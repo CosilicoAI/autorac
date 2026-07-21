@@ -277,6 +277,7 @@ def test_strict_profile_does_not_repair_apply_repairable_fixture(
         "integration-reviewer",
     ):
         assert _gate(result.receipt, reviewer_gate)["status"] == "passed"
+    assert _gate(result.receipt, "companion-tests")["status"] == "failed"
     assert _policy_snapshot(fixture.policy_root) == before
     assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
     assert "auto_zero_section_151_amount" not in fixture.companion.read_text()
@@ -460,6 +461,35 @@ def test_receipt_output_inside_policy_repo_is_rejected(tmp_path: Path):
         )
 
 
+def test_whole_repo_target_set_is_explicit_and_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+
+    def passing_reviewer(_prompt: str, **_kwargs):
+        return '{"score":10,"passed":true,"issues":[]}', 0
+
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        passing_reviewer,
+    )
+    result = run_notary_verification(
+        policy_repo_path=fixture.policy_root,
+        corpus_path=fixture.corpus_root,
+        axiom_rules_engine_path=fixture.engine_root,
+        receipt_out=tmp_path / "whole-repo.json",
+        whole_repo=True,
+        allow_reduced=True,
+        now=_FIXED_NOW,
+    )
+
+    assert result.receipt["targets"] == {
+        "mode": "whole-repo",
+        "files": [_MODULE_RELATIVE.as_posix()],
+    }
+
+
 def test_receipt_has_no_signing_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -487,3 +517,20 @@ def test_receipt_has_no_signing_fields(
     assert b"signature" not in serialized
     assert b"hostname" not in serialized
     assert result.receipt["schema_id"] == NOTARY_RECEIPT_SCHEMA_ID
+    assert (
+        result.receipt["subject_commit"]
+        == _git(fixture.policy_root, "rev-parse", "HEAD").stdout.strip()
+    )
+    assert (
+        result.receipt["subject_tree"]
+        == _git(fixture.policy_root, "rev-parse", "HEAD^{tree}").stdout.strip()
+    )
+    assert result.receipt["dependencies"]["corpus_release"]["name"] == _RELEASE_NAME
+    assert len(result.receipt["dependencies"]["corpus_release"]["content_sha256"]) == 64
+    assert result.receipt["waiver_set"]["count"] == 0
+    engine_identity = result.receipt["dependencies"]["axiom_rules_engine"]
+    assert (
+        engine_identity["commit"]
+        == _git(fixture.engine_root, "rev-parse", "HEAD").stdout.strip()
+    )
+    assert engine_identity["executable"]["path"] == ("target/debug/axiom-rules-engine")

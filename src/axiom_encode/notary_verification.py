@@ -34,7 +34,11 @@ from .harness.evals import (
     _git_checkout_execution_identity,
 )
 from .harness.policyengine_runtime import PolicyEngineRuntime
-from .harness.validator_pipeline import PipelineResult, ValidatorPipeline
+from .harness.validator_pipeline import (
+    PipelineResult,
+    ValidatorPipeline,
+    resolve_axiom_rules_engine_binary,
+)
 from .repo_routing import (
     atomic_rulespec_module_paths,
     canonical_rulespec_repo_name,
@@ -80,7 +84,7 @@ _REVIEWER_GATES = (
     ("parameter_reviewer", "parameter-reviewer"),
     ("integration_reviewer", "integration-reviewer"),
 )
-_SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+_GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -237,10 +241,10 @@ def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
             f"{label} worktree is dirty; commit or remove every tracked and "
             f"untracked change before verification: {root}"
         )
-    if not isinstance(commit, str) or _SHA1_RE.fullmatch(commit) is None:
+    if not isinstance(commit, str) or _GIT_OID_RE.fullmatch(commit) is None:
         raise NotaryVerificationError(f"{label} HEAD is not a full Git commit SHA")
     tree = _git_text(root, "rev-parse", "HEAD^{tree}")
-    if _SHA1_RE.fullmatch(tree) is None:
+    if _GIT_OID_RE.fullmatch(tree) is None:
         raise NotaryVerificationError(f"{label} HEAD tree is not a full Git tree SHA")
     return _CleanGitIdentity(root=root, commit=commit, tree=tree)
 
@@ -277,6 +281,35 @@ def _encoder_package_identity() -> dict[str, object]:
     ):
         raise NotaryVerificationError("Cannot hash the executing axiom-encode package")
     return {"tree_sha256": tree_sha256, "file_count": file_count}
+
+
+def _sha256_file(path: Path, *, label: str) -> dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise NotaryVerificationError(f"{label} is not a regular file: {path}")
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError as exc:
+        raise NotaryVerificationError(f"Cannot hash {label}: {path}") from exc
+    return {"sha256": digest.hexdigest(), "size": size}
+
+
+def _axiom_rules_engine_execution_identity(root: Path) -> dict[str, object]:
+    """Bind the executable selected by the existing validator search order."""
+
+    try:
+        candidate = resolve_axiom_rules_engine_binary(root)
+        relative = candidate.relative_to(root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise NotaryVerificationError(str(exc)) from exc
+    return {
+        "path": relative.as_posix(),
+        **_sha256_file(candidate, label="Axiom rules engine executable"),
+    }
 
 
 def _assert_same_clean_checkout(
@@ -416,6 +449,22 @@ def _result_gate_passed(results: Sequence[PipelineResult], gate: str) -> bool:
     )
 
 
+def _deterministic_gate_passed(
+    results: Sequence[PipelineResult],
+    gate: str,
+) -> bool:
+    if not results:
+        return False
+    for result in results:
+        ci_result = result.results.get("ci")
+        if ci_result is None:
+            return False
+        outcomes = ci_result.details.get("deterministic_gates")
+        if not isinstance(outcomes, dict) or outcomes.get(gate) is not True:
+            return False
+    return True
+
+
 def _oracle_passed(results: Sequence[PipelineResult]) -> tuple[bool, list[str]]:
     issues: list[str] = []
     for result in results:
@@ -468,20 +517,23 @@ def _portable_policyengine_identity(
 
 def _write_receipt(path: Path, receipt: Mapping[str, Any]) -> None:
     raw = canonical_receipt_bytes(receipt)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=path.parent,
-    )
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        raise NotaryVerificationError(f"Cannot write notary receipt: {path}") from exc
 
 
 def _utc_timestamp(now: datetime | None = None) -> str:
@@ -529,6 +581,7 @@ def run_notary_verification(
         engine_root,
         label="Axiom rules engine",
     )
+    engine_execution_before = _axiom_rules_engine_execution_identity(engine_root)
 
     dependency_roots = tuple(
         _resolve_policy_checkout(root) for root in rulespec_dependency_roots
@@ -567,14 +620,18 @@ def run_notary_verification(
     )
     corpus_release = load_rulespec_local_corpus_release(policy_root, corpus_root)
 
-    target_content_roots = tuple(
-        dict.fromkeys(find_policy_repo_root(target) for target in targets)
-    )
-    if any(root is None for root in target_content_roots):
-        raise NotaryVerificationError("A target lost its canonical RuleSpec root")
-    admitted_content_roots = tuple(
-        root for root in target_content_roots if isinstance(root, Path)
-    )
+    module_content_roots = {
+        module: policy_root / module.relative_to(policy_root).parts[0]
+        for module in checkout_modules
+    }
+    try:
+        admitted_content_roots = tuple(
+            dict.fromkeys(module_content_roots[target] for target in targets)
+        )
+    except KeyError as exc:
+        raise NotaryVerificationError(
+            "A target is absent from the strict RuleSpec layout scan"
+        ) from exc
 
     policyengine_runtime: PolicyEngineRuntime | None = None
     oracle_reduced = policyengine_runtime_root is None
@@ -601,11 +658,7 @@ def run_notary_verification(
     pipeline_results: list[PipelineResult] = []
     issues: list[str] = []
     for target in targets:
-        content_root = find_policy_repo_root(target)
-        if content_root is None:
-            raise NotaryVerificationError(
-                f"Target lost its canonical RuleSpec root: {target}"
-            )
+        content_root = module_content_roots[target]
         pipeline = pipelines.get(content_root)
         if pipeline is None:
             pipeline = ValidatorPipeline(
@@ -629,6 +682,18 @@ def run_notary_verification(
 
     compile_passed = _result_gate_passed(pipeline_results, "compile")
     ci_passed = _result_gate_passed(pipeline_results, "ci")
+    deterministic_statuses = {
+        gate: _deterministic_gate_passed(pipeline_results, gate)
+        for gate in (
+            "proof-revalidation",
+            "companion-tests",
+            "grounding-contract",
+            "layout-inspection",
+        )
+    }
+    for gate, passed in deterministic_statuses.items():
+        if not passed and ci_passed:
+            issues.append(f"{gate}: deterministic gate did not complete successfully")
     reviewer_statuses = {
         receipt_gate: _result_gate_passed(pipeline_results, result_name)
         for result_name, receipt_gate in _REVIEWER_GATES
@@ -645,6 +710,7 @@ def run_notary_verification(
     validators_passed = (
         compile_passed
         and ci_passed
+        and all(deterministic_statuses.values())
         and all(reviewer_statuses.values())
         and oracle_passed
         and all(result.all_passed for result in pipeline_results)
@@ -657,6 +723,10 @@ def run_notary_verification(
             "Strict verification mutated files inside the policy repository"
         )
     _assert_same_clean_checkout(engine_git, label="Axiom rules engine")
+    if _axiom_rules_engine_execution_identity(engine_root) != engine_execution_before:
+        raise NotaryVerificationError(
+            "The Axiom rules engine executable changed during verification"
+        )
     for identity in dependency_git:
         _assert_same_clean_checkout(identity, label="RuleSpec dependency checkout")
     if policyengine_runtime is not None:
@@ -670,13 +740,15 @@ def run_notary_verification(
         _gate("subject-clean", "passed"),
         _gate("corpus-release-binding", "passed"),
         _gate("compile", "passed" if compile_passed else "failed"),
-        # ValidatorPipeline intentionally exposes these checks through one
-        # fail-closed `ci` result.  A failed aggregate is therefore reported as
-        # failed for every constituent gate; no receipt can overstate a pass.
-        _gate("proof-revalidation", "passed" if ci_passed else "failed"),
-        _gate("companion-tests", "passed" if ci_passed else "failed"),
-        _gate("grounding-contract", "passed" if ci_passed else "failed"),
-        _gate("layout-inspection", "passed" if ci_passed else "failed"),
+        *[
+            _gate(gate, "passed" if deterministic_statuses[gate] else "failed")
+            for gate in (
+                "proof-revalidation",
+                "companion-tests",
+                "grounding-contract",
+                "layout-inspection",
+            )
+        ],
         _gate("waiver-set-verification", "passed"),
         _gate("policyengine-oracle", oracle_status),
         *[
@@ -710,7 +782,10 @@ def run_notary_verification(
                 "name": corpus_release.name,
                 "content_sha256": corpus_release.content_sha256,
             },
-            "axiom_rules_engine": {"commit": engine_git.commit},
+            "axiom_rules_engine": {
+                "commit": engine_git.commit,
+                "executable": engine_execution_before,
+            },
             "axiom_encode": {
                 "package": "axiom-encode",
                 "version": __version__,
