@@ -1,0 +1,1 @@
+Add an unsigned, provisional `notary-verify` receipt profile that verifies clean RuleSpec checkouts without applying repairs, keeps reviewers enabled, and fails closed when pinned oracle evidence is unavailable unless reduced evidence is explicitly allowed.

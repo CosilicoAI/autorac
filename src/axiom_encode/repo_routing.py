@@ -27,7 +27,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
-from .constants import RULESPEC_COMPOSITION_SPEC_ROOT, RULESPEC_FILESYSTEM_ROOTS
+from .constants import (
+    RULESPEC_ATOMIC_MODULE_ROOTS,
+    RULESPEC_COMPOSITION_SPEC_ROOT,
+    RULESPEC_FILE_SUFFIX,
+    RULESPEC_FILESYSTEM_ROOTS,
+    RULESPEC_TEST_FILE_SUFFIX,
+)
 
 
 class _GitProbeError(RuntimeError):
@@ -714,6 +720,86 @@ def jurisdiction_subdir_names(
         and child.is_dir()
         and _is_jurisdiction_dir_name(child.name, country)
     }
+
+
+def atomic_rulespec_module_paths(checkout: Path) -> tuple[Path, ...]:
+    """Strictly inspect a country checkout and return its atomic modules."""
+
+    checkout = Path(checkout).resolve()
+    inspection = inspect_canonical_rulespec_checkout(
+        checkout,
+        allow_composition_specs=True,
+    )
+    if inspection.name is None:
+        raise ValueError(
+            "RuleSpec module scan requires an exact canonical rulespec-<country> "
+            f"checkout ({inspection.rejection}): {checkout}"
+        )
+    flat_roots = [checkout / root for root in sorted(RULESPEC_ATOMIC_MODULE_ROOTS)]
+    invalid_flat_roots = [
+        path for path in flat_roots if path.exists() or path.is_symlink()
+    ]
+    if invalid_flat_roots:
+        raise ValueError(
+            "RuleSpec checkout contains repository-root atomic content; atomic roots "
+            "must live under rulespec-<country>/<jurisdiction>/<content-root>: "
+            + ", ".join(str(path) for path in invalid_flat_roots)
+        )
+
+    country = checkout.name.removeprefix("rulespec-")
+    jurisdiction_pattern = re.compile(rf"{re.escape(country)}(?:-[a-z0-9]+)*")
+    modules: list[Path] = []
+    for content_root in sorted(checkout.iterdir()):
+        if content_root.is_symlink():
+            raise ValueError(
+                f"RuleSpec checkout content must not contain symlinks: {content_root}"
+            )
+        root_markers = [
+            content_root / root_name
+            for root_name in sorted(RULESPEC_FILESYSTEM_ROOTS)
+            if (content_root / root_name).exists()
+            or (content_root / root_name).is_symlink()
+        ]
+        if jurisdiction_pattern.fullmatch(content_root.name) is None:
+            if root_markers:
+                raise ValueError(
+                    "RuleSpec content roots must be under a matching direct "
+                    f"jurisdiction directory: {content_root}"
+                )
+            continue
+        if not content_root.is_dir():
+            raise ValueError(
+                "RuleSpec jurisdiction roots must be regular direct directories: "
+                f"{content_root}"
+            )
+        if canonical_rulespec_root_identity(content_root) is None:
+            raise ValueError(f"Noncanonical RuleSpec jurisdiction root: {content_root}")
+        for candidate in sorted(content_root.rglob("*")):
+            if candidate.is_symlink():
+                raise ValueError(
+                    f"RuleSpec content must not contain symlinks: {candidate}"
+                )
+            if not candidate.is_file():
+                continue
+            relative = candidate.relative_to(content_root)
+            yaml_like = candidate.suffix.lower() in {".yaml", ".yml"}
+            if yaml_like and candidate.suffix != RULESPEC_FILE_SUFFIX:
+                raise ValueError(
+                    f"RuleSpec content must use the exact .yaml extension: {candidate}"
+                )
+            if candidate.suffix != RULESPEC_FILE_SUFFIX:
+                continue
+            if not relative.parts or relative.parts[0] not in RULESPEC_FILESYSTEM_ROOTS:
+                raise ValueError(
+                    "RuleSpec YAML must be beneath exactly one canonical filesystem "
+                    f"root {sorted(RULESPEC_FILESYSTEM_ROOTS)}: {candidate}"
+                )
+            if relative.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS:
+                continue
+            if candidate.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
+                continue
+            modules.append(candidate)
+    return tuple(modules)
 
 
 def iter_jurisdiction_content_dirs(workspace_root: Path) -> list[tuple[str, Path]]:
