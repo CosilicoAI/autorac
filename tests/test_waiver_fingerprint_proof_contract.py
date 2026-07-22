@@ -141,6 +141,7 @@ def test_pipeline_ci_reports_unresolved_proof_sources(tmp_path, monkeypatch):
         local_corpus_release=release,
         enable_oracles=False,
         require_policy_proofs=True,
+        expose_deterministic_gate_evidence=True,
     )
 
     def fake_compile(rules_file, output_path):
@@ -166,6 +167,7 @@ def test_pipeline_ci_reports_unresolved_proof_sources(tmp_path, monkeypatch):
     )
     assert result.details["deterministic_gates"]["proof-revalidation"] is False
     assert result.details["deterministic_gates"]["grounding-contract"] is True
+    assert result.details["compile_passed"] is True
     assert set(result.details["deterministic_gates"]) == {
         "proof-revalidation",
         "companion-tests",
@@ -191,12 +193,14 @@ def test_pipeline_ci_preflight_fails_deterministic_gate_details_closed(tmp_path)
         axiom_rules_path=tmp_path / "axiom-rules-engine",
         local_corpus_release=release,
         enable_oracles=False,
+        expose_deterministic_gate_evidence=True,
     )
 
     result = pipeline._run_ci(rules_file)
 
     assert result.passed is False
     assert result.details == {
+        "compile_passed": False,
         "deterministic_gates": {
             "proof-revalidation": False,
             "companion-tests": False,
@@ -204,3 +208,28 @@ def test_pipeline_ci_preflight_fails_deterministic_gate_details_closed(tmp_path)
             "layout-inspection": False,
         }
     }
+
+
+def test_pipeline_ci_gate_evidence_is_opt_in(tmp_path):
+    policy_repo = tmp_path / "rulespec-nz" / "nz"
+    rules_file = policy_repo / "statutes" / "example" / "invalid.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text("format: [\n", encoding="utf-8")
+    corpus_root = tmp_path / "axiom-corpus"
+    _write_provisions(corpus_root)
+    release = bind_test_corpus_release(
+        corpus_root,
+        "test-release",
+        [("nz", "statute", "test-version")],
+    )
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        local_corpus_release=release,
+        enable_oracles=False,
+    )
+
+    result = pipeline._run_ci(rules_file)
+
+    assert result.passed is False
+    assert result.details == {}

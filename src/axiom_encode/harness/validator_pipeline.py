@@ -23765,11 +23765,14 @@ _DETERMINISTIC_CI_GATES = (
 
 
 def _deterministic_ci_gate_details(
+    *,
+    compile_passed: bool = False,
     **outcomes: bool,
-) -> dict[str, dict[str, bool]]:
+) -> dict[str, object]:
     """Return fail-closed metadata for the deterministic CI sub-gates."""
 
     return {
+        "compile_passed": bool(compile_passed),
         "deterministic_gates": {
             gate: bool(outcomes.get(gate, False)) for gate in _DETERMINISTIC_CI_GATES
         }
@@ -24265,6 +24268,7 @@ class ValidatorPipeline:
         encoding_db: Optional[EncodingDB] = None,
         session_id: Optional[str] = None,
         policyengine_runtime: PolicyEngineRuntime | None = None,
+        policyengine_rulespec_identity_root: Path | None = None,
         policyengine_rule_hint: str | None = None,
         require_policy_proofs: bool = False,
         require_complete_source_unit: bool = False,
@@ -24275,6 +24279,7 @@ class ValidatorPipeline:
         amendment_source_texts: Mapping[str, str] | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
         validation_staging_root: Path | None = None,
+        expose_deterministic_gate_evidence: bool = False,
     ):
         self.policy_repo_path = Path(policy_repo_path)
         self.axiom_rules_path = Path(axiom_rules_path)
@@ -24306,8 +24311,13 @@ class ValidatorPipeline:
                     "PolicyEngine oracle requires one explicit admitted runtime; "
                     "ambient interpreters and automatic installation are forbidden"
                 )
-            policyengine_runtime.assert_matches_rulespec_root(self.policy_repo_path)
+            policyengine_runtime.assert_matches_rulespec_root(
+                policyengine_rulespec_identity_root or self.policy_repo_path
+            )
         self.policyengine_runtime = policyengine_runtime
+        self.policyengine_rulespec_identity_root = Path(
+            policyengine_rulespec_identity_root or self.policy_repo_path
+        )
         self.max_workers = max_workers
         self.encoding_db = encoding_db
         self.session_id = session_id
@@ -24317,6 +24327,9 @@ class ValidatorPipeline:
             raise TypeError("require_complete_source_unit must be a boolean")
         self.require_complete_source_unit = require_complete_source_unit
         self.enforce_repository_layout = enforce_repository_layout
+        self.expose_deterministic_gate_evidence = bool(
+            expose_deterministic_gate_evidence
+        )
         self.source_text = source_text
         if source_metadata is not None and not isinstance(source_metadata, dict):
             raise TypeError("source_metadata must be a dictionary when provided")
@@ -24377,6 +24390,21 @@ class ValidatorPipeline:
                         "attestation requested_corpus_citation_path"
                     )
         self.policyengine_registry = load_policyengine_registry()
+
+    def _deterministic_ci_details(
+        self,
+        *,
+        compile_passed: bool = False,
+        **outcomes: bool,
+    ) -> dict[str, object]:
+        """Expose strict-profile sub-gate evidence only for opted-in callers."""
+
+        if not self.expose_deterministic_gate_evidence:
+            return {}
+        return _deterministic_ci_gate_details(
+            compile_passed=compile_passed,
+            **outcomes,
+        )
 
     def _log_event(
         self, event_type: str, content: str = "", metadata: Optional[dict] = None
@@ -24773,7 +24801,7 @@ class ValidatorPipeline:
                 passed=False,
                 error=str(e),
                 issues=[str(e)],
-                details=_deterministic_ci_gate_details(),
+                details=self._deterministic_ci_details(),
             )
         self._log_event(
             "validation_ci_end",
@@ -26499,7 +26527,8 @@ class ValidatorPipeline:
                 duration_ms=duration,
                 error=issues[0] if issues else None,
                 raw_output=raw_output,
-                details=_deterministic_ci_gate_details(
+                details=self._deterministic_ci_details(
+                    compile_passed=compile_issue_count == 0,
                     **{
                         "proof-revalidation": proof_issue_count == 0,
                         "companion-tests": companion_stage_completed
@@ -26560,7 +26589,7 @@ class ValidatorPipeline:
                     passed=False,
                     issues=[issue],
                     error=issue,
-                    details=_deterministic_ci_gate_details(),
+                    details=self._deterministic_ci_details(),
                 )
             else:
                 yaml_issue = self._rulespec_yaml_preflight_issue(canonical_file)
@@ -26570,7 +26599,7 @@ class ValidatorPipeline:
                         passed=False,
                         issues=[yaml_issue],
                         error=yaml_issue,
-                        details=_deterministic_ci_gate_details(),
+                        details=self._deterministic_ci_details(),
                     )
                 else:
                     result = self._run_rulespec_ci(canonical_file)
@@ -28957,7 +28986,7 @@ Output ONLY valid JSON:
             raise PolicyEngineRuntimeError(
                 "PolicyEngine oracle requires one explicit admitted runtime"
             )
-        runtime.assert_matches_rulespec_root(self.policy_repo_path)
+        runtime.assert_matches_rulespec_root(self.policyengine_rulespec_identity_root)
         return runtime
 
     def _run_pe_subprocess(self, script: str) -> Optional[str]:
