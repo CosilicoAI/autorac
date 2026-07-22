@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -225,6 +226,30 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
+    )
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _overwrite_loose_git_object(
+    repo: Path,
+    object_id: str,
+    object_type: str,
+    payload: bytes,
+) -> None:
+    object_path = repo / ".git/objects" / object_id[:2] / object_id[2:]
+    assert object_path.is_file()
+    object_path.chmod(0o644)
+    object_path.write_bytes(
+        zlib.compress(
+            f"{object_type} {len(payload)}\0".encode("ascii") + payload
+        )
     )
 
 
@@ -759,6 +784,111 @@ def test_dirty_policy_worktree_is_refused_before_validation(
     assert not receipt_out.exists()
 
 
+def test_git_executable_mode_change_is_refused_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    fixture.module.chmod(0o755)
+    _commit_all(fixture.policy_root, "make RuleSpec executable")
+    fixture.module.chmod(0o654)
+    receipt_out = tmp_path / "mode-change-receipt.json"
+
+    assert _git(fixture.policy_root, "status", "--porcelain").stdout != ""
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("mode changes must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match="raw HEAD tree"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+def test_intent_to_add_index_entry_is_refused_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    intent_to_add = fixture.policy_root / "intent-to-add.txt"
+    intent_to_add.write_text("uncommitted\n", encoding="utf-8")
+    _git(fixture.policy_root, "add", "--intent-to-add", intent_to_add.name)
+    receipt_out = tmp_path / "intent-to-add-receipt.json"
+
+    assert _git(fixture.policy_root, "status", "--porcelain").stdout != ""
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("dirty index must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match="worktree is dirty"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+def test_staged_gitlink_is_not_hidden_by_local_diff_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    nested = fixture.policy_root / "nested-repository"
+    _init_git_repo(nested)
+    (nested / "tracked.txt").write_text("nested\n", encoding="utf-8")
+    _commit_all(nested, "nested fixture")
+    _git(fixture.policy_root, "add", nested.name)
+    _git(fixture.policy_root, "config", "diff.ignoreSubmodules", "all")
+    receipt_out = tmp_path / "staged-gitlink-receipt.json"
+
+    assert _git(fixture.policy_root, "status", "--porcelain").stdout != ""
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("staged gitlinks must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match="worktree is dirty"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
 def test_noncommit_head_is_refused_before_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -918,6 +1048,112 @@ def test_git_clean_filter_cannot_hide_modified_rulespec_bytes(
     assert not receipt_out.exists()
 
 
+def test_repo_local_fsmonitor_is_never_executed(
+    tmp_path: Path,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    sentinel = tmp_path / "fsmonitor-was-executed"
+    hook = tmp_path / "fsmonitor-hook"
+    hook.write_text(
+        "#!/bin/sh\n: > " + shlex.quote(str(sentinel)) + "\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    _git(fixture.policy_root, "config", "core.fsmonitor", str(hook))
+    receipt_out = tmp_path / "fsmonitor-receipt.json"
+
+    with pytest.raises(NotaryVerificationError, match="fails closed"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            now=_FIXED_NOW,
+        )
+
+    assert not sentinel.exists()
+    assert not receipt_out.exists()
+
+
+def test_missing_partial_clone_blob_fails_without_git_metadata_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    git_executable = shutil.which("git")
+    assert git_executable is not None
+    _git(fixture.policy_root, "config", "uploadpack.allowFilter", "true")
+    partial_root = tmp_path / "partial" / "rulespec-us"
+    partial_root.parent.mkdir()
+    subprocess.run(
+        [
+            git_executable,
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            "--no-checkout",
+            fixture.policy_root.as_uri(),
+            str(partial_root),
+        ],
+        check=True,
+    )
+    _git(partial_root, "read-tree", "HEAD")
+    for relative_text in _git(
+        fixture.policy_root,
+        "ls-files",
+        "-z",
+        "--",
+    ).stdout.split("\0"):
+        if not relative_text:
+            continue
+        source = fixture.policy_root / relative_text
+        destination = partial_root / relative_text
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+    blob_id = _git(
+        partial_root,
+        "rev-parse",
+        f"HEAD:{_MODULE_RELATIVE.as_posix()}",
+    ).stdout.strip()
+    missing = subprocess.run(
+        [git_executable, "-C", str(partial_root), "cat-file", "-e", blob_id],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
+    )
+    if missing.returncode == 0:
+        pytest.skip("Git did not create a blobless partial clone")
+
+    metadata_before = _deterministic_tree_identity(partial_root / ".git")
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("missing Git objects must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    receipt_out = tmp_path / "partial-clone-receipt.json"
+    with pytest.raises(NotaryVerificationError):
+        run_notary_verification(
+            policy_repo_path=partial_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert _deterministic_tree_identity(partial_root / ".git") == metadata_before
+    assert not receipt_out.exists()
+
+
 def test_git_replacement_ref_cannot_substitute_subject_tree_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -973,13 +1209,12 @@ def test_corrupt_loose_git_blob_cannot_substitute_snapshot_bytes(
         f"HEAD:{_MODULE_RELATIVE.as_posix()}",
     ).stdout.strip()
     replacement = (_RULESPEC + "# corrupt object payload\n").encode()
-    corrupt_object = zlib.compress(
-        f"blob {len(replacement)}\0".encode("ascii") + replacement
+    _overwrite_loose_git_object(
+        fixture.policy_root,
+        object_id,
+        "blob",
+        replacement,
     )
-    object_path = fixture.policy_root / ".git/objects" / object_id[:2] / object_id[2:]
-    assert object_path.is_file()
-    object_path.chmod(0o644)
-    object_path.write_bytes(corrupt_object)
 
     class ForbiddenPipeline:
         def __init__(self, **_kwargs):
@@ -991,6 +1226,173 @@ def test_corrupt_loose_git_blob_cannot_substitute_snapshot_bytes(
     )
     receipt_out = tmp_path / "corrupt-object.json"
     with pytest.raises(NotaryVerificationError, match="does not match its object"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+def test_corrupt_loose_git_commit_cannot_substitute_subject_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    commit_id = _git(fixture.policy_root, "rev-parse", "HEAD").stdout.strip()
+    replacement = _git_bytes(
+        fixture.policy_root,
+        "cat-file",
+        "commit",
+        commit_id,
+    ) + b"\ncorrupt commit payload\n"
+    _overwrite_loose_git_object(
+        fixture.policy_root,
+        commit_id,
+        "commit",
+        replacement,
+    )
+
+    assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("corrupt Git commit must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    receipt_out = tmp_path / "corrupt-commit.json"
+    with pytest.raises(
+        NotaryVerificationError,
+        match="hash mismatch|Git commit payload does not match its object identity",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+def test_corrupt_loose_git_root_tree_cannot_substitute_snapshot_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    root_tree_id = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    ).stdout.strip()
+    replacement_rulespec = _RULESPEC + "# corrupt root tree payload\n"
+    fixture.module.write_text(replacement_rulespec, encoding="utf-8")
+    _git(fixture.policy_root, "add", _MODULE_RELATIVE.as_posix())
+    replacement_tree_id = _git(
+        fixture.policy_root,
+        "write-tree",
+    ).stdout.strip()
+    replacement = _git_bytes(
+        fixture.policy_root,
+        "cat-file",
+        "tree",
+        replacement_tree_id,
+    )
+    _git(fixture.policy_root, "reset", "--hard", "-q", "HEAD")
+    _overwrite_loose_git_object(
+        fixture.policy_root,
+        root_tree_id,
+        "tree",
+        replacement,
+    )
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("corrupt root tree must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    receipt_out = tmp_path / "corrupt-root-tree.json"
+    with pytest.raises(
+        NotaryVerificationError,
+        match="hash mismatch|Git tree payload does not match its object identity",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            changed_files=[_MODULE_RELATIVE],
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+def test_corrupt_loose_git_nested_tree_cannot_substitute_snapshot_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    nested_path = _MODULE_RELATIVE.parent.as_posix()
+    nested_tree_id = _git(
+        fixture.policy_root,
+        "rev-parse",
+        f"HEAD:{nested_path}",
+    ).stdout.strip()
+    replacement_rulespec = _RULESPEC + "# corrupt nested tree payload\n"
+    fixture.module.write_text(replacement_rulespec, encoding="utf-8")
+    _git(fixture.policy_root, "add", _MODULE_RELATIVE.as_posix())
+    replacement_root_id = _git(
+        fixture.policy_root,
+        "write-tree",
+    ).stdout.strip()
+    replacement_nested_id = _git(
+        fixture.policy_root,
+        "rev-parse",
+        f"{replacement_root_id}:{nested_path}",
+    ).stdout.strip()
+    replacement = _git_bytes(
+        fixture.policy_root,
+        "cat-file",
+        "tree",
+        replacement_nested_id,
+    )
+    _git(fixture.policy_root, "reset", "--hard", "-q", "HEAD")
+    _overwrite_loose_git_object(
+        fixture.policy_root,
+        nested_tree_id,
+        "tree",
+        replacement,
+    )
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("corrupt nested tree must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    receipt_out = tmp_path / "corrupt-nested-tree.json"
+    with pytest.raises(
+        NotaryVerificationError,
+        match="hash mismatch|Git tree payload does not match its object identity",
+    ):
         run_notary_verification(
             policy_repo_path=fixture.policy_root,
             corpus_path=fixture.corpus_root,

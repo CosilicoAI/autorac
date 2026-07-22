@@ -245,9 +245,18 @@ def _git_bytes(
         raise NotaryVerificationError("Cannot inspect Git identity: git is unavailable")
     environment = scrub_attestation_signing_keys()
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         completed = subprocess.run(
-            [git_executable, "-C", str(root), *args],
+            [
+                git_executable,
+                "-c",
+                "core.fsmonitor=false",
+                "-C",
+                str(root),
+                *args,
+            ],
             input=input_bytes,
             capture_output=True,
             check=False,
@@ -279,79 +288,188 @@ def _git_text(root: Path, *args: str) -> str:
     return _git_stdout(root, *args).strip()
 
 
-def _git_tree_entries(identity: _CleanGitIdentity) -> tuple[_GitTreeEntry, ...]:
-    listing = _git_bytes(
-        identity.root,
-        "ls-tree",
-        "-r",
-        "-z",
-        "--full-tree",
-        identity.tree,
-    )
-    entries: list[_GitTreeEntry] = []
-    casefold_paths: dict[str, str] = {}
-    for record in listing.split(b"\0"):
-        if not record:
-            continue
-        try:
-            metadata, raw_path = record.split(b"\t", 1)
-            mode, object_type, raw_object_id = metadata.split(b" ")
-            relative_text = raw_path.decode("utf-8")
-            mode_text = mode.decode("ascii")
-            object_id = raw_object_id.decode("ascii")
-        except (UnicodeError, ValueError) as exc:
-            raise NotaryVerificationError(
-                f"{identity.root.name} HEAD tree contains an unsafe Git entry"
-            ) from exc
-        relative = PurePosixPath(relative_text)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or any(part in {"", ".", ".."} for part in relative.parts)
-            or any(part.casefold() == ".git" for part in relative.parts)
-        ):
-            raise NotaryVerificationError(
-                f"{identity.root.name} HEAD tree contains an unsafe path: "
-                f"{relative_text!r}"
-            )
-        if object_type != b"blob" or mode_text not in {"100644", "100755", "120000"}:
-            raise NotaryVerificationError(
-                f"{identity.root.name} HEAD tree contains unsupported entry "
-                f"{mode_text} {object_type.decode('ascii', errors='replace')}: "
-                f"{relative_text}"
-            )
-        if _GIT_OID_RE.fullmatch(object_id) is None:
-            raise NotaryVerificationError(
-                f"{identity.root.name} HEAD tree contains an invalid blob identity"
-            )
-        for length in range(1, len(relative.parts) + 1):
-            prefix = PurePosixPath(*relative.parts[:length]).as_posix()
-            folded = prefix.casefold()
-            previous = casefold_paths.setdefault(folded, prefix)
-            if previous != prefix:
-                raise NotaryVerificationError(
-                    f"{identity.root.name} HEAD tree has a case-colliding path: "
-                    f"{previous!r} and {prefix!r}"
-                )
-        entries.append(
-            _GitTreeEntry(
-                mode=mode_text,
-                object_id=object_id,
-                relative=relative,
-            )
-        )
-    return tuple(entries)
-
-
-def _git_blob_hasher(size: int, object_id: str):
+def _git_object_hasher(object_type: str, size: int, object_id: str):
+    if object_type not in {"blob", "commit", "tree"}:
+        raise NotaryVerificationError(f"Unsupported Git object type: {object_type}")
     if len(object_id) == 40:
         digest = hashlib.sha1(usedforsecurity=False)
     elif len(object_id) == 64:
         digest = hashlib.sha256()
     else:  # pragma: no cover - guarded by _GIT_OID_RE
         raise NotaryVerificationError("Unsupported Git object format")
-    digest.update(f"blob {size}\0".encode("ascii"))
+    digest.update(f"{object_type} {size}\0".encode("ascii"))
     return digest
+
+
+def _git_object_payloads(
+    root: Path,
+    expected_objects: Sequence[tuple[str, str]],
+) -> tuple[bytes, ...]:
+    """Read and independently hash-check exact Git object preimages."""
+
+    if not expected_objects:
+        return ()
+    queries = b"".join(
+        object_id.encode("ascii") + b"\n"
+        for object_id, _object_type in expected_objects
+    )
+    output = _git_bytes(
+        root,
+        "cat-file",
+        "--batch",
+        input_bytes=queries,
+    )
+    payloads: list[bytes] = []
+    cursor = 0
+    for expected_id, expected_type in expected_objects:
+        header_end = output.find(b"\n", cursor)
+        if header_end < 0:
+            raise NotaryVerificationError(
+                f"Cannot read {root.name} Git {expected_type} object {expected_id}"
+            )
+        try:
+            raw_object_id, raw_object_type, raw_size = output[
+                cursor:header_end
+            ].split(b" ")
+            object_id = raw_object_id.decode("ascii")
+            object_type = raw_object_type.decode("ascii")
+            size = int(raw_size.decode("ascii"))
+        except (UnicodeError, ValueError) as exc:
+            raise NotaryVerificationError(
+                f"Cannot read {root.name} Git {expected_type} object {expected_id}"
+            ) from exc
+        payload_start = header_end + 1
+        payload_end = payload_start + size
+        if (
+            object_id != expected_id
+            or object_type != expected_type
+            or size < 0
+            or payload_end >= len(output)
+            or output[payload_end : payload_end + 1] != b"\n"
+        ):
+            raise NotaryVerificationError(
+                f"Cannot read {root.name} Git {expected_type} object {expected_id}"
+            )
+        payload = output[payload_start:payload_end]
+        digest = _git_object_hasher(expected_type, size, expected_id)
+        digest.update(payload)
+        if digest.hexdigest() != expected_id:
+            raise NotaryVerificationError(
+                f"{root.name} Git {expected_type} payload does not match its "
+                f"object identity: {expected_id}"
+            )
+        payloads.append(payload)
+        cursor = payload_end + 1
+    if cursor != len(output):
+        raise NotaryVerificationError(
+            f"Cannot read {root.name} Git objects: unexpected batch output"
+        )
+    return tuple(payloads)
+
+
+def _verified_commit_tree(root: Path, commit: str) -> str:
+    payload = _git_object_payloads(root, ((commit, "commit"),))[0]
+    first_line = payload.partition(b"\n")[0]
+    try:
+        marker, raw_tree = first_line.split(b" ", 1)
+        tree = raw_tree.decode("ascii")
+    except (UnicodeError, ValueError) as exc:
+        raise NotaryVerificationError(
+            f"{root.name} HEAD commit has no valid tree identity"
+        ) from exc
+    if (
+        marker != b"tree"
+        or _GIT_OID_RE.fullmatch(tree) is None
+        or len(tree) != len(commit)
+    ):
+        raise NotaryVerificationError(
+            f"{root.name} HEAD commit has no valid tree identity"
+        )
+    return tree
+
+
+def _git_tree_entries(identity: _CleanGitIdentity) -> tuple[_GitTreeEntry, ...]:
+    """Walk only independently hash-checked tree objects from the commit root."""
+
+    entries: list[_GitTreeEntry] = []
+    casefold_paths: dict[str, str] = {}
+    observed_paths: set[str] = set()
+    pending: list[tuple[str, PurePosixPath]] = [
+        (identity.tree, PurePosixPath("."))
+    ]
+    object_id_bytes = len(identity.tree) // 2
+    while pending:
+        tree_id, parent = pending.pop()
+        payload = _git_object_payloads(identity.root, ((tree_id, "tree"),))[0]
+        cursor = 0
+        while cursor < len(payload):
+            mode_end = payload.find(b" ", cursor)
+            name_end = payload.find(b"\0", mode_end + 1)
+            object_end = name_end + 1 + object_id_bytes
+            if (
+                mode_end <= cursor
+                or name_end <= mode_end + 1
+                or object_end > len(payload)
+            ):
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree object is malformed: {tree_id}"
+                )
+            raw_mode = payload[cursor:mode_end]
+            raw_name = payload[mode_end + 1 : name_end]
+            raw_object_id = payload[name_end + 1 : object_end]
+            cursor = object_end
+            try:
+                mode = raw_mode.decode("ascii")
+                name = raw_name.decode("utf-8")
+            except UnicodeError as exc:
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree contains an unsafe Git entry"
+                ) from exc
+            if (
+                not name
+                or "/" in name
+                or name in {".", ".."}
+                or name.casefold() == ".git"
+            ):
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree contains an unsafe path: {name!r}"
+                )
+            relative = parent / name
+            relative_text = relative.as_posix()
+            folded = relative_text.casefold()
+            previous = casefold_paths.setdefault(folded, relative_text)
+            if relative_text in observed_paths or previous != relative_text:
+                conflicting = previous if previous != relative_text else relative_text
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree has a colliding path: "
+                    f"{conflicting!r} and {relative_text!r}"
+                )
+            observed_paths.add(relative_text)
+            object_id = raw_object_id.hex()
+            if _GIT_OID_RE.fullmatch(object_id) is None:
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree contains an invalid object identity"
+                )
+            if mode in {"40000", "040000"}:
+                pending.append((object_id, relative))
+                continue
+            if mode not in {"100644", "100755", "120000"}:
+                raise NotaryVerificationError(
+                    f"{identity.root.name} HEAD tree contains unsupported entry "
+                    f"{mode}: {relative_text}"
+                )
+            entries.append(
+                _GitTreeEntry(
+                    mode=mode,
+                    object_id=object_id,
+                    relative=relative,
+                )
+            )
+    return tuple(sorted(entries, key=lambda entry: entry.relative.as_posix()))
+
+
+def _git_blob_hasher(size: int, object_id: str):
+    return _git_object_hasher("blob", size, object_id)
 
 
 def _worktree_blob_identity(path: Path, entry: _GitTreeEntry) -> tuple[str, str]:
@@ -398,7 +516,7 @@ def _worktree_blob_identity(path: Path, entry: _GitTreeEntry) -> tuple[str, str]
         after.st_mtime_ns,
     ):
         raise NotaryVerificationError(f"tracked file changed while hashing: {path}")
-    mode = "100755" if before.st_mode & 0o111 else "100644"
+    mode = "100755" if before.st_mode & stat.S_IXUSR else "100644"
     return mode, digest.hexdigest()
 
 
@@ -406,11 +524,13 @@ def _require_head_tree_matches_worktree(
     identity: _CleanGitIdentity,
     *,
     label: str,
+    entries: Sequence[_GitTreeEntry] | None = None,
 ) -> None:
     """Raw-bind every tracked worktree byte to HEAD without Git filters."""
 
     mismatches: list[str] = []
-    for entry in _git_tree_entries(identity):
+    admitted_entries = entries if entries is not None else _git_tree_entries(identity)
+    for entry in admitted_entries:
         path = identity.root.joinpath(*entry.relative.parts)
         try:
             mode, object_id = _worktree_blob_identity(path, entry)
@@ -448,60 +568,10 @@ def _git_blob_payloads(
     identity: _CleanGitIdentity,
     entries: Sequence[_GitTreeEntry],
 ) -> tuple[bytes, ...]:
-    if not entries:
-        return ()
-    queries = b"".join(
-        entry.object_id.encode("ascii") + b"\n" for entry in entries
-    )
-    output = _git_bytes(
+    return _git_object_payloads(
         identity.root,
-        "cat-file",
-        "--batch",
-        input_bytes=queries,
+        tuple((entry.object_id, "blob") for entry in entries),
     )
-    payloads: list[bytes] = []
-    cursor = 0
-    for expected in entries:
-        header_end = output.find(b"\n", cursor)
-        if header_end < 0:
-            raise NotaryVerificationError(
-                f"Cannot materialize {identity.root.name} HEAD tree"
-            )
-        try:
-            raw_object_id, object_type, raw_size = output[cursor:header_end].split(b" ")
-            object_id = raw_object_id.decode("ascii")
-            size = int(raw_size.decode("ascii"))
-        except (UnicodeError, ValueError) as exc:
-            raise NotaryVerificationError(
-                f"Cannot materialize {identity.root.name} HEAD tree"
-            ) from exc
-        payload_start = header_end + 1
-        payload_end = payload_start + size
-        if (
-            object_id != expected.object_id
-            or object_type != b"blob"
-            or payload_end >= len(output)
-            or output[payload_end : payload_end + 1] != b"\n"
-        ):
-            raise NotaryVerificationError(
-                f"Cannot materialize {identity.root.name} Git blob "
-                f"{expected.object_id}"
-            )
-        payload = output[payload_start:payload_end]
-        digest = _git_blob_hasher(size, expected.object_id)
-        digest.update(payload)
-        if digest.hexdigest() != expected.object_id:
-            raise NotaryVerificationError(
-                f"Materialized {identity.root.name} Git blob payload does not "
-                f"match its object identity: {expected.object_id}"
-            )
-        payloads.append(payload)
-        cursor = payload_end + 1
-    if cursor != len(output):
-        raise NotaryVerificationError(
-            f"Cannot materialize {identity.root.name}: unexpected Git batch output"
-        )
-    return tuple(payloads)
 
 
 def _materialize_git_tree(identity: _CleanGitIdentity, destination: Path) -> None:
@@ -629,6 +699,61 @@ def _require_plain_git_index(root: Path, *, label: str) -> None:
     )
 
 
+def _require_head_tree_matches_index(
+    identity: _CleanGitIdentity,
+    entries: Sequence[_GitTreeEntry],
+    *,
+    label: str,
+) -> None:
+    """Require an exact stage-zero index projection of the verified HEAD tree."""
+
+    raw_index = _git_bytes(
+        identity.root,
+        "ls-files",
+        "--stage",
+        f"--abbrev={len(identity.tree)}",
+        "-z",
+        "--",
+    )
+    index_entries: list[tuple[str, str, str, str]] = []
+    for record in raw_index.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            raw_mode, raw_object_id, raw_stage = metadata.split(b" ")
+            index_entries.append(
+                (
+                    raw_mode.decode("ascii"),
+                    raw_object_id.decode("ascii"),
+                    raw_stage.decode("ascii"),
+                    raw_path.decode("utf-8"),
+                )
+            )
+        except (UnicodeError, ValueError) as exc:
+            raise NotaryVerificationError(
+                f"{label} Git index contains an unsafe entry"
+            ) from exc
+    expected = {
+        (
+            entry.mode,
+            entry.object_id,
+            "0",
+            entry.relative.as_posix(),
+        )
+        for entry in entries
+    }
+    actual = set(index_entries)
+    if (
+        len(actual) != len(index_entries)
+        or any(stage != "0" for _mode, _object_id, stage, _path in index_entries)
+        or actual != expected
+    ):
+        raise NotaryVerificationError(
+            f"{label} worktree is dirty; Git index does not exactly match HEAD"
+        )
+
+
 def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
     try:
         identity_root = Path(_git_text(root, "rev-parse", "--show-toplevel")).resolve(
@@ -645,18 +770,7 @@ def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
     commit = _git_text(root, "rev-parse", "--verify", "HEAD^{commit}")
     if _GIT_OID_RE.fullmatch(commit) is None:
         raise NotaryVerificationError(f"{label} HEAD is not a full Git commit SHA")
-    tree = _git_text(root, "rev-parse", f"{commit}^{{tree}}")
-    if _GIT_OID_RE.fullmatch(tree) is None:
-        raise NotaryVerificationError(f"{label} HEAD tree is not a full Git tree SHA")
-    staged = _git_stdout(
-        root,
-        "diff",
-        "--cached",
-        "--raw",
-        "--no-ext-diff",
-        "HEAD",
-        "--",
-    )
+    tree = _verified_commit_tree(root, commit)
     untracked = tuple(
         path
         for path in _git_stdout(
@@ -669,7 +783,7 @@ def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
         ).split("\0")
         if path
     )
-    if staged or untracked:
+    if untracked:
         raise NotaryVerificationError(
             f"{label} worktree is dirty; commit or remove every tracked and "
             f"untracked change before verification: {root}"
@@ -688,7 +802,9 @@ def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
         git_dir=git_dir,
         git_common_dir=git_common_dir,
     )
-    _require_head_tree_matches_worktree(clean, label=label)
+    entries = _git_tree_entries(clean)
+    _require_head_tree_matches_index(clean, entries, label=label)
+    _require_head_tree_matches_worktree(clean, label=label, entries=entries)
     return clean
 
 
