@@ -84,7 +84,6 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
 
 - `subject_commit`, `subject_tree` — the exact verified state. Dirty
   worktrees MUST be refused.
-- `base_commit` — the protected-branch ancestor the diff was computed from.
 - Dependency identities: corpus release name + content sha256, engine commit,
   encoder version + package identity, verifier profile id.
 - `waiver_set_sha256` + count. An acceptance under waivers means "accepted
