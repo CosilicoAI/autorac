@@ -85,7 +85,10 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
   `public` | `restricted-pinned` | `ci-attested`. Gates with unavailable
   restricted inputs (e.g. licensed oracle bundles) MUST fail the run unless a
   visible reduced-tier mode was explicitly requested, and the receipt MUST
-  say so. Silent degradation is prohibited.
+  say so. Silent degradation is prohibited. (**DECIDED, Max 2026-07-22**:
+  ratified as implemented in the leg-1 profile — fail-closed default,
+  explicit `--allow-reduced` yields a visible `passed-reduced` receipt, and a
+  genuine oracle discrepancy fails even under `--allow-reduced`.)
 - Run identity (encoder version, profile, UTC), `receipt_sha256` self-hash
   over canonical bytes.
 
@@ -142,10 +145,11 @@ the Actions control plane (run identity, workflow ref, artifact digest),
 constructs the notary statement, and requests exactly one `notary_ed25519`
 signature from the broker.
 
-Authorization wording (open decision for the round): either bind durable
-reviewer evidence (deployment approval records) into the statement, or phrase
-the claim as "the protected signing policy authorized this receipt." The
-weaker wording MUST be used unless reviewer evidence is durably bindable.
+Authorization wording (**DECIDED, Max 2026-07-22**): the statement claims
+"the protected signing policy authorized this receipt" — exactly what is
+provable from the environment gate. Reviewer identity remains queryable
+through GitHub's deployment-approval records but is not embedded in the
+signed claim.
 
 ### 4.3 Publication — the X/X+1 rule
 
@@ -205,8 +209,10 @@ named, non-required check.
 
 ## 8. Out of scope for v1 (explicit)
 
-- ProgramSpec / composition outputs: open decision — extend the notary or
-  state that v1 admits atomic RuleSpec only.
+- ProgramSpec / composition outputs (**DECIDED, Max 2026-07-22**): v1 admits
+  atomic RuleSpec only, matching the current manifest boundary; ProgramSpecs
+  keep their compose admission path. Extension is a later, separately gated
+  round.
 - Witnessed lineage chains (dual RFC 3161): sequenced behind the notary
   (receipt#7); until then generation/correction records are self-asserted
   operator metadata plus git history.
@@ -218,8 +224,10 @@ named, non-required check.
 
 1. Cross-family review (sol conditions from the 2026-07-21 round-2 report are
    the starting checklist) with no unresolved CONFIRMED objection.
-2. The three open decisions (§2.3 reduced-tier policy, §4.2 authorization
-   wording, §8 ProgramSpec scope) decided by Max and recorded here.
-3. Required reviewers configured on `production-signing` (#1194).
+2. ~~The three open decisions decided by Max and recorded here~~ **DONE
+   2026-07-22** (§2.3 ratified-as-built, §4.2 narrow wording, §8 atomic-only).
+3. ~~Required reviewers configured on `production-signing` (#1194)~~ **DONE
+   2026-07-22** (MaxGhenis required on `production-signing` and
+   `signing-key-migration`; API-verified).
 4. The strict verifier profile leg merged with its receipt schema marked
    provisional-consistent with §2.3.
