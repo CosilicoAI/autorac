@@ -21,10 +21,18 @@ verification plus authorization**:
 > engine `E`, protected base `B`, and waiver set `W`, and the protected
 > signing policy authorized this acceptance.
 
-That claim is falsifiable: any party with the inputs can re-run the verifier
-and check it. Generation and correction history remain first-class records —
-retained, content-addressed, eventually witnessed (receipt#7) — but they are
-**lineage, not authority**. No model call ever runs on the canonical CI path.
+That claim is falsifiable: any party with the required inputs can re-run the
+verifier and check it. To keep it falsifiable, the notary's **authority path
+is strictly deterministic**: compile, proof re-validation, companion tests,
+grounding contract, layout inspection, waiver verification, and pinned oracle
+comparison. **LLM reviewer stages are NOT admission gates** — they are
+advisory evidence, run outside the notary (operator-side, where model
+subscriptions live, or as non-authority CI QA), recorded in the receipt when
+supplied but never required for admission and never executed by the notary.
+Generation and correction history remain first-class records — retained,
+content-addressed, eventually witnessed (receipt#7) — but they are **lineage,
+not authority**. No model call runs on the canonical CI path, and no model
+credential enters CI.
 
 ## 2. Records
 
@@ -81,16 +89,33 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
   encoder version + package identity, verifier profile id.
 - `waiver_set_sha256` + count. An acceptance under waivers means "accepted
   under waiver set W," never "correct"; the receipt MUST carry it.
+- `base_commit` — normative, not optional: the protected-branch ancestor the
+  complete diff `B..X` was derived from. The verified target set MUST be
+  derived from that diff by the verifier itself (never caller-supplied), MUST
+  represent deletions of protected files, and the receipt MUST record the
+  target mode (`diff` | `whole-repo`) and the exact file set with per-file
+  dispositions (verified / deleted / out-of-scope).
 - Per-gate outcomes: `{gate, status, reproducibility}` where reproducibility ∈
-  `public` | `restricted-pinned` | `ci-attested`. Gates with unavailable
-  restricted inputs (e.g. licensed oracle bundles) MUST fail the run unless a
-  visible reduced-tier mode was explicitly requested, and the receipt MUST
-  say so. Silent degradation is prohibited. (**DECIDED, Max 2026-07-22**:
-  ratified as implemented in the leg-1 profile — fail-closed default,
-  explicit `--allow-reduced` yields a visible `passed-reduced` receipt, and a
-  genuine oracle discrepancy fails even under `--allow-reduced`.)
-- Run identity (encoder version, profile, UTC), `receipt_sha256` self-hash
-  over canonical bytes.
+  `public` (re-runnable by anyone from public pinned inputs) |
+  `restricted-pinned` (re-runnable only by holders of a licensed input whose
+  identity+digest the receipt records) | `ci-attested` (evidence of execution
+  in a specific environment; not independently re-runnable). Admission gates
+  MUST be `public` or `restricted-pinned`; `ci-attested` entries are
+  non-authority evidence. Gates with unavailable restricted inputs MUST fail
+  the run unless a visible reduced-tier mode was explicitly requested, and
+  the receipt MUST say so. Silent degradation is prohibited. (**DECIDED, Max
+  2026-07-22**: ratified as implemented in the leg-1 profile — fail-closed
+  default, explicit `--allow-reduced` yields a visible `passed-reduced`
+  receipt, and a genuine oracle discrepancy fails even under
+  `--allow-reduced`.)
+- Advisory evidence (optional): reviewer-stage outputs and other model-derived
+  checks MAY be attached under a distinct `advisory` key, clearly non-gating.
+- Run identity (encoder version, profile, UTC) and `receipt_sha256`.
+  **Canonicalization (normative)**: the canonical body is UTF-8 JSON with
+  lexicographically sorted keys and minimal separators; `receipt_sha256` is
+  computed over the canonical body serialized **with the `receipt_sha256`
+  field absent** (detached self-hash), then added. Consumers MUST recompute
+  by removing the field and re-canonicalizing.
 
 Notary statement (`axiom/notary-acceptance/v1`, signed):
 
@@ -126,18 +151,26 @@ modes, symlinks. Those move only through separately privileged flows.
 
 ### 4.1 Job 1 — verification (secretless)
 
-Runs candidate code (compile, tests, reviewers, oracles) and therefore MUST
-hold no signing secret and no broker capability. Executes verifier profile
-`P` — non-mutating, no repairs, oracles on, reviewers on (the strict profile;
-first implementation leg) — and emits the verification receipt.
+Runs candidate code (compile, tests, oracle fixtures) and therefore MUST hold
+no signing secret and no signing-capable broker: if a broker is attached (the
+corpus-release trust root requires one), the verifier MUST assert it exposes
+verification capabilities only and MUST refuse to run when any signing
+capability is present. Job 1 executes verifier profile `P` — non-mutating, no
+repairs, deterministic gates plus pinned oracles; **no reviewer or other
+model stages** — and emits the verification receipt. It uses no model
+credential of any kind.
 
 ### 4.2 Job 2 — authorization and signing (no candidate code)
 
 Gated by the `production-signing` environment **with required reviewers**
-(prerequisite: axiom-encode#1194). The approval therefore covers a *completed*
-verification receipt: the reviewer can inspect the exact SHA, diff, and gate
-outcomes before approving, because GitHub environment approval happens before
-the job starts and Job 1 has already finished.
+(configured and verified 2026-07-22; axiom-encode#1194). Because environment
+approval happens before the job starts and Job 1 has already finished, the
+approval covers a *completed* verification receipt — and the workflow MUST
+make that reviewable: Job 1 MUST publish the receipt digest, subject SHA, and
+per-gate outcomes to the run summary (and the receipt as an artifact) so the
+approver inspects them before approving. GitHub's approval record attests
+approval of the waiting job, not artifact inspection; the workflow surface is
+what makes inspection practical, and the signed claim stays narrow (§4.2).
 
 Job 2 MUST NOT execute candidate code. It independently re-fetches and
 re-hashes the immutable subject, validates the verification receipt through
@@ -153,27 +186,39 @@ signed claim.
 
 ### 4.3 Publication — the X/X+1 rule
 
-Verifying `X` and adding its receipt produces `X+1`. Either:
-
-1. **Detached**: the receipt references `X` and lives outside the tree
-   (release asset / receipts store); or
-2. **Mechanical child**: `X+1`'s only delta over `X` is the receipt file,
-   created by the notary flow itself and pushed compare-and-swap while the
-   branch still points at `X`.
+Verifying `X` and adding its receipt produces `X+1`. **v1 REQUIRES the
+detached mode**: the signed statement references `X` and lives outside the
+tree (release asset / receipts store). The mechanical-child mode is DEFERRED:
+as previously drafted it is circular (a signed `attestation_commit` cannot
+name the commit whose tree contains the signed bytes); if later specified,
+the signed statement MUST omit `attestation_commit` (bound only by the
+detached record) and `X+1` MUST be a compare-and-swap mechanical child whose
+sole delta is the receipt file.
 
 The statement distinguishes `subject_commit`, `subject_tree`,
-`attestation_commit`, and `verifier_commit` so no consumer conflates them.
+`attestation_commit` (absent in v1 signed bytes; recorded detached), and
+`verifier_commit` so no consumer conflates them. Downstream guards evaluate
+coverage against `X`'s `subject_tree` as named in the statement — never
+against a tree containing receipt files.
 Branch races, squash rewrites, or stale approvals MUST cause verification
 failure downstream (the guard recomputes `subject_tree` from what actually
 landed).
 
 ## 5. Guard semantics (consumer side)
 
-`run-generated-guard` evolves into the notary guard: content changes on a
-protected lane require, for every touched protected file, coverage by either
-(a) a valid notary-v1 statement whose `subject_tree` matches, or (b) an
-untouched-since-epoch file covered by a frozen v5 manifest. The guard MUST be
-hardcoded in the protected shared workflow (no caller-controlled disable —
+`run-generated-guard` evolves into the notary guard. For every
+new/changed/deleted protected file, coverage requires either (a) a valid
+notary-v1 statement, or (b) untouched-since-epoch status under a frozen v5
+manifest. A statement is valid for a change only if ALL of the following
+bind (normative): signature verifies against the notary trust root under the
+`axiom/notary-acceptance/v1` domain; `repository` and `lane` equal the
+consuming repository and lane; `subject_tree`/`subject_commit` match the
+content under evaluation; the statement's `base_commit` is an ancestor of the
+current protected branch; the statement's policy `epoch` is current or later
+for this repository (nondecreasing — older-epoch statements cannot admit
+post-epoch changes); and the changed-file set under evaluation is a subset of
+the statement's recorded target file set, deletions included. The guard MUST
+be hardcoded in the protected shared workflow (no caller-controlled disable —
 TheAxiomFoundation/.github#55); migration bypasses live in a differently
 named, non-required check.
 
@@ -204,8 +249,11 @@ named, non-required check.
   implementation.
 - Replay/rollback/cross-lane reuse → repository, lane, base, tree, policy
   epoch, and domain bindings in the statement.
-- Reviewer compromise or rubber-stamping → required reviewers named per lane;
-  the receipt records who/what authorized.
+- Approver compromise or rubber-stamping → required reviewers named per
+  environment; the signed statement claims only that the protected signing
+  policy authorized the acceptance (§4.2), and approver identity remains
+  auditable through GitHub's deployment-approval records outside the
+  signature.
 
 ## 8. Out of scope for v1 (explicit)
 
