@@ -258,9 +258,7 @@ def _overwrite_loose_git_object(
     assert object_path.is_file()
     object_path.chmod(0o644)
     object_path.write_bytes(
-        zlib.compress(
-            f"{object_type} {len(payload)}\0".encode("ascii") + payload
-        )
+        zlib.compress(f"{object_type} {len(payload)}\0".encode("ascii") + payload)
     )
 
 
@@ -486,14 +484,9 @@ def _write_notary_fixture(
     engine_root = tmp_path / "axiom-rules-engine"
     _init_git_repo(policy_root, object_format=policy_object_format)
     _init_git_repo(engine_root)
-    _git(policy_root, "commit", "-q", "--allow-empty", "-m", "notary base")
-    base_commit = _git(policy_root, "rev-parse", "HEAD").stdout.strip()
 
     module = policy_root / module_relative
     companion_path = module.with_name(f"{module.stem}.test.yaml")
-    module.parent.mkdir(parents=True)
-    module.write_text(rulespec, encoding="utf-8")
-    companion_path.write_text(companion, encoding="utf-8")
 
     waiver = policy_root / "known-validation-gaps.yaml"
     waiver.write_text("validate_failures: {}\n", encoding="utf-8")
@@ -510,6 +503,11 @@ def _write_notary_fixture(
         f'"{waiver_sha256}"\n',
         encoding="utf-8",
     )
+    base_commit = _commit_all(policy_root, "notary authority base")
+
+    module.parent.mkdir(parents=True)
+    module.write_text(rulespec, encoding="utf-8")
+    companion_path.write_text(companion, encoding="utf-8")
     _write_fake_engine(engine_root)
     _commit_all(policy_root, "notary policy fixture")
     _commit_all(engine_root, "notary engine fixture")
@@ -733,9 +731,7 @@ def test_signing_capable_broker_is_rejected(
 
     class ForbiddenPipeline:
         def __init__(self, **_kwargs):
-            raise AssertionError(
-                "signing-capable broker must fail before validation"
-            )
+            raise AssertionError("signing-capable broker must fail before validation")
 
     monkeypatch.setattr(
         "axiom_encode.notary_verification.ValidatorPipeline",
@@ -767,6 +763,7 @@ def test_strict_profile_does_not_repair_apply_repairable_fixture(
         companion=_APPLY_REPAIRABLE_COMPANION,
     )
     receipt_out = tmp_path / "evidence/receipt.json"
+    receipt_out.parent.mkdir()
     before = _policy_snapshot(fixture.policy_root)
 
     monkeypatch.setattr(
@@ -790,9 +787,7 @@ def test_strict_profile_does_not_repair_apply_repairable_fixture(
         for issue in result.issues
     )
     assert "advisory" not in result.receipt
-    assert all(
-        "reviewer" not in gate["gate"] for gate in result.receipt["gates"]
-    )
+    assert all("reviewer" not in gate["gate"] for gate in result.receipt["gates"])
     deterministic_gates = {
         gate["gate"]
         for gate in result.receipt["gates"]
@@ -864,6 +859,7 @@ def test_command_never_writes_inside_policy_repo(
 ):
     fixture = _write_notary_fixture(tmp_path)
     receipt_out = tmp_path / "notary-output/receipt.json"
+    receipt_out.parent.mkdir()
     before = _policy_snapshot(fixture.policy_root)
     validations: list[tuple[Path, Path, Path, str, bool]] = []
 
@@ -877,8 +873,7 @@ def test_command_never_writes_inside_policy_repo(
                 Path(self.axiom_rules_path),
                 hashlib.sha256(
                     (
-                        Path(self.axiom_rules_path)
-                        / "target/debug/axiom-rules-engine"
+                        Path(self.axiom_rules_path) / "target/debug/axiom-rules-engine"
                     ).read_bytes()
                 ).hexdigest(),
                 skip_reviewers,
@@ -1027,6 +1022,172 @@ def test_diff_mode_rejects_full_nonancestor_commit(
         )
 
 
+def test_diff_mode_hash_checks_intermediate_ancestry_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    intermediate = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD",
+    ).stdout.strip()
+    fixture.module.write_text(
+        _RULESPEC + "\n# genuine child commit\n",
+        encoding="utf-8",
+    )
+    _commit_all(fixture.policy_root, "genuine child of intermediate")
+    head_tree = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD^{tree}",
+    ).stdout.strip()
+    unrelated = _git(
+        fixture.policy_root,
+        "commit-tree",
+        head_tree,
+        "-m",
+        "unrelated corrupt-parent target",
+    ).stdout.strip()
+    intermediate_payload = _git_bytes(
+        fixture.policy_root,
+        "cat-file",
+        "commit",
+        intermediate,
+    )
+    original_parent = f"parent {fixture.base_commit}\n".encode()
+    corrupt_parent = f"parent {unrelated}\n".encode()
+    assert intermediate_payload.count(original_parent) == 1
+    _overwrite_loose_git_object(
+        fixture.policy_root,
+        intermediate,
+        "commit",
+        intermediate_payload.replace(original_parent, corrupt_parent, 1),
+    )
+    receipt_out = tmp_path / "corrupt-ancestry.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("corrupt ancestry must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(
+        NotaryVerificationError,
+        match="commit payload does not match its object identity",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=unrelated,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        Path(".axiom/toolchain.toml"),
+        Path(".axiom/repository-structure.yaml"),
+        Path(".github/workflows/notary.yml"),
+        Path("known-validation-gaps.yaml"),
+    ],
+)
+def test_diff_mode_rejects_authority_surface_changes_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: Path,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    target = fixture.policy_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    target.write_text(existing + "# unauthorized candidate change\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, f"change authority surface {relative}")
+    receipt_out = tmp_path / "authority-surface.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError(
+                "authority-surface changes must fail before validation"
+            )
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(
+        NotaryVerificationError,
+        match="Diff verification refuses authority-surface change",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=fixture.base_commit,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+@pytest.mark.parametrize(
+    ("change_kind", "expected_reason"),
+    [
+        ("executable", "executable changes"),
+        ("symlink", "symlink changes"),
+    ],
+)
+def test_diff_mode_rejects_privileged_git_leaf_modes_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change_kind: str,
+    expected_reason: str,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    target = fixture.policy_root / "candidate-tools/notary-input"
+    target.parent.mkdir(parents=True)
+    if change_kind == "executable":
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o755)
+    else:
+        target.symlink_to("../untrusted-target")
+    _commit_all(fixture.policy_root, f"add {change_kind} candidate leaf")
+    receipt_out = tmp_path / f"{change_kind}-surface.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError(
+                "privileged Git leaf modes must fail before validation"
+            )
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match=expected_reason):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=fixture.base_commit,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
 def test_diff_target_set_is_complete_and_represents_deletions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1133,8 +1294,7 @@ def test_deletion_only_diff_has_complete_vacuous_gate_evidence(
         ],
     }
     assert all(
-        gate["status"] in {"passed", "reduced"}
-        for gate in result.receipt["gates"]
+        gate["status"] in {"passed", "reduced"} for gate in result.receipt["gates"]
     )
 
 
@@ -1172,9 +1332,9 @@ def test_sha256_repository_diff_verification_is_automated(
     assert len(result.receipt["base_commit"]) == 64
     assert len(result.receipt["subject_commit"]) == 64
     assert len(result.receipt["subject_tree"]) == 64
-    assert {
-        item["disposition"] for item in result.receipt["targets"]["files"]
-    } == {"verified", "out-of-scope"}
+    assert {item["disposition"] for item in result.receipt["targets"]["files"]} == {
+        "verified"
+    }
 
 
 def test_dirty_policy_worktree_is_refused_before_validation(
@@ -1608,7 +1768,9 @@ def test_git_replacement_ref_cannot_substitute_subject_tree_bytes(
         ForbiddenPipeline,
     )
     receipt_out = tmp_path / "replacement-ref.json"
-    with pytest.raises(NotaryVerificationError, match="worktree is dirty|raw HEAD tree"):
+    with pytest.raises(
+        NotaryVerificationError, match="worktree is dirty|raw HEAD tree"
+    ):
         run_notary_verification(
             policy_repo_path=fixture.policy_root,
             corpus_path=fixture.corpus_root,
@@ -1669,12 +1831,15 @@ def test_corrupt_loose_git_commit_cannot_substitute_subject_identity(
 ):
     fixture = _write_notary_fixture(tmp_path)
     commit_id = _git(fixture.policy_root, "rev-parse", "HEAD").stdout.strip()
-    replacement = _git_bytes(
-        fixture.policy_root,
-        "cat-file",
-        "commit",
-        commit_id,
-    ) + b"\ncorrupt commit payload\n"
+    replacement = (
+        _git_bytes(
+            fixture.policy_root,
+            "cat-file",
+            "commit",
+            commit_id,
+        )
+        + b"\ncorrupt commit payload\n"
+    )
     _overwrite_loose_git_object(
         fixture.policy_root,
         commit_id,
@@ -1922,7 +2087,8 @@ def test_present_pinned_oracle_runs_and_passes_strict_profile(
         axiom_rules_engine_path=fixture.engine_root,
         policyengine_runtime_root=runtime_root,
         receipt_out=receipt_out,
-        base_commit=fixture.base_commit,
+        base_commit=None,
+        whole_repo=True,
         now=_FIXED_NOW,
     )
 
@@ -1987,7 +2153,8 @@ def test_present_failing_oracle_never_degrades_with_allow_reduced(
         axiom_rules_engine_path=fixture.engine_root,
         policyengine_runtime_root=runtime_root,
         receipt_out=receipt_out,
-        base_commit=fixture.base_commit,
+        base_commit=None,
+        whole_repo=True,
         allow_reduced=True,
         now=_FIXED_NOW,
     )
@@ -2073,9 +2240,7 @@ def test_receipt_cannot_write_linked_worktree_git_metadata(tmp_path: Path):
         str(linked),
         "HEAD",
     )
-    git_dir = Path(
-        _git(linked, "rev-parse", "--absolute-git-dir").stdout.strip()
-    )
+    git_dir = Path(_git(linked, "rev-parse", "--absolute-git-dir").stdout.strip())
     receipt_out = git_dir / "notary-receipt.json"
 
     with pytest.raises(NotaryVerificationError, match="Git metadata"):
@@ -2090,6 +2255,75 @@ def test_receipt_cannot_write_linked_worktree_git_metadata(tmp_path: Path):
         )
 
     assert not receipt_out.exists()
+
+
+def test_missing_receipt_parent_is_rejected_without_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    missing_parent = tmp_path / "missing-receipt-parent" / "nested"
+    receipt_out = missing_parent / "notary-receipt.json"
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        _forbidden_model_backend,
+    )
+
+    with pytest.raises(
+        NotaryVerificationError,
+        match="output parent must already exist",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=fixture.base_commit,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not (tmp_path / "missing-receipt-parent").exists()
+
+
+def test_receipt_ancestry_fstat_failure_closes_parent_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(tmp_path, directory_flags)
+    real_open = os.open
+    real_fstat = os.fstat
+    parent_descriptors: list[int] = []
+
+    def tracking_open(path, flags, *args, **kwargs):
+        opened = real_open(path, flags, *args, **kwargs)
+        if path == "..":
+            parent_descriptors.append(opened)
+        return opened
+
+    def failing_fstat(opened: int):
+        if opened in parent_descriptors:
+            raise OSError("injected parent fstat failure")
+        return real_fstat(opened)
+
+    monkeypatch.setattr(notary_module.os, "open", tracking_open)
+    monkeypatch.setattr(notary_module.os, "fstat", failing_fstat)
+    try:
+        with pytest.raises(
+            NotaryVerificationError,
+            match="Cannot verify the opened notary receipt output directory",
+        ):
+            notary_module._assert_open_directory_outside_protected_roots(
+                descriptor,
+                (),
+            )
+    finally:
+        os.close(descriptor)
+
+    assert len(parent_descriptors) == 1
+    with pytest.raises(OSError):
+        real_fstat(parent_descriptors[0])
 
 
 def test_receipt_parent_symlink_swap_cannot_write_into_policy_repo(
@@ -2187,6 +2421,76 @@ def test_receipt_parent_directory_swap_cannot_write_into_policy_repo(
     assert swapped is True
     assert not (fixture.policy_root / "would-be-created").exists()
     assert not (receipt_parent / "would-be-created").exists()
+    assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.parametrize("swap_on_publication_check", [1, 2])
+def test_late_same_content_checkout_swap_cannot_receive_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swap_on_publication_check: int,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    replacement = tmp_path / "prepared-late-replacement"
+    displaced = tmp_path / "displaced-late-original"
+    shutil.copytree(fixture.policy_root, replacement)
+    receipt_out = tmp_path / "late-checkout-swap-receipt.json"
+    original_write_receipt = notary_module._write_receipt
+    swapped = False
+    checks = 0
+
+    def swapping_write_receipt(
+        path: Path,
+        receipt,
+        *,
+        protected_identities,
+        publication_check,
+    ):
+        def swapping_publication_check():
+            nonlocal checks, swapped
+            checks += 1
+            if checks == swap_on_publication_check:
+                fixture.policy_root.rename(displaced)
+                replacement.rename(fixture.policy_root)
+                swapped = True
+            publication_check()
+
+        return original_write_receipt(
+            path,
+            receipt,
+            protected_identities=protected_identities,
+            publication_check=swapping_publication_check,
+        )
+
+    monkeypatch.setattr(notary_module, "_write_receipt", swapping_write_receipt)
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        _forbidden_model_backend,
+    )
+
+    try:
+        with pytest.raises(
+            NotaryVerificationError,
+            match="filesystem identity changed during strict verification",
+        ):
+            run_notary_verification(
+                policy_repo_path=fixture.policy_root,
+                corpus_path=fixture.corpus_root,
+                axiom_rules_engine_path=fixture.engine_root,
+                receipt_out=receipt_out,
+                base_commit=fixture.base_commit,
+                allow_reduced=True,
+                now=_FIXED_NOW,
+            )
+    finally:
+        if swapped:
+            fixture.policy_root.rename(replacement)
+            displaced.rename(fixture.policy_root)
+
+    assert swapped is True
+    assert checks == swap_on_publication_check
+    assert not receipt_out.exists()
+    assert not tuple(tmp_path.glob(".late-checkout-swap-receipt.json.*"))
     assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
 
 
@@ -2378,9 +2682,7 @@ def test_whole_repo_target_set_is_explicit_and_strict(
         "mode": "whole-repo",
         "files": [
             {
-                "path": fixture.companion.relative_to(
-                    fixture.policy_root
-                ).as_posix(),
+                "path": fixture.companion.relative_to(fixture.policy_root).as_posix(),
                 "disposition": "verified",
             },
             {
@@ -2419,6 +2721,16 @@ def test_receipt_has_no_signing_fields(
         encoding="utf-8",
     )
     _commit_all(fixture.policy_root, "active waiver receipt fixture")
+    receipt_base = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD",
+    ).stdout.strip()
+    fixture.module.write_text(
+        _RULESPEC + "\n# receipt schema target\n",
+        encoding="utf-8",
+    )
+    _commit_all(fixture.policy_root, "receipt schema target")
 
     monkeypatch.setattr(
         "axiom_encode.harness.validator_pipeline.run_claude_code",
@@ -2429,7 +2741,7 @@ def test_receipt_has_no_signing_fields(
         corpus_path=fixture.corpus_root,
         axiom_rules_engine_path=fixture.engine_root,
         receipt_out=tmp_path / "receipt.json",
-        base_commit=fixture.base_commit,
+        base_commit=receipt_base,
         allow_reduced=True,
         now=_FIXED_NOW,
     )
@@ -2447,22 +2759,10 @@ def test_receipt_has_no_signing_fields(
         result.receipt["subject_tree"]
         == _git(fixture.policy_root, "rev-parse", "HEAD^{tree}").stdout.strip()
     )
-    assert result.receipt["base_commit"] == fixture.base_commit
+    assert result.receipt["base_commit"] == receipt_base
     assert result.receipt["targets"] == {
         "mode": "diff",
         "files": [
-            {
-                "path": ".axiom/toolchain.toml",
-                "disposition": "out-of-scope",
-            },
-            {
-                "path": "known-validation-gaps.yaml",
-                "disposition": "out-of-scope",
-            },
-            {
-                "path": "us/statutes/26/151.test.yaml",
-                "disposition": "verified",
-            },
             {
                 "path": _MODULE_RELATIVE.as_posix(),
                 "disposition": "verified",
@@ -2516,7 +2816,6 @@ def test_receipt_has_no_signing_fields(
         "policyengine-oracle": "restricted-pinned",
     }
     assert {
-        gate["gate"]: gate["reproducibility"]
-        for gate in result.receipt["gates"]
+        gate["gate"]: gate["reproducibility"] for gate in result.receipt["gates"]
     } == expected_classes
     assert result.receipt["receipt_sha256"] == receipt_body_sha256(result.receipt)

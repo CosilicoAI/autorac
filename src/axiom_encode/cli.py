@@ -1173,7 +1173,10 @@ def main():
         "--receipt-out",
         type=Path,
         required=True,
-        help="Output path outside the policy checkout for the unsigned receipt",
+        help=(
+            "Output path in a pre-existing directory outside the policy checkout "
+            "for the unsigned receipt"
+        ),
     )
     notary_parser.add_argument(
         "--allow-reduced",
