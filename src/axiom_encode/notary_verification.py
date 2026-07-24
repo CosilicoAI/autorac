@@ -50,6 +50,7 @@ from .repo_routing import (
     inspect_canonical_rulespec_checkout,
     jurisdiction_subdir_names,
 )
+from .signing_broker import SigningBrokerError, get_signing_broker
 from .toolchain import (
     VALIDATION_WAIVER_SET_PATH,
     load_rulespec_local_corpus_release,
@@ -62,9 +63,11 @@ NOTARY_RECEIPT_SCHEMA_STATUS = "PROVISIONAL"
 NOTARY_PROFILE_ID = "axiom/notary-verifier/strict-v0"
 MIN_POLICYENGINE_MATCH = 0.95
 
-GateReproducibility = Literal["public", "restricted-pinned", "ci-attested"]
+GateReproducibility = Literal["public", "restricted-pinned"]
 GateStatus = Literal["passed", "failed", "reduced"]
 _ProtectedRootIdentity = tuple[int, int, str]
+_FilesystemIdentity = tuple[int, int]
+_TargetDisposition = Literal["verified", "deleted", "out-of-scope"]
 
 _PUBLIC_GATES = (
     "subject-clean",
@@ -78,18 +81,6 @@ _PUBLIC_GATES = (
     "policy-repo-nonmutation",
 )
 _RESTRICTED_PINNED_GATES = ("policyengine-oracle",)
-_CI_ATTESTED_GATES = (
-    "rulespec-reviewer",
-    "formula-reviewer",
-    "parameter-reviewer",
-    "integration-reviewer",
-)
-_REVIEWER_GATES = (
-    ("rulespec_reviewer", "rulespec-reviewer"),
-    ("formula_reviewer", "formula-reviewer"),
-    ("parameter_reviewer", "parameter-reviewer"),
-    ("integration_reviewer", "integration-reviewer"),
-)
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -114,6 +105,9 @@ class _CleanGitIdentity:
     tree: str
     git_dir: Path
     git_common_dir: Path
+    root_identity: _FilesystemIdentity
+    git_dir_identity: _FilesystemIdentity
+    git_common_dir_identity: _FilesystemIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,8 +118,21 @@ class _GitTreeEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class _NotaryTargetFile:
+    relative: PurePosixPath
+    disposition: _TargetDisposition
+
+
+@dataclass(frozen=True, slots=True)
+class _NotaryTargetSet:
+    mode: Literal["diff", "whole-repo"]
+    base_commit: str | None
+    files: tuple[_NotaryTargetFile, ...]
+    verification_targets: tuple[PurePosixPath, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _MaterializedVerificationEvidence:
-    relative_targets: tuple[str, ...]
     corpus_release_name: str
     corpus_release_content_sha256: str
     waiver_sha256: str
@@ -133,7 +140,6 @@ class _MaterializedVerificationEvidence:
     policyengine_runtime: PolicyEngineRuntime | None
     compile_passed: bool
     deterministic_statuses: Mapping[str, bool]
-    reviewer_statuses: Mapping[str, bool]
     oracle_status: GateStatus
     validators_passed: bool
     issues: tuple[str, ...]
@@ -192,8 +198,6 @@ def gate_reproducibility(gate: str) -> GateReproducibility:
         return "public"
     if gate in _RESTRICTED_PINNED_GATES:
         return "restricted-pinned"
-    if gate in _CI_ATTESTED_GATES:
-        return "ci-attested"
     raise ValueError(f"Unknown notary verification gate: {gate}")
 
 
@@ -564,6 +568,20 @@ def _git_metadata_directory(root: Path, *args: str) -> Path:
     return resolved
 
 
+def _directory_identity(path: Path, *, label: str) -> _FilesystemIdentity:
+    """Return a stable device/inode identity for one admitted directory."""
+
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise NotaryVerificationError(
+            f"Cannot bind {label} filesystem identity: {path}"
+        ) from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise NotaryVerificationError(f"{label} is not a directory: {path}")
+    return metadata.st_dev, metadata.st_ino
+
+
 def _git_blob_payloads(
     identity: _CleanGitIdentity,
     entries: Sequence[_GitTreeEntry],
@@ -755,6 +773,7 @@ def _require_head_tree_matches_index(
 
 
 def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
+    root_identity = _directory_identity(root, label=label)
     try:
         identity_root = Path(_git_text(root, "rev-parse", "--show-toplevel")).resolve(
             strict=True
@@ -795,16 +814,43 @@ def _require_clean_git_checkout(root: Path, *, label: str) -> _CleanGitIdentity:
         "--path-format=absolute",
         "--git-common-dir",
     )
+    git_dir_identity = _directory_identity(
+        git_dir,
+        label=f"{label} Git directory",
+    )
+    git_common_dir_identity = _directory_identity(
+        git_common_dir,
+        label=f"{label} common Git directory",
+    )
     clean = _CleanGitIdentity(
         root=root,
         commit=commit,
         tree=tree,
         git_dir=git_dir,
         git_common_dir=git_common_dir,
+        root_identity=root_identity,
+        git_dir_identity=git_dir_identity,
+        git_common_dir_identity=git_common_dir_identity,
     )
     entries = _git_tree_entries(clean)
     _require_head_tree_matches_index(clean, entries, label=label)
     _require_head_tree_matches_worktree(clean, label=label, entries=entries)
+    final_identities = (
+        _directory_identity(root, label=label),
+        _directory_identity(git_dir, label=f"{label} Git directory"),
+        _directory_identity(
+            git_common_dir,
+            label=f"{label} common Git directory",
+        ),
+    )
+    if final_identities != (
+        root_identity,
+        git_dir_identity,
+        git_common_dir_identity,
+    ):
+        raise NotaryVerificationError(
+            f"{label} filesystem identity changed during strict admission"
+        )
     return clean
 
 
@@ -927,6 +973,14 @@ def _assert_same_clean_checkout(
     label: str,
 ) -> None:
     actual = _require_clean_git_checkout(expected.root, label=label)
+    if (
+        actual.root_identity != expected.root_identity
+        or actual.git_dir_identity != expected.git_dir_identity
+        or actual.git_common_dir_identity != expected.git_common_dir_identity
+    ):
+        raise NotaryVerificationError(
+            f"{label} filesystem identity changed during strict verification"
+        )
     if actual.commit != expected.commit or actual.tree != expected.tree:
         raise NotaryVerificationError(
             f"{label} commit or tree changed during strict verification"
@@ -1011,41 +1065,124 @@ def _is_primary_rulespec_module(path: Path, *, checkout: Path) -> bool:
     )
 
 
-def _resolve_changed_target(raw_target: Path, *, checkout: Path) -> Path:
-    candidate = Path(raw_target)
-    if not candidate.is_absolute():
-        candidate = checkout / candidate
-    candidate = Path(os.path.abspath(candidate))
-    try:
-        candidate.relative_to(checkout)
-    except ValueError as exc:
+def _protected_rulespec_root_index(relative: PurePosixPath) -> int | None:
+    """Match the guard's protected atomic-YAML path boundary, including legacy."""
+
+    parts = relative.parts
+    if len(parts) < 2:
+        return None
+    if parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return 0
+    if (
+        len(parts) >= 3
+        and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS
+        and re.fullmatch(r"[a-z]{2}(?:-[a-z0-9_]+)*", parts[0])
+    ):
+        return 1
+    return None
+
+
+def _is_protected_rulespec_relative(relative: PurePosixPath) -> bool:
+    return (
+        relative.suffix == RULESPEC_FILE_SUFFIX
+        and _protected_rulespec_root_index(relative) is not None
+    )
+
+
+def _primary_relative_for_target(relative: PurePosixPath) -> PurePosixPath:
+    if not relative.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
+        return relative
+    primary_name = (
+        relative.name.removesuffix(RULESPEC_TEST_FILE_SUFFIX)
+        + RULESPEC_FILE_SUFFIX
+    )
+    return relative.with_name(primary_name)
+
+
+def _companion_relative_for_primary(relative: PurePosixPath) -> PurePosixPath:
+    return relative.with_name(
+        relative.name.removesuffix(RULESPEC_FILE_SUFFIX)
+        + RULESPEC_TEST_FILE_SUFFIX
+    )
+
+
+def _resolve_verification_target(
+    relative: PurePosixPath,
+    *,
+    checkout: Path,
+) -> Path:
+    primary_relative = _primary_relative_for_target(relative)
+    candidate = checkout.joinpath(*primary_relative.parts)
+    if candidate.is_symlink():
         raise NotaryVerificationError(
-            f"Changed target is outside the policy checkout: {raw_target}"
-        ) from exc
-    if candidate.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
-        candidate = candidate.with_name(
-            candidate.name.removesuffix(RULESPEC_TEST_FILE_SUFFIX)
-            + RULESPEC_FILE_SUFFIX
+            f"Protected RuleSpec target is a symlink: {relative.as_posix()}"
         )
     try:
         candidate = candidate.resolve(strict=True)
     except OSError as exc:
         raise NotaryVerificationError(
-            f"Changed RuleSpec target does not exist: {raw_target}"
+            "Protected RuleSpec target has no surviving primary module: "
+            f"{relative.as_posix()}"
         ) from exc
-    if candidate.is_symlink() or not candidate.is_file():
+    if not candidate.is_file():
         raise NotaryVerificationError(
-            f"Changed RuleSpec target is not a regular file: {raw_target}"
+            f"Protected RuleSpec target is not a regular file: {relative.as_posix()}"
         )
     if not _is_primary_rulespec_module(candidate, checkout=checkout):
         raise NotaryVerificationError(
-            "Changed target must be a primary atomic RuleSpec module or its "
-            f"companion test: {raw_target}"
+            "Protected target must resolve to a primary atomic RuleSpec module "
+            f"or its companion test: {relative.as_posix()}"
         )
     return candidate
 
 
-def _whole_repo_targets(checkout: Path) -> tuple[Path, ...]:
+def _verified_base_identity(
+    policy_git: _CleanGitIdentity,
+    base_commit: str,
+) -> _CleanGitIdentity:
+    if (
+        not isinstance(base_commit, str)
+        or _GIT_OID_RE.fullmatch(base_commit) is None
+        or len(base_commit) != len(policy_git.commit)
+    ):
+        raise NotaryVerificationError(
+            "--base-commit must be a full lowercase SHA for this repository"
+        )
+    try:
+        tree = _verified_commit_tree(policy_git.root, base_commit)
+    except NotaryVerificationError as exc:
+        raise NotaryVerificationError(
+            "--base-commit must identify a present Git commit object"
+        ) from exc
+    try:
+        merge_base = _git_text(
+            policy_git.root,
+            "merge-base",
+            base_commit,
+            policy_git.commit,
+        )
+    except NotaryVerificationError as exc:
+        raise NotaryVerificationError(
+            "--base-commit must be an ancestor of HEAD"
+        ) from exc
+    if merge_base != base_commit:
+        raise NotaryVerificationError("--base-commit must be an ancestor of HEAD")
+    return _CleanGitIdentity(
+        root=policy_git.root,
+        commit=base_commit,
+        tree=tree,
+        git_dir=policy_git.git_dir,
+        git_common_dir=policy_git.git_common_dir,
+        root_identity=policy_git.root_identity,
+        git_dir_identity=policy_git.git_dir_identity,
+        git_common_dir_identity=policy_git.git_common_dir_identity,
+    )
+
+
+def _whole_repo_target_set(
+    policy_git: _CleanGitIdentity,
+) -> _NotaryTargetSet:
+    checkout = policy_git.root
     try:
         modules = atomic_rulespec_module_paths(checkout)
     except ValueError as exc:
@@ -1054,28 +1191,138 @@ def _whole_repo_targets(checkout: Path) -> tuple[Path, ...]:
         raise NotaryVerificationError(
             "Whole-repository verification found no atomic RuleSpec modules"
         )
-    return modules
-
-
-def resolve_notary_targets(
-    checkout: Path,
-    *,
-    changed_files: Sequence[Path] = (),
-    whole_repo: bool = False,
-) -> tuple[Path, ...]:
-    """Resolve exactly one explicit changed-file or whole-repository target set."""
-
-    if whole_repo == bool(changed_files):
-        raise NotaryVerificationError(
-            "Choose exactly one target set: --changed-files or --whole-repo"
+    files: list[_NotaryTargetFile] = []
+    verification_targets: set[PurePosixPath] = set()
+    for entry in _git_tree_entries(policy_git):
+        if not _is_protected_rulespec_relative(entry.relative):
+            continue
+        if entry.mode != "100644":
+            raise NotaryVerificationError(
+                "Protected RuleSpec targets must be non-executable regular files: "
+                f"{entry.relative.as_posix()}"
+            )
+        target = _resolve_verification_target(
+            entry.relative,
+            checkout=checkout,
         )
-    if whole_repo:
-        return _whole_repo_targets(checkout)
-    return tuple(
+        verification_targets.add(
+            PurePosixPath(target.relative_to(checkout).as_posix())
+        )
+        files.append(_NotaryTargetFile(entry.relative, "verified"))
+    expected_modules = {
+        PurePosixPath(module.relative_to(checkout).as_posix()) for module in modules
+    }
+    if verification_targets != expected_modules:
+        raise NotaryVerificationError(
+            "Whole-repository target coverage does not match the strict layout scan"
+        )
+    return _NotaryTargetSet(
+        mode="whole-repo",
+        base_commit=None,
+        files=tuple(files),
+        verification_targets=tuple(sorted(verification_targets)),
+    )
+
+
+def _diff_target_set(
+    policy_git: _CleanGitIdentity,
+    *,
+    base_commit: str,
+) -> _NotaryTargetSet:
+    base_git = _verified_base_identity(policy_git, base_commit)
+    base_entries = {
+        entry.relative: entry for entry in _git_tree_entries(base_git)
+    }
+    head_entries = {
+        entry.relative: entry for entry in _git_tree_entries(policy_git)
+    }
+    changed = tuple(
         sorted(
-            {_resolve_changed_target(path, checkout=checkout) for path in changed_files}
+            relative
+            for relative in base_entries.keys() | head_entries.keys()
+            if base_entries.get(relative) != head_entries.get(relative)
         )
     )
+    files: list[_NotaryTargetFile] = []
+    verification_targets: set[PurePosixPath] = set()
+    for relative in changed:
+        head_entry = head_entries.get(relative)
+        if not _is_protected_rulespec_relative(relative):
+            files.append(_NotaryTargetFile(relative, "out-of-scope"))
+            continue
+        if head_entry is None:
+            files.append(_NotaryTargetFile(relative, "deleted"))
+            primary_relative = _primary_relative_for_target(relative)
+            if relative.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
+                primary_entry = head_entries.get(primary_relative)
+                if primary_entry is not None:
+                    if primary_entry.mode != "100644":
+                        raise NotaryVerificationError(
+                            "Protected RuleSpec targets must be non-executable "
+                            f"regular files: {primary_relative.as_posix()}"
+                        )
+                    target = _resolve_verification_target(
+                        primary_relative,
+                        checkout=policy_git.root,
+                    )
+                    verification_targets.add(
+                        PurePosixPath(
+                            target.relative_to(policy_git.root).as_posix()
+                        )
+                    )
+            elif _companion_relative_for_primary(relative) in head_entries:
+                raise NotaryVerificationError(
+                    "A deleted primary RuleSpec module leaves a surviving "
+                    f"companion test: {relative.as_posix()}"
+                )
+            continue
+        if head_entry.mode != "100644":
+            raise NotaryVerificationError(
+                "Protected RuleSpec targets must be non-executable regular files: "
+                f"{relative.as_posix()}"
+            )
+        primary_relative = _primary_relative_for_target(relative)
+        primary_entry = head_entries.get(primary_relative)
+        if primary_entry is None or primary_entry.mode != "100644":
+            raise NotaryVerificationError(
+                "Protected RuleSpec targets require a non-executable regular "
+                f"primary module: {primary_relative.as_posix()}"
+            )
+        target = _resolve_verification_target(
+            relative,
+            checkout=policy_git.root,
+        )
+        verification_targets.add(
+            PurePosixPath(target.relative_to(policy_git.root).as_posix())
+        )
+        files.append(_NotaryTargetFile(relative, "verified"))
+    return _NotaryTargetSet(
+        mode="diff",
+        base_commit=base_commit,
+        files=tuple(files),
+        verification_targets=tuple(sorted(verification_targets)),
+    )
+
+
+def _resolve_notary_target_set(
+    policy_git: _CleanGitIdentity,
+    *,
+    base_commit: str | None,
+    whole_repo: bool,
+) -> _NotaryTargetSet:
+    """Derive the complete target set from admitted Git objects."""
+
+    if whole_repo:
+        if base_commit is not None:
+            raise NotaryVerificationError(
+                "--whole-repo does not accept --base-commit"
+            )
+        return _whole_repo_target_set(policy_git)
+    if base_commit is None:
+        raise NotaryVerificationError(
+            "Diff verification requires --base-commit"
+        )
+    return _diff_target_set(policy_git, base_commit=base_commit)
 
 
 def _pipeline_issue_strings(
@@ -1196,7 +1443,29 @@ def _portable_policyengine_identity(
     return portable
 
 
-def _open_receipt_parent(path: Path) -> int:
+def _require_verification_only_broker() -> None:
+    """Refuse Job 1 when its corpus trust broker can also sign."""
+
+    try:
+        broker = get_signing_broker()
+        capabilities = frozenset(broker.capabilities)
+    except (AttributeError, SigningBrokerError, TypeError) as exc:
+        raise NotaryVerificationError(
+            "Notary verification requires an attached verification-only broker"
+        ) from exc
+    if capabilities:
+        rendered = ", ".join(sorted(str(item) for item in capabilities))
+        raise NotaryVerificationError(
+            "Notary verification requires a verification-only broker; signing "
+            f"capabilities are forbidden: {rendered}"
+        )
+
+
+def _open_receipt_parent(
+    path: Path,
+    *,
+    protected_identities: Sequence[_ProtectedRootIdentity],
+) -> int:
     """Open/create the output parent without following mutable path symlinks."""
 
     nofollow = getattr(os, "O_NOFOLLOW", None)
@@ -1209,15 +1478,34 @@ def _open_receipt_parent(path: Path) -> int:
     descriptor: int | None = None
     try:
         descriptor = os.open(path.anchor, flags)
+        _assert_open_directory_outside_protected_roots(
+            descriptor,
+            protected_identities,
+        )
         for part in path.parent.parts[1:]:
             try:
-                os.mkdir(part, 0o755, dir_fd=descriptor)
-            except FileExistsError:
-                pass
-            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                _assert_open_directory_outside_protected_roots(
+                    descriptor,
+                    protected_identities,
+                )
+                try:
+                    os.mkdir(part, 0o755, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = next_descriptor
+            _assert_open_directory_outside_protected_roots(
+                descriptor,
+                protected_identities,
+            )
         return descriptor
+    except NotaryVerificationError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
@@ -1285,7 +1573,10 @@ def _write_receipt(
     published = False
     complete = False
     try:
-        parent_descriptor = _open_receipt_parent(path)
+        parent_descriptor = _open_receipt_parent(
+            path,
+            protected_identities=protected_identities,
+        )
         _assert_open_directory_outside_protected_roots(
             parent_descriptor,
             protected_identities,
@@ -1365,8 +1656,7 @@ def _run_materialized_verification(
     corpus_root: Path,
     engine_root: Path,
     engine_execution: Mapping[str, object],
-    target_relatives: Sequence[Path],
-    whole_repo: bool,
+    target_relatives: Sequence[PurePosixPath],
     runtime_root: Path | None,
     allow_reduced: bool,
     waiver_date: date,
@@ -1404,17 +1694,17 @@ def _run_materialized_verification(
             checkout_modules = atomic_rulespec_module_paths(policy_root)
         except ValueError as exc:
             raise NotaryVerificationError(str(exc)) from exc
-        if not checkout_modules:
+        if target_relatives and not checkout_modules:
             raise NotaryVerificationError(
                 "Strict verification found no atomic RuleSpec modules"
             )
-        targets = resolve_notary_targets(
-            policy_root,
-            changed_files=() if whole_repo else target_relatives,
-            whole_repo=whole_repo,
+        targets = tuple(
+            _resolve_verification_target(relative, checkout=policy_root)
+            for relative in target_relatives
         )
         observed_relatives = tuple(
-            target.relative_to(policy_root) for target in targets
+            PurePosixPath(target.relative_to(policy_root).as_posix())
+            for target in targets
         )
         if observed_relatives != tuple(target_relatives):
             raise NotaryVerificationError(
@@ -1448,7 +1738,21 @@ def _run_materialized_verification(
 
         policyengine_runtime: PolicyEngineRuntime | None = None
         if runtime_root is not None:
-            identity_roots = tuple(identity_content_roots.values())
+            if admitted_content_roots:
+                identity_roots = tuple(identity_content_roots.values())
+            else:
+                identity_roots = tuple(
+                    dict.fromkeys(
+                        policy_git.root
+                        / module.relative_to(policy_root).parts[0]
+                        for module in checkout_modules
+                    )
+                )
+            if not identity_roots:
+                raise NotaryVerificationError(
+                    "PolicyEngine runtime cannot be bound because the verified "
+                    "checkout has no surviving atomic RuleSpec content root"
+                )
             policyengine_runtime = PolicyEngineRuntime.for_rulespec_root(
                 runtime_root,
                 policy_repo_root=identity_roots[0],
@@ -1482,34 +1786,43 @@ def _run_materialized_verification(
                     expose_deterministic_gate_evidence=True,
                 )
                 pipelines[content_root] = pipeline
-            result = pipeline.validate(target, skip_reviewers=False)
+            result = pipeline.validate(target, skip_reviewers=True)
             pipeline_results.append(result)
             relative_target = target.relative_to(policy_root).as_posix()
             issues.extend(_pipeline_issue_strings(relative_target, result))
 
-        compile_passed = _result_gate_passed(
-            pipeline_results,
-            "compile",
-        ) and _ci_compile_passed(pipeline_results)
-        ci_passed = _result_gate_passed(pipeline_results, "ci")
-        deterministic_statuses = {
-            gate: _deterministic_gate_passed(pipeline_results, gate)
-            for gate in (
-                "proof-revalidation",
-                "companion-tests",
-                "grounding-contract",
-                "layout-inspection",
-            )
-        }
+        if pipeline_results:
+            compile_passed = _result_gate_passed(
+                pipeline_results,
+                "compile",
+            ) and _ci_compile_passed(pipeline_results)
+            ci_passed = _result_gate_passed(pipeline_results, "ci")
+            deterministic_statuses = {
+                gate: _deterministic_gate_passed(pipeline_results, gate)
+                for gate in (
+                    "proof-revalidation",
+                    "companion-tests",
+                    "grounding-contract",
+                    "layout-inspection",
+                )
+            }
+        else:
+            compile_passed = True
+            ci_passed = True
+            deterministic_statuses = {
+                gate: True
+                for gate in (
+                    "proof-revalidation",
+                    "companion-tests",
+                    "grounding-contract",
+                    "layout-inspection",
+                )
+            }
         for gate, passed in deterministic_statuses.items():
             if not passed and ci_passed:
                 issues.append(
                     f"{gate}: deterministic gate did not complete successfully"
                 )
-        reviewer_statuses = {
-            receipt_gate: _result_gate_passed(pipeline_results, result_name)
-            for result_name, receipt_gate in _REVIEWER_GATES
-        }
         if policyengine_runtime is None:
             oracle_passed = True
             oracle_status: GateStatus = "reduced"
@@ -1524,12 +1837,10 @@ def _run_materialized_verification(
             compile_passed
             and ci_passed
             and all(deterministic_statuses.values())
-            and all(reviewer_statuses.values())
             and oracle_passed
             and all(result.all_passed for result in pipeline_results)
         )
         return _MaterializedVerificationEvidence(
-            relative_targets=tuple(path.as_posix() for path in observed_relatives),
             corpus_release_name=corpus_release.name,
             corpus_release_content_sha256=corpus_release.content_sha256,
             waiver_sha256=waiver_sha256,
@@ -1537,7 +1848,6 @@ def _run_materialized_verification(
             policyengine_runtime=policyengine_runtime,
             compile_passed=compile_passed,
             deterministic_statuses=deterministic_statuses,
-            reviewer_statuses=reviewer_statuses,
             oracle_status=oracle_status,
             validators_passed=validators_passed,
             issues=tuple(issues),
@@ -1550,7 +1860,7 @@ def run_notary_verification(
     corpus_path: Path,
     axiom_rules_engine_path: Path,
     receipt_out: Path,
-    changed_files: Sequence[Path] = (),
+    base_commit: str | None,
     whole_repo: bool = False,
     policyengine_runtime_root: Path | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
@@ -1561,10 +1871,16 @@ def run_notary_verification(
 
     timestamp = _utc_timestamp(now)
     waiver_date = datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00").date()
+    _require_verification_only_broker()
     policy_root = _resolve_policy_checkout(policy_repo_path)
     policy_git = _require_clean_git_checkout(
         policy_root,
         label="RuleSpec checkout",
+    )
+    target_set = _resolve_notary_target_set(
+        policy_git,
+        base_commit=base_commit,
+        whole_repo=whole_repo,
     )
     _require_tracked_rulespec_inputs(
         policy_root,
@@ -1648,14 +1964,6 @@ def run_notary_verification(
         protected_roots,
     )
 
-    live_targets = resolve_notary_targets(
-        policy_root,
-        changed_files=changed_files,
-        whole_repo=whole_repo,
-    )
-    target_relatives = tuple(
-        target.relative_to(policy_root) for target in live_targets
-    )
     encoder_package_before = _encoder_package_identity()
     evidence = _run_materialized_verification(
         policy_git=policy_git,
@@ -1663,8 +1971,7 @@ def run_notary_verification(
         corpus_root=corpus_root,
         engine_root=engine_root,
         engine_execution=engine_execution_before,
-        target_relatives=target_relatives,
-        whole_repo=whole_repo,
+        target_relatives=target_set.verification_targets,
         runtime_root=runtime_root,
         allow_reduced=allow_reduced,
         waiver_date=waiver_date,
@@ -1721,13 +2028,6 @@ def run_notary_verification(
         ],
         _gate("waiver-set-verification", "passed"),
         _gate("policyengine-oracle", evidence.oracle_status),
-        *[
-            _gate(
-                name,
-                "passed" if evidence.reviewer_statuses[name] else "failed",
-            )
-            for name in _CI_ATTESTED_GATES
-        ],
         _gate("policy-repo-nonmutation", "passed"),
     ]
 
@@ -1742,9 +2042,16 @@ def run_notary_verification(
         "status": status,
         "subject_tree": policy_git.tree,
         "subject_commit": policy_git.commit,
+        "base_commit": target_set.base_commit,
         "targets": {
-            "mode": "whole-repo" if whole_repo else "changed-files",
-            "files": list(evidence.relative_targets),
+            "mode": target_set.mode,
+            "files": [
+                {
+                    "path": target.relative.as_posix(),
+                    "disposition": target.disposition,
+                }
+                for target in target_set.files
+            ],
         },
         "dependencies": {
             "corpus_release": {
@@ -1772,10 +2079,8 @@ def run_notary_verification(
                 for identity in dependency_git
             ],
         },
-        "waiver_set": {
-            "sha256": evidence.waiver_sha256,
-            "count": evidence.waiver_count,
-        },
+        "waiver_set_sha256": evidence.waiver_sha256,
+        "waiver_count": evidence.waiver_count,
         "gates": gate_outcomes,
         "run": {
             "encoder_version": __version__,
@@ -1813,6 +2118,5 @@ __all__ = [
     "canonical_receipt_bytes",
     "gate_reproducibility",
     "receipt_body_sha256",
-    "resolve_notary_targets",
     "run_notary_verification",
 ]

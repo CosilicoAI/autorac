@@ -1158,15 +1158,10 @@ def main():
     )
     target_group = notary_parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
-        "--changed-files",
-        "--changed-file",
-        dest="changed_files",
-        action="extend",
-        nargs="+",
-        type=Path,
+        "--base-commit",
         help=(
-            "Changed primary RuleSpec modules or companion tests, relative to "
-            "the policy checkout (repeatable)"
+            "Full ancestor commit SHA used to derive the complete base..HEAD "
+            "verification target set"
         ),
     )
     target_group.add_argument(
@@ -3139,7 +3134,7 @@ def cmd_notary_verify(args) -> None:
             corpus_path=args.corpus_path,
             axiom_rules_engine_path=args.axiom_rules_engine_path,
             receipt_out=args.receipt_out,
-            changed_files=tuple(args.changed_files or ()),
+            base_commit=args.base_commit,
             whole_repo=bool(args.whole_repo),
             policyengine_runtime_root=args.policyengine_runtime_root,
             rulespec_dependency_roots=_rulespec_dependency_roots_from_args(args),
