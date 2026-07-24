@@ -1,0 +1,1 @@
+Pin axiom-oracles to the reviewed Texas, Wyoming, and Colorado tax-year-2026 individual-income-tax classifications so encoder coverage resolves all 13 Texas, 12 Wyoming, and 13 Colorado outputs exactly.
