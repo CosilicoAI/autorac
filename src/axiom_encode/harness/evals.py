@@ -126,6 +126,7 @@ from .validator_pipeline import (
 
 EvalMode = Literal["cold", "repo-augmented"]
 EvalOracleMode = Literal["none", "policyengine"]
+EvalFailureKind = Literal["timeout", "validation", "error"]
 IMPORT_ITEM_PATTERN = re.compile(r"^\s*-\s*(['\"]?)([^'\"]+?)\1\s*$")
 TABLE_BOUND_COMPARATOR_NUMBER_PATTERN = re.compile(
     r"(?:(?:<=|>=|<|>|==)\s*(-?[\d,]+(?:\.\d+)?)"
@@ -950,6 +951,11 @@ class EvalPromptResponse:
     trace: dict | None = None
     unexpected_accesses: list[str] = field(default_factory=list)
     error: str | None = None
+    timed_out: bool = False
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
+    timeout_attempts: int = 0
 
 
 @dataclass
@@ -980,6 +986,12 @@ class EvalResult:
     retrieved_files: list[str]
     unexpected_accesses: list[str]
     metrics: EvalArtifactMetrics | None
+    failure_kind: EvalFailureKind | None = None
+    timed_out: bool = False
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
+    timeout_attempts: int = 0
     generation_prompt_sha256: str | None = None
     codex_cli_version: str | None = None
     codex_cli_sha256: str | None = None
@@ -1030,6 +1042,7 @@ def _validate_eval_result_artifact_binding(
         "cache_creation_tokens",
         "reasoning_output_tokens",
         "retry_count",
+        "timeout_attempts",
     ):
         value = payload.get(field_name, 0)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1037,6 +1050,54 @@ def _validate_eval_result_artifact_binding(
                 f"{artifact_name} has invalid nonnegative accounting field "
                 f"'{field_name}'"
             )
+    failure_kind = payload.get("failure_kind")
+    if failure_kind not in {None, "timeout", "validation", "error"}:
+        raise ValueError(f"{artifact_name} has an invalid failure_kind")
+    timed_out = payload.get("timed_out", False)
+    if not isinstance(timed_out, bool):
+        raise ValueError(f"{artifact_name} timed_out must be a boolean")
+    if timed_out is not (failure_kind == "timeout"):
+        raise ValueError(
+            f"{artifact_name} timeout classification is internally inconsistent"
+        )
+    timeout_attempts = payload.get("timeout_attempts", 0)
+    timeout_stage = payload.get("timeout_stage")
+    timeout_reason = payload.get("timeout_reason")
+    timeout_seconds = payload.get("timeout_seconds")
+    if timeout_stage is not None and not isinstance(timeout_stage, str):
+        raise ValueError(f"{artifact_name} timeout_stage must be null or a string")
+    if timeout_reason is not None and not isinstance(timeout_reason, str):
+        raise ValueError(f"{artifact_name} timeout_reason must be null or a string")
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(
+            f"{artifact_name} timeout_seconds must be null or a positive number"
+        )
+    if timeout_attempts == 0 and any(
+        value is not None for value in (timeout_stage, timeout_reason, timeout_seconds)
+    ):
+        raise ValueError(
+            f"{artifact_name} has timeout details without a timed-out attempt"
+        )
+    if timed_out and (
+        timeout_attempts == 0
+        or payload.get("success") is True
+        or payload.get("output_file")
+        or isinstance(payload.get("metrics"), dict)
+    ):
+        raise ValueError(
+            f"{artifact_name} terminal timeout must have attempts and no artifact"
+        )
+    if failure_kind == "validation" and not isinstance(payload.get("metrics"), dict):
+        raise ValueError(
+            f"{artifact_name} marks validation failure without artifact metrics"
+        )
+    if payload.get("success") is True and failure_kind is not None:
+        raise ValueError(f"{artifact_name} marks success with a failure_kind")
     for field_name in ("estimated_cost_usd", "actual_cost_usd"):
         value = payload.get(field_name)
         if value is not None and (
@@ -1931,6 +1992,10 @@ def _combine_retry_response(
     retry_prompt: str,
 ) -> EvalPromptResponse:
     """Return the retry response while preserving aggregate accounting."""
+    initial_timeout = _prompt_response_timeout_evidence(initial)
+    retry_timeout = _prompt_response_timeout_evidence(retry)
+    timeout_attempts = initial_timeout[0] + retry_timeout[0]
+    latest_timeout = retry_timeout if retry_timeout[0] else initial_timeout
     return EvalPromptResponse(
         text=retry.text,
         duration_ms=initial.duration_ms + retry.duration_ms,
@@ -1955,6 +2020,46 @@ def _combine_retry_response(
             *retry.unexpected_accesses,
         ],
         error=retry.error,
+        timed_out=retry_timeout[0] > 0,
+        timeout_stage=latest_timeout[1],
+        timeout_reason=latest_timeout[2],
+        timeout_seconds=latest_timeout[3],
+        timeout_attempts=timeout_attempts,
+    )
+
+
+def _timeout_traces(trace: object) -> list[dict]:
+    """Return timed-out backend traces in attempt order."""
+
+    if not isinstance(trace, dict):
+        return []
+    attempts = trace.get("attempts")
+    if isinstance(attempts, list):
+        nested: list[dict] = []
+        for attempt in attempts:
+            if isinstance(attempt, dict):
+                nested.extend(_timeout_traces(attempt.get("trace")))
+        if nested:
+            return nested
+    return [trace] if trace.get("timed_out") is True else []
+
+
+def _prompt_response_timeout_evidence(
+    response: EvalPromptResponse,
+) -> tuple[int, str | None, str | None, float | None]:
+    """Return aggregate attempt count and latest typed timeout details."""
+
+    traces = _timeout_traces(response.trace)
+    attempts = response.timeout_attempts or len(traces)
+    latest = traces[-1] if traces else {}
+    stage = response.timeout_stage or ("encoder" if attempts else None)
+    reason = response.timeout_reason or latest.get("timeout_reason")
+    seconds = response.timeout_seconds or latest.get("timeout_seconds")
+    return (
+        attempts,
+        stage,
+        str(reason) if reason is not None else None,
+        float(seconds) if isinstance(seconds, (int, float)) else None,
     )
 
 
@@ -2632,7 +2737,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 _EVAL_RESULT_SHA256_FIELD = "result_sha256"
-_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v5"
+_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v6"
 _EVAL_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
 
@@ -2719,6 +2824,12 @@ def _eval_result_verdict_evidence_payload(
         "validation": {
             "success": result_payload.get("success"),
             "error": result_payload.get("error"),
+            "failure_kind": result_payload.get("failure_kind"),
+            "timed_out": result_payload.get("timed_out"),
+            "timeout_stage": result_payload.get("timeout_stage"),
+            "timeout_reason": result_payload.get("timeout_reason"),
+            "timeout_seconds": result_payload.get("timeout_seconds"),
+            "timeout_attempts": result_payload.get("timeout_attempts"),
             "metrics": result_payload.get("metrics"),
         },
     }
@@ -4655,6 +4766,12 @@ def _eval_result_from_payload(
         retrieved_files=list(payload.get("retrieved_files") or []),
         unexpected_accesses=list(payload.get("unexpected_accesses") or []),
         metrics=metrics,
+        failure_kind=payload.get("failure_kind"),
+        timed_out=bool(payload.get("timed_out", False)),
+        timeout_stage=payload.get("timeout_stage"),
+        timeout_reason=payload.get("timeout_reason"),
+        timeout_seconds=payload.get("timeout_seconds"),
+        timeout_attempts=int(payload.get("timeout_attempts", 0) or 0),
         retry_count=int(payload.get("retry_count", 0) or 0),
         source_attestation=(
             dict(payload["source_attestation"])
@@ -4679,6 +4796,13 @@ def _suite_case_failure_results(
     source_attestation: dict[str, object] | None = None,
 ) -> list[EvalResult]:
     """Convert an exception into explicit failed results for each runner."""
+    timed_out = isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
+    timeout_seconds = (
+        float(exc.timeout)
+        if isinstance(exc, subprocess.TimeoutExpired)
+        and isinstance(exc.timeout, (int, float))
+        else None
+    )
     return [
         EvalResult(
             citation=_eval_suite_case_result_citation(case),
@@ -4706,6 +4830,12 @@ def _suite_case_failure_results(
             retrieved_files=[],
             unexpected_accesses=[],
             metrics=None,
+            failure_kind="timeout" if timed_out else "error",
+            timed_out=timed_out,
+            timeout_stage="case" if timed_out else None,
+            timeout_reason="wall" if timed_out else None,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=1 if timed_out else 0,
             source_attestation=(
                 dict(source_attestation) if source_attestation is not None else None
             ),
@@ -4747,6 +4877,8 @@ def _eval_result_indicates_usage_limit(result: EvalResult) -> bool:
 
 def _eval_result_indicates_retryable_timeout(result: EvalResult) -> bool:
     """Return True when one result failed due to a transient timeout."""
+    if result.timed_out or result.timeout_attempts:
+        return True
     texts: list[str] = []
     if result.error:
         texts.append(result.error)
@@ -7334,6 +7466,11 @@ def _run_single_eval(
         metrics,
         require_policyengine=oracle == "policyengine",
     )
+    outcome = _eval_result_outcome(
+        response,
+        wrote_artifact=wrote_artifact,
+        validation_error=validation_error,
+    )
 
     tokens = response.tokens
     generated_output_sha256 = (
@@ -7386,6 +7523,7 @@ def _run_single_eval(
         retrieved_files=[item.source_path for item in workspace.context_files],
         unexpected_accesses=response.unexpected_accesses,
         metrics=metrics,
+        **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
     )
@@ -7409,6 +7547,37 @@ def _eval_artifact_validation_error(
     ):
         return "Generated RuleSpec failed PolicyEngine oracle validation"
     return None
+
+
+def _eval_result_outcome(
+    response: EvalPromptResponse,
+    *,
+    wrote_artifact: bool,
+    validation_error: str | None,
+) -> dict[str, object]:
+    """Return durable row-level outcome and timeout evidence."""
+
+    timeout_attempts, timeout_stage, timeout_reason, timeout_seconds = (
+        _prompt_response_timeout_evidence(response)
+    )
+    terminal_timeout = not wrote_artifact and timeout_attempts > 0
+    failure_kind: EvalFailureKind | None
+    if validation_error is not None:
+        failure_kind = "validation"
+    elif terminal_timeout:
+        failure_kind = "timeout"
+    elif response.error is not None or not wrote_artifact:
+        failure_kind = "error"
+    else:
+        failure_kind = None
+    return {
+        "failure_kind": failure_kind,
+        "timed_out": terminal_timeout,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
+    }
 
 
 def _run_single_source_eval(
@@ -7519,6 +7688,11 @@ def _run_single_source_eval(
         metrics,
         require_policyengine=oracle == "policyengine",
     )
+    outcome = _eval_result_outcome(
+        response,
+        wrote_artifact=wrote_artifact,
+        validation_error=validation_error,
+    )
 
     tokens = response.tokens
     generated_output_sha256 = (
@@ -7569,6 +7743,7 @@ def _run_single_source_eval(
         retrieved_files=[item.source_path for item in workspace.context_files],
         unexpected_accesses=response.unexpected_accesses,
         metrics=metrics,
+        **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
     )
@@ -12094,6 +12269,11 @@ def _run_claude_prompt_eval(
                 "timeout_reason": "wall",
             },
             error="Claude eval timed out",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=1,
         )
     duration_ms = int((time.time() - start) * 1000)
 
@@ -12295,6 +12475,11 @@ def _run_codex_prompt_eval(
         },
         unexpected_accesses=unexpected_accesses,
         error=error,
+        timed_out=timed_out,
+        timeout_stage="encoder" if timed_out else None,
+        timeout_reason=timeout_reason,
+        timeout_seconds=codex_timeout_seconds if timed_out else None,
+        timeout_attempts=1 if timed_out else 0,
     )
 
 

@@ -46767,6 +46767,12 @@ def _serialize_eval_result(result) -> dict:
             "duration_ms": getattr(result, "duration_ms", None),
             "success": getattr(result, "success", None),
             "error": getattr(result, "error", None),
+            "failure_kind": getattr(result, "failure_kind", None),
+            "timed_out": getattr(result, "timed_out", False),
+            "timeout_stage": getattr(result, "timeout_stage", None),
+            "timeout_reason": getattr(result, "timeout_reason", None),
+            "timeout_seconds": getattr(result, "timeout_seconds", None),
+            "timeout_attempts": getattr(result, "timeout_attempts", 0),
             "generation_prompt_sha256": getattr(
                 result, "generation_prompt_sha256", None
             ),

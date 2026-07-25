@@ -437,6 +437,12 @@ def test_fold_two_single_runner_payloads(tmp_path):
             success=False,
             error="encode timed out",
             metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
         ),
     ]
     sol_results = [
@@ -479,7 +485,7 @@ def test_fold_two_single_runner_payloads(tmp_path):
     assert sol.mean_cost_usd == pytest.approx(0.02)
     # Sol leads the ordering on gate-pass rate.
     assert board.ordered_runners()[0].runner == "sol"
-    assert board.cells[(3, "terra")].state == "error"
+    assert board.cells[(3, "terra")].state == "timeout"
     assert board.cells[(2, "terra")].state == "fail"
     assert "ungrounded=2" in board.cells[(2, "terra")].detail
     assert board.cells[(1, "terra")].state == "pass"
@@ -1376,6 +1382,7 @@ def test_renderers_and_exports(tmp_path):
                 success=False,
                 error="boom",
                 metrics=None,
+                failure_kind="error",
             ),
         ],
     )

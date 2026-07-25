@@ -41,7 +41,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Literal
 
-BoardCellState = Literal["pass", "fail", "error", "missing"]
+BoardCellState = Literal["pass", "fail", "timeout", "error", "missing"]
 
 _RESULTS_FILE_NAME = "results.json"
 
@@ -128,6 +128,8 @@ class BoardRunnerStats:
     model: str
     source: str
     cases_run: int
+    artifact_case_count: int
+    timeout_count: int
     gate_pass_count: int
     compile_pass_count: int
     ci_pass_count: int
@@ -147,16 +149,16 @@ class BoardRunnerStats:
         return _rate(self.gate_pass_count, self.cases_run)
 
     @property
-    def compile_pass_rate(self) -> float:
-        return _rate(self.compile_pass_count, self.cases_run)
+    def compile_pass_rate(self) -> float | None:
+        return _optional_rate(self.compile_pass_count, self.artifact_case_count)
 
     @property
-    def ci_pass_rate(self) -> float:
-        return _rate(self.ci_pass_count, self.cases_run)
+    def ci_pass_rate(self) -> float | None:
+        return _optional_rate(self.ci_pass_count, self.artifact_case_count)
 
     @property
-    def zero_ungrounded_rate(self) -> float:
-        return _rate(self.zero_ungrounded_count, self.cases_run)
+    def zero_ungrounded_rate(self) -> float | None:
+        return _optional_rate(self.zero_ungrounded_count, self.artifact_case_count)
 
     @property
     def source_numeric_coverage_rate(self) -> float | None:
@@ -344,6 +346,12 @@ def _rate(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return round(numerator / denominator, 6)
+
+
+def _optional_rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return _rate(numerator, denominator)
 
 
 def _payload_case_identities(payload: dict, source: str) -> list[dict]:
@@ -550,7 +558,11 @@ def _result_metrics(result: dict) -> dict | None:
 
 def result_gate_pass(result: dict) -> bool:
     """The deterministic gate battery for one case x runner result."""
-    if result.get("success") is not True or result.get("error"):
+    if (
+        result.get("success") is not True
+        or result.get("error")
+        or result.get("timed_out") is True
+    ):
         return False
     metrics = _result_metrics(result)
     if metrics is None:
@@ -568,6 +580,45 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     error = result.get("error")
     if error is not None and not isinstance(error, str):
         raise EvalBoardError(f"{context} error must be null or a string, got {error!r}")
+    failure_kind = result.get("failure_kind")
+    if failure_kind not in {None, "timeout", "validation", "error"}:
+        raise EvalBoardError(
+            f"{context} failure_kind must be null, timeout, validation, or error"
+        )
+    timed_out = result.get("timed_out")
+    if not isinstance(timed_out, bool):
+        raise EvalBoardError(f"{context} timed_out must be a boolean")
+    if timed_out is not (failure_kind == "timeout"):
+        raise EvalBoardError(f"{context} has inconsistent timeout classification")
+    timeout_attempts = _require_nonnegative_int(
+        result.get("timeout_attempts"),
+        context=f"{context} timeout_attempts",
+    )
+    timeout_stage = result.get("timeout_stage")
+    timeout_reason = result.get("timeout_reason")
+    if timeout_stage is not None and not isinstance(timeout_stage, str):
+        raise EvalBoardError(
+            f"{context} timeout_stage must be null or a string, got {timeout_stage!r}"
+        )
+    if timeout_reason is not None and not isinstance(timeout_reason, str):
+        raise EvalBoardError(
+            f"{context} timeout_reason must be null or a string, got {timeout_reason!r}"
+        )
+    timeout_seconds = _require_optional_nonnegative_number(
+        result.get("timeout_seconds"),
+        context=f"{context} timeout_seconds",
+    )
+    if timeout_seconds == 0:
+        raise EvalBoardError(f"{context} timeout_seconds must be positive when set")
+    if timeout_attempts == 0 and any(
+        value is not None for value in (timeout_stage, timeout_reason, timeout_seconds)
+    ):
+        raise EvalBoardError(f"{context} has timeout details without timeout attempts")
+    if result.get("success") is True:
+        if failure_kind is not None:
+            raise EvalBoardError(f"{context} marks success with a failure_kind")
+    elif failure_kind is None:
+        raise EvalBoardError(f"{context} failure row has no failure_kind")
     _require_nonnegative_int(
         result.get("duration_ms"), context=f"{context} duration_ms"
     )
@@ -581,6 +632,12 @@ def _validate_result_types(result: dict, *, context: str) -> None:
             f"{context} metrics must be null or an object, got {raw_metrics!r}"
         )
     metrics = _result_metrics(result)
+    if failure_kind == "timeout" and (timeout_attempts == 0 or metrics is not None):
+        raise EvalBoardError(
+            f"{context} timeout row must have attempts and no artifact metrics"
+        )
+    if failure_kind == "validation" and metrics is None:
+        raise EvalBoardError(f"{context} validation failure has no artifact metrics")
     if metrics is None:
         return
     _require_bool(metrics.get("compile_pass"), context=f"{context} compile_pass")
@@ -652,11 +709,41 @@ def _cell_for_result(result: dict) -> BoardCell:
     duration_ms = result.get("duration_ms")
     if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
         duration_ms = None
-    if result.get("success") is not True or result.get("error"):
+    failure_kind = result.get("failure_kind")
+    if failure_kind == "timeout" or result.get("timed_out") is True:
+        error = result.get("error")
+        detail = str(error)[:200] if error else "encoder or case budget timed out"
+        return BoardCell(state="timeout", duration_ms=duration_ms, detail=detail)
+    metrics = _result_metrics(result)
+    failed: list[str] = []
+    if metrics is not None:
+        if metrics.get("compile_pass") is not True:
+            failed.append("compile")
+        if metrics.get("ci_pass") is not True:
+            failed.append("ci")
+        if metrics.get("ungrounded_numeric_count") != 0:
+            failed.append(f"ungrounded={metrics.get('ungrounded_numeric_count')}")
+    if failure_kind == "validation":
+        return BoardCell(
+            state="fail",
+            duration_ms=duration_ms,
+            detail=", ".join(failed)
+            or str(result.get("error") or "validation failure"),
+        )
+    if failed:
+        return BoardCell(
+            state="fail",
+            duration_ms=duration_ms,
+            detail=", ".join(failed),
+        )
+    if (
+        failure_kind == "error"
+        or result.get("success") is not True
+        or result.get("error")
+    ):
         error = result.get("error")
         detail = str(error)[:200] if error else "encode did not succeed"
         return BoardCell(state="error", duration_ms=duration_ms, detail=detail)
-    metrics = _result_metrics(result)
     if metrics is None:
         return BoardCell(
             state="error",
@@ -665,13 +752,6 @@ def _cell_for_result(result: dict) -> BoardCell:
         )
     if result_gate_pass(result):
         return BoardCell(state="pass", duration_ms=duration_ms)
-    failed: list[str] = []
-    if metrics.get("compile_pass") is not True:
-        failed.append("compile")
-    if metrics.get("ci_pass") is not True:
-        failed.append("ci")
-    if metrics.get("ungrounded_numeric_count") != 0:
-        failed.append(f"ungrounded={metrics.get('ungrounded_numeric_count')}")
     return BoardCell(
         state="fail",
         duration_ms=duration_ms,
@@ -894,6 +974,8 @@ def fold_eval_board(
             model=identity["model"],
             source=runner_sources[name],
             cases_run=0,
+            artifact_case_count=0,
+            timeout_count=0,
             gate_pass_count=0,
             compile_pass_count=0,
             ci_pass_count=0,
@@ -920,9 +1002,12 @@ def fold_eval_board(
                 stats.success_count += 1
             if cell.state == "pass":
                 stats.gate_pass_count += 1
+            if cell.state == "timeout":
+                stats.timeout_count += 1
             metrics = _result_metrics(result)
             if metrics is None:
                 continue
+            stats.artifact_case_count += 1
             if metrics.get("compile_pass") is True:
                 stats.compile_pass_count += 1
             if metrics.get("ci_pass") is True:
@@ -963,6 +1048,7 @@ def fold_eval_board(
 _CELL_GLYPHS: dict[BoardCellState, str] = {
     "pass": "P",
     "fail": "F",
+    "timeout": "T",
     "error": "E",
     "missing": "·",
 }
@@ -1007,6 +1093,8 @@ def eval_board_to_json(board: EvalBoard) -> dict:
                 "model": stats.model,
                 "source": stats.source,
                 "cases_run": stats.cases_run,
+                "artifact_case_count": stats.artifact_case_count,
+                "timeout_count": stats.timeout_count,
                 "gate_pass_count": stats.gate_pass_count,
                 "gate_pass_rate": stats.gate_pass_rate,
                 "success_count": stats.success_count,
@@ -1088,15 +1176,16 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
         lines.append("")
     lines.append(
         "Gate pass = encode success + compile + CI + zero ungrounded "
-        "numerics, per case. Reviewer and oracle columns are advisory."
+        "numerics, per case. Compile/CI/grounded rates cover produced "
+        "artifacts only; reviewer and oracle columns are advisory."
     )
     lines.append("")
     header = (
-        "| runner | model | gate pass | compile | ci | grounded | "
+        "| runner | model | gate pass | timeouts | artifacts | compile | ci | grounded | "
         "src coverage | review | review score | oracle | median s | mean $ |"
     )
     lines.append(header)
-    lines.append("|" + "---|" * 12)
+    lines.append("|" + "---|" * 14)
     for stats in ordered:
         oracle = (
             f"{stats.policyengine_pass_count}/{stats.policyengine_case_count}"
@@ -1104,13 +1193,16 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
             else "—"
         )
         lines.append(
-            "| {runner} | {model} | {gate} | {compile} | {ci} | {grounded} | "
+            "| {runner} | {model} | {gate} | {timeouts} | {artifacts} | "
+            "{compile} | {ci} | {grounded} | "
             "{coverage} | {review} | {review_score} | {oracle} | {median} | "
             "{cost} |".format(
                 runner=stats.runner,
                 model=stats.model,
                 gate=f"{stats.gate_pass_count}/{stats.cases_run} "
                 f"({_format_percent(stats.gate_pass_rate)})",
+                timeouts=stats.timeout_count,
+                artifacts=stats.artifact_case_count,
                 compile=_format_percent(stats.compile_pass_rate),
                 ci=_format_percent(stats.ci_pass_rate),
                 grounded=_format_percent(stats.zero_ungrounded_rate),
@@ -1127,7 +1219,10 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
     lines.append("")
     lines.append("## Per-case grid")
     lines.append("")
-    lines.append("P = gate pass, F = gate fail, E = encode error, · = not run.")
+    lines.append(
+        "P = gate pass, F = validation/gate fail, T = encoder/case timeout, "
+        "E = encode error, · = not run."
+    )
     lines.append("")
     grid_header = "| case | " + " | ".join(stats.runner for stats in ordered) + " |"
     lines.append(grid_header)
@@ -1167,13 +1262,15 @@ def render_eval_board_text(board: EvalBoard) -> str:
             f"{stats.runner:<{name_width}}  "
             f"gate {stats.gate_pass_count}/{stats.cases_run} "
             f"({_format_percent(stats.gate_pass_rate)})  "
+            f"T timeout {stats.timeout_count}  "
+            f"artifacts {stats.artifact_case_count}  "
             f"compile {_format_percent(stats.compile_pass_rate)}  "
             f"ci {_format_percent(stats.ci_pass_rate)}  "
             f"grounded {_format_percent(stats.zero_ungrounded_rate)}  "
             f"median {_format_optional(stats.median_duration_seconds, '{:.0f}s')}"
         )
     lines.append("")
-    lines.append("Grid (P pass / F fail / E error / · not run):")
+    lines.append("Grid (P pass / F fail / T timeout / E error / · not run):")
     for case in board.cases:
         cells = " ".join(
             _CELL_GLYPHS[board.cells[(case.index, stats.runner)].state]

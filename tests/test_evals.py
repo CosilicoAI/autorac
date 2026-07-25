@@ -13279,7 +13279,7 @@ cases:
         result_payload = row["result"]
         verdict_path = Path(result_payload["verdict_file"])
         verdict_payload = json.loads(verdict_path.read_text())
-        verdict_payload["schema"] = "axiom-encode/eval-result-verdict/v4"
+        verdict_payload["schema"] = "axiom-encode/eval-result-verdict/v5"
         verdict_payload["signature"] = sign_eval_evidence(
             verdict_payload,
             get_signing_broker(capability="eval_ed25519"),
