@@ -1,0 +1,1 @@
+Pin axiom-oracles to the reviewed Massachusetts tax-year-2026 full-year-resident source-hold classifications, keeping the federal boundary, typed source-readiness predicates, and fail-closed liability sentinels out of PolicyEngine value comparisons.
