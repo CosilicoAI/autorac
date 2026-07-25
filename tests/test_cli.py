@@ -3919,6 +3919,7 @@ class TestCmdEvalSuiteRevalidate:
                     "    corpus_citation_path: us/statute/7/2014/e/6/A",
                     "    oracle: policyengine",
                     "    policyengine_rule_hint: snap_net_income_pre_shelter",
+                    "    require_complete_source_unit: true",
                 ]
             )
         )
@@ -4001,6 +4002,7 @@ class TestCmdEvalSuiteRevalidate:
             "actual_cost_usd": None,
             "retrieved_files": [],
             "unexpected_accesses": [],
+            "require_complete_source_unit": True,
             "metrics": {
                 "compile_pass": False,
                 "compile_issues": ["old"],
@@ -4190,6 +4192,7 @@ class TestCmdEvalSuiteRevalidate:
         assert mock_eval.call_args.kwargs["rulespec_dependency_roots"] == [
             dependency_root
         ]
+        assert mock_eval.call_args.kwargs["require_complete_source_unit"] is True
         ledger = json.loads((source_output / "suite-results.jsonl").read_text())
         assert ledger["result"]["metrics"]["compile_pass"] is compile_pass
         assert ledger["result"]["metrics"]["ci_pass"] is ci_pass

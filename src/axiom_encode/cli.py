@@ -47918,6 +47918,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             source_metadata=source_metadata,
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=manifest.rulespec_dependency_roots,
+            require_complete_source_unit=case.require_complete_source_unit,
         )
         validation_error = _eval_artifact_validation_error(
             result.metrics,
