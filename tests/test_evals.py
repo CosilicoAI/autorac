@@ -168,6 +168,19 @@ def _test_policyengine_runtime(country: str = "us") -> PolicyEngineRuntime:
     return runtime
 
 
+def _test_eval_suite_execution_identity() -> dict[str, object]:
+    """Build an execution identity without depending on ambient git state."""
+
+    with patch(
+        "axiom_encode.harness.evals._git_checkout_execution_identity",
+        side_effect=lambda *_args, **_kwargs: {
+            "kind": "tree",
+            "tree_sha256": "1" * 64,
+        },
+    ):
+        return _build_eval_suite_execution_identity(Path("/tmp/axiom-rules"), ())
+
+
 @pytest.fixture(autouse=True)
 def _mock_generalist_reviewer(monkeypatch):
     """Keep eval tests deterministic unless they explicitly inspect reviewer behavior."""
@@ -13414,6 +13427,39 @@ cases:
             _validate_eval_suite_execution_identity(
                 payload,
                 identity(replacement_runtime),
+            )
+
+    def test_execution_identity_records_effective_claude_timeout(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+
+        identity = _test_eval_suite_execution_identity()
+
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v3"
+        assert identity["runner_timeouts"] == {
+            "claude": {"wall_seconds": 1234},
+        }
+
+    def test_resume_identity_rejects_different_claude_timeout(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1200")
+        persisted_identity = _test_eval_suite_execution_identity()
+        payload = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+        }
+        monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1800")
+
+        with pytest.raises(ValueError, match="execution identity"):
+            _validate_eval_suite_execution_identity(
+                payload,
+                _test_eval_suite_execution_identity(),
             )
 
     def test_run_eval_suite_resume_rejects_tampered_source_attestation(self, tmp_path):

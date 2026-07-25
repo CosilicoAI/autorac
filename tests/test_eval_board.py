@@ -145,10 +145,14 @@ def _execution_identity(
     encoder_commit="1" * 40,
     checkout="/ci/axiom-encode",
     policyengine_runtime=None,
+    claude_timeout_seconds=1800,
 ):
-    """A payload execution identity mirroring the v2 producer shape."""
+    """A payload execution identity mirroring the current producer shape."""
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
+        "runner_timeouts": {
+            "claude": {"wall_seconds": claude_timeout_seconds},
+        },
         "axiom_encode": {
             "kind": "git",
             "path": checkout,
@@ -366,6 +370,10 @@ def _write_payload(tmp_path, name, payload):
 
 def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
+    assert (
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA
+        == "axiom-encode/eval-execution-identity/v3"
+    )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
     )
@@ -698,6 +706,30 @@ def test_fold_refuses_mismatched_execution_identity(tmp_path):
     assert board.mixed_toolchain_sources == [str(right)]
     markdown = render_eval_board_markdown(board)
     assert "Mixed toolchains" in markdown
+
+
+def test_fold_refuses_mismatched_encoder_timeout(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(claude_timeout_seconds=1200),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(claude_timeout_seconds=1800),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
 
 
 def test_fold_ignores_checkout_locations_in_execution_identity(tmp_path):
