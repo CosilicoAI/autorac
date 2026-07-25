@@ -623,6 +623,18 @@ def _add_rulespec_dependency_root_argument(parser: argparse.ArgumentParser) -> N
     )
 
 
+def _add_complete_source_unit_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--require-complete-source-unit",
+        action="store_true",
+        default=False,
+        help=(
+            "Require complete encoding or precise typed deferral of the "
+            "authoritative corpus source unit (default: off)"
+        ),
+    )
+
+
 def _add_policyengine_runtime_root_argument(
     parser: argparse.ArgumentParser,
 ) -> None:
@@ -904,6 +916,7 @@ def main():
         action="store_true",
         help="Fail oracle validation when oracle coverage reports unclassified legal IDs",
     )
+    _add_complete_source_unit_argument(validate_parser)
     _add_rulespec_dependency_root_argument(validate_parser)
 
     validation_waivers_parser = subparsers.add_parser(
@@ -1989,6 +2002,7 @@ def main():
             "re-encoded in the same change set before final repository validation."
         ),
     )
+    _add_complete_source_unit_argument(encode_parser)
     _add_rulespec_dependency_root_argument(encode_parser)
 
     # eval command - run deterministic model comparisons on one or more citations
@@ -2046,6 +2060,7 @@ def main():
         action="store_true",
         help="Emit machine-readable JSON summary",
     )
+    _add_complete_source_unit_argument(eval_parser)
     _add_rulespec_dependency_root_argument(eval_parser)
 
     eval_source_parser = subparsers.add_parser(
@@ -2112,6 +2127,7 @@ def main():
         default=None,
         help="Canonical rule name to use as the PolicyEngine oracle target for this source slice",
     )
+    _add_complete_source_unit_argument(eval_source_parser)
     _add_rulespec_dependency_root_argument(eval_source_parser)
 
     eval_suite_parser = subparsers.add_parser(
@@ -2669,6 +2685,9 @@ def _cmd_validate_with_resolution_cache(args):
                 policyengine_runtime=policyengine_runtime,
                 local_corpus_release=corpus_release,
                 rulespec_dependency_roots=_rulespec_dependency_roots_from_args(args),
+                require_complete_source_unit=(
+                    getattr(args, "require_complete_source_unit", False) is True
+                ),
             )
             pipelines[roots] = pipeline
             policyengine_runtimes[roots] = policyengine_runtime
@@ -19692,6 +19711,9 @@ def _run_encode_attempt(
             local_corpus_release=corpus_release,
             validate_dependents=validate_dependents,
             rulespec_dependency_roots=rulespec_dependency_roots,
+            require_complete_source_unit=(
+                getattr(args, "require_complete_source_unit", False) is True
+            ),
         )
 
     skip_reviewers = bool(getattr(args, "skip_reviewers", False))
@@ -19713,6 +19735,9 @@ def _run_encode_attempt(
         skip_reviewers=skip_reviewers,
         policyengine_rule_hint=policyengine_rule_hint,
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=(
+            getattr(args, "require_complete_source_unit", False) is True
+        ),
     )
 
     result = results[0]
@@ -42351,6 +42376,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     local_corpus_release: LocalCorpusRelease,
     validate_dependents: bool = True,
     rulespec_dependency_roots: Sequence[Path] = (),
+    require_complete_source_unit: bool = False,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Validate generated artifacts in a temporary policy-repo overlay."""
     setattr(result, _APPLY_VALIDATION_SNAPSHOT_ATTR, None)
@@ -42466,6 +42492,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             local_corpus_release=local_corpus_release,
             rulespec_dependency_roots=staged_dependency_roots,
             source_metadata=source_metadata,
+            require_complete_source_unit=require_complete_source_unit,
         )
         dependents = (
             _find_rulespec_dependents(overlay_content_root, relative_output)
@@ -42935,6 +42962,7 @@ def _run_generated_encoding_overlay_validation(
     local_corpus_release: LocalCorpusRelease,
     validate_dependents: bool = True,
     rulespec_dependency_roots: Sequence[Path] = (),
+    require_complete_source_unit: bool = False,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Dispatch a release-bound overlay run through the patchable test seam."""
 
@@ -42946,6 +42974,7 @@ def _run_generated_encoding_overlay_validation(
         local_corpus_release=local_corpus_release,
         validate_dependents=validate_dependents,
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=require_complete_source_unit,
     )
 
 
@@ -46667,6 +46696,9 @@ def cmd_eval(args):
         mode=args.mode,
         extra_context_paths=[Path(path) for path in args.allow_context],
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=(
+            getattr(args, "require_complete_source_unit", False) is True
+        ),
     )
 
     if args.json:
@@ -46745,6 +46777,9 @@ def cmd_eval_source(args):
         extra_context_paths=[Path(path) for path in args.allow_context],
         policyengine_rule_hint=args.policyengine_rule_hint,
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=(
+            getattr(args, "require_complete_source_unit", False) is True
+        ),
     )
 
     if args.json:

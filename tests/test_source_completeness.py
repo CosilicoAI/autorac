@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from axiom_encode.harness.source_completeness import (
     analyze_complete_source_unit,
+    recognize_source_structure,
+    source_states_explicit_computation,
 )
 from axiom_encode.harness.validator_pipeline import (
+    ValidatorPipeline,
     extract_named_scalar_occurrences,
     extract_numeric_occurrences_from_text,
     numeric_value_is_grounded,
@@ -39,6 +44,28 @@ def _has_issue(result, *needles: str) -> bool:
     )
 
 
+def _pipeline_issues(
+    content: str,
+    authoritative_source_text: str,
+    *,
+    test_cases: list[object] | None = None,
+) -> list[str]:
+    pipeline = ValidatorPipeline(
+        policy_repo_path=Path("/tmp/rulespec-de"),
+        axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+    )
+    return pipeline._complete_source_unit_issues(
+        content,
+        validation_source_texts={
+            CORPUS_CITATION_PATH: authoritative_source_text,
+        },
+        test_cases=test_cases,
+    )
+
+
 def _formula_test(
     name: str,
     taxable_income: int,
@@ -69,36 +96,42 @@ rules:
   - name: first_zone_start
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 12349
   - name: first_zone_end
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 17799
   - name: first_zone_quadratic_coefficient
     kind: parameter
     dtype: Decimal
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 914.51
   - name: first_zone_linear_coefficient
     kind: parameter
     dtype: Decimal
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 1400
   - name: basic_allowance
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 12348
   - name: tariff_zone_scale
     kind: parameter
     dtype: Decimal
+    source: de/statute/estg/32a(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 10000
@@ -110,6 +143,10 @@ rules:
     assert result.covered_source_numeric_occurrence_count == 6
     assert result.missing_source_numeric_occurrence_count == 0
     assert _has_issue(result, "principal", "derived/relation")
+    assert any(
+        "principal derived/relation" in issue
+        for issue in _pipeline_issues(constants_only, source, test_cases=[])
+    )
 
 
 ABSATZ_1 = "(1) Die Steuer ist das Einkommen multipliziert mit 10 Prozent."
@@ -126,6 +163,7 @@ ABSATZ_1_RULES = """\
   - name: tariff_rate
     kind: parameter
     dtype: Rate
+    source: de/statute/estg/32a(1)
     metadata:
       proof:
         atoms:
@@ -140,6 +178,7 @@ ABSATZ_1_RULES = """\
   - name: tariff_income_tax_amount
     kind: derived
     dtype: Money
+    source: de/statute/estg/32a(1)
     metadata:
       proof:
         atoms:
@@ -157,6 +196,7 @@ ABSATZ_5_RULE = """\
   - name: joint_assessment_tariff_income_tax_amount
     kind: derived
     dtype: Money
+    source: de/statute/estg/32a(5)
     metadata:
       proof:
         atoms:
@@ -207,6 +247,14 @@ def test_omitting_absatz_5_fails():
     )
 
     assert _has_issue(result, "(5)", "source branch")
+    assert any(
+        "(5)" in issue and "source branch" in issue.lower()
+        for issue in _pipeline_issues(
+            _encoded_absatz_content(include_absatz_5=False),
+            f"{ABSATZ_1}\n{ABSATZ_5}",
+            test_cases=ENCODED_FORMULA_TESTS,
+        )
+    )
 
 
 def test_silently_omitting_absatz_6_fails():
@@ -217,6 +265,14 @@ def test_silently_omitting_absatz_6_fails():
     )
 
     assert _has_issue(result, "(6)", "source branch")
+    assert any(
+        "(6)" in issue and "source branch" in issue.lower()
+        for issue in _pipeline_issues(
+            _encoded_absatz_content(include_absatz_5=True),
+            f"{ABSATZ_1}\n{ABSATZ_5}\n{ABSATZ_6}",
+            test_cases=ENCODED_FORMULA_TESTS,
+        )
+    )
 
 
 def test_precise_typed_absatz_6_deferral_passes():
@@ -243,6 +299,11 @@ def test_precise_typed_absatz_6_deferral_passes():
     )
 
     assert not result.issues
+    assert not _pipeline_issues(
+        content,
+        f"{ABSATZ_1}\n{ABSATZ_5}\n{ABSATZ_6}",
+        test_cases=ENCODED_FORMULA_TESTS,
+    )
 
 
 def test_scalar_only_source_passes_with_parameter_snapshot():
@@ -257,6 +318,7 @@ rules:
   - name: allowance_amount
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)
     metadata:
       proof:
         atoms:
@@ -284,6 +346,7 @@ rules:
     assert result.source_numeric_occurrence_count == 1
     assert result.covered_source_numeric_occurrence_count == 1
     assert result.missing_source_numeric_occurrence_count == 0
+    assert not _pipeline_issues(content, source, test_cases=test_cases)
 
 
 def test_summary_omission_cannot_hide_authoritative_source_number():
@@ -309,6 +372,10 @@ rules:
     assert result.covered_source_numeric_occurrence_count == 1
     assert result.missing_source_numeric_occurrence_count == 1
     assert _has_issue(result, "73", "authoritative")
+    assert any(
+        "authoritative corpus numeric value 73" in issue.lower()
+        for issue in _pipeline_issues(content, source, test_cases=[])
+    )
 
 
 @pytest.mark.parametrize(
@@ -355,6 +422,148 @@ rules: []
     assert _has_issue(result, "(6)", "deferral")
 
 
+def test_deferral_cannot_name_its_own_branch_as_missing_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Splittingverfahren.
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: Absatz 6 fehlt.
+rules: []
+"""
+
+    result = _analyze(content, ABSATZ_6, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Der Betrag ist ein Drittel des Einkommens.",
+        "Der Betrag ist die Summe aus Einkommen und Zuschlag.",
+        "Der Betrag wird um 20 Prozent des Einkommens vermindert.",
+        "Der Betrag ist durch drei geteilt zu berechnen.",
+    ],
+)
+def test_common_german_formula_language_is_computation(source: str):
+    assert source_states_explicit_computation(source)
+
+
+def test_scalar_amount_language_is_not_computation():
+    assert not source_states_explicit_computation(
+        "Der Freibetrag beträgt 259 Euro."
+    )
+
+
+def test_glued_satz_markers_are_paragraph_children_not_list_children():
+    source = """\
+(1) 1Die tarifliche Einkommensteuer wird nach Nummern berechnet.
+1. Grundtarif;
+5. Spitzentarif.3Die Steuer ist abzurunden.4Die Grenze gilt entsprechend.
+(6) 1Das Verfahren gilt für Ehegatten.
+1. Voraussetzung eins,
+2. Voraussetzung zwei,
+c) Voraussetzung drei.2Voraussetzung ist außerdem der Status.
+"""
+
+    paths = {branch.path for branch in recognize_source_structure(source)}
+
+    assert ("1", "satz-3") in paths
+    assert ("1", "satz-4") in paths
+    assert ("6", "satz-2") in paths
+    assert ("1", "5", "satz-3") not in paths
+    assert ("6", "2", "c", "satz-2") not in paths
+
+
+RELEASED_ESTG_32A_BODY = """\
+(1) 1Die tarifliche Einkommensteuer bemisst sich nach dem auf volle Euro abgerundeten zu versteuernden Einkommen. 2Sie beträgt ab dem Veranlagungszeitraum 2026 vorbehaltlich der §§ 32b, 32d, 34, 34a, 34b und 34c jeweils in Euro für zu versteuernde Einkommen
+1. bis 12 348 Euro (Grundfreibetrag):0;
+2. von 12 349 Euro bis 17 799 Euro:(914,51 • y + 1 400) • y;
+3. von 17 800 Euro bis 69 878 Euro:(173,10 • z + 2 397) • z + 1 034,87;
+4. von 69 879 Euro bis 277 825 Euro:0,42 • x – 11 135,63;
+5. von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ ist ein Zehntausendstel des den Grundfreibetrag übersteigenden Teils des auf einen vollen Euro-Betrag abgerundeten zu versteuernden Einkommens. 4Die Größe „z“ ist ein Zehntausendstel des 17 799 Euro übersteigenden Teils des auf einen vollen Euro-Betrag abgerundeten zu versteuernden Einkommens. 5Die Größe „x“ ist das auf einen vollen Euro-Betrag abgerundete zu versteuernde Einkommen. 6Der sich ergebende Steuerbetrag ist auf den nächsten vollen Euro-Betrag abzurunden.
+(2) bis (4) (weggefallen)
+(5) Bei Ehegatten, die nach den §§ 26, 26b zusammen zur Einkommensteuer veranlagt werden, beträgt die tarifliche Einkommensteuer vorbehaltlich der §§ 32b, 32d, 34, 34a, 34b und 34c das Zweifache des Steuerbetrags, der sich für die Hälfte ihres gemeinsam zu versteuernden Einkommens nach Absatz 1 ergibt (Splitting-Verfahren).
+(6) 1Das Verfahren nach Absatz 5 ist auch anzuwenden zur Berechnung der tariflichen Einkommensteuer für das zu versteuernde Einkommen
+1. bei einem verwitweten Steuerpflichtigen für den Veranlagungszeitraum, der dem Kalenderjahr folgt, in dem der Ehegatte verstorben ist, wenn der Steuerpflichtige und sein verstorbener Ehegatte im Zeitpunkt seines Todes die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllt haben,
+2. bei einem Steuerpflichtigen, dessen Ehe in dem Kalenderjahr, in dem er sein Einkommen bezogen hat, aufgelöst worden ist, wenn in diesem Kalenderjahr
+a) der Steuerpflichtige und sein bisheriger Ehegatte die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllt haben,
+b) der bisherige Ehegatte wieder geheiratet hat und
+c) der bisherige Ehegatte und dessen neuer Ehegatte ebenfalls die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllen.2Voraussetzung für die Anwendung des Satzes 1 ist, dass der Steuerpflichtige nicht nach den §§ 26, 26a einzeln zur Einkommensteuer veranlagt wird."""
+
+
+def test_exact_released_estg_32a_structure_paths():
+    paths = {
+        branch.path
+        for branch in recognize_source_structure(RELEASED_ESTG_32A_BODY)
+    }
+
+    assert {("1",), ("5",), ("6",)} <= paths
+    assert ("2",) not in paths
+    assert {("1", str(number)) for number in range(1, 6)} <= paths
+    assert {("6", "1"), ("6", "2")} <= paths
+    assert {("6", "2", letter) for letter in ("a", "b", "c")} <= paths
+    assert {("1", f"satz-{number}") for number in range(1, 7)} <= paths
+    assert {("6", "satz-1"), ("6", "satz-2")} <= paths
+    assert not any(
+        path[:2] == ("1", "5") and path[-1].startswith("satz-")
+        for path in paths
+    )
+    assert not any(
+        path[:3] == ("6", "2", "c") and path[-1].startswith("satz-")
+        for path in paths
+    )
+
+
+def test_nested_editorial_omission_does_not_drop_operative_paragraph():
+    source = """\
+(1) Die Hauptregel gilt:
+1. weggefallen;
+2. Die operative Ausnahme gilt.
+"""
+
+    branches = recognize_source_structure(source)
+    paths = {branch.path for branch in branches}
+
+    assert ("1",) in paths
+    assert ("1", "1") not in paths
+    assert ("1", "2") in paths
+
+
+def test_unrelated_proof_citation_cannot_cover_requested_branch():
+    source = "(1) Die Steuer ist Einkommen * 10."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Tarif.
+rules:
+  - name: tariff_income_tax_amount
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/bgbl/example
+              excerpt: "Die Steuer ist Einkommen * 10."
+    versions:
+      - effective_from: '2026-01-01'
+        formula: taxable_income * 10
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "(1)", "source branch")
+
+
 COMPANION_COVERAGE_SOURCE = """\
 (1) Die Steuer wird nach folgenden Tarifzweigen berechnet:
 1. Bis 100 Euro: Einkommen * 5 Prozent;
@@ -374,30 +583,35 @@ rules:
   - name: lower_tariff_rate_percent
     kind: parameter
     dtype: Decimal
+    source: de/statute/estg/32a(1)(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 5
   - name: upper_tariff_rate_percent
     kind: parameter
     dtype: Decimal
+    source: de/statute/estg/32a(1)(2)
     versions:
       - effective_from: '2026-01-01'
         formula: 7
   - name: lower_tariff_maximum
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)(1)
     versions:
       - effective_from: '2026-01-01'
         formula: 100
   - name: upper_tariff_minimum
     kind: parameter
     dtype: Money
+    source: de/statute/estg/32a(1)(2)
     versions:
       - effective_from: '2026-01-01'
         formula: 101
   - name: tariff_income_tax_amount
     kind: derived
     dtype: Money
+    source: de/statute/estg/32a(1)
     metadata:
       proof:
         atoms:
@@ -451,8 +665,8 @@ COMPLETE_COMPANION_TESTS = [
     _companion_test("upper tariff formula branch", 110, 7),
     _companion_test("lower exact tariff boundary", 100, 5),
     _companion_test("upper exact tariff boundary", 101, 7),
-    _companion_test("exception does not apply", 110, 7),
-    _companion_test("exception applies", 110, 0, exception_applies=True),
+    _companion_test("exception does not apply", 90, 4),
+    _companion_test("exception applies", 90, 0, exception_applies=True),
     _companion_test("rounding down to full euro", 90.5, 4),
 ]
 
@@ -470,7 +684,14 @@ def test_complete_companion_suite_covers_source_controls():
 @pytest.mark.parametrize(
     ("test_cases", "expected_issue_term"),
     [
-        ([COMPLETE_COMPANION_TESTS[0]], "formula branch"),
+        (
+            [
+                case
+                for case in COMPLETE_COMPANION_TESTS
+                if case["input"]["taxable_income"] <= 100
+            ],
+            "formula branch",
+        ),
         (
             [
                 case
@@ -508,3 +729,82 @@ def test_missing_companion_coverage_fails(
     )
 
     assert _has_issue(result, expected_issue_term, "test")
+
+
+def test_unrelated_numeric_input_cannot_cover_tariff_boundary():
+    test_cases = [
+        case
+        for case in COMPLETE_COMPANION_TESTS
+        if "exact tariff boundary" not in case["name"]
+    ]
+    test_cases.append(
+        {
+            **_companion_test("unrelated numeric input", 90, 4),
+            "input": {
+                "taxable_income": 90,
+                "exception_applies": False,
+                "unrelated_amount": 101,
+            },
+        }
+    )
+
+    result = _analyze(
+        COMPANION_COVERAGE_CONTENT,
+        COMPANION_COVERAGE_SOURCE,
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(result, "boundary", "test")
+
+
+def test_unrelated_boolean_toggle_cannot_cover_source_exception():
+    test_cases = [
+        case
+        for case in COMPLETE_COMPANION_TESTS
+        if case["name"] != "exception applies"
+    ]
+    for value in (False, True):
+        test_cases.append(
+            {
+                **_companion_test(f"unrelated toggle {value}", 90, 4),
+                "input": {
+                    "taxable_income": 90,
+                    "exception_applies": False,
+                    "unrelated_toggle": value,
+                },
+            }
+        )
+
+    result = _analyze(
+        COMPANION_COVERAGE_CONTENT,
+        COMPANION_COVERAGE_SOURCE,
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_unrelated_fractional_input_cannot_cover_rounding_rule():
+    test_cases = [
+        case
+        for case in COMPLETE_COMPANION_TESTS
+        if case["name"] != "rounding down to full euro"
+    ]
+    test_cases.append(
+        {
+            **_companion_test("unrelated fractional input", 90, 4),
+            "input": {
+                "taxable_income": 90,
+                "exception_applies": False,
+                "unrelated_amount": 90.5,
+            },
+        }
+    )
+
+    result = _analyze(
+        COMPANION_COVERAGE_CONTENT,
+        COMPANION_COVERAGE_SOURCE,
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(result, "rounding", "test")

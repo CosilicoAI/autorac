@@ -98,6 +98,10 @@ from .policyengine_runtime import (
     PolicyEngineRuntimeError,
 )
 from .pricing import estimate_usage_cost_usd
+from .source_completeness import (
+    authoritative_numeric_recall_text,
+    collect_artifact_numeric_values,
+)
 from .validator_pipeline import (
     NumericOccurrence,
     ValidationResult,
@@ -967,9 +971,12 @@ class EvalResult:
     admission: dict[str, object] | None = None
     verdict_file: str = ""
     verdict_sha256: str | None = None
+    require_complete_source_unit: bool = False
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        if not self.require_complete_source_unit:
+            data.pop("require_complete_source_unit", None)
         if self.metrics is not None:
             data["metrics"] = asdict(self.metrics)
         return _bind_eval_result_payload(data)
@@ -1344,9 +1351,11 @@ def run_model_eval(
     policyengine_rule_hint: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
+    require_complete_source_unit: bool = False,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
+    include_tests = include_tests or require_complete_source_unit
     results: list[EvalResult] = []
     runners = [parse_runner_spec(spec) for spec in runner_specs]
     resolved_sources = [
@@ -1375,6 +1384,7 @@ def run_model_eval(
                         source_unit=source_unit,
                         rulespec_dependency_roots=rulespec_dependency_roots,
                         review_findings_paths=review_findings_paths or [],
+                        require_complete_source_unit=require_complete_source_unit,
                     )
                 )
 
@@ -1396,6 +1406,7 @@ def run_source_eval(
     skip_reviewers: bool = False,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
+    require_complete_source_unit: bool = False,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one corpus-backed source unit."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1433,6 +1444,7 @@ def run_source_eval(
                     local_corpus_release=local_corpus_release,
                     rulespec_dependency_roots=rulespec_dependency_roots,
                     review_findings_paths=review_findings_paths or [],
+                    require_complete_source_unit=require_complete_source_unit,
                 )
             )
 
@@ -4853,6 +4865,9 @@ def _eval_result_from_payload(
         success=payload["success"],
         error=payload.get("error"),
         generation_prompt_sha256=payload.get("generation_prompt_sha256"),
+        require_complete_source_unit=(
+            payload.get("require_complete_source_unit", False) is True
+        ),
         input_tokens=int(payload.get("input_tokens", 0) or 0),
         output_tokens=int(payload.get("output_tokens", 0) or 0),
         cache_read_tokens=int(payload.get("cache_read_tokens", 0) or 0),
@@ -6601,6 +6616,7 @@ def evaluate_artifact(
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
+    require_complete_source_unit: bool = False,
 ) -> EvalArtifactMetrics:
     """Evaluate an artifact inside one exact named corpus release."""
 
@@ -6630,6 +6646,7 @@ def evaluate_artifact(
             local_corpus_release=local_corpus_release,
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=rulespec_dependency_roots,
+            require_complete_source_unit=require_complete_source_unit,
         )
 
 
@@ -6646,6 +6663,7 @@ def _evaluate_artifact_in_scope(
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
+    require_complete_source_unit: bool = False,
 ) -> EvalArtifactMetrics:
     """Evaluate one RuleSpec artifact with deterministic checks plus optional oracles."""
     with _rulespec_validation_target(
@@ -6675,6 +6693,7 @@ def _evaluate_artifact_in_scope(
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=validation_dependency_roots,
             validation_staging_root=validation_staging_root,
+            require_complete_source_unit=require_complete_source_unit,
         )
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
@@ -6754,6 +6773,11 @@ def _evaluate_artifact_in_scope(
     # but generated literals are grounded only in authoritative source text and
     # separately parsed proof evidence below — never in module.summary.
     numeric_validation_source_text = embedded_source or numeric_source_text or ""
+    numeric_recall_source_text = (
+        authoritative_numeric_recall_text(source_text)
+        if require_complete_source_unit
+        else numeric_validation_source_text
+    )
     grounding_module_source_text = source_text or numeric_source_text or ""
     numeric_source_citation_path = source_citation_path
     if numeric_source_citation_path is None:
@@ -6771,7 +6795,7 @@ def _evaluate_artifact_in_scope(
         ),
     )
     counted_numeric_source_text = _numeric_occurrence_source_text(
-        numeric_validation_source_text or "",
+        numeric_recall_source_text or "",
         suppress_source_backed_half_up_increment=bool(half_up_helper_count),
     )
     typed_source_numeric_occurrences = (
@@ -6791,15 +6815,29 @@ def _evaluate_artifact_in_scope(
     if _is_empty_nonassertable_artifact(content):
         source_numeric_occurrences = Counter()
         source_occurrences_by_value = defaultdict(list)
-    named_scalar_occurrences = Counter(
-        item.value for item in extract_named_scalar_occurrences(content)
+    imported_named_scalar_occurrences = _imported_named_scalar_occurrences(
+        content,
+        policy_repo_root,
     )
-    named_scalar_occurrences.update(_numeric_concept_name_occurrences(content))
-    named_scalar_occurrences.update(_verification_value_numeric_occurrences(content))
-    named_scalar_occurrences.update(_deferred_output_numeric_occurrences(content))
-    named_scalar_occurrences.update(
-        _imported_named_scalar_occurrences(content, policy_repo_root)
-    )
+    if require_complete_source_unit:
+        named_scalar_occurrences = Counter(
+            collect_artifact_numeric_values(
+                content,
+                extract_named_scalars=extract_named_scalar_occurrences,
+                extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+                additional_values=imported_named_scalar_occurrences,
+            )
+        )
+    else:
+        named_scalar_occurrences = Counter(
+            item.value for item in extract_named_scalar_occurrences(content)
+        )
+        named_scalar_occurrences.update(_numeric_concept_name_occurrences(content))
+        named_scalar_occurrences.update(
+            _verification_value_numeric_occurrences(content)
+        )
+        named_scalar_occurrences.update(_deferred_output_numeric_occurrences(content))
+        named_scalar_occurrences.update(imported_named_scalar_occurrences)
     semantic_source_occurrence_coverage = Counter[float]()
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
@@ -6945,6 +6983,7 @@ def _evaluate_generated_artifact_with_repairs(
     source_metadata: dict[str, object] | None = None,
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
+    require_complete_source_unit: bool = False,
 ) -> EvalArtifactMetrics | None:
     metrics = evaluate_artifact(
         rulespec_file=rulespec_file,
@@ -6959,6 +6998,7 @@ def _evaluate_generated_artifact_with_repairs(
         local_corpus_release=local_corpus_release,
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=require_complete_source_unit,
     )
     if metrics is None:
         return None
@@ -6984,6 +7024,7 @@ def _evaluate_generated_artifact_with_repairs(
         local_corpus_release=local_corpus_release,
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
+        require_complete_source_unit=require_complete_source_unit,
     )
 
 
@@ -7663,7 +7704,9 @@ def _run_single_eval(
     source_unit: CorpusSourceUnit | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
+    require_complete_source_unit: bool = False,
 ) -> EvalResult:
+    include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
         source_unit = resolve_corpus_source_unit(citation, corpus_release)
     _validate_corpus_source_unit(
@@ -7718,6 +7761,7 @@ def _run_single_eval(
         include_tests=include_tests,
         runner_backend=runner.backend,
         policyengine_rule_hint=policyengine_rule_hint,
+        require_complete_source_unit=require_complete_source_unit,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
     output_file = _contained_eval_output_file(output_root, runner.name, relative_output)
@@ -7769,6 +7813,7 @@ def _run_single_eval(
                 source_metadata_payload
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
+            require_complete_source_unit=require_complete_source_unit,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -7834,6 +7879,7 @@ def _run_single_eval(
         **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
+        require_complete_source_unit=require_complete_source_unit,
     )
     emit_eval_result(result, response.trace)
     return result
@@ -7905,6 +7951,7 @@ def _run_single_source_eval(
     skip_reviewers: bool = False,
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
+    require_complete_source_unit: bool = False,
 ) -> EvalResult:
     """Run one eval on a corpus-backed source unit rather than a USC citation."""
     workspace = prepare_eval_workspace(
@@ -7936,6 +7983,7 @@ def _run_single_source_eval(
         include_tests=True,
         runner_backend=runner.backend,
         policyengine_rule_hint=policyengine_rule_hint,
+        require_complete_source_unit=require_complete_source_unit,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
     output_file = _contained_eval_output_file(output_root, runner.name, relative_output)
@@ -7989,6 +8037,7 @@ def _run_single_source_eval(
                 source_metadata_payload
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
+            require_complete_source_unit=require_complete_source_unit,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8052,6 +8101,7 @@ def _run_single_source_eval(
         **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
+        require_complete_source_unit=require_complete_source_unit,
     )
     emit_eval_result(result, response.trace)
     return result
@@ -8574,6 +8624,7 @@ def _build_rulespec_eval_prompt(
     runner_backend: str,
     policyengine_rule_hint: str | None,
     include_corpus_context_injection: bool = True,
+    require_complete_source_unit: bool = False,
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
     source_text = workspace.source_text_file.read_text()
@@ -9096,6 +9147,30 @@ Preferred principal output:
 """
 
     mandatory_review_findings_section = _format_mandatory_review_findings(workspace)
+    complete_source_unit_section = ""
+    if require_complete_source_unit:
+        complete_source_unit_section = """
+Complete-source-unit mode is enabled for this request:
+- Treat the entire authoritative `./source.txt` body as the completeness
+  inventory. `module.summary` is only a concise reviewer orientation and
+  contributes nothing to completeness accounting.
+- Every explicit computation stated in the source unit must have a principal
+  `kind: derived` or `kind: derived_relation` output. Naming its constants as
+  parameters without encoding the stated formula is invalid.
+- Encode every structural paragraph and list branch, including Absatz markers
+  such as `(1)` and `(2)`, `Abs. 5`, numbered items such as `1.` and `1a.`, and
+  Satz enumerations. If a branch cannot be encoded, use a precise typed
+  deferral that names the exact branch and its missing dependency or citation;
+  never omit it silently. Put the structural branch in the deferred output
+  path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`) and list
+  exact missing RuleSpec targets under `blocked_by`.
+- Companion tests must cover every source-stated formula branch, boundary,
+  exception, and rounding rule. When a formula branch cannot be identified
+  from a numeric selector input, add an exact canonical source branch under
+  the executing case's `covers` list (for example,
+  `covers: [de/statute/estg/32a/1/2]`).
+- A genuinely scalar-only source unit may remain parameter-only.
+"""
 
     return f"""You are participating in an encoding eval for {citation}.
 
@@ -9115,7 +9190,7 @@ Primary legal authority:
 {inline_source}
 {source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}
 {backend_section}
-{canonical_concept_section}
+{canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
 - The RuleSpec file must begin with `format: rulespec/v1`.
 - Include `module.summary: |-` with a concise exact audit excerpt, not the full source text when the source is more than a short paragraph. Corpus-backed validation reads the authoritative source from `corpus.provisions`; use the summary only to orient reviewers to the encoded provisions.
@@ -9932,6 +10007,7 @@ def _build_eval_prompt(
     runner_backend: str = "codex",
     policyengine_rule_hint: str | None = None,
     include_corpus_context_injection: bool = True,
+    require_complete_source_unit: bool = False,
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
     return _build_rulespec_eval_prompt(
@@ -9945,6 +10021,7 @@ def _build_eval_prompt(
         runner_backend=runner_backend,
         policyengine_rule_hint=policyengine_rule_hint,
         include_corpus_context_injection=include_corpus_context_injection,
+        require_complete_source_unit=require_complete_source_unit,
     )
 
 

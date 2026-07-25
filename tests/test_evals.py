@@ -6067,15 +6067,21 @@ def test_eval_result_payload_round_trips_prompt_digests():
             "requested_corpus_citation_path": "us/statute/7/2014/e/6/A",
             "source_sha256": "a" * 64,
         },
+        require_complete_source_unit=True,
     )
 
-    restored = _eval_result_from_payload(result.to_dict())
+    strict_payload = result.to_dict()
+    restored = _eval_result_from_payload(strict_payload)
 
+    assert strict_payload["require_complete_source_unit"] is True
+    assert restored.require_complete_source_unit is True
     assert restored.generation_prompt_sha256 == "generation-digest"
     assert restored.retry_count == 1
     assert restored.metrics is not None
     assert restored.metrics.generalist_review_prompt_sha256 == "review-digest"
     assert restored.source_attestation == result.source_attestation
+    result.require_complete_source_unit = False
+    assert "require_complete_source_unit" not in result.to_dict()
 
     def test_wait_for_codex_process_terminates_after_persistent_output(self, tmp_path):
         last_message = tmp_path / ".codex-last-message.txt"
@@ -7321,6 +7327,58 @@ rules:
         assert metrics.ci_pass
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
+
+    def test_complete_mode_numeric_recall_uses_authoritative_body(self, tmp_path):
+        source_text = (
+            "(1) Der Freibetrag beträgt 259 Euro; "
+            "der Zuschlag beträgt 73 Euro."
+        )
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path="de/statute/estg/32a",
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "statutes" / "estg" / "32a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Der Freibetrag beträgt 259 Euro.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+        )
+        compile_result = ValidationResult("compile", True, issues=[])
+        ci_result = ValidationResult("ci", True, issues=[])
+
+        with (
+            patch.object(
+                ValidatorPipeline, "_run_compile_check", return_value=compile_result
+            ),
+            patch.object(ValidatorPipeline, "_run_ci", return_value=ci_result),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text=source_text,
+                local_corpus_release=corpus_release,
+                source_citation_path="de/statute/estg/32a",
+                require_complete_source_unit=True,
+            )
+
+        assert not metrics.ci_pass
+        assert metrics.source_numeric_occurrence_count == 2
+        assert metrics.covered_source_numeric_occurrence_count == 1
+        assert metrics.missing_source_numeric_occurrence_count == 1
+        assert any("73" in issue for issue in metrics.numeric_occurrence_issues)
 
     def test_numeric_occurrence_check_counts_inline_source_table_bounds(self, tmp_path):
         rulespec_file = tmp_path / "statutes" / "26" / "3241" / "b.yaml"
