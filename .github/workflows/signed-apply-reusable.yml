@@ -435,9 +435,14 @@ jobs:
           # generation bug/compromise cannot smuggle an executable surface (e.g.
           # a workflow file) into the signed branch.
           jurs="$(cd "$genroot" && ls -d */ 2>/dev/null | grep -E '^[a-z]{2}(-[a-z0-9-]+)*/' | tr -d '/')"
-          allow=()
+          manifest_dir=".axiom/encoding-manifests"
+          if [ ! -d "$genroot/$manifest_dir" ]; then
+            echo "::error::required signed apply manifest directory missing: $manifest_dir"
+            exit 1
+          fi
+          allow=("$manifest_dir")
           for j in $jurs; do allow+=("$j"); done
-          for p in .axiom/encoding-manifests docs data/coverage \
+          for p in docs data/coverage \
                    known-validation-gaps.yaml known-missing-money-atoms.yaml \
                    oracle-coverage-pending.yaml; do
             [ -e "$genroot/$p" ] && allow+=("$p")
@@ -625,10 +630,10 @@ jobs:
           # on a pathspec that matches nothing (e.g. a mirror with no docs/),
           # staging NOTHING and masking it under `|| true` — so add the
           # jurisdiction glob (always present post-gate: the tracked .gitkeep
-          # under each content root matches it) plus only the optional meta
-          # paths that actually exist.
-          add_paths=(':(glob)*/**')
-          for p in .axiom/encoding-manifests docs data/coverage \
+          # under each content root matches it), the required encoding manifest,
+          # plus only the optional meta paths that actually exist.
+          add_paths=(':(glob)*/**' '.axiom/encoding-manifests')
+          for p in docs data/coverage \
                    known-validation-gaps.yaml known-missing-money-atoms.yaml \
                    oracle-coverage-pending.yaml; do
             [ -e "$p" ] && add_paths+=("$p")
