@@ -6892,7 +6892,12 @@ def _evaluate_artifact_in_scope(
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
     source_is_table = _source_text_looks_like_table(
-        numeric_recall_source_text or ""
+        (
+            numeric_recall_source_text
+            if require_complete_source_unit
+            else numeric_grounding_validation_source_text
+        )
+        or ""
     )
     inline_table_formula_occurrences = (
         _inline_table_formula_numeric_occurrences(content)
