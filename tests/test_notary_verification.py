@@ -1125,6 +1125,47 @@ def test_diff_mode_rejects_base_commit_equal_to_head_before_validation(
     assert not receipt_out.exists()
 
 
+def test_diff_mode_rejects_distinct_ancestor_with_identical_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    base_commit = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD",
+    ).stdout.strip()
+    _git(
+        fixture.policy_root,
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "empty descendant",
+    )
+    receipt_out = tmp_path / "same-tree-empty-diff.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("a same-tree diff must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match="empty-diff receipts"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=base_commit,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
 @pytest.mark.parametrize(
     "relative",
     [
@@ -1155,6 +1196,10 @@ def test_authority_surface_matcher_rejects_recognized_paths(relative: Path):
     [
         Path(".gitignore"),
         Path("docs/.gitignore"),
+        Path(".github/.gitignore"),
+        Path(".github/nested/.gitignore"),
+        Path(".axiom/.gitignore"),
+        Path(".axiom/nested/.gitignore"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
         Path("nested/.gitmodules"),
@@ -1170,6 +1215,33 @@ def test_authority_surface_matcher_allows_non_authority_paths(relative: Path):
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_reason"),
+    [
+        ("100755", "executable changes"),
+        ("120000", "symlink changes"),
+    ],
+)
+def test_gitignore_matcher_still_rejects_privileged_modes(
+    mode: str,
+    expected_reason: str,
+):
+    entry = notary_module._GitTreeEntry(
+        mode=mode,
+        object_id="0" * 40,
+        relative=Path(".axiom/nested/.gitignore"),
+    )
+
+    reason = notary_module._authority_surface_change_reason(
+        entry.relative,
+        base_entry=None,
+        head_entry=entry,
+    )
+
+    assert reason is not None
+    assert expected_reason in reason
 
 
 @pytest.mark.parametrize(
@@ -1233,6 +1305,10 @@ def test_diff_mode_records_non_authority_matcher_controls_as_out_of_scope(
     allowed_paths = (
         Path(".gitignore"),
         Path("docs/.gitignore"),
+        Path(".github/.gitignore"),
+        Path(".github/nested/.gitignore"),
+        Path(".axiom/.gitignore"),
+        Path(".axiom/nested/.gitignore"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
         Path("nested/.gitmodules"),
@@ -2829,6 +2905,14 @@ def test_whole_repo_target_set_is_explicit_and_strict(
     monkeypatch: pytest.MonkeyPatch,
 ):
     fixture = _write_notary_fixture(tmp_path)
+    for relative in (
+        Path(".github/nested/.gitignore"),
+        Path(".axiom/nested/.gitignore"),
+    ):
+        nested_gitignore = fixture.policy_root / relative
+        nested_gitignore.parent.mkdir(parents=True, exist_ok=True)
+        nested_gitignore.write_text("# not an authority surface\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, "add nested ignore controls")
 
     monkeypatch.setattr(
         "axiom_encode.harness.validator_pipeline.run_claude_code",

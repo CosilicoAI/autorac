@@ -1195,6 +1195,15 @@ def _authority_surface_change_reason(
 ) -> str | None:
     """Return why trusted preflight must reject one changed Git leaf."""
 
+    for entry in (base_entry, head_entry):
+        if entry is None:
+            continue
+        if entry.mode == "120000":
+            return "symlink changes require a separately privileged flow"
+        if entry.mode == "100755":
+            return "executable changes require a separately privileged flow"
+    if relative.name == ".gitignore":
+        return None
     relative_text = relative.as_posix()
     if relative.parts and relative.parts[0] == ".axiom":
         return "protected verifier, trust-root, or repository configuration"
@@ -1204,13 +1213,6 @@ def _authority_surface_change_reason(
         return "protected per-directory Git attributes"
     if relative_text in _AUTHORITY_SURFACE_PATHS:
         return "protected repository or waiver-policy configuration"
-    for entry in (base_entry, head_entry):
-        if entry is None:
-            continue
-        if entry.mode == "120000":
-            return "symlink changes require a separately privileged flow"
-        if entry.mode == "100755":
-            return "executable changes require a separately privileged flow"
     return None
 
 
@@ -1375,6 +1377,12 @@ def _diff_target_set(
             if base_entries.get(relative) != head_entries.get(relative)
         )
     )
+    if not changed:
+        raise NotaryVerificationError(
+            "Diff verification found no changed Git leaves between "
+            "--base-commit and HEAD; empty-diff receipts are forbidden; "
+            "use --whole-repo for epoch-coverage backfill"
+        )
     files: list[_NotaryTargetFile] = []
     verification_targets: set[PurePosixPath] = set()
     for relative in changed:
