@@ -100,18 +100,20 @@ from .validator_pipeline import (
     ValidatorPipeline,
     _authoritative_corpus_scope,
     _authoritative_rulespec_dependency_scope,
+    _module_numeric_citation_path,
     _normalize_rulespec_dependency_roots,
+    _numeric_profile_for_citation_path,
     _parse_rulespec_target,
     _resolve_rulespec_target_file,
     _source_text_looks_like_table,
-    evaluate_numeric_grounding_values,
+    evaluate_numeric_grounding_values_scoped,
     extract_embedded_source_text,
     extract_named_scalar_occurrences,
     extract_numeric_grounding_source_text,
     extract_numeric_occurrences_from_text,
     extract_typed_numeric_inventory_occurrences_from_text,
     find_deferred_output_issues,
-    find_ungrounded_numeric_issues,
+    find_ungrounded_numeric_issues_scoped,
     find_unused_import_issues,
     find_unused_modifier_parameter_issues,
     normalize_source_backed_half_up_rounding_occurrence_text,
@@ -640,70 +642,6 @@ def _is_empty_nonassertable_artifact(content: str) -> bool:
         else str(payload.get("status", "")).strip()
     )
     return status in {"deferred", "entity_not_supported"} and not payload.get("rules")
-
-
-def _extract_proof_source_excerpt_text(content: str) -> str:
-    """Return source excerpts from proof atoms for numeric grounding."""
-    with contextlib.suppress(ValueError, TypeError, yaml.YAMLError):
-        payload = yaml.safe_load(content)
-        if not isinstance(payload, dict):
-            return ""
-        rules = payload.get("rules")
-        if not isinstance(rules, list):
-            return ""
-        excerpts: list[str] = []
-        for rule in rules:
-            if not isinstance(rule, dict):
-                continue
-            metadata = rule.get("metadata")
-            if not isinstance(metadata, dict):
-                continue
-            proof = metadata.get("proof")
-            if not isinstance(proof, dict):
-                continue
-            atoms = proof.get("atoms")
-            if not isinstance(atoms, list):
-                continue
-            for atom in atoms:
-                if not isinstance(atom, dict):
-                    continue
-                source = atom.get("source")
-                if not isinstance(source, dict):
-                    continue
-                excerpt = source.get("excerpt")
-                if isinstance(excerpt, str) and excerpt.strip():
-                    excerpts.append(excerpt.strip())
-        return "\n".join(excerpts)
-    return ""
-
-
-def _has_parameter_table_proof_atom(content: str) -> bool:
-    """Return true when a RuleSpec artifact grounds values in a source table."""
-    with contextlib.suppress(ValueError, TypeError, yaml.YAMLError):
-        payload = yaml.safe_load(content)
-        if not isinstance(payload, dict):
-            return False
-        rules = payload.get("rules")
-        if not isinstance(rules, list):
-            return False
-        for rule in rules:
-            if not isinstance(rule, dict):
-                continue
-            metadata = rule.get("metadata")
-            if not isinstance(metadata, dict):
-                continue
-            proof = metadata.get("proof")
-            if not isinstance(proof, dict):
-                continue
-            atoms = proof.get("atoms")
-            if not isinstance(atoms, list):
-                continue
-            if any(
-                isinstance(atom, dict) and atom.get("kind") == "parameter_table"
-                for atom in atoms
-            ):
-                return True
-    return False
 
 
 @dataclass(frozen=True)
@@ -6436,21 +6374,31 @@ def _evaluate_artifact_in_scope(
                 )
 
     content = rulespec_file.read_text()
+    numeric_proof_source_texts = (
+        pipeline._numeric_source_texts_for_rulespec_content(
+            content,
+            source_texts=None,
+        )
+    )
     embedded_source = extract_embedded_source_text(content)
-    proof_excerpt_text = _extract_proof_source_excerpt_text(content)
     numeric_source_text = extract_numeric_grounding_source_text(content)
     if not numeric_source_text and source_text:
         numeric_source_text = source_text
-    numeric_validation_source_text = embedded_source or numeric_source_text
-    numeric_grounding_validation_source_text = numeric_validation_source_text
-    if source_text and _has_parameter_table_proof_atom(content):
-        numeric_grounding_validation_source_text = "\n".join(
-            part for part in (source_text, numeric_validation_source_text) if part
-        )
-    numeric_grounding_source_text = "\n".join(
-        part
-        for part in (numeric_grounding_validation_source_text, proof_excerpt_text)
-        if part
+    # Source-recall metrics retain their long-standing operating-slice scope,
+    # but generated literals are grounded only in authoritative source text and
+    # separately parsed proof evidence below — never in module.summary.
+    numeric_validation_source_text = embedded_source or numeric_source_text or ""
+    grounding_module_source_text = source_text or numeric_source_text or ""
+    numeric_source_citation_path = source_citation_path
+    if numeric_source_citation_path is None:
+        with contextlib.suppress(ValueError, TypeError, yaml.YAMLError):
+            numeric_payload = yaml.safe_load(content)
+            if isinstance(numeric_payload, dict):
+                numeric_source_citation_path = _module_numeric_citation_path(
+                    numeric_payload
+                )
+    numeric_profile = _numeric_profile_for_citation_path(
+        numeric_source_citation_path
     )
     half_up_helper_count = min(
         source_backed_half_up_rounding_helper_count(content, source_text),
@@ -6464,7 +6412,8 @@ def _evaluate_artifact_in_scope(
     )
     typed_source_numeric_occurrences = (
         extract_typed_numeric_inventory_occurrences_from_text(
-            counted_numeric_source_text
+            counted_numeric_source_text,
+            profile=numeric_profile,
         )
     )
     source_numeric_occurrences = Counter(
@@ -6491,7 +6440,7 @@ def _evaluate_artifact_in_scope(
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
     source_is_table = _source_text_looks_like_table(
-        numeric_grounding_validation_source_text or ""
+        numeric_validation_source_text
     )
     inline_table_formula_occurrences = (
         _inline_table_formula_numeric_occurrences(content)
@@ -6500,10 +6449,13 @@ def _evaluate_artifact_in_scope(
     )
 
     grounding_metrics: list[GroundingMetric] = []
-    for line, raw, value, grounded in evaluate_numeric_grounding_values(
+    for line, raw, value, grounded in evaluate_numeric_grounding_values_scoped(
         content,
-        numeric_grounding_source_text,
+        module_source_text=grounding_module_source_text,
+        module_citation_path=numeric_source_citation_path,
+        proof_source_texts=numeric_proof_source_texts,
         authoritative_source_text=source_text,
+        require_body_bound_proof_evidence=False,
     ):
         grounding_metrics.append(
             GroundingMetric(
@@ -6541,10 +6493,12 @@ def _evaluate_artifact_in_scope(
                 f"but only {covered_count} named scalar definition(s) with that value were found."
             )
 
-    ungrounded_numeric_issues = find_ungrounded_numeric_issues(
+    ungrounded_numeric_issues = find_ungrounded_numeric_issues_scoped(
         content,
-        numeric_grounding_source_text,
-        authoritative_source_text=source_text,
+        module_source_text=grounding_module_source_text,
+        module_citation_path=numeric_source_citation_path,
+        proof_source_texts=numeric_proof_source_texts,
+        require_body_bound_proof_evidence=False,
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,

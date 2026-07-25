@@ -221,9 +221,11 @@ from .harness.validator_pipeline import (
     _canonical_rulespec_target,
     _extract_source_verification_text,
     _filing_status_rule_source_context,
+    _has_malformed_profiled_numeric_envelope,
     _is_executable_rulespec_rule,
     _matching_delegated_setting_rule_names,
     _normalize_rulespec_dependency_roots,
+    _numeric_profile_for_citation_path,
     _parse_rulespec_target,
     _resolve_rulespec_target_file,
     _rule_versions_are_constant_false,
@@ -23098,7 +23100,10 @@ def _try_repair_generated_source_child_corpus_paths_for_apply(
     )
     if not child_source_text:
         return []
-    source_occurrences = extract_typed_numeric_occurrences_from_text(child_source_text)
+    source_occurrences = extract_typed_numeric_occurrences_from_text(
+        child_source_text,
+        profile=_numeric_profile_for_citation_path(child_corpus_path),
+    )
     if not all(
         numeric_value_is_grounded(float(value), source_occurrences)
         for value in literals
@@ -23800,8 +23805,14 @@ def _grounded_formula_literal_for_scalar_expression(
                 continue
             excerpt = source.get("excerpt")
             if isinstance(excerpt, str):
+                citation_path = source.get("corpus_citation_path")
                 source_occurrences.extend(
-                    extract_typed_numeric_occurrences_from_text(excerpt)
+                    extract_typed_numeric_occurrences_from_text(
+                        excerpt,
+                        profile=_numeric_profile_for_citation_path(
+                            citation_path if isinstance(citation_path, str) else None
+                        ),
+                    )
                 )
     if not source_occurrences or not numeric_value_is_grounded(
         value, source_occurrences
@@ -28722,7 +28733,11 @@ def _try_repair_generated_nonexact_proof_excerpts_for_apply(
             if not isinstance(excerpt, str) or not excerpt.strip():
                 continue
             source_text = embedded_source_text
-            corpus_citation_path = str(source.get("corpus_citation_path") or "").strip()
+            raw_citation_path = source.get("corpus_citation_path")
+            corpus_citation_path = str(raw_citation_path or "").strip()
+            numeric_profile = _numeric_profile_for_citation_path(
+                raw_citation_path if isinstance(raw_citation_path, str) else None
+            )
             if corpus_release is not None and corpus_citation_path:
                 if corpus_citation_path not in cited_source_texts:
                     cited_source_texts[corpus_citation_path] = (
@@ -28750,6 +28765,7 @@ def _try_repair_generated_nonexact_proof_excerpts_for_apply(
                 exact_excerpt = _closest_exact_source_excerpt(
                     source_text=source_text,
                     excerpt=excerpt,
+                    numeric_profile=numeric_profile,
                 )
             if exact_excerpt is None or exact_excerpt == excerpt:
                 continue
@@ -28835,7 +28851,12 @@ def _install_generated_yaml_payload(rules_file: Path, payload: dict) -> bool:
     return True
 
 
-def _closest_exact_source_excerpt(*, source_text: str, excerpt: str) -> str | None:
+def _closest_exact_source_excerpt(
+    *,
+    source_text: str,
+    excerpt: str,
+    numeric_profile: str = "legacy",
+) -> str | None:
     source = str(source_text)
     query = re.sub(r"\s+", " ", str(excerpt)).strip()
     if not source or not query:
@@ -28849,6 +28870,7 @@ def _closest_exact_source_excerpt(*, source_text: str, excerpt: str) -> str | No
                 candidate := _closest_exact_source_excerpt(
                     source_text=segment,
                     excerpt=excerpt,
+                    numeric_profile=numeric_profile,
                 )
             )
         }
@@ -28886,13 +28908,32 @@ def _closest_exact_source_excerpt(*, source_text: str, excerpt: str) -> str | No
         return _safe_wrapped_direct_source_match(source, direct_match)
 
     query_tokens = _proof_excerpt_match_tokens(query)
-    query_numbers = set(extract_numbers_from_text(query))
+    query_numbers = set(
+        extract_numbers_from_text(query, profile=numeric_profile)
+    )
+    if (
+        _has_malformed_profiled_numeric_envelope(
+            query,
+            profile=numeric_profile,
+        )
+        or (
+            numeric_profile != "legacy"
+            and re.search(r"\d", query)
+            and not query_numbers
+        )
+    ):
+        return None
     scored: list[tuple[float, _SourceExcerptCandidate]] = []
     for candidate in candidates:
         normalized_candidate = re.sub(r"\s+", " ", candidate.text).strip()
         candidate_tokens = _proof_excerpt_match_tokens(candidate.text)
         shared_tokens = query_tokens & candidate_tokens
-        candidate_numbers = set(extract_numbers_from_text(candidate.text))
+        candidate_numbers = set(
+            extract_numbers_from_text(
+                candidate.text,
+                profile=numeric_profile,
+            )
+        )
         shared_numbers = query_numbers & candidate_numbers
         if query_numbers and not shared_numbers:
             continue

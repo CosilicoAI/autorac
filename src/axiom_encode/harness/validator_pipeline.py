@@ -2692,11 +2692,21 @@ def _rule_grounding_values_by_path(
     return out
 
 
-def _rule_atom_evidence_by_path(
+@dataclass(frozen=True)
+class _NumericEvidenceItem:
+    """One source fragment and the citation identity that selects its profile."""
+
+    citation_path: str | None
+    text: str
+
+
+def _rule_atom_numeric_evidence_items_by_path(
     rule: Any,
     proof_source_texts: Mapping[str, str | None] | None = None,
-) -> dict[str, str]:
-    """Map each proof atom's anchor ``path`` to that atom's grounding evidence.
+    *,
+    require_body_bound_evidence: bool = True,
+) -> dict[str, tuple[_NumericEvidenceItem, ...]]:
+    """Map each proof anchor to separately profileable numeric evidence items.
 
     Evidence is excerpt-first: the atom's excerpt/quote/table cells — the
     encoder's chosen, excerpt-verified text for the value at that exact path.
@@ -2705,10 +2715,11 @@ def _rule_atom_evidence_by_path(
     module-source semantics while keeping the boundary per anchored atom: an
     unrelated atom in the same rule can launder nothing, because neither its
     excerpt nor its cited provision is consulted for another path's literal.
+    Fragments retain their own citation and are never joined before tokenization.
     (Follow-up ratchet: require excerpts on numeric-bearing atoms.)
     """
-    by_path: dict[str, list[str]] = {}
-    cited_by_path: dict[str, list[str]] = {}
+    by_path: dict[str, list[_NumericEvidenceItem]] = {}
+    cited_by_path: dict[str, list[tuple[str, str]]] = {}
     explicit_evidence_paths: set[str] = set()
     if not isinstance(rule, dict):
         return {}
@@ -2728,7 +2739,13 @@ def _rule_atom_evidence_by_path(
         source = atom.get("source")
         if not path or not isinstance(source, dict):
             continue
-        citation_path = str(source.get("corpus_citation_path") or "").strip()
+        raw_citation_path = source.get("corpus_citation_path")
+        citation_identity = (
+            raw_citation_path if isinstance(raw_citation_path, str) else None
+        )
+        citation_path = (
+            citation_identity.strip() if citation_identity is not None else ""
+        )
         resolved_text = (
             proof_source_texts.get(citation_path)
             if proof_source_texts is not None and citation_path
@@ -2741,7 +2758,8 @@ def _rule_atom_evidence_by_path(
                 continue
             explicit_evidence_paths.add(path)
             excerpt_is_body_bound = (
-                proof_source_texts is None
+                not require_body_bound_evidence
+                or proof_source_texts is None
                 or not citation_path
                 or (
                     resolved_text is not None
@@ -2749,7 +2767,9 @@ def _rule_atom_evidence_by_path(
                 )
             )
             if excerpt_is_body_bound:
-                fragments.append(text.strip())
+                fragments.append(
+                    _NumericEvidenceItem(citation_identity, text.strip())
+                )
         table = source.get("table")
         if isinstance(table, dict):
             for cell in table.values():
@@ -2757,7 +2777,8 @@ def _rule_atom_evidence_by_path(
                     explicit_evidence_paths.add(path)
                     text = str(cell).strip()
                     cell_is_body_bound = (
-                        proof_source_texts is None
+                        not require_body_bound_evidence
+                        or proof_source_texts is None
                         or not citation_path
                         or (
                             resolved_text is not None
@@ -2767,25 +2788,41 @@ def _rule_atom_evidence_by_path(
                         )
                     )
                     if cell_is_body_bound:
-                        fragments.append(text)
+                        fragments.append(_NumericEvidenceItem(citation_identity, text))
         if citation_path:
-            cited_by_path.setdefault(path, []).append(citation_path)
-    evidence: dict[str, str] = {}
+            cited_by_path.setdefault(path, []).append(
+                (citation_path, citation_identity or citation_path)
+            )
+    evidence: dict[str, tuple[_NumericEvidenceItem, ...]] = {}
     for path, fragments in by_path.items():
         if fragments:
-            evidence[path] = "\n".join(fragments)
+            evidence[path] = tuple(fragments)
             continue
         if path in explicit_evidence_paths:
-            evidence[path] = ""
+            evidence[path] = ()
             continue
-        resolved: list[str] = []
+        resolved: list[_NumericEvidenceItem] = []
         if proof_source_texts is not None:
-            for citation_path in cited_by_path.get(path, []):
+            for citation_path, citation_identity in cited_by_path.get(path, []):
                 text = proof_source_texts.get(citation_path)
                 if text:
-                    resolved.append(text)
-        evidence[path] = "\n".join(resolved)
+                    resolved.append(_NumericEvidenceItem(citation_identity, text))
+        evidence[path] = tuple(resolved)
     return evidence
+
+
+def _rule_atom_evidence_by_path(
+    rule: Any,
+    proof_source_texts: Mapping[str, str | None] | None = None,
+) -> dict[str, str]:
+    """Return the legacy joined view used by non-numeric evidence consumers."""
+    return {
+        path: "\n".join(item.text for item in items)
+        for path, items in _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+        ).items()
+    }
 
 
 def _source_evidence_fragment_is_body_bound(
@@ -5211,7 +5248,7 @@ def _extract_legacy_inventory_values(text: str) -> list[float]:
 
 @dataclass(frozen=True)
 class _NumericTokenization:
-    """Typed legacy emission streams used by both public extraction adapters."""
+    """Typed emission streams used by both public extraction adapters."""
 
     grounding: tuple[NumericOccurrence, ...]
     inventory: tuple[NumericOccurrence, ...]
@@ -5643,6 +5680,299 @@ class _LegacyNumericCollector:
         self.inventory.append(self.occurrence(view, span, value, **kwargs))
 
 
+_NUMERIC_EXTRACTION_PROFILES = frozenset({"legacy", "en-US", "en-GB", "de-DE"})
+_LOCALE_NUMERIC_GROUPING_SPACES = " \u00a0\u202f"
+_LOCALE_UNARY_SIGNS = "+-\u2013\u2212"
+_LOCALE_UNARY_PREFIXES = frozenset(
+    "([{=:;,+*/|<>!%^&~?"
+    "\u2022"  # bullet
+    "\u00b7"  # middle dot
+    "\u00d7"  # multiplication sign
+    "\u00f7"  # division sign
+    "\u2219"  # bullet operator
+    "\u2260"  # not equal
+    "\u2264"  # less than or equal
+    "\u2265"  # greater than or equal
+)
+_GERMAN_LEXICAL_SCALE_VALUES = {
+    "Einhundertzwanzigstel": 120.0,
+    "Dreihundertsechzigstel": 360.0,
+    "Vierhundertfünfzigstel": 450.0,
+    "Vierundzwanzigstel": 24.0,
+    "Hundertzwanzigstel": 120.0,
+    "Fünfundsiebzigstel": 75.0,
+    "Dreihundertstel": 300.0,
+    "Sechshundertstel": 600.0,
+    "Zehntausendstel": 10_000.0,
+    "Vierzehntel": 14.0,
+    "Fünfzehntel": 15.0,
+    "Neunzehntel": 19.0,
+    "Dreizehntel": 13.0,
+    "Tausendstel": 1_000.0,
+    "Hundertstel": 100.0,
+    "Dreißigstel": 30.0,
+    "Fünfzigstel": 50.0,
+    "Zwanzigstel": 20.0,
+    "Zwölftel": 12.0,
+    "Siebtel": 7.0,
+    "Sechstel": 6.0,
+    "Fünftel": 5.0,
+    "Viertel": 4.0,
+    "Drittel": 3.0,
+    "Zehntel": 10.0,
+    "Achtel": 8.0,
+}
+_GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_LEXICAL_SCALE_VALUES.items()
+}
+_GERMAN_LEXICAL_SCALE_PATTERN = re.compile(
+    r"(?<!\w)(?P<denominator>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_LEXICAL_SCALE_VALUES, key=len, reverse=True)
+    )
+    + r")(?:n)?(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _numeric_profile_for_citation_path(citation_path: str | None) -> str:
+    """Select a locale only from a canonical evidence citation path."""
+    if not isinstance(citation_path, str) or not citation_path:
+        return "legacy"
+    try:
+        canonical = require_canonical_corpus_citation_path(citation_path)
+    except (InvalidCorpusCitationError, TypeError, ValueError):
+        return "legacy"
+    return "de-DE" if canonical.startswith("de/") else "legacy"
+
+
+def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
+    prefix_index = sign_index - 1
+    while (
+        prefix_index >= 0
+        and text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES
+    ):
+        prefix_index -= 1
+    if prefix_index < 0:
+        return True
+    prefix = text[prefix_index]
+    return (
+        prefix.isspace()
+        or prefix in _LOCALE_UNARY_PREFIXES
+        or prefix in _LOCALE_UNARY_SIGNS
+    )
+
+
+def _iter_locale_numeric_envelopes(text: str) -> Iterator[tuple[int, int]]:
+    """Reserve each complete numeric-looking span before locale validation."""
+    occupied_until = 0
+    for digit_match in re.finditer(r"\d", text):
+        digit_start = digit_match.start()
+        if digit_start < occupied_until:
+            continue
+
+        start = digit_start
+        while start > 0 and text[start - 1] in ".,":
+            start -= 1
+        whitespace_start = start
+        while (
+            whitespace_start > 0
+            and text[whitespace_start - 1] in _LOCALE_NUMERIC_GROUPING_SPACES
+        ):
+            whitespace_start -= 1
+        sign_index = whitespace_start - 1
+        if (
+            sign_index >= 0
+            and text[sign_index] in _LOCALE_UNARY_SIGNS
+            and _locale_sign_is_unary(text, sign_index)
+        ):
+            start = sign_index
+
+        index = digit_start
+        exponent_seen = False
+        while index < len(text):
+            char = text[index]
+            if char.isdigit():
+                index += 1
+                continue
+            if char in ".,":
+                separator_end = index
+                while separator_end < len(text) and text[separator_end] in ".,":
+                    separator_end += 1
+                if (
+                    separator_end < len(text)
+                    and text[separator_end].isdigit()
+                ):
+                    index = separator_end
+                    continue
+                break
+            if char in _LOCALE_NUMERIC_GROUPING_SPACES:
+                next_index = index
+                while (
+                    next_index < len(text)
+                    and text[next_index] in _LOCALE_NUMERIC_GROUPING_SPACES
+                ):
+                    next_index += 1
+                if next_index < len(text) and text[next_index].isdigit():
+                    index = next_index
+                    continue
+                break
+            if char in "Ee" and not exponent_seen:
+                exponent_seen = True
+                index += 1
+                while index < len(text) and text[index] in _LOCALE_UNARY_SIGNS:
+                    index += 1
+                continue
+            break
+
+        occupied_until = index
+        yield start, index
+
+
+def _valid_grouped_integer(
+    raw: str,
+    *,
+    allowed_separators: str,
+) -> tuple[bool, str]:
+    separators = {char for char in raw if char in allowed_separators}
+    if not separators:
+        return raw.isdigit(), raw
+    if len(separators) != 1:
+        return False, ""
+    separator = next(iter(separators))
+    groups = raw.split(separator)
+    if (
+        not groups
+        or not groups[0].isdigit()
+        or not 1 <= len(groups[0]) <= 3
+        or (len(groups[0]) > 1 and groups[0].startswith("0"))
+        or any(len(group) != 3 or not group.isdigit() for group in groups[1:])
+    ):
+        return False, ""
+    return True, "".join(groups)
+
+
+def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
+    stripped = raw.strip(_LOCALE_NUMERIC_GROUPING_SPACES)
+    sign = 1.0
+    if stripped and stripped[0] in _LOCALE_UNARY_SIGNS:
+        if stripped[0] in "-\u2013\u2212":
+            sign = -1.0
+        stripped = stripped[1:].lstrip(_LOCALE_NUMERIC_GROUPING_SPACES)
+    if not stripped:
+        return None
+
+    scientific = re.fullmatch(
+        r"(?P<mantissa>.+?)(?P<exponent>[Ee][+\-\u2013\u2212]?\d+)?",
+        stripped,
+    )
+    if scientific is None:
+        return None
+    mantissa = scientific.group("mantissa")
+    exponent = (
+        scientific.group("exponent") or ""
+    ).replace("\u2013", "-").replace("\u2212", "-")
+
+    if profile == "de-DE":
+        if mantissa.count(",") > 1:
+            return None
+        integer, comma, fraction = mantissa.partition(",")
+        if comma and (not fraction or not fraction.isdigit()):
+            return None
+        valid, normalized_integer = _valid_grouped_integer(
+            integer,
+            allowed_separators="." + _LOCALE_NUMERIC_GROUPING_SPACES,
+        )
+        if not valid:
+            return None
+        normalized = normalized_integer + (f".{fraction}" if comma else "") + exponent
+    else:
+        if mantissa.count(".") > 1:
+            return None
+        integer, dot, fraction = mantissa.partition(".")
+        if dot and (not fraction or not fraction.isdigit()):
+            return None
+        valid, normalized_integer = _valid_grouped_integer(
+            integer,
+            allowed_separators=",",
+        )
+        if not valid:
+            return None
+        normalized = normalized_integer + (f".{fraction}" if dot else "") + exponent
+
+    with contextlib.suppress(ValueError, OverflowError):
+        value = sign * float(normalized)
+        if math.isfinite(value):
+            return value
+    return None
+
+
+def _locale_numeric_envelope_has_token_boundaries(
+    text: str,
+    span: tuple[int, int],
+) -> bool:
+    before = text[span[0] - 1] if span[0] > 0 else ""
+    after = text[span[1]] if span[1] < len(text) else ""
+    return not (
+        (before and (before.isalnum() or before == "_"))
+        or (after and (after.isalnum() or after == "_"))
+    )
+
+
+def _has_malformed_profiled_numeric_envelope(
+    text: str,
+    *,
+    profile: str,
+) -> bool:
+    """Return whether strict-profile text contains an unparseable full span."""
+    if profile == "legacy":
+        return False
+    if profile not in _NUMERIC_EXTRACTION_PROFILES:
+        raise ValueError(f"Unsupported numeric profile: {profile}")
+    cleaned = _clean_source_text_for_numeric_extraction(text)
+    return any(
+        _locale_numeric_envelope_has_token_boundaries(cleaned, span)
+        and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
+        is None
+        for span in _iter_locale_numeric_envelopes(cleaned)
+    )
+
+
+def _tokenize_profiled_numeric_occurrences(
+    text: str,
+    *,
+    profile: str,
+) -> _NumericTokenization:
+    """Tokenize strict locale-aware numeric envelopes without suffix fallback."""
+    cleaned = _clean_source_text_for_numeric_extraction(text)
+    view = _NumericTextView.aligned(text, cleaned)
+    collector = _LegacyNumericCollector(text)
+    occurrences: list[NumericOccurrence] = []
+
+    for span in _iter_locale_numeric_envelopes(cleaned):
+        if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
+            continue
+        value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
+        if value is None:
+            continue
+        occurrences.append(collector.occurrence(view, span, value))
+
+    if profile == "de-DE":
+        for match in _GERMAN_LEXICAL_SCALE_PATTERN.finditer(cleaned):
+            value = _GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD.get(
+                match.group("denominator").casefold()
+            )
+            if value is not None:
+                occurrences.append(collector.occurrence(view, match.span(), value))
+
+    occurrences.sort(key=lambda occurrence: (occurrence.start, occurrence.end))
+    return _NumericTokenization(
+        grounding=tuple(occurrences),
+        inventory=tuple(occurrences),
+    )
+
+
 def _occurrence_value_matches(left: float, right: float) -> bool:
     return math.isclose(
         left,
@@ -5658,8 +5988,10 @@ def _tokenize_numeric_occurrences_from_text(
     profile: str = "legacy",
 ) -> _NumericTokenization:
     """Tokenize once into typed grounding and source-inventory emission streams."""
-    if profile != "legacy":
+    if profile not in _NUMERIC_EXTRACTION_PROFILES:
         raise ValueError(f"Unsupported numeric profile: {profile}")
+    if profile != "legacy":
+        return _tokenize_profiled_numeric_occurrences(text, profile=profile)
 
     collector = _LegacyNumericCollector(text)
     source_view = _NumericTextView.identity(text)
@@ -6434,6 +6766,73 @@ def _decimal_place_scale_values_from_source(source: str) -> set[float]:
     return values
 
 
+def _module_numeric_citation_path(payload: Mapping[str, Any]) -> str | None:
+    """Return the exact, unnormalized module citation identity when present."""
+    citation_path: str | None = None
+    module = payload.get("module")
+    source_verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    if isinstance(source_verification, dict):
+        raw_citation_path = source_verification.get("corpus_citation_path")
+        if isinstance(raw_citation_path, str):
+            citation_path = raw_citation_path
+    return citation_path
+
+
+def _module_numeric_evidence_item(
+    payload: Mapping[str, Any],
+    module_source: str,
+    *,
+    citation_path: str | None = None,
+) -> _NumericEvidenceItem | None:
+    """Attach the module source to its exact persisted citation identity."""
+    if not module_source:
+        return None
+    if citation_path is None:
+        citation_path = _module_numeric_citation_path(payload)
+    return _NumericEvidenceItem(citation_path, module_source)
+
+
+def _numeric_evidence_index(
+    evidence_items: Sequence[_NumericEvidenceItem],
+    *,
+    suppress_ambiguous_half_up_terms: bool = False,
+    cache: dict[
+        tuple[str, str],
+        tuple[tuple[NumericOccurrence, ...], frozenset[float]],
+    ]
+    | None = None,
+) -> tuple[tuple[NumericOccurrence, ...], set[float]]:
+    """Parse each evidence item under its own profile, then union the indexes."""
+    occurrences: list[NumericOccurrence] = []
+    decimal_place_scale_values: set[float] = set()
+    for item in evidence_items:
+        source = (
+            _strip_ambiguous_half_up_terms(item.text)
+            if suppress_ambiguous_half_up_terms
+            else item.text
+        )
+        if not source:
+            continue
+        profile = _numeric_profile_for_citation_path(item.citation_path)
+        cache_key = (profile, source)
+        source_index = cache.get(cache_key) if cache is not None else None
+        if source_index is None:
+            source_index = (
+                _tokenize_numeric_occurrences_from_text(
+                    source,
+                    profile=profile,
+                ).grounding,
+                frozenset(_decimal_place_scale_values_from_source(source)),
+            )
+            if cache is not None:
+                cache[cache_key] = source_index
+        occurrences.extend(source_index[0])
+        decimal_place_scale_values.update(source_index[1])
+    return tuple(occurrences), decimal_place_scale_values
+
+
 def _numeric_value_grounded_in_source(
     value: float,
     source_occurrences: Sequence[NumericOccurrence],
@@ -6483,18 +6882,22 @@ def evaluate_numeric_grounding_values(
     source_text: str,
     *,
     authoritative_source_text: str | None = None,
+    source_citation_path: str | None = None,
 ) -> list[tuple[int, str, float, bool]]:
     """Return a grounding decision for every generated numeric literal.
 
     ``source_text`` may include excerpt-verified proof evidence used for ordinary
     literal matching. Semantic rounding support is intentionally restricted to
     ``authoritative_source_text`` when supplied, so inline excerpts cannot grant
-    the half-up helper exemption.
+    the half-up helper exemption. A single annotated source is parsed under the
+    profile selected by its exact canonical citation; unannotated text remains
+    legacy.
     """
     grounding_values = extract_grounding_values(content)
     if not grounding_values:
         return []
 
+    source_profile = _numeric_profile_for_citation_path(source_citation_path)
     authoritative_source = (
         source_text
         if authoritative_source_text is None
@@ -6502,12 +6905,17 @@ def evaluate_numeric_grounding_values(
     )
     with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
         payload = yaml.safe_load(content)
+        if isinstance(payload, dict) and source_citation_path is None:
+            source_profile = _numeric_profile_for_citation_path(
+                _module_numeric_citation_path(payload)
+            )
         rules = payload.get("rules") if isinstance(payload, dict) else None
         if isinstance(rules, list):
             selector_table_keys = _rulespec_index_selector_keys(rules)
             decisions: list[tuple[int, str, float, bool]] = []
             source_indexes: dict[
-                str, tuple[tuple[NumericOccurrence, ...], set[float]]
+                tuple[str, str],
+                tuple[tuple[NumericOccurrence, ...], set[float]],
             ] = {}
             for rule in rules:
                 anchored_values = _rule_grounding_values_by_path(
@@ -6534,15 +6942,17 @@ def evaluate_numeric_grounding_values(
                         if _is_half_up_rounding_helper_scalar(rule_name, value)
                         else source_text
                     )
-                    source_index = source_indexes.get(grounding_source)
+                    source_index_key = (source_profile, grounding_source)
+                    source_index = source_indexes.get(source_index_key)
                     if source_index is None:
                         source_index = (
                             _tokenize_numeric_occurrences_from_text(
-                                grounding_source
+                                grounding_source,
+                                profile=source_profile,
                             ).grounding,
                             _decimal_place_scale_values_from_source(grounding_source),
                         )
-                        source_indexes[grounding_source] = source_index
+                        source_indexes[source_index_key] = source_index
                     decisions.append(
                         (
                             1,
@@ -6556,7 +6966,10 @@ def evaluate_numeric_grounding_values(
             if len(decisions) == len(grounding_values):
                 return decisions
 
-    source_occurrences = _tokenize_numeric_occurrences_from_text(source_text).grounding
+    source_occurrences = _tokenize_numeric_occurrences_from_text(
+        source_text,
+        profile=source_profile,
+    ).grounding
     decimal_place_scale_values = _decimal_place_scale_values_from_source(source_text)
     return [
         (
@@ -6576,6 +6989,7 @@ def find_ungrounded_numeric_issues(
     source_text: str | None = None,
     *,
     authoritative_source_text: str | None = None,
+    source_citation_path: str | None = None,
 ) -> list[str]:
     """Return issues for generated numeric literals absent from source text."""
     grounding_values = extract_grounding_values(content)
@@ -6598,6 +7012,7 @@ def find_ungrounded_numeric_issues(
         content,
         source,
         authoritative_source_text=authoritative_source_text,
+        source_citation_path=source_citation_path,
     ):
         if grounded:
             continue
@@ -6609,11 +7024,151 @@ def find_ungrounded_numeric_issues(
     return issues
 
 
+def evaluate_numeric_grounding_values_scoped(
+    content: str,
+    *,
+    module_source_text: str | None,
+    module_citation_path: str | None = None,
+    proof_source_texts: Mapping[str, str | None] | None = None,
+    authoritative_source_text: str | None = None,
+    require_body_bound_proof_evidence: bool = True,
+) -> list[tuple[int, str, float, bool]]:
+    """Evaluate anchored literals against separately profiled evidence items."""
+    grounding_values = extract_grounding_values(content)
+    if not grounding_values:
+        return []
+
+    module_source = (module_source_text or "").strip()
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, ValueError):
+        payload = None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != "rulespec/v1"
+        or not isinstance(payload.get("rules"), list)
+    ):
+        return evaluate_numeric_grounding_values(
+            content,
+            module_source,
+            authoritative_source_text=authoritative_source_text,
+            source_citation_path=module_citation_path,
+        )
+
+    module_evidence = _module_numeric_evidence_item(
+        payload,
+        module_source,
+        citation_path=module_citation_path,
+    )
+    evidence_items_by_rule = [
+        _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+            require_body_bound_evidence=require_body_bound_proof_evidence,
+        )
+        for rule in payload["rules"]
+    ]
+    selector_table_keys = _rulespec_index_selector_keys(payload["rules"])
+    evidence_index_cache: dict[
+        tuple[str, str],
+        tuple[tuple[NumericOccurrence, ...], frozenset[float]],
+    ] = {}
+    decisions: list[tuple[int, str, float, bool]] = []
+    for rule, evidence_items_by_path in zip(
+        payload["rules"],
+        evidence_items_by_rule,
+        strict=True,
+    ):
+        anchored_values = _rule_grounding_values_by_path(
+            rule,
+            selector_table_keys=selector_table_keys,
+        )
+        if not anchored_values:
+            continue
+        verified_source_pairs_by_path = _rule_verified_source_excerpt_pairs_by_path(
+            rule,
+            proof_source_texts,
+        )
+        rule_name = (
+            str(rule.get("name") or "").strip() if isinstance(rule, dict) else ""
+        )
+        for anchor_path, raw, value in anchored_values:
+            direct_half_up_helper = _is_direct_half_up_rounding_helper_value(
+                rule,
+                anchor_path,
+                value,
+            )
+            module_supports_rounding = bool(module_source) and (
+                _is_source_backed_half_up_rounding_helper(
+                    rule_name,
+                    value,
+                    module_source,
+                )
+            )
+            source_evidence = verified_source_pairs_by_path.get(anchor_path, ())
+            atom_supports_rounding = any(
+                (
+                    excerpt is None
+                    or _is_source_backed_half_up_rounding_helper(
+                        rule_name,
+                        value,
+                        excerpt,
+                    )
+                )
+                and _is_source_backed_half_up_rounding_helper(
+                    rule_name,
+                    value,
+                    resolved_source,
+                )
+                for excerpt, resolved_source in source_evidence
+            )
+            if direct_half_up_helper and (
+                module_supports_rounding or atom_supports_rounding
+            ):
+                decisions.append((1, raw, value, True))
+                continue
+
+            evidence_items = (
+                ([module_evidence] if module_evidence is not None else [])
+                + list(evidence_items_by_path.get(anchor_path, ()))
+            )
+            source_occurrences, decimal_place_scale_values = _numeric_evidence_index(
+                evidence_items,
+                suppress_ambiguous_half_up_terms=(
+                    _is_half_up_rounding_helper_scalar(rule_name, value)
+                ),
+                cache=evidence_index_cache,
+            )
+            decisions.append(
+                (
+                    1,
+                    raw,
+                    value,
+                    _numeric_value_grounded_in_source(
+                        value,
+                        source_occurrences,
+                        decimal_place_scale_values,
+                    ),
+                )
+            )
+
+    if len(decisions) == len(grounding_values):
+        return decisions
+    return evaluate_numeric_grounding_values(
+        content,
+        module_source,
+        authoritative_source_text=authoritative_source_text,
+        source_citation_path=module_citation_path,
+    )
+
+
 def find_ungrounded_numeric_issues_scoped(
     content: str,
     *,
     module_source_text: str | None,
+    module_citation_path: str | None = None,
     proof_source_texts: Mapping[str, str | None] | None = None,
+    require_body_bound_proof_evidence: bool = True,
 ) -> list[str]:
     """Ground each rule's literals against the provisions that rule actually cites.
 
@@ -6636,13 +7191,30 @@ def find_ungrounded_numeric_issues_scoped(
         or payload.get("format") != "rulespec/v1"
         or not isinstance(payload.get("rules"), list)
     ):
-        return find_ungrounded_numeric_issues(content, source_text=module_source_text)
+        return find_ungrounded_numeric_issues(
+            content,
+            source_text=module_source_text,
+            source_citation_path=module_citation_path,
+        )
 
     if not extract_grounding_values(content):
         return []
-    any_evidence = bool(module_source) or any(
-        any(_rule_atom_evidence_by_path(rule, proof_source_texts).values())
+    module_evidence = _module_numeric_evidence_item(
+        payload,
+        module_source,
+        citation_path=module_citation_path,
+    )
+    evidence_items_by_rule = [
+        _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+            require_body_bound_evidence=require_body_bound_proof_evidence,
+        )
         for rule in payload["rules"]
+    ]
+    any_evidence = module_evidence is not None or any(
+        any(items for items in evidence_by_path.values())
+        for evidence_by_path in evidence_items_by_rule
     )
     if not any_evidence:
         return [
@@ -6651,67 +7223,28 @@ def find_ungrounded_numeric_issues_scoped(
             "`module.summary` is not accepted as source text for numeric grounding."
         ]
 
-    selector_table_keys = _rulespec_index_selector_keys(payload["rules"])
     seen: set[str] = set()
     issues: list[str] = []
-    for rule in payload["rules"]:
-        anchored_values = _rule_grounding_values_by_path(
-            rule, selector_table_keys=selector_table_keys
-        )
-        if not anchored_values:
+    # Bind each literal to only the proof atom at its exact RuleSpec path plus
+    # the designated module source. The evaluator parses each source fragment
+    # under its own citation-selected profile before unioning typed indexes.
+    for _line, raw, value, grounded in evaluate_numeric_grounding_values_scoped(
+        content,
+        module_source_text=module_source,
+        module_citation_path=module_citation_path,
+        proof_source_texts=proof_source_texts,
+        require_body_bound_proof_evidence=require_body_bound_proof_evidence,
+    ):
+        if grounded:
             continue
-        # Bind each literal to ONLY the proof atom anchored to that literal's
-        # exact path (versions[i].formula / versions[i].values), plus the single
-        # designated module source. Grounding against just that atom's
-        # excerpt-verified evidence — not every atom in the rule, and not the
-        # full text of cited provisions — is the tightest correct semantics: an
-        # unrelated atom in the same rule (e.g. a note) cannot launder a
-        # fabricated value that merely appears in its own excerpt. Module-source
-        # retention matches the pre-existing single-source check (no regression).
-        evidence_by_path = _rule_atom_evidence_by_path(rule, proof_source_texts)
-        verified_source_pairs_by_path = _rule_verified_source_excerpt_pairs_by_path(
-            rule, proof_source_texts
+        display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        issue = (
+            "Ungrounded generated numeric literal: "
+            f"{display} does not appear as a substantive numeric value in the source text."
         )
-        rule_name = (
-            str(rule.get("name") or "").strip() if isinstance(rule, dict) else ""
-        )
-        for anchor_path, raw, value in anchored_values:
-            direct_half_up_helper = _is_direct_half_up_rounding_helper_value(
-                rule, anchor_path, value
-            )
-            texts = [module_source, evidence_by_path.get(anchor_path, "")]
-            combined = "\n".join(text for text in texts if text).strip()
-            source_evidence = verified_source_pairs_by_path.get(anchor_path, ())
-            module_supports_rounding = bool(module_source) and (
-                _is_source_backed_half_up_rounding_helper(
-                    rule_name, value, module_source
-                )
-            )
-            atom_supports_rounding = any(
-                (
-                    excerpt is None
-                    or _is_source_backed_half_up_rounding_helper(
-                        rule_name, value, excerpt
-                    )
-                )
-                and _is_source_backed_half_up_rounding_helper(
-                    rule_name, value, resolved_source
-                )
-                for excerpt, resolved_source in source_evidence
-            )
-            if direct_half_up_helper and (
-                module_supports_rounding or atom_supports_rounding
-            ):
-                continue
-            grounding_source = (
-                _strip_ambiguous_half_up_terms(combined)
-                if _is_half_up_rounding_helper_scalar(rule_name, value)
-                else combined
-            )
-            for issue in _ungrounded_from_values([(1, raw, value)], grounding_source):
-                if issue not in seen:
-                    seen.add(issue)
-                    issues.append(issue)
+        if issue not in seen:
+            seen.add(issue)
+            issues.append(issue)
     return issues
 
 
@@ -7931,8 +8464,13 @@ def repair_source_table_open_ended_bound_sentinels(
         if source_text is not None
         else (extract_numeric_grounding_source_text(content) or "").strip()
     )
+    profile = _numeric_profile_for_citation_path(
+        _module_numeric_citation_path(payload)
+    )
     source_occurrences = (
-        extract_typed_numeric_occurrences_from_text(source) if source else []
+        extract_typed_numeric_occurrences_from_text(source, profile=profile)
+        if source
+        else []
     )
     changed_rules: set[str] = set()
 
@@ -20755,11 +21293,19 @@ def _find_source_text_value_issues(
     expected_value: Any,
 ) -> list[str]:
     """Check expected values are present in the ingested source page text."""
+    numeric_profile = _numeric_profile_for_citation_path(source_label)
     normalized_text = _normalize_source_verification_text(source_text)
     if isinstance(expected_value, dict):
         issues: list[str] = []
+        profiled_numeric_cells: list[tuple[str, Any]] = []
         for raw_key, expected_cell in expected_value.items():
             cell_key = str(raw_key)
+            if (
+                numeric_profile != "legacy"
+                and _numeric_rule_value(expected_cell) is not None
+            ):
+                profiled_numeric_cells.append((cell_key, expected_cell))
+                continue
             if not _source_text_contains_indexed_value(
                 normalized_text,
                 index=cell_key,
@@ -20770,17 +21316,50 @@ def _find_source_text_value_issues(
                     f"`{source_label}` does not contain `{value_name}[{cell_key}]` = "
                     f"{_format_verification_value(expected_cell)}."
                 )
-        if issues and _source_text_contains_table_value_multiset(
-            normalized_text,
-            expected_value.values(),
+        if (
+            numeric_profile == "legacy"
+            and issues
+            and _source_text_contains_table_value_multiset(
+                normalized_text,
+                expected_value.values(),
+            )
         ):
             return []
+        if profiled_numeric_cells and not (
+            _source_text_contains_profiled_table_value_multiset(
+                source_text,
+                (cell for _, cell in profiled_numeric_cells),
+                profile=numeric_profile,
+            )
+        ):
+            issues.extend(
+                "Source verification value missing: "
+                f"`{source_label}` does not contain `{value_name}[{cell_key}]` = "
+                f"{_format_verification_value(expected_cell)}."
+                for cell_key, expected_cell in profiled_numeric_cells
+            )
         return issues
 
-    if _source_text_contains_scalar_value(
-        normalized_text,
-        expected_value,
-    ) or _source_text_contains_numeric_value_equivalent(source_text, expected_value):
+    expected_is_numeric = _numeric_rule_value(expected_value) is not None
+    if numeric_profile != "legacy" and expected_is_numeric:
+        value_is_present = _source_text_contains_numeric_value_equivalent(
+            source_text,
+            expected_value,
+            profile=numeric_profile,
+        )
+    else:
+        value_is_present = _source_text_contains_scalar_value(
+            normalized_text,
+            expected_value,
+        ) or (
+            expected_is_numeric
+            and _source_text_contains_numeric_value_equivalent(
+                source_text,
+                expected_value,
+                profile=numeric_profile,
+            )
+        )
+    if value_is_present:
         return []
     return [
         "Source verification value missing: "
@@ -20871,13 +21450,18 @@ def _source_text_contains_scalar_value(text: str, value: Any) -> bool:
     )
 
 
-def _source_text_contains_numeric_value_equivalent(text: str, value: Any) -> bool:
+def _source_text_contains_numeric_value_equivalent(
+    text: str,
+    value: Any,
+    *,
+    profile: str = "legacy",
+) -> bool:
     numeric = _numeric_rule_value(value)
     if numeric is None:
         return False
     return numeric_value_is_grounded(
         numeric[1],
-        extract_typed_numeric_occurrences_from_text(text),
+        extract_typed_numeric_occurrences_from_text(text, profile=profile),
     )
 
 
@@ -20899,6 +21483,57 @@ def _source_text_contains_table_value_multiset(
         )
         >= expected_count
         for value_texts_key, expected_count in expected_counts.items()
+    )
+
+
+def _source_text_contains_profiled_table_value_multiset(
+    text: str,
+    values: Iterable[Any],
+    *,
+    profile: str,
+) -> bool:
+    """Match locale-parsed table values without reusing source occurrences."""
+    expected_values: list[float] = []
+    for value in values:
+        numeric = _numeric_rule_value(value)
+        if numeric is None:
+            return False
+        expected_values.append(numeric[1])
+
+    source_occurrences = extract_typed_numeric_occurrences_from_text(
+        text,
+        profile=profile,
+    )
+    candidate_indexes = [
+        [
+            occurrence_index
+            for occurrence_index, occurrence in enumerate(source_occurrences)
+            if numeric_value_is_grounded(expected, (occurrence,))
+        ]
+        for expected in expected_values
+    ]
+    if any(not candidates for candidates in candidate_indexes):
+        return False
+
+    matched_expected_by_occurrence: dict[int, int] = {}
+
+    def assign(expected_index: int, visited: set[int]) -> bool:
+        for occurrence_index in candidate_indexes[expected_index]:
+            if occurrence_index in visited:
+                continue
+            visited.add(occurrence_index)
+            previous = matched_expected_by_occurrence.get(occurrence_index)
+            if previous is None or assign(previous, visited):
+                matched_expected_by_occurrence[occurrence_index] = expected_index
+                return True
+        return False
+
+    return all(
+        assign(expected_index, set())
+        for expected_index in sorted(
+            range(len(expected_values)),
+            key=lambda index: len(candidate_indexes[index]),
+        )
     )
 
 
@@ -24057,7 +24692,9 @@ class ValidatorPipeline:
         if self.source_text is not None:
             issues.extend(
                 find_ungrounded_numeric_issues(
-                    content, source_text=validation_source_text
+                    content,
+                    source_text=validation_source_text,
+                    source_citation_path=self.source_citation_path,
                 )
             )
         else:
@@ -24065,6 +24702,7 @@ class ValidatorPipeline:
                 find_ungrounded_numeric_issues_scoped(
                     content,
                     module_source_text=validation_source_text,
+                    module_citation_path=self.source_citation_path,
                     proof_source_texts=numeric_source_texts,
                 )
             )

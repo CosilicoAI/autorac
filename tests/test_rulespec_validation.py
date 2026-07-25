@@ -7752,6 +7752,275 @@ def test_numeric_extraction_reads_single_dot_group_as_decimal_too():
     assert 12345678.0 not in multi_pct
 
 
+_GERMAN_SECTION_32A_FORMULA_TEXT = (
+    ":(914,51 \u2022 y + 1 400) \u2022 y;\n"
+    ":(173,10 \u2022 z + 2 397) \u2022 z + 1 034,87;\n"
+    ":0,42 \u2022 x \u2013 11 135,63;\n"
+    ":0,45 \u2022 x \u2013 19 470,38."
+)
+_GERMAN_SECTION_32A_VALUES = (
+    914.51,
+    1400.0,
+    173.10,
+    2397.0,
+    1034.87,
+    0.42,
+    11135.63,
+    0.45,
+    19470.38,
+)
+_GERMAN_SECTION_32A_RAWS = (
+    "914,51",
+    "1 400",
+    "173,10",
+    "2 397",
+    "1 034,87",
+    "0,42",
+    "11 135,63",
+    "0,45",
+    "19 470,38",
+)
+
+
+def test_de_numeric_profile_extracts_released_section_32a_coefficients_exactly():
+    expected = set(_GERMAN_SECTION_32A_VALUES)
+
+    assert (
+        extract_numbers_from_text(
+            _GERMAN_SECTION_32A_FORMULA_TEXT,
+            profile="de-DE",
+        )
+        == expected
+    )
+    assert extract_numeric_occurrences_from_text(
+        _GERMAN_SECTION_32A_FORMULA_TEXT,
+        profile="de-DE",
+    ) == list(_GERMAN_SECTION_32A_VALUES)
+
+
+def test_de_numeric_profile_preserves_section_32a_raw_spans():
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        _GERMAN_SECTION_32A_FORMULA_TEXT,
+        profile="de-DE",
+    )
+
+    assert [(item.value, item.raw) for item in occurrences] == list(
+        zip(_GERMAN_SECTION_32A_VALUES, _GERMAN_SECTION_32A_RAWS, strict=True)
+    )
+    assert all(
+        item.raw == _GERMAN_SECTION_32A_FORMULA_TEXT[item.start : item.end]
+        for item in occurrences
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile", "source_text", "expected"),
+    (
+        ("legacy", "1,234.56", {1234.56}),
+        ("legacy", "1.234,56", {1234.56}),
+        ("legacy", "1 234,56", {1.0, 234.56}),
+        ("en-US", "1,234.56", {1234.56}),
+        ("en-US", "1.234,56", set()),
+        ("en-US", "1 234,56", set()),
+        ("en-GB", "1,234.56", {1234.56}),
+        ("en-GB", "1.234,56", set()),
+        ("en-GB", "1 234,56", set()),
+        ("de-DE", "1,234.56", set()),
+        ("de-DE", "1.234,56", {1234.56}),
+        ("de-DE", "1 234,56", {1234.56}),
+    ),
+)
+def test_numeric_profile_convention_matrix(profile, source_text, expected):
+    assert extract_numbers_from_text(source_text, profile=profile) == expected
+    assert (
+        set(extract_numeric_occurrences_from_text(source_text, profile=profile))
+        == expected
+    )
+
+
+def test_legacy_profile_keeps_uk_single_dot_dual_read():
+    source_text = "1.075 if the relevant dwelling is in valuation band E"
+    expected = {1.075, 1075.0}
+
+    assert extract_numbers_from_text(source_text) == expected
+    assert extract_numbers_from_text(source_text, profile="legacy") == expected
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "10 000",
+        "10\u00a0000",
+        "10\u202f000",
+        "10.000",
+    ),
+)
+def test_de_numeric_profile_accepts_supported_grouping_separators(source_text):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {10000.0}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    ) == [10000.0]
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("10 000", 10000.0),
+        ("100 000", 100000.0),
+    ),
+)
+def test_de_numeric_profile_accepts_wogg_group_widths(source_text, expected):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {expected}
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        ",42",
+        "1,,234",
+        "1 34,87",
+        "1 0034,87",
+        "1 034,,87",
+        "12.34,56",
+        "1,234.56",
+        "4,797E-4,5",
+        "4,797E--4",
+        "4,797E\u2212-4",
+        "4,797E\u2013\u20134",
+        "1E2.3",
+    ),
+)
+def test_de_numeric_profile_reserves_malformed_spans_without_suffixes(source_text):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == set()
+    assert (
+        extract_numeric_occurrences_from_text(source_text, profile="de-DE") == []
+    )
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "4,797E-4",
+        "4,797E\u22124",
+        "4,797E\u20134",
+    ),
+)
+def test_de_numeric_profile_reads_wogg_comma_scientific_notation(source_text):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {0.0004797}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    ) == [0.0004797]
+
+
+@pytest.mark.parametrize("operator", ("\u2219", "\u00b7", "\u2022", "\u00d7"))
+def test_de_numeric_profile_accepts_multiplication_boundaries(operator):
+    source_text = f"x{operator}914,51"
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert [(item.value, item.raw) for item in occurrences] == [(914.51, "914,51")]
+
+
+def test_de_numeric_profile_accepts_released_wogg_dot_operator_orientation():
+    source_text = "z4 = 1,15 \u2219 z3"
+
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {1.15}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    ) == [1.15]
+
+
+def test_de_numeric_profile_accepts_punctuation_boundaries():
+    source_text = "(914,51);0,42:1 400"
+
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {
+        914.51,
+        0.42,
+        1400.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("\u2013 1,000E-2", -0.01),
+        ("| \u2013 1,000E-2", -0.01),
+        ("\u22120,42", -0.42),
+        ("(\u2013 1 034,87)", -1034.87),
+        ("x \u2264 \u22120,42", -0.42),
+        ("x < \u2013 1 000", -1000.0),
+        ("x > -5", -5.0),
+        ("x \u00f7 \u22122", -2.0),
+        ("x \u2212 \u22120,42", -0.42),
+    ),
+)
+def test_de_numeric_profile_reads_unicode_unary_minus(source_text, expected):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {expected}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    ) == [expected]
+
+
+def test_de_numeric_profile_keeps_expression_subtraction_binary():
+    source_text = (
+        "0,42 \u2219 x \u2013 11 135,63; "
+        "0,45 \u00b7 x \u2212 19 470,38"
+    )
+
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {
+        0.42,
+        11135.63,
+        0.45,
+        19470.38,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("42 Prozent", True),
+        ("42 Tage", False),
+    ),
+)
+def test_de_numeric_profile_types_local_rate_context(source_text, expected):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert numeric_value_is_grounded(0.42, occurrences) is expected
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("Achtel", 8.0),
+        ("Vierundzwanzigstel", 24.0),
+        ("Hundertstel", 100.0),
+        ("Dreihundertsechzigstel", 360.0),
+        ("Tausendstel", 1000.0),
+        ("Zehntausendstel", 10000.0),
+        ("Sechsteln", 6.0),
+        ("Zwanzigsteln", 20.0),
+    ),
+)
+def test_de_numeric_profile_reads_german_lexical_denominators(
+    source_text,
+    expected,
+):
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {expected}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    ) == [expected]
+
+
 def test_numeric_extraction_handles_uganda_shilling_suffix():
     # Ugandan prints glue a "/=" (or plain "=") shilling suffix to amounts
     # ("Exceeding 100,000= but not exceeding 200,000= 5,000=" in the Local
@@ -30562,6 +30831,449 @@ def test_grounding_binds_each_literal_to_its_own_anchored_atom():
         },
     )
     assert any("450" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("module_block", "expects_grounded"),
+    (
+        (
+            """
+            module:
+              source_verification:
+                corpus_citation_path: de/statute/estg/32a
+            """,
+            True,
+        ),
+        (
+            """
+            module:
+              source_verification:
+                corpus_citation_path: xx/statute/act/32a
+            """,
+            False,
+        ),
+        ("", False),
+    ),
+)
+def test_scoped_numeric_profile_is_selected_from_module_citation(
+    module_block,
+    expects_grounded,
+):
+    rules_block = textwrap.dedent(
+        """
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '1034.87'
+        """
+    ).strip()
+    content = "\n".join(
+        part
+        for part in (
+            "format: rulespec/v1",
+            textwrap.dedent(module_block).strip(),
+            rules_block,
+        )
+        if part
+    )
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text="Der Betrag beläuft sich auf 1 034,87 Punkte.",
+    )
+
+    if expects_grounded:
+        assert issues == []
+    else:
+        assert any("1034.87" in issue for issue in issues), issues
+
+
+def test_single_source_grounding_selects_profile_from_module_citation():
+    content = textwrap.dedent(
+        """
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: de/statute/estg/32a
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '1034.87'
+        """
+    ).strip()
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text="Der Betrag beläuft sich auf 1 034,87 Punkte.",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "expects_grounded"),
+    (
+        ("de/statute/estg/32a", True),
+        ("xx/statute/act/32a", False),
+    ),
+)
+def test_scoped_numeric_profile_is_selected_from_atom_citation(
+    citation_path,
+    expects_grounded,
+):
+    source_text = "Der Betrag beläuft sich auf 1 034,87 Punkte."
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            metadata:
+              proof:
+                atoms:
+                  - path: versions[0].formula
+                    kind: amount
+                    source:
+                      corpus_citation_path: {citation_path}
+                      excerpt: {source_text}
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '1034.87'
+        """
+    ).strip()
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text="",
+        proof_source_texts={citation_path: source_text},
+    )
+
+    if expects_grounded:
+        assert issues == []
+    else:
+        assert any("1034.87" in issue for issue in issues), issues
+
+
+def test_scoped_numeric_profiles_parse_each_anchored_evidence_item_before_union():
+    german_source = "Der deutsche Betrag ist 1 034,87 Punkte."
+    english_source = "The other amount is 1,234.56 dollars."
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        rules:
+          - name: mixed_locale_sum
+            kind: parameter
+            dtype: Money
+            metadata:
+              proof:
+                atoms:
+                  - path: versions[0].formula
+                    kind: amount
+                    source:
+                      corpus_citation_path: de/statute/estg/32a
+                      excerpt: {german_source}
+                  - path: versions[0].formula
+                    kind: amount
+                    source:
+                      corpus_citation_path: xx/statute/act/2
+                      excerpt: {english_source}
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '1034.87 + 1234.56'
+        """
+    ).strip()
+
+    assert (
+        find_ungrounded_numeric_issues_scoped(
+            content,
+            module_source_text="",
+            proof_source_texts={
+                "de/statute/estg/32a": german_source,
+                "xx/statute/act/2": english_source,
+            },
+        )
+        == []
+    )
+
+
+def test_scoped_numeric_profiles_do_not_leak_across_anchored_evidence_items():
+    german_source = "Der deutsche Betrag ist 2 000 Punkte."
+    legacy_source = "The legacy record prints 1 034,87."
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        rules:
+          - name: mixed_locale_sum
+            kind: parameter
+            dtype: Money
+            metadata:
+              proof:
+                atoms:
+                  - path: versions[0].formula
+                    kind: amount
+                    source:
+                      corpus_citation_path: de/statute/estg/32a
+                      excerpt: {german_source}
+                  - path: versions[0].formula
+                    kind: amount
+                    source:
+                      corpus_citation_path: xx/statute/act/2
+                      excerpt: {legacy_source}
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '2000 + 1034.87'
+        """
+    ).strip()
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text="",
+        proof_source_texts={
+            "de/statute/estg/32a": german_source,
+            "xx/statute/act/2": legacy_source,
+        },
+    )
+
+    assert not any("2000" in issue for issue in issues), issues
+    assert any("1034.87" in issue for issue in issues), issues
+
+
+def test_scoped_locale_evidence_stays_bound_to_exact_atom_anchor():
+    source_text = "Der deutsche Betrag ist 1 034,87 Punkte."
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            metadata:
+              note: supporting note
+              proof:
+                atoms:
+                  - path: metadata.note
+                    kind: note
+                    source:
+                      corpus_citation_path: de/statute/estg/32a
+                      excerpt: {source_text}
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '1034.87'
+        """
+    ).strip()
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text="",
+        proof_source_texts={"de/statute/estg/32a": source_text},
+    )
+
+    assert any("1034.87" in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "expects_grounded"),
+    (
+        ("de/statute/wogg/anlage", True),
+        ("xx/statute/act/annex", False),
+    ),
+)
+def test_scoped_de_profile_grounds_german_lexical_denominator(
+    citation_path,
+    expects_grounded,
+):
+    source_text = "Das Ergebnis ist auf ein Zehntausendstel genau zu berechnen."
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        rules:
+          - name: calculation_scale
+            kind: parameter
+            dtype: Decimal
+            metadata:
+              proof:
+                atoms:
+                  - path: versions[0].formula
+                    kind: parameter
+                    source:
+                      corpus_citation_path: {citation_path}
+                      excerpt: {source_text}
+            versions:
+              - effective_from: '2025-01-01'
+                formula: '10000'
+        """
+    ).strip()
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text="",
+        proof_source_texts={citation_path: source_text},
+    )
+
+    if expects_grounded:
+        assert issues == []
+    else:
+        assert any("10000" in issue for issue in issues), issues
+
+
+def test_source_verification_uses_de_profile_for_scalar_and_table_values():
+    citation_path = "de/statute/estg/32a"
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: {citation_path}
+            values:
+              german_amount: 1034.87
+              german_table:
+                1: 11135.63
+                2: 19470.38
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            versions:
+              - effective_from: '2026-01-01'
+                formula: '1034.87'
+          - name: german_table
+            kind: parameter
+            dtype: Money
+            indexed_by: band
+            versions:
+              - effective_from: '2026-01-01'
+                values:
+                  1: 11135.63
+                  2: 19470.38
+        """
+    ).strip()
+    source_text = (
+        "Der Betrag ist 1 034,87 Euro.\n"
+        "1 | 11 135,63\n"
+        "2 | 19 470,38"
+    )
+
+    assert (
+        find_source_verification_issues(
+            content,
+            source_texts={citation_path: source_text},
+        )
+        == []
+    )
+
+
+def test_source_verification_de_profile_rejects_us_numeric_spans():
+    citation_path = "de/statute/example/1"
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: {citation_path}
+            values:
+              german_amount: 1234.56
+              german_table:
+                1: 1234.56
+                2: 2345.67
+        rules:
+          - name: german_amount
+            kind: parameter
+            dtype: Money
+            versions:
+              - effective_from: '2026-01-01'
+                formula: '1234.56'
+          - name: german_table
+            kind: parameter
+            dtype: Money
+            indexed_by: band
+            versions:
+              - effective_from: '2026-01-01'
+                values:
+                  1: 1234.56
+                  2: 2345.67
+        """
+    ).strip()
+    source_text = (
+        "Der Betrag ist 1,234.56 Euro.\n"
+        "1 | 1,234.56\n"
+        "2 | 2,345.67"
+    )
+
+    issues = find_source_verification_issues(
+        content,
+        source_texts={citation_path: source_text},
+    )
+
+    assert any("`german_amount`" in issue for issue in issues), issues
+    assert any("`german_table[1]`" in issue for issue in issues), issues
+    assert any("`german_table[2]`" in issue for issue in issues), issues
+
+
+def test_source_verification_de_profile_requires_rate_context():
+    citation_path = "de/statute/example/1"
+    content = textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: {citation_path}
+            values:
+              german_rate: 0.42
+        rules:
+          - name: german_rate
+            kind: parameter
+            dtype: Rate
+            versions:
+              - effective_from: '2026-01-01'
+                formula: '0.42'
+        """
+    ).strip()
+
+    issues = find_source_verification_issues(
+        content,
+        source_texts={citation_path: "Die Frist beträgt 42 Tage."},
+    )
+
+    assert any("`german_rate`" in issue for issue in issues), issues
+
+
+def test_open_ended_bound_repair_uses_module_numeric_profile():
+    content = textwrap.dedent(
+        """
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: de/statute/example/1
+        rules:
+          - name: benefit_upper_bound
+            kind: parameter
+            dtype: Money
+            indexed_by: band
+            versions:
+              - effective_from: '2026-01-01'
+                values:
+                  0: 500000
+                  1: 1000000
+        """
+    ).strip()
+
+    repaired, changed = (
+        validator_pipeline.repair_source_table_open_ended_bound_sentinels(
+            content,
+            source_text="Der Grenzwert beträgt 1 000 000 Punkte.",
+        )
+    )
+
+    assert repaired == content
+    assert changed == []
 
 
 def test_scoped_grounding_uses_resolved_source_for_half_up_helper():
