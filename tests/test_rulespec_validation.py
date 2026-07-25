@@ -34,6 +34,7 @@ from axiom_encode.harness.proof_validator import (
     validate_rulespec_proofs,
 )
 from axiom_encode.harness.validator_pipeline import (
+    NumericOccurrence,
     OracleSubprocessResult,
     _corpus_citation_to_normalized_target,
     _extract_json_object,
@@ -48,6 +49,7 @@ from axiom_encode.harness.validator_pipeline import (
     extract_named_scalar_occurrences,
     extract_numbers_from_text,
     extract_numeric_occurrences_from_text,
+    extract_typed_numeric_occurrences_from_text,
     find_aggregate_exception_predicate_issues,
     find_anaphoric_scope_omission_issues,
     find_broad_application_passthrough_issues,
@@ -116,6 +118,7 @@ from axiom_encode.harness.validator_pipeline import (
     find_upstream_placement_issues,
     find_versioned_derived_formula_issues,
     find_zero_branch_test_coverage_issues,
+    numeric_value_is_grounded,
     repair_copied_cross_reference_summary,
     repair_nonnegative_amount_reductions,
     repair_source_table_band_scalar_parameters,
@@ -7087,6 +7090,166 @@ rules:
     )
 
 
+@pytest.mark.parametrize(
+    ("generated_literal", "source_text"),
+    (
+        ("0.42", "The released formula fragment is :0,42."),
+        ("0.30", "The deadline is 30 Tage."),
+        ("0.18", "Children under age 18 qualify."),
+        ("0.18", "Die Altersgrenze beträgt 18 Jahre."),
+        ("0.20", "See § 20 for the governing rule."),
+    ),
+)
+def test_numeric_grounding_rejects_x100_without_local_rate_context(
+    generated_literal,
+    source_text,
+):
+    content = f"""format: rulespec/v1
+rules:
+  - name: demonstrated_rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2025-01-01'
+        formula: '{generated_literal}'
+"""
+
+    issues = find_ungrounded_numeric_issues(content, source_text=source_text)
+
+    assert any(generated_literal in issue for issue in issues), issues
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "The applicable rate is 42 %.",
+        "Der anzuwendende Satz beträgt 42 Prozent.",
+        "The applicable rate is 42 percent.",
+        "The applicable rate is 42 per cent.",
+        "Der anzuwendende Satz beträgt 42 vom Hundert.",
+    ),
+)
+def test_numeric_grounding_accepts_x100_with_local_rate_context(source_text):
+    content = """format: rulespec/v1
+rules:
+  - name: demonstrated_rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2025-01-01'
+        formula: '0.42'
+"""
+
+    assert find_ungrounded_numeric_issues(content, source_text=source_text) == []
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_value", "has_rate_context"),
+    (
+        ("The released formula fragment is :0,42.", 42.0, False),
+        ("The applicable rate is 42 %.", 0.42, True),
+        ("Der anzuwendende Satz beträgt 42 Prozent.", 42.0, True),
+        ("The deadline is 30 Tage.", 30.0, False),
+    ),
+)
+def test_typed_numeric_occurrences_preserve_source_spans_and_rate_context(
+    source_text,
+    expected_value,
+    has_rate_context,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(source_text)
+    occurrence = next(
+        item
+        for item in occurrences
+        if math.isclose(item.value, expected_value, rel_tol=0, abs_tol=1e-9)
+    )
+
+    assert isinstance(occurrence, NumericOccurrence)
+    assert occurrence.raw == source_text[occurrence.start : occurrence.end]
+    assert occurrence.has_rate_context is has_rate_context
+
+
+def test_typed_numeric_occurrences_preserve_exact_legacy_float_emissions():
+    source_text = "Applicable percentage 18.1 and literal 0.181"
+
+    numbers = extract_numbers_from_text(source_text)
+
+    assert numbers == {18.1, 18.1 / 100, 0.181}
+    assert 18.1 / 100 != 0.181
+    assert extract_numbers_from_text("0.0000000004%") == {4e-12}
+
+
+def test_typed_numeric_occurrences_map_repeated_cleaned_values_exactly():
+    source_text = "Section 42\nRate 42 Prozent"
+
+    occurrences = extract_typed_numeric_occurrences_from_text(source_text)
+    occurrence = next(item for item in occurrences if item.has_rate_context)
+    expected_start = source_text.index("42 Prozent")
+
+    assert occurrence.span == (expected_start, expected_start + 2)
+    assert occurrence.raw == "42"
+    assert numeric_value_is_grounded(0.42, occurrences)
+
+
+def test_typed_derived_numeric_occurrence_has_exact_phrase_span():
+    source_text = "The period is for 2 weeks."
+
+    occurrence = next(
+        item
+        for item in extract_typed_numeric_occurrences_from_text(source_text)
+        if item.value == 14
+    )
+    expected_start = source_text.index("2 weeks")
+
+    assert occurrence.span == (expected_start, expected_start + len("2 weeks"))
+    assert occurrence.raw == "2 weeks"
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "The applicable percentage is described elsewhere. The deadline is 42 Tage.",
+        "The applicable percentage is described elsewhere. Children age 42 qualify.",
+        "20 percent 42 days",
+    ),
+)
+def test_numeric_grounding_rejects_nonlocal_or_consumed_rate_context(source_text):
+    content = """format: rulespec/v1
+rules:
+  - name: demonstrated_rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2025-01-01'
+        formula: '0.42'
+"""
+
+    issues = find_ungrounded_numeric_issues(content, source_text=source_text)
+
+    assert any("0.42" in issue for issue in issues), issues
+
+
+def test_typed_numeric_occurrences_carry_pipe_table_percentage_column_context():
+    source_text = (
+        "Ratio | Applicable percentage\n| At least | Section 3201(b) |\n| 2.5 | 4.9 |"
+    )
+
+    occurrences = extract_typed_numeric_occurrences_from_text(source_text)
+    percentage = next(
+        item
+        for item in occurrences
+        if math.isclose(item.value, 4.9, rel_tol=0, abs_tol=1e-9)
+    )
+    ratio_bound = next(
+        item
+        for item in occurrences
+        if math.isclose(item.value, 2.5, rel_tol=0, abs_tol=1e-9)
+    )
+
+    assert percentage.has_rate_context
+    assert not ratio_bound.has_rate_context
+
+
 def test_rulespec_grounding_accepts_dotted_fractional_percentage_rates():
     content = """format: rulespec/v1
 module:
@@ -8376,20 +8539,35 @@ rules:
 {values}
 """
     source_text = " ".join(f"The value is {value}." for value in range(100, 200))
-    calls = 0
-    original = validator_pipeline.extract_numbers_from_text
+    tokenizer_calls = 0
+    cleaner_calls = 0
+    original_tokenizer = validator_pipeline._tokenize_numeric_occurrences_from_text
+    original_cleaner = validator_pipeline._clean_source_text_for_numeric_extraction
 
-    def counting_extract_numbers(text):
-        nonlocal calls
-        calls += 1
-        return original(text)
+    def counting_tokenize(text, *, profile="legacy"):
+        nonlocal tokenizer_calls
+        tokenizer_calls += 1
+        return original_tokenizer(text, profile=profile)
+
+    def counting_cleaner(text):
+        nonlocal cleaner_calls
+        cleaner_calls += 1
+        return original_cleaner(text)
 
     monkeypatch.setattr(
-        validator_pipeline, "extract_numbers_from_text", counting_extract_numbers
+        validator_pipeline,
+        "_tokenize_numeric_occurrences_from_text",
+        counting_tokenize,
+    )
+    monkeypatch.setattr(
+        validator_pipeline,
+        "_clean_source_text_for_numeric_extraction",
+        counting_cleaner,
     )
 
     assert find_ungrounded_numeric_issues(content, source_text=source_text) == []
-    assert calls == 1
+    assert tokenizer_calls == 1
+    assert cleaner_calls == 1
 
 
 def test_rulespec_grounding_rejects_half_up_exemption_for_helper_value_table():
@@ -8843,9 +9021,9 @@ rules:
 """
 
     source_text = (
-        "The credit percentage and the phaseout percentage are determined as "
-        "follows. The no-children row appears later in the table at 7.65. "
-        "The one-child row is 34."
+        "Qualifying children | Applicable percentage\n"
+        "| None | 7.65 |\n"
+        "| One | 34 |"
     )
 
     assert find_ungrounded_numeric_issues(content, source_text=source_text) == []

@@ -95,6 +95,7 @@ from .policyengine_runtime import (
 )
 from .pricing import estimate_usage_cost_usd
 from .validator_pipeline import (
+    NumericOccurrence,
     ValidationResult,
     ValidatorPipeline,
     _authoritative_corpus_scope,
@@ -108,6 +109,7 @@ from .validator_pipeline import (
     extract_named_scalar_occurrences,
     extract_numeric_grounding_source_text,
     extract_numeric_occurrences_from_text,
+    extract_typed_numeric_inventory_occurrences_from_text,
     find_deferred_output_issues,
     find_ungrounded_numeric_issues,
     find_unused_import_issues,
@@ -279,7 +281,7 @@ def _is_rulespec_local_identifier(value: str | None) -> bool:
 
 def _matching_numeric_occurrence_count(
     occurrences: Counter[float],
-    value: float,
+    source_occurrences: Sequence[NumericOccurrence],
 ) -> int:
     """Return whether a named scalar covers the source value.
 
@@ -288,7 +290,7 @@ def _matching_numeric_occurrence_count(
     """
     return int(
         any(
-            numeric_value_is_grounded(occurrence_value, {value})
+            numeric_value_is_grounded(occurrence_value, source_occurrences)
             for occurrence_value in occurrences
         )
     )
@@ -6460,11 +6462,22 @@ def _evaluate_artifact_in_scope(
         numeric_validation_source_text or "",
         suppress_source_backed_half_up_increment=bool(half_up_helper_count),
     )
-    source_numeric_occurrences = Counter(
-        extract_numeric_occurrences_from_text(counted_numeric_source_text)
+    typed_source_numeric_occurrences = (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            counted_numeric_source_text
+        )
     )
+    source_numeric_occurrences = Counter(
+        occurrence.value for occurrence in typed_source_numeric_occurrences
+    )
+    source_occurrences_by_value: dict[float, list[NumericOccurrence]] = defaultdict(
+        list
+    )
+    for occurrence in typed_source_numeric_occurrences:
+        source_occurrences_by_value[occurrence.value].append(occurrence)
     if _is_empty_nonassertable_artifact(content):
         source_numeric_occurrences = Counter()
+        source_occurrences_by_value = defaultdict(list)
     named_scalar_occurrences = Counter(
         item.value for item in extract_named_scalar_occurrences(content)
     )
@@ -6507,7 +6520,10 @@ def _evaluate_artifact_in_scope(
     for value, expected_count in sorted(source_numeric_occurrences.items()):
         covered_count = (
             expected_count
-            if _matching_numeric_occurrence_count(named_scalar_occurrences, value)
+            if _matching_numeric_occurrence_count(
+                named_scalar_occurrences,
+                source_occurrences_by_value[value],
+            )
             else 0
         )
         covered_count = max(

@@ -237,6 +237,7 @@ from .harness.validator_pipeline import (
     _rulespec_target_is_descendant_of,
     extract_embedded_source_text,
     extract_numbers_from_text,
+    extract_typed_numeric_occurrences_from_text,
     find_interval_table_reencoding_candidates,
     find_structured_scale_parameter_issue_records,
     find_tax_filing_status_local_input_issues,
@@ -23097,9 +23098,10 @@ def _try_repair_generated_source_child_corpus_paths_for_apply(
     )
     if not child_source_text:
         return []
-    source_numbers = extract_numbers_from_text(child_source_text)
+    source_occurrences = extract_typed_numeric_occurrences_from_text(child_source_text)
     if not all(
-        numeric_value_is_grounded(float(value), source_numbers) for value in literals
+        numeric_value_is_grounded(float(value), source_occurrences)
+        for value in literals
     ):
         return []
 
@@ -23786,7 +23788,7 @@ def _grounded_formula_literal_for_scalar_expression(
     value = _simple_fraction_expression_value(expression)
     if value is None:
         return None
-    source_numbers: set[float] = set()
+    source_occurrences = []
     proof = rule.get("metadata", {}).get("proof")
     atoms = proof.get("atoms") if isinstance(proof, dict) else None
     if isinstance(atoms, list):
@@ -23798,8 +23800,12 @@ def _grounded_formula_literal_for_scalar_expression(
                 continue
             excerpt = source.get("excerpt")
             if isinstance(excerpt, str):
-                source_numbers.update(extract_numbers_from_text(excerpt))
-    if not source_numbers or not numeric_value_is_grounded(value, source_numbers):
+                source_occurrences.extend(
+                    extract_typed_numeric_occurrences_from_text(excerpt)
+                )
+    if not source_occurrences or not numeric_value_is_grounded(
+        value, source_occurrences
+    ):
         return None
     return _format_grounded_scalar_formula_literal(value)
 
