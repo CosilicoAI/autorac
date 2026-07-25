@@ -1,0 +1,1 @@
+Persisted-row revalidation at eval-suite finalize, resume, and archive now skips advisory reviewers and compares only deterministic validator outputs, so suites with live generalist reviewers can finalize instead of failing on nondeterministic review scores.
