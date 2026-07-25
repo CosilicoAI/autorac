@@ -16,6 +16,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -1700,6 +1701,14 @@ def _write_receipt(
     protected_identities: Sequence[_ProtectedRootIdentity],
     publication_check: Callable[[], None],
 ) -> None:
+    """Atomically publish a receipt into a trusted external output directory.
+
+    The output host is trusted to honor descriptor-relative replacement and
+    unlink operations.  Cleanup after a rejected publication is best effort:
+    the original verification error remains authoritative, and an unlink
+    failure emits a stderr warning because the rejected receipt may remain.
+    """
+
     raw = canonical_receipt_bytes(receipt)
     parent_descriptor: int | None = None
     temporary_name: str | None = None
@@ -1766,13 +1775,21 @@ def _write_receipt(
             if temporary_name is not None:
                 try:
                     os.unlink(temporary_name, dir_fd=parent_descriptor)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    print(
+                        "notary-verify: warning: failed to remove rejected "
+                        f"temporary receipt {path.parent / temporary_name}: {exc!r}",
+                        file=sys.stderr,
+                    )
             if published and not complete:
                 try:
                     os.unlink(path.name, dir_fd=parent_descriptor)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    print(
+                        "notary-verify: warning: failed to remove rejected "
+                        f"published receipt {path}: {exc!r}",
+                        file=sys.stderr,
+                    )
             os.close(parent_descriptor)
 
 

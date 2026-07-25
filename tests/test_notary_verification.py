@@ -2619,6 +2619,49 @@ def test_late_same_content_checkout_swap_cannot_receive_receipt(
     assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
 
 
+def test_failed_post_publication_cleanup_warns_and_preserves_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    receipt_out = tmp_path / "rejected-notary-receipt.json"
+    receipt = attach_receipt_sha256({"schema_id": "cleanup-warning-test"})
+    checks = 0
+
+    def fail_second_publication_check() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise NotaryVerificationError("injected late verification failure")
+
+    original_unlink = notary_module.os.unlink
+
+    def fail_published_unlink(path, *args, **kwargs):
+        if path == receipt_out.name and kwargs.get("dir_fd") is not None:
+            raise OSError("injected rejected-receipt cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(notary_module.os, "unlink", fail_published_unlink)
+
+    with pytest.raises(
+        NotaryVerificationError,
+        match="injected late verification failure",
+    ):
+        notary_module._write_receipt(
+            receipt_out,
+            receipt,
+            protected_identities=(),
+            publication_check=fail_second_publication_check,
+        )
+
+    assert checks == 2
+    assert receipt_out.read_bytes() == canonical_receipt_bytes(receipt)
+    assert (
+        "notary-verify: warning: failed to remove rejected published receipt"
+        in capsys.readouterr().err
+    )
+
+
 def test_same_content_checkout_replacement_is_rejected_before_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
