@@ -1160,14 +1160,17 @@ def main():
     target_group.add_argument(
         "--base-commit",
         help=(
-            "Full ancestor commit SHA used to derive the complete base..HEAD "
-            "verification target set"
+            "Full protected-base ancestor SHA resolved and bound by the trusted "
+            "workflow, used to derive the complete base..HEAD target set"
         ),
     )
     target_group.add_argument(
         "--whole-repo",
         action="store_true",
-        help="Verify every atomic RuleSpec module in the policy checkout",
+        help=(
+            "Backfill every atomic RuleSpec module for epoch coverage of HEAD; "
+            "never authorizes a diff"
+        ),
     )
     notary_parser.add_argument(
         "--receipt-out",

@@ -83,10 +83,17 @@ _PUBLIC_GATES = (
 _RESTRICTED_PINNED_GATES = ("policyengine-oracle",)
 _AUTHORITY_SURFACE_PATHS = frozenset(
     {
-        ".gitattributes",
         ".gitmodules",
         ".github/CODEOWNERS",
         "CODEOWNERS",
+        "docs/CODEOWNERS",
+        str(VALIDATION_WAIVER_SET_PATH),
+    }
+)
+_WHOLE_REPO_BOUND_AUTHORITY_PATHS = frozenset(
+    {
+        ".axiom/toolchain.toml",
+        POLICYENGINE_RUNTIME_PIN_PATH.as_posix(),
         str(VALIDATION_WAIVER_SET_PATH),
     }
 )
@@ -1190,8 +1197,10 @@ def _authority_surface_change_reason(
     relative_text = relative.as_posix()
     if relative.parts and relative.parts[0] == ".axiom":
         return "protected verifier, trust-root, or repository configuration"
-    if relative.parts[:2] == (".github", "workflows"):
-        return "protected workflow configuration"
+    if relative.parts and relative.parts[0] == ".github":
+        return "protected GitHub workflow or repository configuration"
+    if relative.name == ".gitattributes":
+        return "protected per-directory Git attributes"
     if relative_text in _AUTHORITY_SURFACE_PATHS:
         return "protected repository or waiver-policy configuration"
     for entry in (base_entry, head_entry):
@@ -1261,6 +1270,11 @@ def _verified_base_identity(
         raise NotaryVerificationError(
             "--base-commit must be a full lowercase SHA for this repository"
         )
+    if base_commit == policy_git.commit:
+        raise NotaryVerificationError(
+            "Diff verification refuses --base-commit equal to HEAD; "
+            "use --whole-repo for epoch-coverage backfill"
+        )
     try:
         tree = _verified_commit_tree(policy_git.root, base_commit)
     except NotaryVerificationError as exc:
@@ -1287,7 +1301,25 @@ def _verified_base_identity(
 def _whole_repo_target_set(
     policy_git: _CleanGitIdentity,
 ) -> _NotaryTargetSet:
+    """Derive backfill-only targets after a fail-closed whole-tree preflight."""
+
     checkout = policy_git.root
+    entries = _git_tree_entries(policy_git)
+    for entry in entries:
+        authority_reason = _authority_surface_change_reason(
+            entry.relative,
+            base_entry=None,
+            head_entry=entry,
+        )
+        is_bound_verification_input = (
+            entry.mode == "100644"
+            and entry.relative.as_posix() in _WHOLE_REPO_BOUND_AUTHORITY_PATHS
+        )
+        if authority_reason is not None and not is_bound_verification_input:
+            raise NotaryVerificationError(
+                "Whole-repository verification refuses authority-surface tree "
+                f"entry {entry.relative.as_posix()}: {authority_reason}"
+            )
     try:
         modules = atomic_rulespec_module_paths(checkout)
     except ValueError as exc:
@@ -1298,7 +1330,7 @@ def _whole_repo_target_set(
         )
     files: list[_NotaryTargetFile] = []
     verification_targets: set[PurePosixPath] = set()
-    for entry in _git_tree_entries(policy_git):
+    for entry in entries:
         if not _is_protected_rulespec_relative(entry.relative):
             continue
         if entry.mode != "100644":
@@ -1969,7 +2001,16 @@ def run_notary_verification(
     allow_reduced: bool = False,
     now: datetime | None = None,
 ) -> NotaryVerificationResult:
-    """Run the strict profile and emit one unsigned, content-addressed receipt."""
+    """Run the strict profile and emit one unsigned, content-addressed receipt.
+
+    In diff mode, the trusted workflow must resolve the protected branch and
+    bind its full commit SHA as ``base_commit``.  Treating caller input as the
+    protected base would move a trust decision outside this verifier.
+
+    ``whole_repo`` is only a backfill instrument for epoch coverage of the
+    exact subject tree.  Its receipt has an explicit null ``base_commit`` and
+    ``targets.mode == "whole-repo"`` and must never authorize a diff.
+    """
 
     timestamp = _utc_timestamp(now)
     waiver_date = datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00").date()

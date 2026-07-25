@@ -1091,12 +1091,97 @@ def test_diff_mode_hash_checks_intermediate_ancestry_commits(
     assert not receipt_out.exists()
 
 
+def test_diff_mode_rejects_base_commit_equal_to_head_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    head_commit = _git(
+        fixture.policy_root,
+        "rev-parse",
+        "HEAD",
+    ).stdout.strip()
+    receipt_out = tmp_path / "empty-diff.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("an empty diff must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(NotaryVerificationError, match="equal to HEAD"):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=head_commit,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        Path("CODEOWNERS"),
+        Path(".github/CODEOWNERS"),
+        Path("docs/CODEOWNERS"),
+        Path(".gitattributes"),
+        Path("docs/.gitattributes"),
+        Path(".gitmodules"),
+        Path(".github/workflows/notary.yml"),
+        Path(".github/actions/notary/action.yml"),
+        Path(".github/scripts/notary.py"),
+    ],
+)
+def test_authority_surface_matcher_rejects_recognized_paths(relative: Path):
+    assert (
+        notary_module._authority_surface_change_reason(
+            relative,
+            base_entry=None,
+            head_entry=None,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        Path(".gitignore"),
+        Path("docs/.gitignore"),
+        Path("docs/notes/OWNERS.md"),
+        Path("docs/notes/CODEOWNERS"),
+        Path("nested/.gitmodules"),
+        Path("docs/notary-notes.md"),
+    ],
+)
+def test_authority_surface_matcher_allows_non_authority_paths(relative: Path):
+    assert (
+        notary_module._authority_surface_change_reason(
+            relative,
+            base_entry=None,
+            head_entry=None,
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "relative",
     [
         Path(".axiom/toolchain.toml"),
         Path(".axiom/repository-structure.yaml"),
         Path(".github/workflows/notary.yml"),
+        Path(".github/actions/notary/action.yml"),
+        Path(".github/scripts/notary.py"),
+        Path("docs/CODEOWNERS"),
+        Path("docs/config/.gitattributes"),
         Path("known-validation-gaps.yaml"),
     ],
 )
@@ -1138,6 +1223,46 @@ def test_diff_mode_rejects_authority_surface_changes_before_validation(
         )
 
     assert not receipt_out.exists()
+
+
+def test_diff_mode_records_non_authority_matcher_controls_as_out_of_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    allowed_paths = (
+        Path(".gitignore"),
+        Path("docs/.gitignore"),
+        Path("docs/notes/OWNERS.md"),
+        Path("docs/notes/CODEOWNERS"),
+        Path("nested/.gitmodules"),
+    )
+    for relative in allowed_paths:
+        target = fixture.policy_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# not an authority surface\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, "add non-authority matcher controls")
+
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        _forbidden_model_backend,
+    )
+    result = run_notary_verification(
+        policy_repo_path=fixture.policy_root,
+        corpus_path=fixture.corpus_root,
+        axiom_rules_engine_path=fixture.engine_root,
+        receipt_out=tmp_path / "non-authority-controls.json",
+        base_commit=fixture.base_commit,
+        allow_reduced=True,
+        now=_FIXED_NOW,
+    )
+
+    dispositions = {
+        item["path"]: item["disposition"]
+        for item in result.receipt["targets"]["files"]
+    }
+    for relative in allowed_paths:
+        assert dispositions[relative.as_posix()] == "out-of-scope"
 
 
 @pytest.mark.parametrize(
@@ -2691,6 +2816,62 @@ def test_whole_repo_target_set_is_explicit_and_strict(
             },
         ],
     }
+
+
+@pytest.mark.parametrize(
+    ("tree_entry_kind", "expected_reason"),
+    [
+        ("workflow", "protected GitHub"),
+        ("executable", "executable changes"),
+        ("symlink", "symlink changes"),
+    ],
+)
+def test_whole_repo_authority_preflight_rejects_anomalies_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tree_entry_kind: str,
+    expected_reason: str,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    if tree_entry_kind == "workflow":
+        target = fixture.policy_root / ".github/workflows/notary.yml"
+        target.parent.mkdir(parents=True)
+        target.write_text("name: untrusted\n", encoding="utf-8")
+    else:
+        target = fixture.policy_root / f"candidate-tools/{tree_entry_kind}"
+        target.parent.mkdir(parents=True)
+        if tree_entry_kind == "executable":
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o755)
+        else:
+            target.symlink_to("../untrusted-target")
+    _commit_all(fixture.policy_root, f"add whole-tree {tree_entry_kind} anomaly")
+    receipt_out = tmp_path / f"whole-repo-{tree_entry_kind}.json"
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("whole-tree anomalies must fail before validation")
+
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(
+        NotaryVerificationError,
+        match=expected_reason,
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=None,
+            whole_repo=True,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert not receipt_out.exists()
 
 
 def test_receipt_has_no_signing_fields(
