@@ -2848,6 +2848,108 @@ class TestCorpusSourceResolution:
 
 
 class TestClaudePromptEval:
+    def test_prompt_eval_uses_configurable_encoder_timeout_and_records_it(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ) as mock_run:
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert mock_run.call_args.kwargs["timeout"] == 1234
+        assert response.trace["timed_out"] is False
+        assert response.trace["timeout_reason"] is None
+        assert response.trace["timeout_seconds"] == 1234
+
+    def test_prompt_eval_returns_structured_timeout_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["claude"], timeout=1234),
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == "Claude eval timed out"
+        assert response.trace == {
+            "provider": "anthropic",
+            "backend": "claude-print",
+            "model": "opus",
+            "timed_out": True,
+            "timeout_reason": "wall",
+            "timeout_seconds": 1234,
+        }
+
+    @pytest.mark.parametrize(
+        "configured_value",
+        [None, "not-a-number", "0", "-1"],
+    )
+    def test_prompt_eval_uses_fair_default_for_invalid_encoder_timeout(
+        self,
+        tmp_path,
+        monkeypatch,
+        configured_value,
+    ):
+        if configured_value is None:
+            monkeypatch.delenv(
+                "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
+                raising=False,
+            )
+        else:
+            monkeypatch.setenv(
+                "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
+                configured_value,
+            )
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ) as mock_run:
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert mock_run.call_args.kwargs["timeout"] == 1800
+        assert response.trace["timeout_seconds"] == 1800
+
     def test_prompt_eval_disables_tools_and_scrubs_signing_capabilities(
         self,
         tmp_path,
@@ -4985,6 +5087,24 @@ def test_codex_prompt_timeouts_use_default_for_short_source(tmp_path):
     assert _codex_prompt_timeouts(workspace) == (600, 300)
 
 
+def test_claude_encoder_timeout_does_not_change_codex_timeouts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+    workspace = prepare_eval_workspace(
+        citation="us/statute/7/2012",
+        runner=parse_runner_spec("codex:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="short source",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "us"),
+        mode="cold",
+        extra_context_paths=[],
+    )
+
+    assert _codex_prompt_timeouts(workspace) == (600, 300)
+
+
 def test_codex_prompt_timeouts_use_env_for_short_source(tmp_path, monkeypatch):
     monkeypatch.setenv("AXIOM_ENCODE_CODEX_TIMEOUT_SECONDS", "90")
     monkeypatch.setenv("AXIOM_ENCODE_CODEX_IDLE_TIMEOUT_SECONDS", "30")
@@ -5474,6 +5594,71 @@ class TestEvaluateArtifact:
             assert "rulespec-us" in parts
             assert "us-ny" in parts
             assert parts != policy_repo.parts
+
+    def test_normalizes_ephemeral_validation_root_in_compile_and_ci_issues(
+        self, tmp_path
+    ):
+        policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+        generated = _generated_rulespec_file_path(
+            tmp_path / "out",
+            "statutes/1/a.yaml",
+        )
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        observed_paths: list[Path] = []
+
+        def fake_compile(_pipeline, path):
+            observed_paths.append(path)
+            issue = f"Axiom rules engine compile failed: failed to load `{path}`"
+            return ValidationResult(
+                "compile",
+                passed=False,
+                issues=[issue],
+                error=issue,
+                raw_output=issue,
+            )
+
+        def fake_ci(_pipeline, path):
+            observed_paths.append(path)
+            issue = f"Axiom rules engine compile failed: failed to load `{path}`"
+            return ValidationResult(
+                "ci",
+                passed=False,
+                issues=[issue],
+                error=issue,
+                raw_output=issue,
+            )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_rulespec_compile_check",
+                fake_compile,
+            ),
+            patch.object(ValidatorPipeline, "_run_rulespec_ci", fake_ci),
+        ):
+            corpus_release = _write_test_corpus_provision(tmp_path / "bound-release")
+            metrics_by_run = [
+                evaluate_artifact(
+                    local_corpus_release=corpus_release,
+                    rulespec_file=generated,
+                    policy_repo_root=policy_repo,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    source_text="No numeric values.",
+                    skip_reviewers=True,
+                )
+                for _ in range(2)
+            ]
+
+        stable_issue = (
+            "Axiom rules engine compile failed: failed to load "
+            "`<rulespec-validation-root>/rulespec-us/us/statutes/1/a.yaml`"
+        )
+        assert observed_paths[0] == observed_paths[1]
+        assert observed_paths[2] == observed_paths[3]
+        assert observed_paths[0] != observed_paths[2]
+        for metrics in metrics_by_run:
+            assert metrics.compile_issues == [stable_issue]
+            assert metrics.ci_issues == [stable_issue]
 
     def test_validation_overlay_preserves_country_monorepo_state_shape(self, tmp_path):
         monorepo = tmp_path / "repos" / "rulespec-us"
@@ -17451,6 +17636,34 @@ def test_persisted_revalidation_still_rejects_deterministic_drift(
     )
     persisted = _revalidation_metrics(**persisted_overrides)
     fresh = _revalidation_metrics(**reviewer_blank, **fresh_overrides)
+    with pytest.raises(ValueError, match="do not match fresh validation"):
+        _run_case_revalidation(persisted, fresh)
+
+
+@pytest.mark.parametrize("field_name", ["compile_issues", "ci_issues"])
+def test_persisted_revalidation_still_rejects_issue_text_drift(field_name):
+    """Location normalization must not remove issue lists from tamper checks."""
+    persisted = _revalidation_metrics(
+        **{
+            field_name: [
+                "failed to load "
+                "<rulespec-validation-root>/rulespec-uk/uk/statutes/1/a.yaml"
+            ]
+        }
+    )
+    fresh = _revalidation_metrics(
+        generalist_review_pass=None,
+        generalist_review_score=None,
+        generalist_review_issues=[],
+        generalist_review_prompt_sha256=None,
+        **{
+            field_name: [
+                "failed to load "
+                "<rulespec-validation-root>/rulespec-uk/uk/statutes/1/b.yaml"
+            ]
+        },
+    )
+
     with pytest.raises(ValueError, match="do not match fresh validation"):
         _run_case_revalidation(persisted, fresh)
 

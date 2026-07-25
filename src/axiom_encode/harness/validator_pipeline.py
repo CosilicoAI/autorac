@@ -122,6 +122,7 @@ _SENSITIVE_ENV_NAME_MARKERS = (
     "SECRET",
     "TOKEN",
 )
+_VALIDATION_STAGING_ROOT_PLACEHOLDER = "<rulespec-validation-root>"
 _AUTHORITATIVE_CORPUS_RELEASE: ContextVar[LocalCorpusRelease | None] = ContextVar(
     "axiom_authoritative_corpus_release",
     default=None,
@@ -20687,6 +20688,22 @@ class ValidationResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+def _normalize_validation_staging_text(
+    text: str,
+    staging_root: Path,
+) -> str:
+    """Replace one harness-owned staging prefix while preserving its suffix."""
+    normalized = text
+    root_variants = {str(staging_root), staging_root.as_posix()}
+    for root_text in sorted(root_variants, key=len, reverse=True):
+        normalized = re.sub(
+            rf"{re.escape(root_text)}(?=$|[\\/])",
+            _VALIDATION_STAGING_ROOT_PLACEHOLDER,
+            normalized,
+        )
+    return normalized
+
+
 @dataclass
 class OracleSubprocessResult:
     """Structured result from a local oracle subprocess."""
@@ -21165,9 +21182,15 @@ class ValidatorPipeline:
         source_metadata: dict[str, object] | None = None,
         source_citation_path: str | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
+        validation_staging_root: Path | None = None,
     ):
         self.policy_repo_path = Path(policy_repo_path)
         self.axiom_rules_path = Path(axiom_rules_path)
+        self.validation_staging_root = (
+            Path(validation_staging_root).resolve()
+            if validation_staging_root is not None
+            else None
+        )
         self.enable_oracles = enable_oracles
         self.oracle_validators = (
             ("policyengine",) if oracle_validators is None else oracle_validators
@@ -21258,6 +21281,29 @@ class ValidatorPipeline:
                 content=content,
                 metadata=metadata,
             )
+
+    def _normalize_validation_staging_result(
+        self,
+        result: ValidationResult,
+    ) -> ValidationResult:
+        """Remove only this validation's ephemeral root from recorded text."""
+        if self.validation_staging_root is None:
+            return result
+        result.issues = [
+            _normalize_validation_staging_text(issue, self.validation_staging_root)
+            for issue in result.issues
+        ]
+        if result.error is not None:
+            result.error = _normalize_validation_staging_text(
+                result.error,
+                self.validation_staging_root,
+            )
+        if result.raw_output is not None:
+            result.raw_output = _normalize_validation_staging_text(
+                result.raw_output,
+                self.validation_staging_root,
+            )
+        return result
 
     def _pythonpath_env(self) -> dict[str, str]:
         """Build an env that prefers the configured Axiom rules engine checkout."""
@@ -21744,14 +21790,15 @@ class ValidatorPipeline:
         """Tier 0: Compile check against the Axiom rules engine RuleSpec."""
         yaml_issue = self._rulespec_yaml_preflight_issue(rulespec_file)
         if yaml_issue:
-            return ValidationResult(
+            result = ValidationResult(
                 validator_name="compile",
                 passed=False,
                 issues=[yaml_issue],
                 error=yaml_issue,
             )
-
-        return self._run_rulespec_compile_check(rulespec_file)
+        else:
+            result = self._run_rulespec_compile_check(rulespec_file)
+        return self._normalize_validation_staging_result(result)
 
     def _coerce_rulespec_period(self, value: Any) -> dict[str, Any]:
         """Coerce compact `.test.yaml` period shorthands to engine JSON."""
@@ -23096,21 +23143,24 @@ class ValidatorPipeline:
                 )
             except (OSError, ValueError, UnsafeRulespecContextPath) as exc:
                 issue = f"RuleSpec validation target is not canonical: {exc}"
-                return ValidationResult(
+                result = ValidationResult(
                     validator_name="ci",
                     passed=False,
                     issues=[issue],
                     error=issue,
                 )
-            yaml_issue = self._rulespec_yaml_preflight_issue(canonical_file)
-            if yaml_issue:
-                return ValidationResult(
-                    validator_name="ci",
-                    passed=False,
-                    issues=[yaml_issue],
-                    error=yaml_issue,
-                )
-            return self._run_rulespec_ci(canonical_file)
+            else:
+                yaml_issue = self._rulespec_yaml_preflight_issue(canonical_file)
+                if yaml_issue:
+                    result = ValidationResult(
+                        validator_name="ci",
+                        passed=False,
+                        issues=[yaml_issue],
+                        error=yaml_issue,
+                    )
+                else:
+                    result = self._run_rulespec_ci(canonical_file)
+            return self._normalize_validation_staging_result(result)
 
     def _copy_validation_import_closure(
         self,

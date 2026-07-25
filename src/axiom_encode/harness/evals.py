@@ -234,6 +234,7 @@ _RULESPEC_OUTPUT_ROOT_BY_SOURCE_TOKEN = {
 }
 _UK_LEGISLATION_DOMAIN_TOKEN = "legislation.gov.uk"
 _UK_LEGISLATION_SECTION_TOKENS = {"article", "regulation", "section"}
+_CLAUDE_DEFAULT_TIMEOUT_SECONDS = 1800
 _CODEX_DEFAULT_TIMEOUT_SECONDS = 600
 _CODEX_DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 _CODEX_LONG_SOURCE_CHAR_THRESHOLD = 40_000
@@ -6353,6 +6354,12 @@ def _evaluate_artifact_in_scope(
         validation_policy_repo_root = _validation_policy_repo_root(
             validation_file, policy_repo_root
         )
+        source_policy_repo_root = Path(policy_repo_root).resolve()
+        validation_staging_root = (
+            validation_policy_repo_root.parent.parent
+            if validation_policy_repo_root != source_policy_repo_root
+            else None
+        )
         validation_dependency_roots = _validation_rulespec_dependency_roots(
             validation_file=validation_file,
             policy_repo_root=policy_repo_root,
@@ -6370,6 +6377,7 @@ def _evaluate_artifact_in_scope(
             local_corpus_release=local_corpus_release,
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=validation_dependency_roots,
+            validation_staging_root=validation_staging_root,
         )
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
@@ -12045,18 +12053,42 @@ def _run_claude_prompt_eval(
         prompt,
     ]
 
-    start = time.time()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        cwd=workspace.root,
-        timeout=600,
-        env=scrub_attestation_signing_keys(),
+    timeout_seconds = _positive_int_env(
+        "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
+        _CLAUDE_DEFAULT_TIMEOUT_SECONDS,
     )
+    trace: dict[str, object] = {
+        "provider": "anthropic",
+        "backend": "claude-print",
+        "model": runner.model,
+        "timed_out": False,
+        "timeout_reason": None,
+        "timeout_seconds": timeout_seconds,
+    }
+    start = time.time()
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=workspace.root,
+            timeout=timeout_seconds,
+            env=scrub_attestation_signing_keys(),
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = int((time.time() - start) * 1000)
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace={
+                **trace,
+                "timed_out": True,
+                "timeout_reason": "wall",
+            },
+            error="Claude eval timed out",
+        )
     duration_ms = int((time.time() - start) * 1000)
 
-    trace: dict = {}
     text = result.stdout + result.stderr
     tokens = None
     actual_cost = None
@@ -12064,12 +12096,7 @@ def _run_claude_prompt_eval(
 
     try:
         payload = json.loads(text)
-        trace = {
-            "provider": "anthropic",
-            "backend": "claude-print",
-            "model": runner.model,
-            "json_result": payload,
-        }
+        trace["json_result"] = payload
         usage = payload.get("usage", {}) or {}
         tokens = TokenUsage(
             input_tokens=int(usage.get("input_tokens", 0) or 0),
@@ -12082,12 +12109,7 @@ def _run_claude_prompt_eval(
         if payload.get("is_error"):
             error = text or "Claude eval returned an error"
     except json.JSONDecodeError:
-        trace = {
-            "provider": "anthropic",
-            "backend": "claude-print",
-            "model": runner.model,
-            "raw_output": result.stdout + result.stderr,
-        }
+        trace["raw_output"] = result.stdout + result.stderr
         if result.returncode != 0:
             error = (result.stdout + result.stderr).strip() or "Claude eval failed"
 
