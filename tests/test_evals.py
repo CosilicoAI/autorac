@@ -5086,6 +5086,53 @@ def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
     assert mock_prompt_eval.call_count == 2
 
 
+def test_exhausted_encoder_timeout_classification_survives_result_round_trip(
+    tmp_path,
+):
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path, "source states 451."
+    )
+    timed_out_responses = [
+        EvalPromptResponse(
+            text="",
+            duration_ms=1234000,
+            trace={
+                "timed_out": True,
+                "timeout_reason": "wall",
+                "timeout_seconds": 1234,
+            },
+            error="Claude eval timed out",
+        )
+        for _ in range(2)
+    ]
+
+    with patch(
+        "axiom_encode.harness.evals._run_prompt_eval",
+        side_effect=timed_out_responses,
+    ):
+        [result] = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["claude:opus"],
+            output_root=tmp_path / "out",
+            policy_path=policy_repo_root,
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+            mode="cold",
+        )
+
+    restored = _eval_result_from_payload(result.to_dict())
+    assert restored.success is False
+    assert restored.failure_kind == "timeout"
+    assert restored.timed_out is True
+    assert restored.timeout_stage == "encoder"
+    assert restored.timeout_reason == "wall"
+    assert restored.timeout_seconds == 1234
+    assert restored.timeout_attempts == 2
+    assert restored.metrics is None
+    assert restored.output_file == ""
+
+
 def test_codex_prompt_timeouts_use_default_for_short_source(tmp_path):
     workspace = prepare_eval_workspace(
         citation="us/statute/7/2012",

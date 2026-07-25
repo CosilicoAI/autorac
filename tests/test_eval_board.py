@@ -244,6 +244,12 @@ def _result(
     cost=None,
     metrics="default",
     eval_case_overrides=None,
+    failure_kind=None,
+    timed_out=False,
+    timeout_stage=None,
+    timeout_reason=None,
+    timeout_seconds=None,
+    timeout_attempts=0,
 ):
     if metrics == "default":
         metrics = _metrics()
@@ -264,6 +270,12 @@ def _result(
         "mode": "cold",
         "success": success,
         "error": error,
+        "failure_kind": failure_kind,
+        "timed_out": timed_out,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
         "duration_ms": duration_ms,
         "estimated_cost_usd": cost,
         "metrics": metrics,
@@ -472,6 +484,67 @@ def test_fold_two_single_runner_payloads(tmp_path):
     assert "ungrounded=2" in board.cells[(2, "terra")].detail
     assert board.cells[(1, "terra")].state == "pass"
     assert board.mixed_toolchain_sources == []
+
+
+def test_board_distinguishes_timeout_validation_failure_and_plain_error(tmp_path):
+    results = [
+        _result(
+            "fable",
+            CASE_IDENTITIES[0],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Claude eval timed out",
+            metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=3,
+        ),
+        _result(
+            "fable",
+            CASE_IDENTITIES[1],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Generated RuleSpec failed CI validation",
+            metrics=_metrics(ci_pass=False),
+            failure_kind="validation",
+        ),
+        _result(
+            "fable",
+            CASE_IDENTITIES[2],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Claude CLI failed",
+            metrics=None,
+            failure_kind="error",
+        ),
+    ]
+    path = _write_payload(
+        tmp_path,
+        "fable.json",
+        _payload(
+            [("fable", "claude", "claude-fable-5")],
+            results,
+        ),
+    )
+
+    board = fold_eval_board([path])
+    stats = board.runners[0]
+    assert board.cells[(1, "fable")].state == "timeout"
+    assert board.cells[(2, "fable")].state == "fail"
+    assert board.cells[(3, "fable")].state == "error"
+    assert stats.timeout_count == 1
+    assert stats.artifact_case_count == 1
+    assert stats.compile_pass_rate == 1.0
+    assert stats.ci_pass_rate == 0.0
+    assert stats.zero_ungrounded_rate == 1.0
+    assert "T = encoder/case timeout" in render_eval_board_markdown(board)
+    assert "T timeout" in render_eval_board_text(board)
 
 
 def test_gate_pass_requires_all_deterministic_checks():
