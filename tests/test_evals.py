@@ -12688,6 +12688,98 @@ cases:
         assert results == [source_result]
         assert mock_source.call_count == 2
 
+    def test_case_budget_stops_suite_retry_and_marks_terminal_timeout(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manifest = EvalSuiteManifest(
+            name="Case budget suite",
+            path=tmp_path / "suite.yaml",
+            runners=["openai:gpt-5.4"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        clock = [0.0]
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def exhaust_budget(**_kwargs):
+            clock[0] = 11.0
+            raise RuntimeError("stream disconnected")
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=exhaust_budget,
+        ) as mock_source:
+            [result] = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+            )
+
+        mock_source.assert_called_once()
+        assert result.failure_kind == "timeout"
+        assert result.timed_out is True
+        assert result.timeout_stage == "case_budget"
+        assert result.timeout_reason == "wall"
+        assert result.timeout_seconds == 10
+        assert result.timeout_attempts == 1
+        assert "case budget" in (result.error or "").lower()
+
+    def test_suite_retries_accumulate_timeout_attempts_in_durable_row(
+        self,
+        tmp_path,
+    ):
+        manifest = EvalSuiteManifest(
+            name="Timeout accumulation suite",
+            path=tmp_path / "suite.yaml",
+            runners=["claude:opus"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=[
+                subprocess.TimeoutExpired(["claude"], timeout=600)
+                for _ in range(3)
+            ],
+        ) as mock_source:
+            [result] = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+            )
+
+        assert mock_source.call_count == 3
+        assert result.failure_kind == "timeout"
+        assert result.timed_out is True
+        assert result.timeout_attempts == 3
+        assert result.timeout_seconds == 600
+
     def test_run_eval_suite_retries_error_results(self, tmp_path):
         manifest_file = tmp_path / "suite.yaml"
         manifest_file.write_text(
@@ -13484,10 +13576,12 @@ cases:
         monkeypatch,
     ):
         monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "2400")
 
         identity = _test_eval_suite_execution_identity()
 
         assert identity["schema"] == "axiom-encode/eval-execution-identity/v3"
+        assert identity["case_timeout_seconds"] == 2400
         assert identity["runner_timeouts"] == {
             "claude": {"wall_seconds": 1234},
         }
