@@ -1638,11 +1638,10 @@ Complete-source-unit mode is enabled for this request:
   never omit it silently. Put the structural branch in the deferred output
   path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`) and list
   exact missing RuleSpec targets under `blocked_by`.
-- Companion tests must cover every source-stated formula branch, boundary,
-  exception, and rounding rule. When a formula branch cannot be identified
-  from a numeric selector input, add an exact canonical source branch under
-  the executing case's `covers` list (for example,
-  `covers: [de/statute/estg/32a/1/2]`).
+- Companion tests must execute every source-stated formula branch, boundary,
+  exception, and rounding rule with assertions on the affected principal
+  output. Each branch needs distinct runtime evidence; descriptive test
+  metadata is not coverage evidence.
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 

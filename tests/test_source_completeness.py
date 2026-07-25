@@ -4,8 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from axiom_encode.harness import source_completeness as completeness_module
 from axiom_encode.harness.source_completeness import (
     analyze_complete_source_unit,
+    authoritative_numeric_recall_text,
+    collect_artifact_numeric_values,
     recognize_source_structure,
     source_states_explicit_computation,
 )
@@ -378,6 +381,42 @@ rules:
     )
 
 
+def test_trusted_requested_path_controls_authoritative_recall_body():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/other
+  summary: Der Freibetrag beträgt 259 Euro.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+    pipeline = ValidatorPipeline(
+        policy_repo_path=Path("/tmp/rulespec-de"),
+        axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+        local_corpus_release=None,
+        enable_oracles=False,
+        source_citation_path=CORPUS_CITATION_PATH,
+        require_complete_source_unit=True,
+    )
+
+    issues = pipeline._complete_source_unit_issues(
+        content,
+        validation_source_texts={
+            CORPUS_CITATION_PATH: "(1) Der Zuschlag beträgt 73 Euro.",
+            "de/statute/estg/other": "(1) Der Freibetrag beträgt 259 Euro.",
+        },
+        test_cases=[],
+    )
+
+    assert any("numeric value 73" in issue.lower() for issue in issues)
+
+
 def test_deferral_prose_and_targets_cannot_hide_authoritative_source_number():
     source = "(1) Der Freibetrag beträgt 259 Euro; der Zuschlag beträgt 73 Euro."
     content = """\
@@ -472,6 +511,92 @@ rules: []
 
 
 @pytest.mark.parametrize(
+    "reason",
+    [
+        "Absatz 6 hängt von Absatz 5 ab.",
+        "Satz 2 fehlt.",
+        "Nummer 1 wird benötigt.",
+        "Buchstabe a ist nicht codiert.",
+    ],
+)
+def test_deferral_cannot_use_bare_internal_structure_as_dependency(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: {reason}
+rules: []
+"""
+
+    result = _analyze(content, ABSATZ_6, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
+def test_deferral_cannot_use_another_output_in_same_unit_as_blocker():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: Absatz 6 benötigt die noch fehlende Tarifberechnung.
+      blocked_by:
+        - de:statutes/estg/32a#tariff_income_tax_amount
+rules: []
+"""
+
+    result = _analyze(content, ABSATZ_6, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
+def test_root_deferral_does_not_blanket_structured_source_unit():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a#whole_unit
+      reason: Requires an external assessment base.
+      blocked_by:
+        - de:statutes/estg/26#assessment_base
+rules: []
+"""
+
+    result = _analyze(content, "(1) Regel eins.\n(2) Regel zwei.", test_cases=[])
+
+    assert _has_issue(result, "(1)", "source branch")
+    assert _has_issue(result, "(2)", "source branch")
+
+
+def test_parent_deferral_does_not_blanket_nested_list_branches():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/1#paragraph_rule
+      reason: Requires an external assessment base.
+      blocked_by:
+        - de:statutes/estg/26#assessment_base
+rules: []
+"""
+    source = "(1) Es gelten:\n1. Zweig eins;\n2. Zweig zwei."
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "1.", "source branch")
+    assert _has_issue(result, "2.", "source branch")
+
+
+@pytest.mark.parametrize(
     "source",
     [
         "Der Betrag ist ein Drittel des Einkommens.",
@@ -484,10 +609,90 @@ def test_common_german_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Der Betrag ist das Dreifache des Einkommens.",
+        "The amount equals income plus supplement.",
+    ],
+)
+def test_additional_formula_language_is_computation(source: str):
+    assert source_states_explicit_computation(source)
+
+
 def test_scalar_amount_language_is_not_computation():
     assert not source_states_explicit_computation(
         "Der Freibetrag beträgt 259 Euro."
     )
+
+
+def test_scalar_year_span_is_not_computation():
+    assert not source_states_explicit_computation(
+        "Für den Zeitraum 2025/2026 beträgt der Freibetrag 259 Euro."
+    )
+
+
+def test_indented_absatz_markers_are_recognized():
+    branches = recognize_source_structure("  (1) Regel eins.\n\t(2) Regel zwei.")
+
+    assert {branch.path for branch in branches} >= {("1",), ("2",)}
+
+
+def test_numeric_recall_does_not_credit_rule_or_formula_identifier_digits():
+    source = "(1) Der Zuschlag beträgt 73 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: placeholder_73
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: missing_value_73
+    verification:
+      values: [73]
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "73", "numeric-recall")
+
+
+def test_imported_numeric_recall_only_credits_explicit_imported_scalar():
+    content = """\
+format: rulespec/v1
+imports:
+  - de:statutes/estg/99#needed_amount
+rules: []
+"""
+    imported = """\
+format: rulespec/v1
+rules:
+  - name: needed_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5
+  - name: unrelated_73_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 73
+"""
+
+    values = collect_artifact_numeric_values(
+        content,
+        extract_named_scalars=extract_named_scalar_occurrences,
+        imported_contents=(imported,),
+    )
+
+    assert values == (5.0,)
 
 
 def test_glued_satz_markers_are_paragraph_children_not_list_children():
@@ -548,6 +753,109 @@ def test_exact_released_estg_32a_structure_paths():
         path[:3] == ("6", "2", "c") and path[-1].startswith("satz-")
         for path in paths
     )
+
+
+def test_released_estg_32a_constants_without_tariff_output_fail():
+    values = extract_numeric_occurrences_from_text(
+        authoritative_numeric_recall_text(RELEASED_ESTG_32A_BODY)
+    )
+    rules = "\n".join(
+        f"""\
+  - name: released_constant_{index}
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: {value!r}"""
+        for index, value in enumerate(dict.fromkeys(values), start=1)
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Released constants only.
+rules:
+{rules}
+"""
+
+    result = _analyze(content, RELEASED_ESTG_32A_BODY, test_cases=[])
+
+    assert result.missing_source_numeric_occurrence_count == 0
+    assert _has_issue(result, "principal", "derived/relation")
+
+
+def test_released_estg_32a_omitted_absatz_5_and_6_are_visible():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: paragraph_one_snapshot
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+"""
+
+    result = _analyze(content, RELEASED_ESTG_32A_BODY, test_cases=[])
+
+    assert _has_issue(result, "(5)", "source branch")
+    assert _has_issue(result, "(6)", "source branch")
+
+
+def test_released_estg_32a_does_not_invent_boundary_from_omission_line():
+    branches = recognize_source_structure(RELEASED_ESTG_32A_BODY)
+    formula_branches = completeness_module._source_formula_branches(
+        RELEASED_ESTG_32A_BODY,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    obligations = completeness_module._source_boundary_obligations(
+        branches,
+        narrative_formula_branches=formula_branches,
+        extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+    )
+
+    assert not any(branch.path == () for branch, _value in obligations)
+    assert not any(value == 34 for _branch, value in obligations)
+    assert any(value == 12348 for _branch, value in obligations)
+
+
+def test_released_estg_32a_feminine_rounding_is_computation():
+    assert source_states_explicit_computation(
+        "Die Größe x ist das auf volle Euro abgerundete Einkommen."
+    )
+
+
+def test_letter_formula_boundaries_are_inventoried():
+    source = """\
+(1) Die Berechnung umfasst:
+1. folgende Zweige:
+a) Bis 73 Euro: Einkommen * 2;
+b) Von 74 Euro an: Einkommen * 3.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        branches,
+        narrative_formula_branches=formula_branches,
+        extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+    )
+
+    assert any(branch.path[-1] == "a" and value == 73 for branch, value in obligations)
+    assert any(branch.path[-1] == "b" and value == 74 for branch, value in obligations)
 
 
 def test_nested_editorial_omission_does_not_drop_operative_paragraph():
@@ -1111,3 +1419,228 @@ def test_nested_whitespace_rounding_operand_accepts_fractional_input():
     )
 
     assert not _has_issue(result, "rounding", "test")
+
+
+MULTI_PARAGRAPH_FORMULA_SOURCE = """\
+(1) Der erste Betrag ist Einkommen * 2.
+(2) Der zweite Betrag ist Einkommen * 3.
+"""
+
+MULTI_PARAGRAPH_FORMULA_CONTENT = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: first_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: second_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: combined_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * first_multiplier + income * second_multiplier
+"""
+
+
+def _combined_formula_test(name: str, income: int) -> dict[str, object]:
+    return {
+        "name": name,
+        "period": "2026",
+        "input": {"income": income},
+        "output": {"de:statutes/estg/32a#combined_amount": income * 5},
+    }
+
+
+def test_each_paragraph_formula_requires_distinct_executed_case():
+    one_case = _combined_formula_test("one execution", 10)
+    one_case["covers"] = [
+        "de/statute/estg/32a(1)",
+        "de/statute/estg/32a(2)",
+    ]
+
+    result = _analyze(
+        MULTI_PARAGRAPH_FORMULA_CONTENT,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[one_case],
+    )
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_distinct_cases_cover_distinct_paragraph_formulas():
+    result = _analyze(
+        MULTI_PARAGRAPH_FORMULA_CONTENT,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[
+            _combined_formula_test("first execution", 10),
+            _combined_formula_test("second execution", 20),
+        ],
+    )
+
+    assert not _has_issue(result, "formula branch")
+
+
+def test_numbered_prose_formulas_require_distinct_executed_cases():
+    source = """\
+(1) Es gelten folgende Berechnungen:
+1. Der erste Betrag wird als Einkommen * 2 berechnet;
+2. Der zweite Betrag wird als Einkommen * 3 berechnet.
+"""
+    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+        "de/statute/estg/32a(2)",
+        "de/statute/estg/32a(1)(2)",
+    ).replace(
+        "de/statute/estg/32a(1); de/statute/estg/32a(1)(2)",
+        "de/statute/estg/32a(1)(1); de/statute/estg/32a(1)(2)",
+    )
+
+    result = _analyze(
+        content,
+        source,
+        test_cases=[_combined_formula_test("one execution", 10)],
+    )
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+@pytest.mark.parametrize(
+    "exception_text",
+    [
+        "Die Regel gilt nicht, wenn eine Befreiung vorliegt.",
+        "Die Regel findet keine Anwendung, wenn eine Befreiung vorliegt.",
+        "Die Regel gilt, soweit nicht eine Befreiung vorliegt.",
+    ],
+)
+def test_common_german_exceptions_require_paired_cases(exception_text: str):
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet. " + exception_text
+    )
+    one_sided_tests = [
+        case
+        for case in COMPLETE_COMPANION_TESTS
+        if case["name"] != "exception applies"
+    ]
+
+    result = _analyze(
+        COMPANION_COVERAGE_CONTENT,
+        source,
+        test_cases=one_sided_tests,
+    )
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_glued_german_satz_exception_requires_paired_cases():
+    source = """\
+(6) 1Der Betrag wird aus dem Einkommen berechnet.2Voraussetzung für die Anwendung ist, dass die Person nicht befreit ist.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(6) Satz 1; de/statute/estg/32a(6) Satz 2
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if exception_applies:
+            0
+          else:
+            income
+"""
+    test_cases = [
+        {
+            "name": "ordinary case",
+            "period": "2026",
+            "input": {"income": 10, "exception_applies": False},
+            "output": {"de:statutes/estg/32a#amount": 10},
+        }
+    ]
+
+    result = _analyze(content, source, test_cases=test_cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_rounding_fractional_evidence_is_bound_to_affected_branch():
+    source = """\
+(1) Der erste Betrag ist Einkommen * 2 und auf volle Euro abzurunden.
+(2) Der zweite Betrag ist Einkommen * 3 und auf volle Euro abzurunden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: first_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: second_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: first_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: floor(income * first_multiplier)
+  - name: second_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: floor(income * second_multiplier)
+"""
+    tests = [
+        {
+            "name": "first fractional execution",
+            "period": "2026",
+            "input": {"income": 10.25},
+            "output": {"de:statutes/estg/32a#first_amount": 20},
+        },
+        {
+            "name": "another first fractional execution",
+            "period": "2026",
+            "input": {"income": 11.25},
+            "output": {"de:statutes/estg/32a#first_amount": 22},
+        },
+        {
+            "name": "second integer execution",
+            "period": "2026",
+            "input": {"income": 12},
+            "output": {"de:statutes/estg/32a#second_amount": 36},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=tests)
+
+    assert _has_issue(result, "rounding", "fractional")

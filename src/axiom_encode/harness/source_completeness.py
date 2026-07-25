@@ -46,7 +46,7 @@ class CompleteSourceUnitAnalysis:
 
 
 _PARAGRAPH_MARKER = re.compile(
-    r"(?m)^(?P<marker>\((?P<label>\d+[a-z]?|[a-z])\))(?=\s|bis\b)",
+    r"(?m)^[ \t]*(?P<marker>\((?P<label>\d+[a-z]?|[a-z])\))(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _NUMBER_MARKER = re.compile(
@@ -75,14 +75,15 @@ _EDITORIAL_OMISSION_ONLY = re.compile(
     flags=re.IGNORECASE,
 )
 _ARITHMETIC_EXPRESSION = re.compile(
-    r"(?:\d|[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß]*)"
+    r"(?:\d+(?:[.,]\d+)?|[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß]*)"
     r"[ \t]*(?:[+*/=×·•∗∙]|(?<!\w)[−–-](?!\w))[ \t]*"
-    r"(?:\d|[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß]*)"
+    r"(?:\d+(?:[.,]\d+)?|[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß]*)"
 )
 _COMPUTATION_LANGUAGE = re.compile(
     r"\b(?:"
     r"bemisst\s+sich\s+nach|berechn(?:et|en|ung)|ergibt\s+sich|"
-    r"zweifache|hälfte|zehntausendstel|übersteigenden\s+teils|"
+    r"(?:zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)fache|"
+    r"hälfte|zehntausendstel|übersteigenden\s+teils|"
     r"(?:ein(?:e[nsrm]?)?\s+)?(?:drittel|viertel|fünftel|sechstel|"
     r"siebtel|achtel|neuntel|zehntel)\s+(?:des|der|von)|"
     r"summe\s+(?:aus|der|von)|unterschied|differenz|"
@@ -93,24 +94,25 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
     r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
-    r"percentage\s+of|in\s+excess\s+of"
+    r"percentage\s+of|in\s+excess\s+of|"
+    r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
     flags=re.IGNORECASE,
 )
 _ROUNDING_LANGUAGE = re.compile(
     r"\b(?:"
-    r"abgerundet(?:en|er|es)?|abzurunden|aufgerundet(?:en|er|es)?|"
+    r"abgerundet(?:e|en|er|es)?|abzurunden|aufgerundet(?:e|en|er|es)?|"
     r"aufzurunden|kaufmännisch(?:\s+zu)?\s+runden|"
     r"round(?:ed|ing)?(?:\s+(?:down|up|to\s+the\s+nearest))?"
     r")\b",
     flags=re.IGNORECASE,
 )
 _DOWN_ROUNDING_LANGUAGE = re.compile(
-    r"\b(?:abgerundet(?:en|er|es)?|abzurunden|round(?:ed|ing)?\s+down)\b",
+    r"\b(?:abgerundet(?:e|en|er|es)?|abzurunden|round(?:ed|ing)?\s+down)\b",
     flags=re.IGNORECASE,
 )
 _UP_ROUNDING_LANGUAGE = re.compile(
-    r"\b(?:aufgerundet(?:en|er|es)?|aufzurunden|round(?:ed|ing)?\s+up)\b",
+    r"\b(?:aufgerundet(?:e|en|er|es)?|aufzurunden|round(?:ed|ing)?\s+up)\b",
     flags=re.IGNORECASE,
 )
 _NEAREST_ROUNDING_LANGUAGE = re.compile(
@@ -121,7 +123,9 @@ _EXCEPTION_LANGUAGE = re.compile(
     r"\b(?:"
     r"except(?:ion)?|unless|subject\s+to|shall\s+not\s+apply|"
     r"does\s+not\s+apply|notwithstanding|vorbehaltlich|ausnahme|"
-    r"es\s+sei\s+denn|voraussetzung[^.;]{0,160}\bnicht\b"
+    r"es\s+sei\s+denn|gilt\s+nicht(?:\s*,?\s*wenn)?|"
+    r"findet\s+keine\s+anwendung|soweit\s+nicht|"
+    r"(?:[1-9]\d?)?voraussetzung[^.;]{0,160}\bnicht\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -175,10 +179,6 @@ _ENGLISH_LEGAL_CITATION = re.compile(
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:Absatz|Abs\.|Satz|Sätze|Nummer|Nr\.|Buchstabe|Buchst\.)"
     r"\s*\d*[a-z]?\b",
-    flags=re.IGNORECASE,
-)
-_DECIMAL_PERCENT_IDENTIFIER = re.compile(
-    r"(?<!\d)(?P<integer>\d{1,3})_(?P<fraction>\d{1,4})_percent\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -300,10 +300,21 @@ def source_states_explicit_computation(source_text: str) -> bool:
     """Return whether text states a computation rather than only a scalar."""
 
     return bool(
-        _ARITHMETIC_EXPRESSION.search(source_text)
+        _has_substantive_arithmetic_expression(source_text)
         or _COMPUTATION_LANGUAGE.search(source_text)
         or _ROUNDING_LANGUAGE.search(source_text)
     )
+
+
+def _has_substantive_arithmetic_expression(source_text: str) -> bool:
+    """Ignore slash-separated year spans while recognizing actual arithmetic."""
+
+    for match in _ARITHMETIC_EXPRESSION.finditer(source_text):
+        expression = re.sub(r"\s+", "", match.group(0))
+        if re.fullmatch(r"(?:19|20)\d{2}/(?:19|20)\d{2}", expression):
+            continue
+        return True
+    return False
 
 
 def analyze_complete_source_unit(
@@ -676,6 +687,7 @@ def _deferred_coverage(
             continue
         reason = str(record.get("reason") or "").strip()
         blocked_by = record.get("blocked_by")
+        normalized_base_target = base_target.lower()
         exact_blockers = (
             isinstance(blocked_by, list)
             and bool(blocked_by)
@@ -688,12 +700,18 @@ def _deferred_coverage(
                     flags=re.IGNORECASE,
                 )
                 and item.strip().lower() != output.lower()
+                and not (
+                    item.strip().lower().split("#", 1)[0]
+                    == normalized_base_target
+                    or item.strip().lower().split("#", 1)[0].startswith(
+                        f"{normalized_base_target}/"
+                    )
+                )
                 for item in blocked_by
             )
         )
         reason_identifies_dependency = _reason_names_external_dependency(
             reason,
-            deferred_path=path,
             corpus_citation_path=corpus_citation_path,
         )
         precise = (
@@ -718,7 +736,6 @@ def _deferred_coverage(
 def _reason_names_external_dependency(
     reason: str,
     *,
-    deferred_path: tuple[str, ...],
     corpus_citation_path: str,
 ) -> bool:
     if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
@@ -727,12 +744,18 @@ def _reason_names_external_dependency(
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
         dependency = match.group(0).strip()
         normalized = dependency.lower()
-        if paragraph_match := _ABSATZ_REFERENCE.fullmatch(dependency):
-            if (
-                deferred_path
-                and paragraph_match.group("label").lower() == deferred_path[0]
-            ):
-                continue
+        if any(
+            pattern.fullmatch(dependency)
+            for pattern in (
+                _ABSATZ_REFERENCE,
+                _SATZ_REFERENCE,
+                _NUMMER_REFERENCE,
+                _BUCHSTABE_REFERENCE,
+            )
+        ):
+            # A bare structural reference names another part of this same
+            # authoritative unit, not a missing external dependency.
+            continue
         if section_match := re.fullmatch(
             r"§{1,2}\s*(\d+[a-z]?)",
             dependency,
@@ -775,9 +798,7 @@ def _path_covered(
     encoded_paths: set[tuple[str, ...]],
     deferred_paths: set[tuple[str, ...]],
 ) -> bool:
-    if path in encoded_paths:
-        return True
-    return any(path[: len(deferred)] == deferred for deferred in deferred_paths)
+    return path in encoded_paths or path in deferred_paths
 
 
 def _branch_citation(
@@ -826,122 +847,44 @@ def collect_artifact_numeric_values(
     content: str,
     *,
     extract_named_scalars: NamedScalarExtractor,
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
     imported_contents: Sequence[str] = (),
     additional_values: Iterable[float] = (),
 ) -> tuple[float, ...]:
     """Collect numeric representations credited by strict recall accounting."""
 
     values = [float(value) for value in additional_values]
-    for artifact_content in (content, *imported_contents):
+    values.extend(
+        float(item.value)
+        for item in extract_named_scalars(content)
+        if hasattr(item, "value")
+    )
+    imported_symbols = _rulespec_import_symbols(content)
+    for artifact_content in imported_contents:
         values.extend(
             float(item.value)
             for item in extract_named_scalars(artifact_content)
             if hasattr(item, "value")
+            and _named_scalar_base_name(str(getattr(item, "name", "")))
+            in imported_symbols
         )
-        with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
-            payload = yaml.safe_load(artifact_content)
-            if not (
-                isinstance(payload, dict)
-                and payload.get("format") == "rulespec/v1"
-            ):
-                continue
-            rules = payload.get("rules")
-            if isinstance(rules, list):
-                for rule in rules:
-                    if not isinstance(rule, dict):
-                        continue
-                    values.extend(
-                        _numeric_concept_values(
-                            str(rule.get("name") or ""),
-                            extract_numeric_occurrences=extract_numeric_occurrences,
-                        )
-                    )
-                    versions = rule.get("versions")
-                    if isinstance(versions, list):
-                        for version in versions:
-                            formula = (
-                                version.get("formula")
-                                if isinstance(version, dict)
-                                else None
-                            )
-                            if isinstance(formula, str):
-                                for identifier in set(
-                                    _FORMULA_IDENTIFIER.findall(formula)
-                                ):
-                                    values.extend(
-                                        _numeric_concept_values(
-                                            identifier,
-                                            extract_numeric_occurrences=(
-                                                extract_numeric_occurrences
-                                            ),
-                                        )
-                                    )
-                    verification = rule.get("verification")
-                    if isinstance(verification, dict):
-                        values.extend(
-                            _verification_numeric_values(
-                                verification.get("values"),
-                                extract_numeric_occurrences=(
-                                    extract_numeric_occurrences
-                                ),
-                            )
-                        )
     return tuple(values)
 
 
-def _numeric_concept_values(
-    text: str,
-    *,
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[float, ...]:
-    normalized = _DECIMAL_PERCENT_IDENTIFIER.sub(
-        lambda match: (
-            f"{match.group('integer')}.{match.group('fraction')} percent"
-        ),
-        text,
-    )
-    normalized = normalized.replace("_", " ").replace("-", " ")
-    return tuple(float(value) for value in extract_numeric_occurrences(normalized))
+def _rulespec_import_symbols(content: str) -> set[str]:
+    with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
+        payload = yaml.safe_load(content)
+        imports = payload.get("imports") if isinstance(payload, dict) else None
+        if isinstance(imports, list):
+            return {
+                item.rsplit("#", 1)[1]
+                for item in imports
+                if isinstance(item, str) and "#" in item
+            }
+    return set()
 
 
-def _verification_numeric_values(
-    value: object,
-    *,
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[float, ...]:
-    if isinstance(value, bool) or value is None:
-        return ()
-    if isinstance(value, (int, float)):
-        return (float(value),)
-    if isinstance(value, str):
-        return tuple(
-            float(item) for item in extract_numeric_occurrences(value.strip())
-        )
-    values: list[float] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            values.extend(
-                _verification_numeric_values(
-                    key,
-                    extract_numeric_occurrences=extract_numeric_occurrences,
-                )
-            )
-            values.extend(
-                _verification_numeric_values(
-                    item,
-                    extract_numeric_occurrences=extract_numeric_occurrences,
-                )
-            )
-    elif isinstance(value, list):
-        for item in value:
-            values.extend(
-                _verification_numeric_values(
-                    item,
-                    extract_numeric_occurrences=extract_numeric_occurrences,
-                )
-            )
-    return tuple(values)
+def _named_scalar_base_name(name: str) -> str:
+    return name.split("[", 1)[0]
 
 
 def _companion_test_issues(
@@ -983,49 +926,34 @@ def _companion_test_issues(
     active_branches = [
         branch
         for branch in branches
-        if not any(
-            branch.path[: len(deferred)] == deferred for deferred in deferred_paths
-        )
+        if branch.path not in deferred_paths
     ]
-    structured_formula_branches = [
-        branch
-        for branch in active_branches
-        if branch.kind in {"number", "letter"}
-        and _structured_branch_is_formula_leaf(
-            branch,
-            extract_numeric_occurrences=extract_numeric_occurrences,
-        )
-    ]
-    narrative_formula_branches = _narrative_formula_branches(
+    formula_branches = _source_formula_branches(
         source_text,
         branches=branches,
         active_branches=active_branches,
         deferred_paths=deferred_paths,
+    )
+    missing_formula_branches = _unwitnessed_formula_branches(
+        formula_branches,
+        principal_rules=principal_rules,
+        principal_rule_paths=principal_rule_paths,
+        asserted_by_rule=asserted_by_rule,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
-    formula_branches = (*structured_formula_branches, *narrative_formula_branches)
-    for branch in formula_branches:
-        if _formula_branch_has_test_evidence(
-            branch,
-            principal_rules=principal_rules,
-            principal_rule_paths=principal_rule_paths,
-            asserted_by_rule=asserted_by_rule,
-            corpus_citation_path=corpus_citation_path,
-            extract_numeric_occurrences=extract_numeric_occurrences,
-            allow_explicit_cover=branch.kind != "formula-clause",
-        ):
-            continue
+    for branch in missing_formula_branches:
         issues.append(
             "[complete-source-unit:tests] Companion tests do not demonstrate "
             f"formula branch {branch.label} at "
             f"{_branch_citation(corpus_citation_path, branch)} with a principal "
-            "output assertion and selector input in that branch (or an exact "
-            "`covers` source-branch declaration)."
+            "output assertion and, when the branch states a range, a selector "
+            "input in that branch. Each formula branch needs distinct executed "
+            "test evidence."
         )
 
     boundary_obligations = _source_boundary_obligations(
         active_branches,
-        narrative_formula_branches=narrative_formula_branches,
+        narrative_formula_branches=formula_branches,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
     missing_boundaries: list[tuple[SourceStructureBranch, float]] = []
@@ -1050,11 +978,6 @@ def _companion_test_issues(
             f"source-stated boundary input; missing: {rendered}."
         )
 
-    active_text = _source_text_without_deferred_branches(
-        source_text,
-        branches=branches,
-        deferred_paths=deferred_paths,
-    )
     exception_branches = _source_exception_branches(
         source_text,
         branches=branches,
@@ -1085,108 +1008,56 @@ def _companion_test_issues(
                 f"{missing_citations}."
             )
 
-    rounding_count = len(_ROUNDING_LANGUAGE.findall(active_text))
-    if rounding_count:
-        down_rules = {
-            name
-            for name, rule in principal_rules.items()
-            if re.search(r"\bfloor\s*\(", _rule_formula_text(rule))
-        }
-        up_rules = {
-            name
-            for name, rule in principal_rules.items()
-            if re.search(r"\bceil\s*\(", _rule_formula_text(rule))
-        }
-        nearest_rules = {
-            name
-            for name, rule in principal_rules.items()
-            if re.search(r"\bfloor\s*\(", _rule_formula_text(rule))
-            and re.search(r"\+\s*0?\.5\b", _rule_formula_text(rule))
-        }
-        applicable_rounding_functions: dict[str, set[str]] = {}
-        if _DOWN_ROUNDING_LANGUAGE.search(active_text) and not down_rules:
-            issues.append(
-                "[complete-source-unit:tests] A source-stated downward-rounding "
-                "rule is absent from the principal formula (`floor(...)`)."
-            )
-        if _DOWN_ROUNDING_LANGUAGE.search(active_text):
-            for rule_name in down_rules:
-                applicable_rounding_functions.setdefault(rule_name, set()).add(
-                    "floor"
-                )
-        if _UP_ROUNDING_LANGUAGE.search(active_text) and not up_rules:
-            issues.append(
-                "[complete-source-unit:tests] A source-stated upward-rounding "
-                "rule is absent from the principal formula (`ceil(...)`)."
-            )
-        if _UP_ROUNDING_LANGUAGE.search(active_text):
-            for rule_name in up_rules:
-                applicable_rounding_functions.setdefault(rule_name, set()).add(
-                    "ceil"
-                )
-        if _NEAREST_ROUNDING_LANGUAGE.search(active_text) and not nearest_rules:
-            issues.append(
-                "[complete-source-unit:tests] A source-stated nearest/commercial "
-                "rounding rule is absent from the principal formula."
-            )
-        if _NEAREST_ROUNDING_LANGUAGE.search(active_text):
-            for rule_name in nearest_rules:
-                applicable_rounding_functions.setdefault(rule_name, set()).add(
-                    "nearest"
-                )
-        fractional_cases = _fractional_formula_input_case_count(
-            principal_rules,
-            asserted_by_rule=asserted_by_rule,
-            rule_functions=applicable_rounding_functions,
-        )
-        if fractional_cases < rounding_count:
-            issues.append(
-                "[complete-source-unit:tests] Companion tests do not demonstrate "
-                f"all {rounding_count} source-stated rounding rule(s) with "
-                "fractional input values."
-            )
-    return issues
-
-
-def _source_text_without_deferred_branches(
-    source_text: str,
-    *,
-    branches: Sequence[SourceStructureBranch],
-    deferred_paths: set[tuple[str, ...]],
-) -> str:
-    """Remove precisely deferred spans without duplicating nested branch text."""
-
-    deferred_ranges = sorted(
-        (
-            branch.start,
-            branch.end,
-        )
-        for branch in branches
-        if any(
-            branch.path[: len(deferred)] == deferred for deferred in deferred_paths
-        )
-        and not any(
-            ancestor.path != branch.path
-            and ancestor.start <= branch.start
-            and branch.end <= ancestor.end
-            and any(
-                ancestor.path[: len(deferred)] == deferred
-                for deferred in deferred_paths
-            )
-            for ancestor in branches
-        )
+    rounding_obligations = _source_rounding_obligations(
+        source_text,
+        branches=branches,
+        active_branches=active_branches,
+        deferred_paths=deferred_paths,
     )
-    if not deferred_ranges:
-        return source_text
-    parts: list[str] = []
-    cursor = 0
-    for start, end in deferred_ranges:
-        if start < cursor:
+    missing_rounding_formula: list[tuple[SourceStructureBranch, str]] = []
+    rounding_witnesses: dict[
+        tuple[SourceStructureBranch, str], set[tuple[str, int]]
+    ] = {}
+    for obligation in rounding_obligations:
+        branch, direction = obligation
+        rule_names = {
+            name
+            for name in _rules_covering_branch(branch, principal_rule_paths)
+            if _rule_implements_rounding(principal_rules[name], direction)
+        }
+        if not rule_names:
+            missing_rounding_formula.append(obligation)
             continue
-        parts.append(source_text[cursor:start])
-        cursor = end
-    parts.append(source_text[cursor:])
-    return "".join(parts)
+        rounding_witnesses[obligation] = set().union(
+            *(
+                _fractional_rounding_case_witnesses(
+                    name,
+                    principal_rules[name],
+                    asserted_by_rule=asserted_by_rule,
+                    direction=direction,
+                )
+                for name in rule_names
+            )
+        )
+    for branch, direction in missing_rounding_formula:
+        issues.append(
+            "[complete-source-unit:tests] A source-stated "
+            f"{direction} rounding rule at "
+            f"{_branch_citation(corpus_citation_path, branch)} is absent from "
+            "the principal formula."
+        )
+    missing_rounding_tests = _unmatched_evidence_obligations(rounding_witnesses)
+    if missing_rounding_tests:
+        rendered = ", ".join(
+            _branch_citation(corpus_citation_path, branch)
+            for branch, _direction in missing_rounding_tests
+        )
+        issues.append(
+            "[complete-source-unit:tests] Companion tests do not demonstrate "
+            "every source-stated rounding rule with distinct fractional input "
+            f"evidence on its affected principal output; missing at {rendered}."
+        )
+    return issues
 
 
 def _test_case_output_names(case: dict[str, Any]) -> set[str]:
@@ -1200,55 +1071,20 @@ def _test_case_output_names(case: dict[str, Any]) -> set[str]:
     return names
 
 
-def _structured_branch_is_formula_leaf(
-    branch: SourceStructureBranch,
-    *,
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> bool:
-    first_line = (
-        branch.text.splitlines()[0] if branch.text.splitlines() else branch.text
-    )
-    return bool(
-        (
-            source_states_explicit_computation(branch.text)
-            or re.search(r":\s*-?\d", branch.text)
-        )
-        and (
-            ":" in first_line
-            or _formula_branch_interval(
-                branch,
-                extract_numeric_occurrences=extract_numeric_occurrences,
-            )
-            is not None
-        )
-    )
-
-
-def _narrative_formula_branches(
+def _source_formula_branches(
     source_text: str,
     *,
     branches: Sequence[SourceStructureBranch],
     active_branches: Sequence[SourceStructureBranch],
     deferred_paths: set[tuple[str, ...]],
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[SourceStructureBranch, ...]:
-    """Return range-formula clauses not already represented by list branches."""
+    """Return every explicit computation clause with its structural owner."""
 
-    structured_ranges = [
-        (branch.start, branch.end)
-        for branch in branches
-        if branch.kind in {"number", "letter"}
-    ]
     obligations: list[SourceStructureBranch] = []
     for clause_index, (start, end, clause) in enumerate(
-        _source_clause_spans(source_text),
+        _source_clause_spans(source_text, branches=branches),
         start=1,
     ):
-        if any(
-            start < structured_end and structured_start < end
-            for structured_start, structured_end in structured_ranges
-        ):
-            continue
         if _span_is_deferred(
             start,
             end,
@@ -1257,12 +1093,6 @@ def _narrative_formula_branches(
         ):
             continue
         if not source_states_explicit_computation(clause):
-            continue
-        interval = _formula_interval_from_text(
-            clause,
-            extract_numeric_occurrences=extract_numeric_occurrences,
-        )
-        if interval is None:
             continue
         owner = _most_specific_containing_branch(
             start,
@@ -1291,16 +1121,24 @@ def _narrative_formula_branches(
     return tuple(obligations)
 
 
-def _source_clause_spans(source_text: str) -> Iterable[tuple[int, int, str]]:
-    """Yield offset-preserving semicolon and true sentence clauses."""
+def _source_clause_spans(
+    source_text: str,
+    *,
+    branches: Sequence[SourceStructureBranch],
+) -> Iterable[tuple[int, int, str]]:
+    """Yield offset-preserving clauses split at punctuation and structure."""
 
     boundary = re.compile(
         r";|[.!?](?=(?:[ \t]+[A-ZÄÖÜ(]|\s*$))",
         flags=re.MULTILINE,
     )
-    start = 0
-    for match in boundary.finditer(source_text):
-        end = match.end()
+    split_points = {
+        0,
+        len(source_text),
+        *(match.end() for match in boundary.finditer(source_text)),
+        *(branch.start for branch in branches),
+    }
+    for start, end in zip(sorted(split_points), sorted(split_points)[1:]):
         raw = source_text[start:end]
         left_trimmed = len(raw) - len(raw.lstrip())
         right_trimmed = len(raw.rstrip())
@@ -1310,16 +1148,6 @@ def _source_clause_spans(source_text: str) -> Iterable[tuple[int, int, str]]:
                 start + right_trimmed,
                 raw[left_trimmed:right_trimmed],
             )
-        start = end
-    raw = source_text[start:]
-    left_trimmed = len(raw) - len(raw.lstrip())
-    right_trimmed = len(raw.rstrip())
-    if right_trimmed > left_trimmed:
-        yield (
-            start + left_trimmed,
-            start + right_trimmed,
-            raw[left_trimmed:right_trimmed],
-        )
 
 
 def _span_is_deferred(
@@ -1332,10 +1160,7 @@ def _span_is_deferred(
     return any(
         branch.start <= start
         and end <= branch.end
-        and any(
-            branch.path[: len(deferred)] == deferred
-            for deferred in deferred_paths
-        )
+        and branch.path in deferred_paths
         for branch in branches
     )
 
@@ -1361,37 +1186,82 @@ def _most_specific_containing_branch(
     )
 
 
-def _formula_branch_has_test_evidence(
+def _unwitnessed_formula_branches(
+    branches: Sequence[SourceStructureBranch],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> tuple[SourceStructureBranch, ...]:
+    """Consume each executed rule/case witness for at most one source formula."""
+
+    candidate_witnesses = {
+        branch: _formula_branch_test_witnesses(
+            branch,
+            principal_rules=principal_rules,
+            principal_rule_paths=principal_rule_paths,
+            asserted_by_rule=asserted_by_rule,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        for branch in branches
+    }
+    return _unmatched_evidence_obligations(candidate_witnesses)
+
+
+def _unmatched_evidence_obligations(
+    candidate_witnesses: dict[Any, set[Any]],
+) -> tuple[Any, ...]:
+    """Return obligations excluded by a maximum one-witness-per-item match."""
+
+    assigned_obligation_by_witness: dict[Any, Any] = {}
+
+    def assign(obligation: Any, visited: set[Any]) -> bool:
+        for witness in sorted(candidate_witnesses[obligation]):
+            if witness in visited:
+                continue
+            visited.add(witness)
+            incumbent = assigned_obligation_by_witness.get(witness)
+            if incumbent is None or assign(incumbent, visited):
+                assigned_obligation_by_witness[witness] = obligation
+                return True
+        return False
+
+    missing: list[Any] = []
+    for obligation in sorted(
+        candidate_witnesses,
+        key=lambda item: len(candidate_witnesses[item]),
+    ):
+        if not assign(obligation, set()):
+            missing.append(obligation)
+    return tuple(missing)
+
+
+def _formula_branch_test_witnesses(
     branch: SourceStructureBranch,
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
-    corpus_citation_path: str,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-    allow_explicit_cover: bool,
-) -> bool:
+) -> set[tuple[str, int]]:
     interval = _formula_branch_interval(
         branch,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
+    witnesses: set[tuple[str, int]] = set()
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         selector_names = _rule_numeric_selector_names(principal_rules[rule_name])
         for case in asserted_by_rule.get(rule_name, ()):
-            if allow_explicit_cover and _case_explicitly_covers_branch(
-                case,
-                branch,
-                corpus_citation_path=corpus_citation_path,
-            ):
-                return True
-            if interval is None or not selector_names:
+            if interval is None:
+                witnesses.add((rule_name, id(case)))
                 continue
-            if any(
+            if selector_names and any(
                 _interval_contains(interval, value)
                 for value in _case_numeric_selector_values(case, selector_names)
             ):
-                return True
-    return False
+                witnesses.add((rule_name, id(case)))
+    return witnesses
 
 
 def _branch_boundary_has_test_evidence(
@@ -1420,8 +1290,6 @@ def _rules_covering_branch(
     branch: SourceStructureBranch,
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
 ) -> tuple[str, ...]:
-    if not branch.path:
-        return tuple(principal_rule_paths)
     return tuple(
         name
         for name, paths in principal_rule_paths.items()
@@ -1604,6 +1472,53 @@ def _source_exception_branches(
     return tuple(obligations)
 
 
+def _source_rounding_obligations(
+    source_text: str,
+    *,
+    branches: Sequence[SourceStructureBranch],
+    active_branches: Sequence[SourceStructureBranch],
+    deferred_paths: set[tuple[str, ...]],
+) -> tuple[tuple[SourceStructureBranch, str], ...]:
+    obligations: list[tuple[SourceStructureBranch, str]] = []
+    for match in _ROUNDING_LANGUAGE.finditer(source_text):
+        if _span_is_deferred(
+            match.start(),
+            match.end(),
+            branches=branches,
+            deferred_paths=deferred_paths,
+        ):
+            continue
+        owner = _most_specific_containing_branch(
+            match.start(),
+            match.end(),
+            branches=active_branches,
+        ) or SourceStructureBranch(
+            (),
+            "source-unit",
+            "source unit",
+            source_text,
+            0,
+            len(source_text),
+        )
+        matched_text = match.group(0)
+        if _NEAREST_ROUNDING_LANGUAGE.search(matched_text):
+            direction = "nearest"
+        elif _UP_ROUNDING_LANGUAGE.search(matched_text):
+            direction = "upward"
+        else:
+            direction = "downward"
+        obligation_branch = SourceStructureBranch(
+            owner.path,
+            "rounding-clause",
+            owner.label,
+            matched_text,
+            match.start(),
+            match.end(),
+        )
+        obligations.append((obligation_branch, direction))
+    return tuple(obligations)
+
+
 def _unwitnessed_exception_branches(
     exception_branches: Sequence[SourceStructureBranch],
     *,
@@ -1781,32 +1696,48 @@ def _exception_semantic_identifier(identifier: str) -> bool:
     )
 
 
-def _fractional_formula_input_case_count(
-    principal_rules: dict[str, dict[str, Any]],
+def _rule_implements_rounding(rule: dict[str, Any], direction: str) -> bool:
+    formula_text = _rule_formula_text(rule)
+    if direction == "nearest":
+        return bool(
+            re.search(r"\bfloor\s*\(", formula_text)
+            and re.search(r"\+\s*0?\.5\b", formula_text)
+        )
+    function_name = "ceil" if direction == "upward" else "floor"
+    return re.search(rf"\b{function_name}\s*\(", formula_text) is not None
+
+
+def _fractional_rounding_case_witnesses(
+    rule_name: str,
+    rule: dict[str, Any],
     *,
     asserted_by_rule: dict[str, list[dict[str, Any]]],
-    rule_functions: dict[str, set[str]],
-) -> int:
+    direction: str,
+) -> set[tuple[str, int]]:
     evidence: set[tuple[str, int]] = set()
-    for rule_name, functions in rule_functions.items():
-        rounded_operand_identifiers = _rounding_operand_identifier_names(
-            principal_rules[rule_name],
-            functions=functions,
+    functions = {
+        "nearest" if direction == "nearest" else (
+            "ceil" if direction == "upward" else "floor"
         )
-        for index, case in enumerate(asserted_by_rule.get(rule_name, ())):
-            inputs = case.get("input")
-            if not isinstance(inputs, dict):
-                continue
-            if any(
-                _input_key_names(key) & rounded_operand_identifiers
-                and any(
-                    not float(value).is_integer()
-                    for value in _numeric_test_input_values(input_value)
-                )
-                for key, input_value in inputs.items()
-            ):
-                evidence.add((rule_name, index))
-    return len(evidence)
+    }
+    rounded_operand_identifiers = _rounding_operand_identifier_names(
+        rule,
+        functions=functions,
+    )
+    for case in asserted_by_rule.get(rule_name, ()):
+        inputs = case.get("input")
+        if not isinstance(inputs, dict):
+            continue
+        if any(
+            _input_key_names(key) & rounded_operand_identifiers
+            and any(
+                not float(value).is_integer()
+                for value in _numeric_test_input_values(input_value)
+            )
+            for key, input_value in inputs.items()
+        ):
+            evidence.add((rule_name, id(case)))
+    return evidence
 
 
 def _rounding_operand_identifier_names(
@@ -1865,33 +1796,6 @@ def _balanced_call_operands(text: str, function_name: str) -> Iterable[str]:
             yield text[open_index + 1 : cursor - 1]
 
 
-def _case_explicitly_covers_branch(
-    case: dict[str, Any],
-    branch: SourceStructureBranch,
-    *,
-    corpus_citation_path: str,
-) -> bool:
-    raw_covers = case.get("covers")
-    if isinstance(raw_covers, (str, dict)):
-        raw_covers = [raw_covers]
-    if not isinstance(raw_covers, list):
-        return False
-    for item in raw_covers:
-        value = (
-            item.get("source_branch")
-            if isinstance(item, dict)
-            else item
-        )
-        if not isinstance(value, str):
-            continue
-        if branch.path in _paths_from_source_reference(
-            value,
-            corpus_citation_path=corpus_citation_path,
-        ):
-            return True
-    return False
-
-
 def _source_boundary_obligations(
     branches: Sequence[SourceStructureBranch],
     *,
@@ -1900,7 +1804,7 @@ def _source_boundary_obligations(
 ) -> tuple[tuple[SourceStructureBranch, float], ...]:
     obligations: list[tuple[SourceStructureBranch, float]] = []
     for branch in branches:
-        if branch.kind != "number":
+        if branch.kind not in {"number", "letter"}:
             continue
         first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
         prefix = first_line.split(":", 1)[0]
@@ -1931,7 +1835,7 @@ def _source_boundary_obligations(
         )
     return tuple(
         {
-            (branch.path, float(value), branch.kind): (branch, float(value))
+            (branch.path, float(value)): (branch, float(value))
             for branch, value in obligations
         }.values()
     )

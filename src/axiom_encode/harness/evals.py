@@ -6926,8 +6926,10 @@ def _evaluate_artifact_in_scope(
             collect_artifact_numeric_values(
                 content,
                 extract_named_scalars=extract_named_scalar_occurrences,
-                extract_numeric_occurrences=extract_numeric_occurrences_from_text,
-                additional_values=imported_named_scalar_occurrences,
+                additional_values=_strict_imported_named_scalar_occurrences(
+                    content,
+                    policy_repo_root,
+                ),
             )
         )
     else:
@@ -7324,6 +7326,29 @@ def _imported_named_scalar_occurrences(
                     for item in extract_named_scalar_occurrences(imported_content)
                 )
                 occurrences.update(_numeric_concept_name_occurrences(imported_content))
+            break
+    return occurrences
+
+
+def _strict_imported_named_scalar_occurrences(
+    content: str,
+    policy_repo_root: Path,
+) -> Counter[float]:
+    """Count only direct scalar definitions for explicitly imported symbols."""
+
+    occurrences: Counter[float] = Counter()
+    for import_target in _extract_import_targets(content):
+        if "#" not in import_target:
+            continue
+        imported_symbol = import_target.rsplit("#", 1)[1]
+        for path in _candidate_import_rule_files(import_target, policy_repo_root):
+            with contextlib.suppress(OSError):
+                imported_content = path.read_text()
+                occurrences.update(
+                    item.value
+                    for item in extract_named_scalar_occurrences(imported_content)
+                    if item.name.split("[", 1)[0] == imported_symbol
+                )
             break
     return occurrences
 
@@ -9273,11 +9298,10 @@ Complete-source-unit mode is enabled for this request:
   never omit it silently. Put the structural branch in the deferred output
   path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`) and list
   exact missing RuleSpec targets under `blocked_by`.
-- Companion tests must cover every source-stated formula branch, boundary,
-  exception, and rounding rule. When a formula branch cannot be identified
-  from a numeric selector input, add an exact canonical source branch under
-  the executing case's `covers` list (for example,
-  `covers: [de/statute/estg/32a/1/2]`).
+- Companion tests must execute every source-stated formula branch, boundary,
+  exception, and rounding rule with assertions on the affected principal
+  output. Each branch needs distinct runtime evidence; descriptive test
+  metadata is not coverage evidence.
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 

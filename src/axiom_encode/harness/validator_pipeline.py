@@ -23448,13 +23448,22 @@ class ValidatorPipeline:
 
         if not self.require_complete_source_unit:
             return []
-        authoritative_source_text = _extract_source_verification_text(
-            content,
-            source_texts=(
-                dict(validation_source_texts)
-                if validation_source_texts is not None
-                else None
-            ),
+        source_texts = (
+            dict(validation_source_texts)
+            if validation_source_texts is not None
+            else None
+        )
+        authoritative_source_text = (
+            _source_verification_text(
+                citation_paths=(self.source_citation_path,),
+                source_label=self.source_citation_path,
+                source_texts=source_texts,
+            )
+            if self.source_citation_path
+            else _extract_source_verification_text(
+                content,
+                source_texts=source_texts,
+            )
         )
         source_verification = None
         with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
@@ -23472,7 +23481,6 @@ class ValidatorPipeline:
         artifact_numeric_values = collect_artifact_numeric_values(
             content,
             extract_named_scalars=extract_named_scalar_occurrences,
-            extract_numeric_occurrences=extract_numeric_occurrences_from_text,
             imported_contents=self._complete_source_unit_import_contents(rules_file),
         )
         completeness = analyze_complete_source_unit(
