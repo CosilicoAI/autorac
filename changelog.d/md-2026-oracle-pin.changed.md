@@ -1,0 +1,1 @@
+Pin axiom-oracles to the reviewed Maryland tax-year-2026 full-year-resident State income-tax source-hold classifications, keeping the preserved federal-return diagnostic, typed source-readiness predicates, and fail-closed State liability sentinels out of PolicyEngine value comparisons.
