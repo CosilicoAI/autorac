@@ -240,6 +240,7 @@ _CODEX_DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 _CODEX_LONG_SOURCE_CHAR_THRESHOLD = 40_000
 _CODEX_LONG_SOURCE_TIMEOUT_SECONDS = 1800
 _CODEX_LONG_SOURCE_IDLE_TIMEOUT_SECONDS = 900
+EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _POLICYENGINE_HINT_BROAD_PLACEHOLDER_RE = re.compile(
     r"\b(?:"
     r"person_is_described_in_[A-Za-z0-9_]*"
@@ -3170,7 +3171,12 @@ def _build_eval_suite_execution_identity(
     )
     encoder_identity["version"] = __version__
     return {
-        "schema": "axiom-encode/eval-execution-identity/v2",
+        "schema": EVAL_EXECUTION_IDENTITY_SCHEMA,
+        "runner_timeouts": {
+            "claude": {
+                "wall_seconds": _claude_encoder_timeout_seconds(),
+            },
+        },
         "axiom_encode": encoder_identity,
         "axiom_rules_engine": _git_checkout_execution_identity(axiom_rules_path),
         "policyengine_runtime": (
@@ -3199,7 +3205,7 @@ def _validate_eval_suite_execution_identity(
     *,
     artifact_name: str = "suite-run.json",
 ) -> None:
-    """Reject resume across encoder, engine, RuleSpec, or waiver changes."""
+    """Reject resume across runner limits, encoder, engine, or RuleSpec changes."""
 
     persisted = payload.get("execution_identity")
     persisted_digest = payload.get("execution_identity_sha256")
@@ -3213,6 +3219,11 @@ def _validate_eval_suite_execution_identity(
         raise ValueError(
             f"Cannot resume eval suite: {artifact_name} has an inconsistent "
             "executable toolchain identity digest"
+        )
+    if persisted.get("runner_timeouts") != expected_identity.get("runner_timeouts"):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "runner timeout execution identity"
         )
     if persisted.get("axiom_encode") != expected_identity.get("axiom_encode"):
         raise ValueError(
@@ -12053,10 +12064,7 @@ def _run_claude_prompt_eval(
         prompt,
     ]
 
-    timeout_seconds = _positive_int_env(
-        "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
-        _CLAUDE_DEFAULT_TIMEOUT_SECONDS,
-    )
+    timeout_seconds = _claude_encoder_timeout_seconds()
     trace: dict[str, object] = {
         "provider": "anthropic",
         "backend": "claude-print",
@@ -12345,6 +12353,15 @@ def _positive_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _claude_encoder_timeout_seconds() -> int:
+    """Return the effective Claude wall timeout bound into suite identity."""
+
+    return _positive_int_env(
+        "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
+        _CLAUDE_DEFAULT_TIMEOUT_SECONDS,
+    )
 
 
 def _wait_for_codex_process(

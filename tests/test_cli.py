@@ -513,7 +513,10 @@ def _fake_verified_eval_suite_artifacts(
         "validation_waiver_set_sha256": "8" * 64,
     }
     execution_identity = {
-        "schema": "axiom-encode/eval-execution-identity/v2",
+        "schema": "axiom-encode/eval-execution-identity/v3",
+        "runner_timeouts": {
+            "claude": {"wall_seconds": 1800},
+        },
         "axiom_encode": {
             "kind": "tree",
             "tree_sha256": "1" * 64,

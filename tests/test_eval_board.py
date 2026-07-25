@@ -371,8 +371,7 @@ def _write_payload(tmp_path, name, payload):
 def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
     assert (
-        SUPPORTED_EXECUTION_IDENTITY_SCHEMA
-        == "axiom-encode/eval-execution-identity/v3"
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v3"
     )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
@@ -407,6 +406,7 @@ def test_real_producer_identity_matches_consumer_contract():
     assert '"path"' not in rendered
     # Score-affecting fields survive normalization.
     assert identity["axiom_encode"]["version"] in rendered
+    assert identity["runner_timeouts"] == normalized["runner_timeouts"]
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
@@ -510,7 +510,7 @@ def test_fold_refuses_unknown_schema(tmp_path):
 
 def test_fold_refuses_unknown_execution_identity_schema(tmp_path):
     identity = _execution_identity()
-    identity["schema"] = "axiom-encode/eval-execution-identity/v1"
+    identity["schema"] = "axiom-encode/eval-execution-identity/v2"
     path = _write_payload(
         tmp_path,
         "old-identity.json",
@@ -521,6 +521,23 @@ def test_fold_refuses_unknown_execution_identity_schema(tmp_path):
         ),
     )
     with pytest.raises(EvalBoardError, match="execution identity carries schema"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_execution_identity_without_timeout_policy(tmp_path):
+    identity = _execution_identity()
+    identity.pop("runner_timeouts")
+    path = _write_payload(
+        tmp_path,
+        "missing-timeout-policy.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="runner timeout"):
         fold_eval_board([path])
 
 

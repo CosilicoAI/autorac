@@ -10,13 +10,13 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, PolicyEngine runtime) — compared after dropping
-location-only fields, so the same toolchain checked out at different paths
-still folds. The manifest content hash may differ (single-runner variants of
-one suite differ byte-wise but share case identities), and runner sets may
-differ — that is the add-a-model path. Duplicate runner names across
-payloads are refused rather than merged: two runs of one runner are two
-boards, not one.
+content/toolchain/waivers, runner timeouts, PolicyEngine runtime) — compared
+after dropping location-only fields, so the same toolchain checked out at
+different paths still folds. The manifest content hash may differ
+(single-runner variants of one suite differ byte-wise but share case
+identities), and runner sets may differ — that is the add-a-model path.
+Duplicate runner names across payloads are refused rather than merged: two
+runs of one runner are two boards, not one.
 
 The board consumes canonical v5 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
@@ -52,7 +52,7 @@ SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v5"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
-SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v2"
+SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
@@ -297,8 +297,9 @@ def normalized_execution_identity(
 
     Checkout paths (and digests computed over structures that embed them)
     differ across machines and directories without affecting scores; every
-    other field — commits, content hashes, waiver digests, versions — is
-    score-affecting and must match exactly. The `policyengine_runtime`
+    other field — commits, content hashes, waiver digests, versions, and
+    runner timeouts — is score-affecting and must match exactly. The
+    `policyengine_runtime`
     subtree uses the extended location-key set because its sealed-runtime
     identity embeds venv/stdlib/interpreter locations.
     """
@@ -414,6 +415,26 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"Suite results execution identity carries schema {schema!r}; "
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
+        )
+    runner_timeouts = identity.get("runner_timeouts")
+    claude_timeout = (
+        runner_timeouts.get("claude") if isinstance(runner_timeouts, dict) else None
+    )
+    wall_seconds = (
+        claude_timeout.get("wall_seconds") if isinstance(claude_timeout, dict) else None
+    )
+    if (
+        not isinstance(runner_timeouts, dict)
+        or set(runner_timeouts) != {"claude"}
+        or not isinstance(claude_timeout, dict)
+        or set(claude_timeout) != {"wall_seconds"}
+        or isinstance(wall_seconds, bool)
+        or not isinstance(wall_seconds, int)
+        or wall_seconds <= 0
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"runner timeout policy: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -724,8 +745,9 @@ def fold_eval_board(
                         "Suite results are not comparable: score-affecting "
                         f"execution identity in {source} does not match "
                         f"{reference_source} (encoder, rules engine, RuleSpec "
-                        "content/toolchain/waivers, or PolicyEngine runtime "
-                        "differ; checkout locations are ignored). Re-run on "
+                        "content/toolchain/waivers, runner timeouts, or "
+                        "PolicyEngine runtime differ; checkout locations are "
+                        "ignored). Re-run on "
                         "one toolchain, or pass --allow-mixed-toolchains to "
                         "fold anyway with the mismatch recorded."
                     )

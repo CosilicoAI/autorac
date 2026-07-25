@@ -13402,7 +13402,10 @@ cases:
 
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
-                "schema": "axiom-encode/eval-execution-identity/v2",
+                "schema": "axiom-encode/eval-execution-identity/v3",
+                "runner_timeouts": {
+                    "claude": {"wall_seconds": 1800},
+                },
                 "axiom_encode": {"tree_sha256": "1" * 64},
                 "axiom_rules_engine": {"tree_sha256": "2" * 64},
                 "policyengine_runtime": {
