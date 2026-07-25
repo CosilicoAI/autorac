@@ -6083,6 +6083,12 @@ def test_eval_result_payload_round_trips_prompt_digests():
     result.require_complete_source_unit = False
     assert "require_complete_source_unit" not in result.to_dict()
 
+    malformed_payload = dict(strict_payload)
+    malformed_payload["require_complete_source_unit"] = "true"
+    malformed_payload = _bind_eval_result_payload(malformed_payload)
+    with pytest.raises(ValueError, match="invalid boolean field"):
+        _eval_result_from_payload(malformed_payload)
+
     def test_wait_for_codex_process_terminates_after_persistent_output(self, tmp_path):
         last_message = tmp_path / ".codex-last-message.txt"
         last_message.write_text("ready\n")
@@ -13126,6 +13132,78 @@ class TestEvalSuiteManifest:
 
         assert manifest.cases[0].citation == "7 USC 2017"
 
+    def test_complete_source_unit_case_mode_is_default_off_and_identity_preserving(
+        self,
+        tmp_path,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        default_case = load_eval_suite_manifest(manifest_file).cases[0]
+        explicit_off_case = replace(default_case, require_complete_source_unit=False)
+        complete_case = replace(default_case, require_complete_source_unit=True)
+
+        default_identity = evals_module._canonical_eval_suite_case_payload(
+            default_case
+        )
+        assert default_case.require_complete_source_unit is False
+        assert (
+            evals_module._canonical_eval_suite_case_payload(explicit_off_case)
+            == default_identity
+        )
+        assert "require_complete_source_unit" not in default_identity
+        assert evals_module._canonical_eval_suite_case_payload(complete_case)[
+            "require_complete_source_unit"
+        ] is True
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", []])
+    def test_complete_source_unit_case_mode_requires_a_boolean(
+        self,
+        tmp_path,
+        value,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"][0]["require_complete_source_unit"] = value
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        with pytest.raises(
+            ValueError,
+            match="require_complete_source_unit.*must be a boolean",
+        ):
+            load_eval_suite_manifest(manifest_file)
+
+    def test_complete_source_unit_case_mode_loads_when_enabled(self, tmp_path):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"][0]["require_complete_source_unit"] = True
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        manifest = load_eval_suite_manifest(manifest_file)
+
+        assert manifest.cases[0].require_complete_source_unit is True
+
+    def test_complete_source_unit_case_rejects_mismatched_runner_result(self):
+        case = EvalSuiteCase(
+            kind="source",
+            name="sample",
+            mode="cold",
+            corpus_citation_path="us/statute/7/2017",
+            require_complete_source_unit=True,
+        )
+        result = _fake_eval_result(
+            "openai-gpt-5.4",
+            "us/statute/7/2017",
+        )
+
+        with pytest.raises(ValueError, match="different complete-source-unit mode"):
+            evals_module._validate_new_eval_suite_case_results(
+                case,
+                [result],
+                [parse_runner_spec("openai:gpt-5.4")],
+            )
+
     def test_manifest_context_path_does_not_rewrite_legacy_checkout_layout(
         self, tmp_path
     ):
@@ -13762,6 +13840,54 @@ cases:
         assert mock_source.call_args.kwargs["rulespec_dependency_roots"] == [
             dependency_root
         ]
+
+    def test_run_eval_suite_forwards_complete_source_unit_mode_per_case(
+        self,
+        tmp_path,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"] = [
+            {
+                "kind": "source",
+                "name": "source-case",
+                "corpus_citation_path": "us/statute/7/2017",
+                "require_complete_source_unit": True,
+            },
+            {
+                "kind": "citation",
+                "name": "citation-case",
+                "citation": "7 USC 2017",
+                "require_complete_source_unit": True,
+            },
+        ]
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+        manifest = load_eval_suite_manifest(manifest_file)
+        corpus_release = _write_test_corpus_provision(tmp_path)
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.run_source_eval",
+                side_effect=RuntimeError("source runner stopped"),
+            ) as mock_source,
+            patch(
+                "axiom_encode.harness.evals.run_model_eval",
+                side_effect=RuntimeError("citation runner stopped"),
+            ) as mock_model,
+        ):
+            results = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=corpus_release,
+                suite_retry_attempts=0,
+            )
+
+        assert mock_source.call_args.kwargs["require_complete_source_unit"] is True
+        assert mock_model.call_args.kwargs["require_complete_source_unit"] is True
+        assert len(results) == 2
+        assert all(result.require_complete_source_unit is True for result in results)
 
     def test_run_eval_suite_passes_policyengine_rule_hint_to_source_runner(
         self, tmp_path
@@ -19926,6 +20052,8 @@ def _revalidation_result(
 def _run_case_revalidation(
     persisted: EvalArtifactMetrics | None,
     fresh: EvalArtifactMetrics | None,
+    *,
+    require_complete_source_unit: bool = False,
     **result_overrides,
 ):
     case = evals_module.EvalSuiteCase(
@@ -19933,6 +20061,7 @@ def _run_case_revalidation(
         name="vat_standard_rate",
         mode="cold",
         corpus_citation_path="uk/statute/ukpga/1994/23/2",
+        require_complete_source_unit=require_complete_source_unit,
     )
     source_unit = SimpleNamespace(body="The rate of VAT is 20 percent.")
     with (
@@ -19974,6 +20103,20 @@ def test_persisted_revalidation_ignores_reviewer_outcomes():
     )
     evaluate_mock = _run_case_revalidation(persisted, fresh)
     assert evaluate_mock.call_args.kwargs["skip_reviewers"] is True
+
+
+def test_persisted_revalidation_keeps_complete_source_unit_mode():
+    metrics = _revalidation_metrics()
+
+    evaluate_mock = _run_case_revalidation(
+        metrics,
+        metrics,
+        require_complete_source_unit=True,
+    )
+
+    assert (
+        evaluate_mock.call_args.kwargs["require_complete_source_unit"] is True
+    )
 
 
 @pytest.mark.parametrize(

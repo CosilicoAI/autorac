@@ -1010,6 +1010,13 @@ def _validate_eval_result_artifact_binding(
 
     if not isinstance(payload.get("success"), bool):
         raise ValueError(f"{artifact_name} success must be a boolean")
+    if "require_complete_source_unit" in payload and type(
+        payload["require_complete_source_unit"]
+    ) is not bool:
+        raise ValueError(
+            f"{artifact_name} has invalid boolean field "
+            "'require_complete_source_unit'"
+        )
     for field_name in (
         "duration_ms",
         "input_tokens",
@@ -1226,6 +1233,7 @@ class EvalSuiteCase:
     corpus_citation_path: str | None = None
     policyengine_rule_hint: str | None = None
     oracle: EvalOracleMode = "none"
+    require_complete_source_unit: bool = False
 
 
 @dataclass
@@ -2076,6 +2084,7 @@ _EVAL_SUITE_CASE_KEYS = frozenset(
         "corpus_citation_path",
         "policyengine_rule_hint",
         "oracle",
+        "require_complete_source_unit",
         "source_id",
         "source_file",
         "metadata_file",
@@ -2309,6 +2318,15 @@ def load_eval_suite_manifest(path: Path) -> EvalSuiteManifest:
                     f"Eval suite case #{index} field '{field_name}' must be a "
                     "canonical nonempty string"
                 )
+        require_complete_source_unit = item.get(
+            "require_complete_source_unit",
+            False,
+        )
+        if type(require_complete_source_unit) is not bool:
+            raise ValueError(
+                f"Eval suite case #{index} field "
+                "'require_complete_source_unit' must be a boolean"
+            )
         case = EvalSuiteCase(
             kind=kind,
             name=name,
@@ -2328,6 +2346,7 @@ def load_eval_suite_manifest(path: Path) -> EvalSuiteManifest:
                 else None
             ),
             oracle=item.get("oracle", "none"),
+            require_complete_source_unit=require_complete_source_unit,
         )
         _validate_eval_suite_case(case, index)
         cases.append(case)
@@ -2561,6 +2580,9 @@ def _run_eval_suite_with_signer(
                                     rulespec_dependency_roots=(
                                         manifest.rulespec_dependency_roots
                                     ),
+                                    require_complete_source_unit=(
+                                        case.require_complete_source_unit
+                                    ),
                                 )
                             elif case.kind == "source":
                                 if (
@@ -2583,6 +2605,9 @@ def _run_eval_suite_with_signer(
                                     policyengine_rule_hint=case.policyengine_rule_hint,
                                     rulespec_dependency_roots=(
                                         manifest.rulespec_dependency_roots
+                                    ),
+                                    require_complete_source_unit=(
+                                        case.require_complete_source_unit
                                     ),
                                 )
                             else:
@@ -2945,7 +2970,7 @@ def _validate_signed_eval_result_verdict_evidence(
 def _canonical_eval_suite_case_payload(case: EvalSuiteCase) -> dict[str, object]:
     """Return every case field that can affect generation or validation."""
 
-    return {
+    payload: dict[str, object] = {
         "kind": case.kind,
         "name": case.name,
         "mode": case.mode,
@@ -2955,6 +2980,9 @@ def _canonical_eval_suite_case_payload(case: EvalSuiteCase) -> dict[str, object]
         "policyengine_rule_hint": case.policyengine_rule_hint,
         "oracle": case.oracle,
     }
+    if case.require_complete_source_unit:
+        payload["require_complete_source_unit"] = True
+    return payload
 
 
 def _eval_suite_case_identities(
@@ -3515,6 +3543,14 @@ def _validate_new_eval_suite_case_results(
                 f"Eval suite case '{case.name}' returned runner '{result.runner}' "
                 f"with mode '{result.mode}' instead of '{case.mode}'"
             )
+        if (
+            result.require_complete_source_unit
+            is not case.require_complete_source_unit
+        ):
+            raise ValueError(
+                f"Eval suite case '{case.name}' returned runner '{result.runner}' "
+                "with a different complete-source-unit mode"
+            )
         if result.citation != expected_citation:
             raise ValueError(
                 f"Eval suite case '{case.name}' returned citation "
@@ -3949,6 +3985,15 @@ def _validate_persisted_eval_suite_case_group(
                 "Cannot resume eval suite: suite-results.jsonl row uses a "
                 f"different mode for case '{case.name}' runner '{runner_name}'"
             )
+        if (
+            result.require_complete_source_unit
+            is not case.require_complete_source_unit
+        ):
+            raise ValueError(
+                "Cannot resume eval suite: suite-results.jsonl row uses a "
+                "different complete-source-unit mode for case "
+                f"'{case.name}' runner '{runner_name}'"
+            )
         _validate_eval_result_artifacts(
             result,
             output_root,
@@ -4049,6 +4094,7 @@ def _revalidate_persisted_eval_suite_case_results(
                 source_metadata=source_metadata,
                 source_citation_path=source_citation_path,
                 rulespec_dependency_roots=rulespec_dependency_roots,
+                require_complete_source_unit=case.require_complete_source_unit,
             )
         fresh_success = bool(
             fresh_metrics is not None
@@ -4951,6 +4997,7 @@ def _suite_case_failure_results(
             source_attestation=(
                 dict(source_attestation) if source_attestation is not None else None
             ),
+            require_complete_source_unit=case.require_complete_source_unit,
         )
         for runner in runners
     ]
@@ -5245,6 +5292,11 @@ def _resolve_manifest_path(base_dir: Path, value: object) -> Path:
 
 def _validate_eval_suite_case(case: EvalSuiteCase, index: int) -> None:
     """Validate one suite case after parsing."""
+    if type(case.require_complete_source_unit) is not bool:
+        raise ValueError(
+            f"Eval suite case #{index} field "
+            "'require_complete_source_unit' must be a boolean"
+        )
     if case.oracle not in {"none", "policyengine"}:
         raise ValueError(
             f"Eval suite case #{index} has unsupported oracle '{case.oracle}'"
