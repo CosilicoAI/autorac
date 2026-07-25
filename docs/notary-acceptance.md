@@ -26,9 +26,11 @@ verifier and check it. To keep it falsifiable, the notary's **authority path
 is strictly deterministic**: compile, proof re-validation, companion tests,
 grounding contract, layout inspection, waiver verification, and pinned oracle
 comparison. **LLM reviewer stages are NOT admission gates** — they are
-advisory evidence, run outside the notary (operator-side, where model
-subscriptions live, or as non-authority CI QA), recorded in the receipt when
-supplied but never required for admission and never executed by the notary.
+advisory evidence, run outside the notary — operator-side, where model
+subscriptions live; if an org later adds a separate non-authority QA
+workflow for them, it is a distinct surface with its own credential story,
+never the canonical authority path — recorded in the receipt when supplied
+but never required for admission and never executed by the notary.
 Generation and correction history remain first-class records — retained,
 content-addressed, eventually witnessed (receipt#7) — but they are **lineage,
 not authority**. No model call runs on the canonical CI path, and no model
@@ -88,12 +90,19 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
   encoder version + package identity, verifier profile id.
 - `waiver_set_sha256` + count. An acceptance under waivers means "accepted
   under waiver set W," never "correct"; the receipt MUST carry it.
-- `base_commit` — normative, not optional: the protected-branch ancestor the
-  complete diff `B..X` was derived from. The verified target set MUST be
+- `base_commit` — normative for `diff` mode: the protected-branch ancestor
+  the complete diff `B..X` was derived from. The verified target set MUST be
   derived from that diff by the verifier itself (never caller-supplied), MUST
   represent deletions of protected files, and the receipt MUST record the
   target mode (`diff` | `whole-repo`) and the exact file set with per-file
-  dispositions (verified / deleted / out-of-scope).
+  dispositions (verified / deleted / out-of-scope). **`whole-repo` mode is a
+  backfill instrument, not a change-authorizing one**: it verifies the entire
+  protected content of `subject_tree` (no base; `base_commit` null and
+  explicit), MUST still run the authority preflight as a whole-tree scan
+  (symlink, executable-mode, and authority-surface anomalies fail closed),
+  and a whole-repo receipt is valid downstream ONLY for establishing epoch
+  coverage of exactly `subject_tree` — it NEVER authorizes a diff against
+  any prior base (§5).
 - Per-gate outcomes: `{gate, status, reproducibility}` where reproducibility ∈
   `public` (re-runnable by anyone from public pinned inputs) |
   `restricted-pinned` (re-runnable only by holders of a licensed input whose
@@ -110,11 +119,19 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
 - Advisory evidence (optional): reviewer-stage outputs and other model-derived
   checks MAY be attached under a distinct `advisory` key, clearly non-gating.
 - Run identity (encoder version, profile, UTC) and `receipt_sha256`.
-  **Canonicalization (normative)**: the canonical body is UTF-8 JSON with
-  lexicographically sorted keys and minimal separators; `receipt_sha256` is
-  computed over the canonical body serialized **with the `receipt_sha256`
-  field absent** (detached self-hash), then added. Consumers MUST recompute
-  by removing the field and re-canonicalizing.
+  **Canonicalization (normative, byte-exact)**: the canonical body is JSON
+  serialized with (i) object keys sorted lexicographically by Unicode code
+  point, (ii) separators exactly `,` and `:` with no whitespace, (iii)
+  ASCII-only output — every non-ASCII character escaped as JSON `\uXXXX`
+  with lowercase hex, (iv) all numeric fields restricted to integers in
+  minimal decimal form (floats are prohibited in this schema), (v) UTF-8
+  encoding of the resulting ASCII text. This is byte-identical to CPython
+  `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
+  for conforming bodies, stated here so any implementation can reproduce the
+  bytes without Python. `receipt_sha256` is computed over the canonical body
+  serialized **with the `receipt_sha256` field absent** (detached
+  self-hash), then added. Consumers MUST recompute by removing the field and
+  re-canonicalizing.
 
 Notary statement (`axiom/notary-acceptance/v1`, signed):
 
@@ -122,6 +139,9 @@ Notary statement (`axiom/notary-acceptance/v1`, signed):
   independently by Job 2, the authorization context (see §4), the signing
   policy epoch, and the repository + lane identity. Domain-separated signing
   input; see §3.
+- The unsigned verification receipt MUST be co-published durably alongside
+  the statement (release asset / receipts store) — the statement embeds only
+  its digest, and a digest without the retrievable receipt is unverifiable.
 
 ## 3. Domains and keys
 
@@ -142,8 +162,9 @@ Notary statement (`axiom/notary-acceptance/v1`, signed):
 
 ### 4.0 Preflight (trusted)
 
-Resolves canonical repository identity, protected base `B`, candidate commit
-`X`, and the complete git-object diff `B..X`. The preflight MUST reject
+Resolves canonical repository identity, protected base `B` (resolved by the
+trusted workflow from the protected branch — never accepted from caller
+input), candidate commit `X`, and the complete git-object diff `B..X`. The preflight MUST reject
 candidate changes to authority surfaces: workflow files, verifier pins, trust
 roots, waiver policy files, repository-structure declarations, executable
 modes, symlinks. Those move only through separately privileged flows.
@@ -185,8 +206,8 @@ signed claim.
 
 ### 4.3 Publication — the X/X+1 rule
 
-Verifying `X` and adding its receipt produces `X+1`. **v1 REQUIRES the
-detached mode**: the signed statement references `X` and lives outside the
+**v1 REQUIRES the detached mode** (no receipt commit exists, so no `X+1`
+arises): the signed statement references `X` and lives outside the
 tree (release asset / receipts store). The mechanical-child mode is DEFERRED:
 as previously drafted it is circular (a signed `attestation_commit` cannot
 name the commit whose tree contains the signed bytes); if later specified,
@@ -215,8 +236,11 @@ consuming repository and lane; `subject_tree`/`subject_commit` match the
 content under evaluation; the statement's `base_commit` is an ancestor of the
 current protected branch; the statement's policy `epoch` is current or later
 for this repository (nondecreasing — older-epoch statements cannot admit
-post-epoch changes); and the changed-file set under evaluation is a subset of
-the statement's recorded target file set, deletions included. The guard MUST
+post-epoch changes); and the change under evaluation binds to recorded dispositions exactly:
+every protected file present in the change MUST carry disposition
+`verified` in the receipt; every protected file absent (deleted) MUST carry
+disposition `deleted`; a disposition of `out-of-scope` NEVER authorizes any
+protected change — subset membership alone is insufficient. The guard MUST
 be hardcoded in the protected shared workflow (no caller-controlled disable —
 TheAxiomFoundation/.github#55); migration bypasses live in a differently
 named, non-required check.
