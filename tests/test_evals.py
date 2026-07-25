@@ -7328,15 +7328,21 @@ rules:
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
 
-    def test_complete_mode_numeric_recall_uses_authoritative_body(self, tmp_path):
-        source_text = (
+    @pytest.mark.parametrize("pass_source_citation_path", [False, True])
+    def test_complete_mode_numeric_recall_uses_authoritative_body(
+        self,
+        tmp_path,
+        pass_source_citation_path,
+    ):
+        authoritative_source_text = (
             "(1) Der Freibetrag beträgt 259 Euro; "
             "der Zuschlag beträgt 73 Euro."
         )
+        caller_source_summary = "(1) Der Freibetrag beträgt 259 Euro."
         corpus_release = _write_test_corpus_provision(
             tmp_path,
             citation_path="de/statute/estg/32a",
-            body=source_text,
+            body=authoritative_source_text,
         )
         rulespec_file = tmp_path / "statutes" / "estg" / "32a.yaml"
         rulespec_file.parent.mkdir(parents=True)
@@ -7368,9 +7374,11 @@ rules:
                 rulespec_file=rulespec_file,
                 policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
                 axiom_rules_path=Path("/tmp/axiom-rules-engine"),
-                source_text=source_text,
+                source_text=caller_source_summary,
                 local_corpus_release=corpus_release,
-                source_citation_path="de/statute/estg/32a",
+                source_citation_path=(
+                    "de/statute/estg/32a" if pass_source_citation_path else None
+                ),
                 require_complete_source_unit=True,
             )
 

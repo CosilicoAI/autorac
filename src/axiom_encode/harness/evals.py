@@ -6650,6 +6650,44 @@ def evaluate_artifact(
         )
 
 
+def _module_corpus_citation_path(content: str) -> str | None:
+    """Return the artifact's exact corpus source locator, when present."""
+
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    module = payload.get("module")
+    if not isinstance(module, dict):
+        return None
+    source_verification = module.get("source_verification")
+    if not isinstance(source_verification, dict):
+        return None
+    citation_path = source_verification.get("corpus_citation_path")
+    if not isinstance(citation_path, str) or not citation_path.strip():
+        return None
+    return _corpus_resolver.require_canonical_corpus_citation_path(citation_path)
+
+
+def _complete_source_unit_eval_text(
+    content: str,
+    *,
+    local_corpus_release: _corpus_resolver.LocalCorpusRelease,
+    source_citation_path: str | None,
+) -> str:
+    """Resolve strict eval accounting text from the bound corpus release."""
+
+    citation_path = source_citation_path or _module_corpus_citation_path(content)
+    if citation_path is None:
+        return ""
+    return _corpus_resolver.resolve_local_corpus_source(
+        citation_path,
+        local_corpus_release,
+    ).body
+
+
 def _evaluate_artifact_in_scope(
     rulespec_file: Path,
     policy_repo_root: Path,
@@ -6761,6 +6799,15 @@ def _evaluate_artifact_in_scope(
                 )
 
     content = rulespec_file.read_text()
+    evaluation_source_text = (
+        _complete_source_unit_eval_text(
+            content,
+            local_corpus_release=local_corpus_release,
+            source_citation_path=source_citation_path,
+        )
+        if require_complete_source_unit
+        else source_text
+    )
     numeric_proof_source_texts = pipeline._numeric_source_texts_for_rulespec_content(
         content,
         source_texts=None,
@@ -6774,11 +6821,13 @@ def _evaluate_artifact_in_scope(
     # separately parsed proof evidence below — never in module.summary.
     numeric_validation_source_text = embedded_source or numeric_source_text or ""
     numeric_recall_source_text = (
-        authoritative_numeric_recall_text(source_text)
+        authoritative_numeric_recall_text(evaluation_source_text)
         if require_complete_source_unit
         else numeric_validation_source_text
     )
-    grounding_module_source_text = source_text or numeric_source_text or ""
+    grounding_module_source_text = (
+        evaluation_source_text or numeric_source_text or ""
+    )
     numeric_source_citation_path = source_citation_path
     if numeric_source_citation_path is None:
         with contextlib.suppress(ValueError, TypeError, yaml.YAMLError):
@@ -6789,7 +6838,7 @@ def _evaluate_artifact_in_scope(
                 )
     numeric_profile = _numeric_profile_for_citation_path(numeric_source_citation_path)
     half_up_helper_count = min(
-        source_backed_half_up_rounding_helper_count(content, source_text),
+        source_backed_half_up_rounding_helper_count(content, evaluation_source_text),
         source_backed_half_up_rounding_helper_count(
             content, numeric_validation_source_text or ""
         ),
@@ -6841,7 +6890,7 @@ def _evaluate_artifact_in_scope(
     semantic_source_occurrence_coverage = Counter[float]()
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
-    source_is_table = _source_text_looks_like_table(numeric_validation_source_text)
+    source_is_table = _source_text_looks_like_table(numeric_recall_source_text)
     inline_table_formula_occurrences = (
         _inline_table_formula_numeric_occurrences(content)
         if source_is_table
@@ -6854,7 +6903,7 @@ def _evaluate_artifact_in_scope(
         module_source_text=grounding_module_source_text,
         module_citation_path=numeric_source_citation_path,
         proof_source_texts=numeric_proof_source_texts,
-        authoritative_source_text=source_text,
+        authoritative_source_text=evaluation_source_text,
         require_body_bound_proof_evidence=False,
     ):
         grounding_metrics.append(
@@ -6902,7 +6951,7 @@ def _evaluate_artifact_in_scope(
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,
-        source_text,
+        evaluation_source_text,
     )
     policyengine_hint_upstream_issues = _policyengine_hint_upstream_composition_issues(
         content,

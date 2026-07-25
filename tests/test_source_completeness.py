@@ -681,6 +681,117 @@ def test_complete_companion_suite_covers_source_controls():
     assert not result.issues
 
 
+NARRATIVE_PIECEWISE_SOURCE = """\
+(1) Bis 100 Euro wird die Steuer als Einkommen * 5 Prozent berechnet; über 100 Euro wird die Steuer als Einkommen * 7 Prozent berechnet.
+"""
+
+NARRATIVE_PIECEWISE_CONTENT = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Narrative piecewise tariff.
+rules:
+  - name: tariff_boundary
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+  - name: lower_tariff_rate_percent
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5
+  - name: upper_tariff_rate_percent
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 7
+  - name: tariff_income_tax_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: "Bis 100 Euro wird die Steuer als Einkommen * 5 Prozent berechnet; über 100 Euro wird die Steuer als Einkommen * 7 Prozent berechnet."
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if taxable_income <= tariff_boundary:
+            taxable_income * lower_tariff_rate_percent / 100
+          else:
+            taxable_income * upper_tariff_rate_percent / 100
+"""
+
+
+def _narrative_piecewise_test(
+    name: str,
+    taxable_income: int,
+    expected_tax: int,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "period": "2026",
+        "input": {"taxable_income": taxable_income},
+        "output": {
+            "de:statutes/estg/32a#tariff_income_tax_amount": expected_tax,
+        },
+    }
+
+
+def test_narrative_piecewise_formula_requires_every_clause_and_boundary():
+    lower_only = _narrative_piecewise_test("lower zone", 90, 4)
+    lower_only["covers"] = ["de/statute/estg/32a(1)"]
+
+    result = _analyze(
+        NARRATIVE_PIECEWISE_CONTENT,
+        NARRATIVE_PIECEWISE_SOURCE,
+        test_cases=[lower_only],
+    )
+
+    assert _has_issue(result, "do not demonstrate", "formula branch")
+    assert _has_issue(result, "boundary", "test")
+
+
+def test_narrative_piecewise_zone_cases_still_require_exact_boundary():
+    result = _analyze(
+        NARRATIVE_PIECEWISE_CONTENT,
+        NARRATIVE_PIECEWISE_SOURCE,
+        test_cases=[
+            _narrative_piecewise_test("lower zone", 90, 4),
+            _narrative_piecewise_test("upper zone", 110, 7),
+        ],
+    )
+
+    assert not _has_issue(result, "do not demonstrate", "formula branch")
+    assert _has_issue(result, "boundary", "test")
+
+
+def test_narrative_piecewise_complete_zone_and_boundary_cases_pass():
+    result = _analyze(
+        NARRATIVE_PIECEWISE_CONTENT,
+        NARRATIVE_PIECEWISE_SOURCE,
+        test_cases=[
+            _narrative_piecewise_test("lower zone", 90, 4),
+            _narrative_piecewise_test("upper zone", 110, 7),
+            _narrative_piecewise_test("exact boundary", 100, 5),
+        ],
+    )
+
+    assert not result.issues
+
+
 @pytest.mark.parametrize(
     ("test_cases", "expected_issue_term"),
     [
@@ -758,6 +869,10 @@ def test_unrelated_numeric_input_cannot_cover_tariff_boundary():
 
 
 def test_unrelated_boolean_toggle_cannot_cover_source_exception():
+    content_with_unrelated_formula_gate = COMPANION_COVERAGE_CONTENT.replace(
+        "          else:\n            floor(\n",
+        "          else:\n            if unrelated_toggle:\n              floor(\n",
+    )
     test_cases = [
         case
         for case in COMPLETE_COMPANION_TESTS
@@ -776,7 +891,7 @@ def test_unrelated_boolean_toggle_cannot_cover_source_exception():
         )
 
     result = _analyze(
-        COMPANION_COVERAGE_CONTENT,
+        content_with_unrelated_formula_gate,
         COMPANION_COVERAGE_SOURCE,
         test_cases=test_cases,
     )
@@ -784,7 +899,55 @@ def test_unrelated_boolean_toggle_cannot_cover_source_exception():
     assert _has_issue(result, "exception", "test")
 
 
+def test_exception_toggle_from_another_source_branch_cannot_cover_exception():
+    source = (
+        COMPANION_COVERAGE_SOURCE
+        + "(2) Der Sonderbetrag wird als Einkommen + Einkommen berechnet.\n"
+    )
+    content = COMPANION_COVERAGE_CONTENT + """\
+  - name: special_status_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if special_status_applies:
+            0
+          else:
+            taxable_income
+"""
+    test_cases = [
+        case
+        for case in COMPLETE_COMPANION_TESTS
+        if case["name"] != "exception applies"
+    ]
+    for value, expected in ((False, 90), (True, 0)):
+        test_cases.append(
+            {
+                "name": f"other branch status {value}",
+                "period": "2026",
+                "input": {
+                    "taxable_income": 90,
+                    "exception_applies": False,
+                    "special_status_applies": value,
+                },
+                "output": {
+                    "de:statutes/estg/32a#special_status_amount": expected,
+                },
+            }
+        )
+
+    result = _analyze(content, source, test_cases=test_cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
 def test_unrelated_fractional_input_cannot_cover_rounding_rule():
+    content_with_unrelated_formula_amount = COMPANION_COVERAGE_CONTENT.replace(
+        "            )\n",
+        "            ) + unrelated_amount * 0\n",
+    )
     test_cases = [
         case
         for case in COMPLETE_COMPANION_TESTS
@@ -802,9 +965,27 @@ def test_unrelated_fractional_input_cannot_cover_rounding_rule():
     )
 
     result = _analyze(
-        COMPANION_COVERAGE_CONTENT,
+        content_with_unrelated_formula_amount,
         COMPANION_COVERAGE_SOURCE,
         test_cases=test_cases,
     )
 
     assert _has_issue(result, "rounding", "test")
+
+
+def test_nested_whitespace_rounding_operand_accepts_fractional_input():
+    content = COMPANION_COVERAGE_CONTENT.replace(
+        "            floor(\n",
+        "            floor (\n              max(0,\n",
+    ).replace(
+        "            )\n",
+        "              )\n            )\n",
+    )
+
+    result = _analyze(
+        content,
+        COMPANION_COVERAGE_SOURCE,
+        test_cases=COMPLETE_COMPANION_TESTS,
+    )
+
+    assert not _has_issue(result, "rounding", "test")
