@@ -6825,9 +6825,10 @@ def _evaluate_artifact_in_scope(
         if require_complete_source_unit
         else numeric_validation_source_text
     )
-    grounding_module_source_text = (
-        evaluation_source_text or numeric_source_text or ""
-    )
+    # Complete-source recall deliberately inventories the whole authoritative
+    # unit.  Generated-number grounding remains scoped exactly as it is in the
+    # default lane so an unrelated sibling branch cannot legitimize a literal.
+    grounding_module_source_text = source_text or numeric_source_text or ""
     numeric_source_citation_path = source_citation_path
     if numeric_source_citation_path is None:
         with contextlib.suppress(ValueError, TypeError, yaml.YAMLError):
@@ -6838,7 +6839,7 @@ def _evaluate_artifact_in_scope(
                 )
     numeric_profile = _numeric_profile_for_citation_path(numeric_source_citation_path)
     half_up_helper_count = min(
-        source_backed_half_up_rounding_helper_count(content, evaluation_source_text),
+        source_backed_half_up_rounding_helper_count(content, source_text),
         source_backed_half_up_rounding_helper_count(
             content, numeric_validation_source_text or ""
         ),
@@ -6890,7 +6891,9 @@ def _evaluate_artifact_in_scope(
     semantic_source_occurrence_coverage = Counter[float]()
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
-    source_is_table = _source_text_looks_like_table(numeric_recall_source_text)
+    source_is_table = _source_text_looks_like_table(
+        numeric_recall_source_text or ""
+    )
     inline_table_formula_occurrences = (
         _inline_table_formula_numeric_occurrences(content)
         if source_is_table
@@ -6903,7 +6906,7 @@ def _evaluate_artifact_in_scope(
         module_source_text=grounding_module_source_text,
         module_citation_path=numeric_source_citation_path,
         proof_source_texts=numeric_proof_source_texts,
-        authoritative_source_text=evaluation_source_text,
+        authoritative_source_text=source_text,
         require_body_bound_proof_evidence=False,
     ):
         grounding_metrics.append(
@@ -6951,7 +6954,7 @@ def _evaluate_artifact_in_scope(
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,
-        evaluation_source_text,
+        source_text,
     )
     policyengine_hint_upstream_issues = _policyengine_hint_upstream_composition_issues(
         content,

@@ -7588,8 +7588,11 @@ rules: []
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
 
+    @pytest.mark.parametrize("require_complete_source_unit", [False, True])
     def test_generated_numeric_grounding_uses_authoritative_module_source(
-        self, tmp_path
+        self,
+        tmp_path,
+        require_complete_source_unit,
     ):
         source_text = (
             "(a) Households in which each member receives qualifying public "
@@ -7637,6 +7640,7 @@ rules:
                 axiom_rules_path=Path("/tmp/axiom-rules-engine"),
                 source_text=source_text,
                 local_corpus_release=corpus_release,
+                require_complete_source_unit=require_complete_source_unit,
             )
 
         assert metrics.ci_pass
@@ -7695,6 +7699,9 @@ rules:
         assert not metrics.ci_pass
         assert metrics.ungrounded_numeric_count == 1
         assert any("144" in issue for issue in metrics.ci_issues)
+        if require_complete_source_unit:
+            assert metrics.source_numeric_occurrence_count == 1
+            assert metrics.missing_source_numeric_occurrence_count == 0
 
     def test_numeric_grounding_uses_de_profile_from_source_citation(self, tmp_path):
         source_text = "Der Betrag beläuft sich auf 1 034,87 Punkte."
