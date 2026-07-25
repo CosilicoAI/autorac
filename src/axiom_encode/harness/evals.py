@@ -1606,6 +1606,7 @@ def _target_document_identifiers(
     row: _corpus_resolver.ActiveCorpusBodyRow | None,
     *,
     target_citation_path: str,
+    parent_document_row: _corpus_resolver.ActiveCorpusBodyRow | None = None,
 ) -> _AmendmentTargetIdentifiers:
     exact_structured = {_normalized_relation_text(target_citation_path)}
     structured_phrases: set[tuple[str, ...]] = set()
@@ -1630,8 +1631,15 @@ def _target_document_identifiers(
         ):
             structured_phrases.add(tokens)
 
-    if row is not None:
-        exact_structured.add(_normalized_relation_text(row.row.citation_path))
+    identifier_rows = tuple(
+        identifier_row
+        for identifier_row in (row, parent_document_row)
+        if identifier_row is not None
+    )
+    for identifier_row in identifier_rows:
+        exact_structured.add(
+            _normalized_relation_text(identifier_row.row.citation_path)
+        )
     citation_segments = target_citation_path.split("/")[2:]
     for index, segment in enumerate(citation_segments):
         segment_tokens = _normalized_tokens(segment)
@@ -1653,9 +1661,9 @@ def _target_document_identifiers(
             add_structured(f"{segment}/{citation_segments[index + 1]}")
         else:
             add_name(segment)
-    if row is not None:
+    for identifier_row in identifier_rows:
         for key in ("title", "title_short", "title_alternative"):
-            for value in _metadata_scalar_values(row.metadata.get(key)):
+            for value in _metadata_scalar_values(identifier_row.metadata.get(key)):
                 add_name(value)
                 if key == "title":
                     title_without_parenthetical = re.sub(
@@ -1664,7 +1672,7 @@ def _target_document_identifiers(
                     short_title_tokens = _normalized_tokens(title_without_parenthetical)
                     if short_title_tokens[:2] == ("bek", "af"):
                         add_name(" ".join(short_title_tokens[2:]))
-        for key, value in row.metadata.items():
+        for key, value in identifier_row.metadata.items():
             normalized_key = key.casefold().replace("-", "_")
             is_eli_identifier = _is_eli_key(normalized_key)
             if is_eli_identifier or (
@@ -1672,8 +1680,8 @@ def _target_document_identifiers(
             ):
                 for scalar in _metadata_scalar_values(value):
                     add_structured(scalar, force_phrase=is_eli_identifier)
-        if row.heading:
-            add_name(row.heading)
+        if identifier_row.heading:
+            add_name(identifier_row.heading)
     return _AmendmentTargetIdentifiers(
         exact_structured=frozenset(exact_structured),
         structured_phrases=frozenset(structured_phrases),
@@ -1741,13 +1749,16 @@ def _discover_amendment_documents(
     rows: Sequence[_corpus_resolver.ActiveCorpusBodyRow],
     *,
     target_row: _corpus_resolver.ActiveCorpusBodyRow | None,
+    parent_document_row: _corpus_resolver.ActiveCorpusBodyRow | None,
     target_citation_path: str,
     target_source_path: str | None,
     version: str,
 ) -> tuple[CorpusAmendmentDocument, ...]:
     target_document_key = target_source_path or target_citation_path
     target_identifiers = _target_document_identifiers(
-        target_row, target_citation_path=target_citation_path
+        target_row,
+        target_citation_path=target_citation_path,
+        parent_document_row=parent_document_row,
     )
     marked_rows = [
         row
@@ -5288,6 +5299,30 @@ def prepare_eval_workspace(
     )
 
 
+def _shallowest_active_source_path_row(
+    rows: Sequence[_corpus_resolver.ActiveCorpusBodyRow],
+    *,
+    source_path: str | None,
+    version: str,
+) -> _corpus_resolver.ActiveCorpusBodyRow | None:
+    """Select a document root only within one non-empty source and version."""
+
+    if not source_path:
+        return None
+    return min(
+        (
+            row
+            for row in rows
+            if row.row.source_path == source_path and row.row.version == version
+        ),
+        key=lambda row: (
+            len(row.row.citation_path.split("/")),
+            row.row.citation_path,
+        ),
+        default=None,
+    )
+
+
 def resolve_corpus_source_unit(
     identifier: str,
     release: _corpus_resolver.LocalCorpusRelease,
@@ -5326,20 +5361,20 @@ def resolve_corpus_source_unit(
             None,
         )
         if target_row is None and resolved.row.source_path:
-            source_path_matches = (
-                item
-                for item in active_rows
-                if item.row.source_path == resolved.row.source_path
-                and item.row.version == resolved.row.version
+            target_row = _shallowest_active_source_path_row(
+                active_rows,
+                source_path=resolved.row.source_path,
+                version=resolved.row.version,
             )
-            target_row = min(
-                source_path_matches,
-                key=lambda item: (
-                    len(item.row.citation_path.split("/")),
-                    item.row.citation_path,
-                ),
-                default=None,
-            )
+        parent_document_row = _shallowest_active_source_path_row(
+            active_rows,
+            source_path=resolved.row.source_path,
+            version=resolved.row.version,
+        )
+        if parent_document_row is None or len(resolved.citation_path.split("/")) <= len(
+            parent_document_row.row.citation_path.split("/")
+        ):
+            parent_document_row = None
         return CorpusSourceUnit(
             requested=resolved.requested,
             citation_path=resolved.citation_path,
@@ -5353,6 +5388,7 @@ def resolve_corpus_source_unit(
             amendment_documents=_discover_amendment_documents(
                 active_rows,
                 target_row=target_row,
+                parent_document_row=parent_document_row,
                 target_citation_path=resolved.citation_path,
                 target_source_path=resolved.row.source_path,
                 version=resolved.row.version,

@@ -15,6 +15,7 @@ import pytest
 import requests
 import yaml
 
+from axiom_encode import corpus_resolver
 from axiom_encode.corpus_resolver import (
     InvalidCorpusCitationError,
     LocalCorpusRelease,
@@ -81,6 +82,7 @@ from axiom_encode.harness.evals import (
     _run_codex_prompt_eval,
     _secure_eval_read,
     _select_cross_section_context_files,
+    _shallowest_active_source_path_row,
     _slugify,
     _source_identifier_to_relative_rulespec_path,
     _source_metadata_citation_path,
@@ -766,6 +768,193 @@ def test_target_source_document_is_not_its_own_amendment_context(tmp_path):
                 "body": "Embedded amendment history.",
                 "source_path": "sources/dk/benefit-act.txt",
                 "metadata": {"amends": "dk/statute/benefit/section-1"},
+            },
+        ],
+    )
+
+    source_unit = resolve_corpus_source_unit("dk/statute/benefit/section-1", release)
+
+    assert source_unit.amendment_documents == ()
+
+
+def test_provision_inherits_document_identifiers_for_de_amendment_discovery(tmp_path):
+    target_path = "de/statute/estg"
+    target_source_path = "sources/de/statute/estg/BJNR010050934.xml"
+    stefe_path = "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    stefe_metadata = {
+        "amendment_targets": [target_path, f"{target_path}/32"],
+        "amends": (
+            "Einkommensteuergesetz (EStG), in der Fassung der Bekanntmachung "
+            "vom 8. Oktober 2009 (BGBl. I S. 3366, 3862)"
+        ),
+        "document_type": "Änderungsgesetz (amendment act)",
+        "title": (
+            "Gesetz zur Fortentwicklung des Steuerrechts und zur Anpassung des "
+            "Einkommensteuertarifs (Steuerfortentwicklungsgesetz – SteFeG) "
+            "(BGBl. 2024 I Nr. 449)"
+        ),
+        "source_note": "Official electronic Bundesgesetzblatt PDF.",
+    }
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": target_path,
+                "body": "Einkommensteuergesetz",
+                "source_path": target_source_path,
+                "heading": "Einkommensteuergesetz",
+                "metadata": {
+                    "ausfertigung_datum": "1934-10-16",
+                    "jurabk": "EStG",
+                    "law_metadata": {
+                        "jurabk": "EStG",
+                        "langtitel": "Einkommensteuergesetz",
+                    },
+                    "law_slug": "estg",
+                    "law_title": "Einkommensteuergesetz (EStG)",
+                    "legal_authority_url": ("https://www.gesetze-im-internet.de/estg/"),
+                },
+            },
+            {
+                "citation_path": f"{target_path}/3",
+                "body": "§ 3 Steuerfreie Einnahmen",
+                "source_path": target_source_path,
+                "heading": "§ 3",
+                "metadata": {},
+            },
+            {
+                "citation_path": stefe_path,
+                "body": "Artikel 1 ändert das Einkommensteuergesetz.",
+                "source_path": "sources/de/statute/stefeg/regelungstext.pdf",
+                "expression_date": "2024-12-23",
+                "metadata": stefe_metadata,
+            },
+        ],
+    )
+
+    provision = resolve_corpus_source_unit(f"{target_path}/3", release)
+    document = resolve_corpus_source_unit(target_path, release)
+
+    assert [item.citation_path for item in provision.amendment_documents] == [
+        stefe_path
+    ]
+    assert (
+        provision.amendment_documents[0].metadata["source_note"].startswith("Official")
+    )
+    assert provision.amendment_documents == document.amendment_documents
+
+
+def test_provision_identifier_inheritance_does_not_cross_source_documents(tmp_path):
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "de/statute/act-a",
+                "source_path": "sources/de/act-a.xml",
+                "metadata": {"title": "Alpha Family Benefits Act"},
+            },
+            {
+                "citation_path": "de/statute/act-a/3",
+                "body": "Act A provision.",
+                "source_path": "sources/de/act-a.xml",
+                "metadata": {},
+            },
+            {
+                "citation_path": "de/statute/act-b",
+                "source_path": "sources/de/act-b.xml",
+                "metadata": {"title": "Beta Housing Support Act"},
+            },
+            {
+                "citation_path": "de/statute/act-b/amendment",
+                "body": "Act B amendment.",
+                "source_path": "sources/de/act-b-amendment.xml",
+                "metadata": {
+                    "document_type": "amendment act",
+                    "amends": "Beta Housing Support Act",
+                },
+            },
+        ],
+    )
+
+    assert (
+        resolve_corpus_source_unit("de/statute/act-a/3", release).amendment_documents
+        == ()
+    )
+    # Active release rows require source_path, so exercise the resolver's
+    # fail-closed boundary against populated candidate rows through its selector.
+    candidate_rows = tuple(
+        corpus_resolver.iter_active_local_corpus_rows(
+            release, jurisdiction="de", document_class="statute"
+        )
+    )
+    assert candidate_rows
+    assert (
+        _shallowest_active_source_path_row(
+            candidate_rows, source_path=None, version=_TEST_CORPUS_VERSION
+        )
+        is None
+    )
+
+
+def test_provision_inherits_parent_metadata_identifiers(tmp_path):
+    source_path = "sources/de/family-benefit.xml"
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "de/statute/family-benefit",
+                "source_path": source_path,
+                "metadata": {"title": "German Family Benefit Act"},
+            },
+            {
+                "citation_path": "de/statute/family-benefit/3",
+                "body": "Provision text.",
+                "source_path": source_path,
+                "metadata": {},
+            },
+            {
+                "citation_path": "de/statute/amendment-2026",
+                "body": "Amendment text.",
+                "source_path": "sources/de/amendment-2026.xml",
+                "metadata": {
+                    "document_type": "amendment act",
+                    "amends": "Amendment of the German Family Benefit Act",
+                },
+            },
+        ],
+    )
+
+    source_unit = resolve_corpus_source_unit("de/statute/family-benefit/3", release)
+
+    assert [item.citation_path for item in source_unit.amendment_documents] == [
+        "de/statute/amendment-2026"
+    ]
+
+
+def test_provision_inheritance_preserves_same_document_amendment_exclusion(tmp_path):
+    source_path = "sources/dk/benefit-act.txt"
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "dk/statute/benefit",
+                "source_path": source_path,
+                "metadata": {"title": "Danish Family Benefit Act"},
+            },
+            {
+                "citation_path": "dk/statute/benefit/section-1",
+                "body": "The divisor is 12.",
+                "source_path": source_path,
+                "metadata": {},
+            },
+            {
+                "citation_path": "dk/statute/benefit/amendment-note",
+                "body": "Embedded amendment history.",
+                "source_path": source_path,
+                "metadata": {
+                    "document_type": "amendment act",
+                    "amends": "Danish Family Benefit Act",
+                },
             },
         ],
     )
