@@ -378,6 +378,37 @@ rules:
     )
 
 
+def test_deferral_prose_and_targets_cannot_hide_authoritative_source_number():
+    source = "(1) Der Freibetrag beträgt 259 Euro; der Zuschlag beträgt 73 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Der Freibetrag beträgt 259 Euro.
+  deferred_outputs:
+    - output: de:statutes/estg/32a/1#supplement_73_amount
+      reason: The 73 Euro supplement requires an unavailable dependency.
+      blocked_by:
+        - de:statutes/estg/99#dependency_73_value
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+
+    issues = _pipeline_issues(content, source, test_cases=[])
+
+    assert any(
+        "authoritative corpus numeric value 73" in issue.lower()
+        for issue in issues
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "marker"),
     [
@@ -562,6 +593,97 @@ rules:
     result = _analyze(content, source, test_cases=[])
 
     assert _has_issue(result, "(1)", "source branch")
+
+
+def test_unrelated_rule_source_cannot_cover_requested_branch():
+    source = "(1) Die Hauptregel gilt."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Hauptregel.
+rules:
+  - name: unrelated_output
+    kind: derived
+    dtype: Money
+    source: de/statute/other/99 Absatz 1
+    versions:
+      - effective_from: '2026-01-01'
+        formula: unrelated_value
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "(1)", "source branch")
+
+
+def test_unstructured_formula_requires_principal_output_bound_to_source_unit():
+    source = (
+        "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Steuerberechnung.
+rules:
+  - name: unrelated_output
+    kind: derived
+    dtype: Money
+    source: de/statute/other/99
+    versions:
+      - effective_from: '2026-01-01'
+        formula: unrelated_value
+"""
+    test_cases = [
+        {
+            "name": "unrelated output",
+            "period": "2026",
+            "input": {"unrelated_value": 5},
+            "output": {"de:statutes/estg/32a#unrelated_output": 5},
+        }
+    ]
+
+    unrelated = _analyze(content, source, test_cases=test_cases)
+    bound = _analyze(
+        content.replace("de/statute/other/99", CORPUS_CITATION_PATH),
+        source,
+        test_cases=test_cases,
+    )
+
+    assert _has_issue(unrelated, "explicit source computation", "principal")
+    assert not _has_issue(bound, "formula-output")
+
+
+def test_unstructured_formula_requires_unit_level_deferral():
+    source = (
+        "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
+    )
+    child_deferral = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Steuerberechnung.
+  deferred_outputs:
+    - output: de:statutes/estg/32a/99#income_tax_amount
+      reason: Requires the missing assessment base under EStG section 26.
+      blocked_by:
+        - de:statutes/estg/26#assessment_base
+rules: []
+"""
+
+    unrelated = _analyze(child_deferral, source, test_cases=[])
+    whole_unit = _analyze(
+        child_deferral.replace("/32a/99#", "/32a#"),
+        source,
+        test_cases=[],
+    )
+
+    assert _has_issue(unrelated, "explicit source computation", "principal")
+    assert not whole_unit.issues
 
 
 COMPANION_COVERAGE_SOURCE = """\

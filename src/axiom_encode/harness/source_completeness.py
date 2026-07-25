@@ -404,7 +404,7 @@ def _analyze_rulespec_payload(
                     "`derived_relation`) and is not "
                     "precisely deferred; parameter-only representation is invalid."
                 )
-        elif not principal_rules and not deferred_paths:
+        elif not _path_covered((), principal_paths, deferred_paths):
             issues.append(
                 "[complete-source-unit:formula-output] Explicit source computation "
                 "has no principal derived/relation output (`derived` or "
@@ -503,6 +503,8 @@ def _rule_coverage(
             excerpt_branch = _most_specific_excerpt_branch(excerpt, branches)
             if excerpt_branch is not None:
                 paths.add(excerpt_branch.path)
+            elif not branches:
+                paths.add(())
         for path in paths:
             all_paths.update(_path_prefixes(path))
         if kind in {"derived", "derived_relation"} and name:
@@ -563,7 +565,10 @@ def _paths_from_source_reference(
     corpus_citation_path: str,
 ) -> set[tuple[str, ...]]:
     value = source.strip()
-    if not value:
+    if not value or not _source_reference_targets_authoritative_unit(
+        value,
+        corpus_citation_path=corpus_citation_path,
+    ):
         return set()
     paths: set[tuple[str, ...]] = set()
     escaped_path = re.escape(corpus_citation_path.rstrip("/"))
@@ -594,15 +599,51 @@ def _paths_from_source_reference(
     if keyword_components:
         paths.add(tuple(keyword_components))
 
+    current_section = corpus_citation_path.rstrip("/").rsplit("/", 1)[-1]
     for match in re.finditer(
-        r"§\s*\d+[a-z]?(?P<suffix>(?:\([A-Za-z0-9-]+\))+)",
+        rf"§\s*{re.escape(current_section)}"
+        r"(?P<suffix>(?:\([A-Za-z0-9-]+\))+)",
         value,
         flags=re.IGNORECASE,
     ):
         components = re.findall(r"\(([A-Za-z0-9-]+)\)", match.group("suffix"))
         if components:
             paths.add(tuple(component.lower() for component in components))
+    if not paths:
+        paths.add(())
     return paths
+
+
+def _source_reference_targets_authoritative_unit(
+    source: str,
+    *,
+    corpus_citation_path: str,
+) -> bool:
+    """Require branch claims to identify this unit, not merely a branch label."""
+
+    candidates = {
+        corpus_citation_path.rstrip("/"),
+        _rulespec_target_base(corpus_citation_path),
+    }
+    if any(
+        re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(candidate)}(?![A-Za-z0-9_.-])",
+            source,
+            flags=re.IGNORECASE,
+        )
+        for candidate in candidates
+        if candidate
+    ):
+        return True
+    current_section = corpus_citation_path.rstrip("/").rsplit("/", 1)[-1]
+    return bool(
+        current_section
+        and re.search(
+            rf"§{{1,2}}\s*{re.escape(current_section)}(?![A-Za-z0-9.])",
+            source,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _deferred_coverage(
@@ -622,14 +663,16 @@ def _deferred_coverage(
             continue
         output = str(record.get("output") or "").strip()
         output_path = output.split("#", 1)[0]
-        path: tuple[str, ...] = ()
-        if output_path.startswith(f"{base_target}/"):
+        path: tuple[str, ...] | None = None
+        if output_path == base_target:
+            path = ()
+        elif output_path.startswith(f"{base_target}/"):
             path = tuple(
                 part.lower()
                 for part in output_path[len(base_target) + 1 :].split("/")
                 if part
             )
-        if not path:
+        if path is None:
             continue
         reason = str(record.get("reason") or "").strip()
         blocked_by = record.get("blocked_by")
@@ -660,10 +703,12 @@ def _deferred_coverage(
         if precise:
             covered.add(path)
         else:
+            branch_label = path[0] if path else "source unit"
+            rendered_path = "/".join(path) or "<source-unit>"
             issues.append(
                 "[complete-source-unit:deferral] "
                 f"`module.deferred_outputs[{index}]` identifies source branch "
-                f"({path[0]}) (`{'/'.join(path)}`) but its deferral does not "
+                f"({branch_label}) (`{rendered_path}`) but its deferral does not "
                 "name an exact missing "
                 "dependency/citation."
             )
@@ -720,6 +765,8 @@ def _rulespec_target_base(corpus_citation_path: str) -> str:
 
 
 def _path_prefixes(path: tuple[str, ...]) -> set[tuple[str, ...]]:
+    if not path:
+        return {()}
     return {path[:index] for index in range(1, len(path) + 1)}
 
 
@@ -786,7 +833,7 @@ def collect_artifact_numeric_values(
     """Collect numeric representations credited by strict recall accounting."""
 
     values = [float(value) for value in additional_values]
-    for index, artifact_content in enumerate((content, *imported_contents)):
+    for artifact_content in (content, *imported_contents):
         values.extend(
             float(item.value)
             for item in extract_named_scalars(artifact_content)
@@ -840,13 +887,6 @@ def collect_artifact_numeric_values(
                                 ),
                             )
                         )
-            if index == 0:
-                values.extend(
-                    _deferred_numeric_values(
-                        payload,
-                        extract_numeric_occurrences=extract_numeric_occurrences,
-                    )
-                )
     return tuple(values)
 
 
@@ -901,42 +941,6 @@ def _verification_numeric_values(
                     extract_numeric_occurrences=extract_numeric_occurrences,
                 )
             )
-    return tuple(values)
-
-
-def _deferred_numeric_values(
-    payload: dict[str, Any],
-    *,
-    extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[float, ...]:
-    module = payload.get("module")
-    records = module.get("deferred_outputs") if isinstance(module, dict) else None
-    if not isinstance(records, list):
-        return ()
-    values: list[float] = []
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        reason = record.get("reason")
-        if isinstance(reason, str):
-            values.extend(
-                float(value)
-                for value in extract_numeric_occurrences(
-                    authoritative_numeric_recall_text(reason)
-                )
-            )
-        for field in ("output", "blocked_by", "source_values"):
-            raw = record.get(field)
-            items = raw if isinstance(raw, list) else [raw]
-            for item in items:
-                if not isinstance(item, str):
-                    continue
-                values.extend(
-                    _numeric_concept_values(
-                        item.rsplit("#", 1)[-1],
-                        extract_numeric_occurrences=extract_numeric_occurrences,
-                    )
-                )
     return tuple(values)
 
 
