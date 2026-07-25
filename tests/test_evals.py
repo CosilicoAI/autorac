@@ -9,6 +9,7 @@ import uuid
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from axiom_encode.corpus_resolver import (
     LocalCorpusRelease,
     resolve_scoped_local_corpus_source,
 )
+from axiom_encode.harness import evals as evals_module
 from axiom_encode.harness import validator_pipeline
 from axiom_encode.harness.dependency_stubs import UnsafeRulespecContextPath
 from axiom_encode.harness.encoding_db import TokenUsage
@@ -13279,10 +13281,16 @@ cases:
                 resume_existing=True,
             )
 
-    def test_run_eval_suite_resume_reruns_reviewer_for_complete_revalidation(
+    def test_run_eval_suite_resume_revalidates_without_rerunning_reviewer(
         self,
         tmp_path,
     ):
+        """Resume recomputes deterministic verdicts; advisory review is not rerun.
+
+        Generalist review is model-generated and nondeterministic, so a resume
+        that rerun it could never reproduce the persisted output byte-for-byte
+        and every legitimate resume of a reviewed suite would be refused.
+        """
         manifest, corpus_release, output_root, axiom_rules_path = (
             _complete_test_eval_suite(tmp_path)
         )
@@ -13301,7 +13309,7 @@ cases:
         self.persisted_result_revalidation.assert_called_once()
         assert (
             self.persisted_result_revalidation.call_args.kwargs["skip_reviewers"]
-            is False
+            is True
         )
 
     def test_revalidation_admission_authenticates_without_old_verdict_equality(
@@ -13343,25 +13351,8 @@ cases:
         assert completed == {1}
         self.persisted_result_revalidation.assert_not_called()
 
-    @pytest.mark.parametrize(
-        "metrics_mutation",
-        [
-            {
-                "generalist_review_pass": False,
-                "generalist_review_score": 1.0,
-            },
-            {"policyengine_pass": True},
-        ],
-        ids=["generalist-review", "policyengine-oracle"],
-    )
-    def test_run_eval_suite_resume_rejects_fully_rehashed_verdict_mutation(
-        self,
-        tmp_path,
-        metrics_mutation,
-    ):
-        manifest, corpus_release, output_root, axiom_rules_path = (
-            _complete_test_eval_suite(tmp_path)
-        )
+    def _mutate_and_rehash_first_row(self, output_root, metrics_mutation):
+        """Mutate persisted metrics with full verdict re-sign and rehash."""
         ledger_path = output_root / "suite-results.jsonl"
         row = json.loads(ledger_path.read_text())
         result_payload = row["result"]
@@ -13383,12 +13374,18 @@ cases:
         row["result"] = _bind_eval_result_payload(result_payload)
         ledger_path.write_text(json.dumps(row, sort_keys=True) + "\n")
 
-        expected_error = (
-            "PolicyEngine evidence without its runtime identity"
-            if "policyengine_pass" in metrics_mutation
-            else "fresh validation of the bound artifact"
+    def test_run_eval_suite_resume_rejects_fully_rehashed_verdict_mutation(
+        self,
+        tmp_path,
+    ):
+        manifest, corpus_release, output_root, axiom_rules_path = (
+            _complete_test_eval_suite(tmp_path)
         )
-        with pytest.raises(ValueError, match=expected_error):
+        self._mutate_and_rehash_first_row(output_root, {"policyengine_pass": True})
+
+        with pytest.raises(
+            ValueError, match="PolicyEngine evidence without its runtime identity"
+        ):
             run_eval_suite(
                 manifest=manifest,
                 output_root=output_root,
@@ -13397,13 +13394,81 @@ cases:
                 corpus_release=corpus_release,
                 resume_existing=True,
             )
-        if "policyengine_pass" in metrics_mutation:
-            self.persisted_result_revalidation.assert_not_called()
-        else:
-            assert (
-                self.persisted_result_revalidation.call_args.kwargs["skip_reviewers"]
-                is False
+        self.persisted_result_revalidation.assert_not_called()
+
+    def test_run_eval_suite_resume_rejects_fully_rehashed_deterministic_mutation(
+        self,
+        tmp_path,
+    ):
+        """Deterministic metric drift is refused by recompute, not hydration.
+
+        The mutation survives every hydration-layer guard (verdict re-signed,
+        hashes rebound, no runtime-identity coupling), so the refusal must
+        come from the deterministic revalidation comparison itself.
+        """
+        manifest, corpus_release, output_root, axiom_rules_path = (
+            _complete_test_eval_suite(tmp_path)
+        )
+        row = json.loads((output_root / "suite-results.jsonl").read_text())
+        original_count = row["result"]["metrics"]["grounded_numeric_count"]
+        self._mutate_and_rehash_first_row(
+            output_root, {"grounded_numeric_count": original_count + 4}
+        )
+        self.persisted_result_revalidation.reset_mock()
+
+        with pytest.raises(ValueError, match="fresh validation of the bound artifact"):
+            run_eval_suite(
+                manifest=manifest,
+                output_root=output_root,
+                axiom_rules_path=axiom_rules_path,
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=corpus_release,
+                resume_existing=True,
             )
+        self.persisted_result_revalidation.assert_called_once()
+        assert (
+            self.persisted_result_revalidation.call_args.kwargs["skip_reviewers"]
+            is True
+        )
+
+    def test_run_eval_suite_resume_admits_resigned_advisory_review_mutation(
+        self,
+        tmp_path,
+    ):
+        """A key-holding mutation of advisory review fields is admitted.
+
+        Recompute-equality cannot police the generalist reviewer: it is
+        nondeterministic, so rerunning it rejects every legitimate resume
+        (the failure this contract replaces). Advisory review integrity is
+        signature-bound instead; this attacker re-signs with the live broker
+        key, which no deterministic check can distinguish from a real run.
+        Deterministic gate fields stay recompute-verified regardless.
+        """
+        manifest, corpus_release, output_root, axiom_rules_path = (
+            _complete_test_eval_suite(tmp_path)
+        )
+        self._mutate_and_rehash_first_row(
+            output_root,
+            {"generalist_review_pass": False, "generalist_review_score": 1.0},
+        )
+        self.persisted_result_revalidation.reset_mock()
+
+        results = run_eval_suite(
+            manifest=manifest,
+            output_root=output_root,
+            axiom_rules_path=axiom_rules_path,
+            policy_repo_path=tmp_path / "rulespec-us",
+            corpus_release=corpus_release,
+            resume_existing=True,
+        )
+
+        assert len(results) == 1
+        assert results[0].metrics.generalist_review_pass is False
+        assert results[0].metrics.generalist_review_score == 1.0
+        assert (
+            self.persisted_result_revalidation.call_args.kwargs["skip_reviewers"]
+            is True
+        )
 
     def test_run_eval_suite_resume_rejects_fully_rehashed_cost_laundering(
         self,
@@ -17250,3 +17315,149 @@ def test_summarize_validation_failures_deduplicates_caps_and_counts_before_cap()
     assert sum(summary["validation_failure_counts"].values()) == 42
     assert summary["validation_failure_counts"][f"compile:{'x' * 60}"] == 1
     assert all(len(item["detail"]) <= 240 for item in summary["validation_failures"])
+
+
+def _revalidation_metrics(**overrides) -> EvalArtifactMetrics:
+    base = dict(
+        compile_pass=True,
+        compile_issues=[],
+        ci_pass=True,
+        ci_issues=[],
+        embedded_source_present=True,
+        grounded_numeric_count=3,
+        ungrounded_numeric_count=0,
+        grounding=[GroundingMetric(line=4, raw="20", value=20.0, grounded=True)],
+        source_numeric_occurrence_count=3,
+        covered_source_numeric_occurrence_count=3,
+        missing_source_numeric_occurrence_count=0,
+        numeric_occurrence_issues=[],
+        generalist_review_pass=True,
+        generalist_review_score=8.5,
+        generalist_review_issues=["style nit"],
+        generalist_review_prompt_sha256="a" * 64,
+    )
+    base.update(overrides)
+    return EvalArtifactMetrics(**base)
+
+
+def _revalidation_result(
+    metrics: EvalArtifactMetrics | None,
+    *,
+    output_file: str = "artifact.yaml",
+    success: bool = True,
+    error: str | None = None,
+) -> evals_module.EvalResult:
+    return evals_module.EvalResult(
+        citation="uk/statute/ukpga/1994/23/2",
+        runner="fable",
+        backend="claude",
+        model="claude-fable-5",
+        mode="cold",
+        output_file=output_file,
+        trace_file="trace.json",
+        context_manifest_file="context.json",
+        generated_output_sha256="b" * 64,
+        trace_sha256="c" * 64,
+        context_manifest_sha256="d" * 64,
+        duration_ms=1000,
+        success=success,
+        error=error,
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        reasoning_output_tokens=0,
+        estimated_cost_usd=None,
+        actual_cost_usd=1.0,
+        retrieved_files=[],
+        unexpected_accesses=[],
+        metrics=metrics,
+    )
+
+
+def _run_case_revalidation(
+    persisted: EvalArtifactMetrics | None,
+    fresh: EvalArtifactMetrics | None,
+    **result_overrides,
+):
+    case = evals_module.EvalSuiteCase(
+        kind="source",
+        name="vat_standard_rate",
+        mode="cold",
+        corpus_citation_path="uk/statute/ukpga/1994/23/2",
+    )
+    source_unit = SimpleNamespace(body="The rate of VAT is 20 percent.")
+    with (
+        patch.object(
+            evals_module, "resolve_corpus_source_unit", return_value=source_unit
+        ),
+        patch.object(
+            evals_module, "_source_metadata_with_attestation", return_value={}
+        ),
+        patch.object(
+            evals_module,
+            "_source_metadata_citation_path",
+            return_value="uk/statute/ukpga/1994/23/2",
+        ),
+        patch.object(
+            evals_module, "evaluate_artifact", return_value=fresh
+        ) as evaluate_mock,
+    ):
+        evals_module._revalidate_persisted_eval_suite_case_results(
+            case,
+            [_revalidation_result(persisted, **result_overrides)],
+            policy_repo_root=Path("/nonexistent/policy"),
+            axiom_rules_path=Path("/nonexistent/engine"),
+            corpus_release=SimpleNamespace(),
+            policyengine_runtime=None,
+            rulespec_dependency_roots=(),
+        )
+    return evaluate_mock
+
+
+def test_persisted_revalidation_ignores_reviewer_outcomes():
+    """Advisory reviewer output is nondeterministic; it must not gate resume."""
+    persisted = _revalidation_metrics()
+    fresh = _revalidation_metrics(
+        generalist_review_pass=None,
+        generalist_review_score=None,
+        generalist_review_issues=[],
+        generalist_review_prompt_sha256=None,
+    )
+    evaluate_mock = _run_case_revalidation(persisted, fresh)
+    assert evaluate_mock.call_args.kwargs["skip_reviewers"] is True
+
+
+@pytest.mark.parametrize(
+    "persisted_overrides,fresh_overrides",
+    [
+        ({}, {"ci_pass": False, "ci_issues": ["fixture failed"]}),
+        (
+            {"policyengine_pass": True, "policyengine_score": 0.97},
+            {"policyengine_pass": False, "policyengine_score": 0.41},
+        ),
+    ],
+    ids=["ci", "policyengine-oracle"],
+)
+def test_persisted_revalidation_still_rejects_deterministic_drift(
+    persisted_overrides, fresh_overrides
+):
+    """Deterministic validator fields — oracle included — stay recompute-bound."""
+    reviewer_blank = dict(
+        generalist_review_pass=None,
+        generalist_review_score=None,
+        generalist_review_issues=[],
+        generalist_review_prompt_sha256=None,
+    )
+    persisted = _revalidation_metrics(**persisted_overrides)
+    fresh = _revalidation_metrics(**reviewer_blank, **fresh_overrides)
+    with pytest.raises(ValueError, match="do not match fresh validation"):
+        _run_case_revalidation(persisted, fresh)
+
+
+def test_persisted_revalidation_admits_unvalidated_rows_without_reviewer_calls():
+    """A row with no bound artifact (no output, metrics=None) resumes cleanly."""
+    evaluate_mock = _run_case_revalidation(
+        None, None, output_file="", success=False, error="encode failed"
+    )
+    evaluate_mock.assert_not_called()

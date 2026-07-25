@@ -3751,6 +3751,31 @@ def _validate_persisted_eval_suite_case_group(
     return [results_by_runner[runner.name] for runner in parsed_runners]
 
 
+_REVIEWER_DEPENDENT_METRIC_FIELDS = (
+    "generalist_review_pass",
+    "generalist_review_score",
+    "generalist_review_issues",
+    "generalist_review_prompt_sha256",
+)
+
+
+def _reviewer_independent_metrics(
+    metrics: EvalArtifactMetrics | None,
+) -> dict[str, object] | None:
+    """Project metrics onto reviewer-independent fields for revalidation.
+
+    Generalist review is advisory and model-generated, so recomputing it
+    yields different output for the same artifact; persisted-row integrity
+    checks must compare only the deterministic validator outputs.
+    """
+    if metrics is None:
+        return None
+    payload = asdict(metrics)
+    for field_name in _REVIEWER_DEPENDENT_METRIC_FIELDS:
+        payload.pop(field_name, None)
+    return payload
+
+
 def _revalidate_persisted_eval_suite_case_results(
     case: EvalSuiteCase,
     results: Sequence[EvalResult],
@@ -3761,7 +3786,13 @@ def _revalidate_persisted_eval_suite_case_results(
     policyengine_runtime: PolicyEngineRuntime | None,
     rulespec_dependency_roots: Sequence[Path],
 ) -> None:
-    """Recompute persisted verdicts from exact artifacts before admitting them."""
+    """Recompute persisted deterministic verdicts before admitting rows.
+
+    Reviewers are skipped: generalist review is advisory and nondeterministic,
+    so persisted reviewer outcomes are carried forward as recorded while the
+    deterministic validators (compile, CI, grounding, oracle) must reproduce
+    exactly from the bound artifacts.
+    """
 
     identifier = case.corpus_citation_path or case.citation or ""
     source_unit = resolve_corpus_source_unit(identifier, corpus_release)
@@ -3782,7 +3813,7 @@ def _revalidate_persisted_eval_suite_case_results(
                 oracle=case.oracle,
                 policyengine_runtime=policyengine_runtime,
                 policyengine_rule_hint=case.policyengine_rule_hint,
-                skip_reviewers=False,
+                skip_reviewers=True,
                 source_metadata=source_metadata,
                 source_citation_path=source_citation_path,
                 rulespec_dependency_roots=rulespec_dependency_roots,
@@ -3803,12 +3834,8 @@ def _revalidate_persisted_eval_suite_case_results(
             if result.output_file
             else None
         )
-        persisted_metrics = (
-            asdict(result.metrics) if result.metrics is not None else None
-        )
-        recomputed_metrics = (
-            asdict(fresh_metrics) if fresh_metrics is not None else None
-        )
+        persisted_metrics = _reviewer_independent_metrics(result.metrics)
+        recomputed_metrics = _reviewer_independent_metrics(fresh_metrics)
         if (
             result.success is not fresh_success
             or persisted_metrics != recomputed_metrics

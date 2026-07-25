@@ -37,6 +37,7 @@ runners:
   - gpt-5.5=codex:gpt-5.5
   - luna=codex:gpt-5.6-luna
   - fable=claude:claude-fable-5
+  - opus-5=claude:claude-opus-5
 mode: cold
 # Rate gates are pinned to 0.0: a capability suite reports rates through
 # eval-board instead of gating bulk-readiness, and the manifest loader
