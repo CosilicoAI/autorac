@@ -1319,4 +1319,11 @@ def test_capability_manifest_locks_shape():
     # The roster is subscription-billed backends only.
     backends = {spec.split("=", 1)[-1].split(":", 1)[0] for spec in manifest.runners}
     assert backends == {"codex", "claude"}
-    assert len(manifest.runners) == len(set(manifest.runners)) == 5
+    assert manifest.runners == [
+        "terra=codex:gpt-5.6-terra",
+        "sol=codex:gpt-5.6-sol",
+        "gpt-5.5=codex:gpt-5.5",
+        "luna=codex:gpt-5.6-luna",
+        "fable=claude:claude-fable-5",
+        "opus-5=claude:claude-opus-5",
+    ]
