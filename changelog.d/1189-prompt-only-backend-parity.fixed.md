@@ -3,13 +3,18 @@ the complete source and every declared context file inlined. Context is never
 silently truncated or skipped: prompts outside the shared receiver envelope
 fail as `context_overflow`. Claude keeps tools disabled, while Codex runs
 read-only in a fresh empty scratch workspace and treats undeclared reads as
-terminal integrity failures.
+terminal integrity failures. Local CLI prompts are streamed as exact UTF-8
+bytes over standard input, avoiding operating-system command-line size limits.
 
 OpenAI Responses must report a completed response and completed output, use the
 model's 128,000-token output ceiling, and reject incomplete or max-token output
-as `output_truncated`; Agent API max-token stops are likewise rejected.
+as `output_truncated`; Agent API max-token stops are likewise rejected. Claude
+and Codex terminal envelopes are checked explicitly, and output from any
+receiver error or terminal partial is cleared before artifact materialization
+so it cannot be scored.
 Capability boards render overflow, truncation, and integrity failures
 distinctly and never score their artifacts. Eval suites preflight each local
 CLI's version and required flags once before case dispatch, execute that exact
-binary, and bind Claude/Codex versions plus OpenAI endpoint, response model,
-service tier, and request ceiling into result/verdict schema v7.
+binary, and require Claude/Codex versions plus the Codex executable digest, and
+OpenAI endpoint, response model, service tier, and request ceiling, in
+result/verdict schema v7.
