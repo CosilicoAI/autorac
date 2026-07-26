@@ -6630,6 +6630,70 @@ def test_timed_out_truncated_artifact_is_never_scored_as_validation_failure(
     mock_evaluate.assert_not_called()
 
 
+def test_receiver_error_with_plausible_artifact_is_never_materialized_or_scored(
+    tmp_path,
+):
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path, "source states 451."
+    )
+    plausible_bundle = (
+        "=== FILE: sample.yaml ===\n"
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  summary: plausible but receiver-rejected output\n"
+        "rules: []\n"
+        "=== FILE: sample.test.yaml ===\n"
+        "[]\n"
+    )
+    response = EvalPromptResponse(
+        text=plausible_bundle,
+        duration_ms=50,
+        error="Receiver rejected the turn",
+        failure_kind="error",
+    )
+    plausible_metrics = EvalArtifactMetrics(
+        compile_pass=True,
+        compile_issues=[],
+        ci_pass=True,
+        ci_issues=[],
+        embedded_source_present=True,
+        grounded_numeric_count=1,
+        ungrounded_numeric_count=0,
+        grounding=[],
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            return_value=response,
+        ) as mock_prompt_eval,
+        patch(
+            "axiom_encode.harness.evals.evaluate_artifact",
+            return_value=plausible_metrics,
+        ) as mock_evaluate,
+    ):
+        [result] = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["codex:gpt-5.4"],
+            output_root=tmp_path / "out",
+            policy_path=policy_repo_root,
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+            mode="cold",
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
+        )
+
+    restored = _eval_result_from_payload(result.to_dict())
+    assert restored.success is False
+    assert restored.failure_kind == "error"
+    assert restored.metrics is None
+    assert restored.output_file == ""
+    assert restored.generated_output_sha256 is None
+    assert mock_prompt_eval.call_count == 1
+    mock_evaluate.assert_not_called()
+
+
 def test_timed_out_response_outcome_prioritizes_timeout_over_artifact_validation():
     response = EvalPromptResponse(
         text="truncated",

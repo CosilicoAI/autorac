@@ -8199,6 +8199,13 @@ def _run_prompt_eval_with_empty_artifact_retry(
             prompt,
             cli_environment=cli_environment,
         )
+        error_attempt = _discard_artifacts_after_error_response(
+            response,
+            output_file=output_file,
+            artifact_root=artifact_root,
+            workspace_root=workspace.root,
+            materialized_paths=materialized_paths,
+        )
         if _discard_artifacts_after_terminal_infra_response(
             response,
             output_file=output_file,
@@ -8215,7 +8222,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
             materialized_paths=materialized_paths,
         )
         wrote_artifact = False
-        if not timed_out_attempt:
+        if not error_attempt and not timed_out_attempt:
             wrote_artifact = _materialize_eval_artifact(
                 response.text,
                 output_file,
@@ -8250,6 +8257,13 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 cli_environment=cli_environment,
             )
             retry_count += 1
+            error_attempt = _discard_artifacts_after_error_response(
+                retry_response,
+                output_file=output_file,
+                artifact_root=artifact_root,
+                workspace_root=workspace.root,
+                materialized_paths=materialized_paths,
+            )
             terminal_infra_attempt = _discard_artifacts_after_terminal_infra_response(
                 retry_response,
                 output_file=output_file,
@@ -8269,7 +8283,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 wrote_artifact = False
                 break
             wrote_artifact = False
-            if not timed_out_attempt:
+            if not error_attempt and not timed_out_attempt:
                 wrote_artifact = _materialize_eval_artifact(
                     retry_response.text,
                     output_file,
@@ -8295,6 +8309,29 @@ def _run_prompt_eval_with_empty_artifact_retry(
         return response, wrote_artifact, retry_count, frozenset(materialized_paths)
     finally:
         _pause_eval_case_budget()
+
+
+def _discard_artifacts_after_error_response(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    workspace_root: Path,
+    materialized_paths: set[Path],
+) -> bool:
+    """Make every receiver error ineligible for artifact admission."""
+
+    if response.error is None:
+        return False
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
+    )
+    materialized_paths.clear()
+    response.text = ""
+    return True
 
 
 def _discard_artifacts_after_terminal_infra_response(
