@@ -12124,6 +12124,43 @@ class TestOpenAIEvalRequest:
         assert exc_info.value.timeout_seconds == 5
         assert exc_info.value.timeout_attempts == 1
 
+    def test_post_openai_eval_request_rejects_response_after_case_deadline(
+        self,
+        monkeypatch,
+    ):
+        clock = [100.0]
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+        ok_response = Mock(status_code=200)
+
+        def return_after_deadline(*_args, **kwargs):
+            assert kwargs["timeout"] == (5.0, 5.0)
+            clock[0] = 106.0
+            return ok_response
+
+        deadline_token = evals_module._EVAL_CASE_DEADLINE_MONOTONIC.set(105.0)
+        timeout_token = evals_module._EVAL_CASE_TIMEOUT_SECONDS.set(5)
+        try:
+            with (
+                patch(
+                    "axiom_encode.harness.evals.requests.post",
+                    side_effect=return_after_deadline,
+                ),
+                pytest.raises(requests.Timeout) as exc_info,
+            ):
+                _post_openai_eval_request(
+                    headers={"Authorization": "Bearer test"},
+                    body={"model": "gpt-5.4", "input": "hi"},
+                    attempts=1,
+                )
+        finally:
+            evals_module._EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+            evals_module._EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+        assert exc_info.value.timeout_stage == "case_budget"
+        assert exc_info.value.timeout_reason == "wall"
+        assert exc_info.value.timeout_seconds == 5
+        assert exc_info.value.timeout_attempts == 1
+
     @pytest.mark.parametrize(
         ("error", "expected_reason", "expected_seconds"),
         [

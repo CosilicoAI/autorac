@@ -715,6 +715,32 @@ def test_fold_refuses_execution_identity_without_case_budget(tmp_path):
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "axiom_encode",
+        "axiom_rules_engine",
+        "rulespec_roots",
+        "policyengine_runtime",
+    ],
+)
+def test_fold_refuses_execution_identity_without_core_field(tmp_path, field_name):
+    identity = _execution_identity()
+    identity.pop(field_name)
+    path = _write_payload(
+        tmp_path,
+        f"missing-{field_name}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_execution_identity_without_timeout_retry_policy(tmp_path):
     identity = _execution_identity()
     identity.pop("timeout_retry_policy")
