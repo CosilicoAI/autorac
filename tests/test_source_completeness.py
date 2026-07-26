@@ -2048,14 +2048,6 @@ def test_narrative_piecewise_complete_zone_and_boundary_cases_pass():
             ],
             "exception",
         ),
-        (
-            [
-                case
-                for case in COMPLETE_COMPANION_TESTS
-                if case["name"] != "rounding down to full euro"
-            ],
-            "rounding",
-        ),
     ],
 )
 def test_missing_companion_coverage_fails(
@@ -2173,29 +2165,25 @@ def test_exception_toggle_from_another_source_branch_cannot_cover_exception():
 
 
 def test_unrelated_fractional_input_cannot_cover_rounding_rule():
-    content_with_unrelated_formula_amount = COMPANION_COVERAGE_CONTENT.replace(
-        "            )\n",
-        "            ) + unrelated_amount * 0\n",
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
+        "auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content(
+        "floor(income * multiplier + unrelated_amount * 0)",
     )
     test_cases = [
-        case
-        for case in COMPLETE_COMPANION_TESTS
-        if case["name"] != "rounding down to full euro"
-    ]
-    test_cases.append(
         {
-            **_companion_test("unrelated fractional input", 90, 4),
-            "input": {
-                "taxable_income": 90,
-                "exception_applies": False,
-                "unrelated_amount": 90.5,
-            },
-        }
-    )
+            "name": "unrelated fractional input",
+            "period": "2026",
+            "input": {"income": 10, "unrelated_amount": 90.5},
+            "output": {"amount": 20},
+        },
+    ]
 
     result = _analyze(
-        content_with_unrelated_formula_amount,
-        COMPANION_COVERAGE_SOURCE,
+        content,
+        source,
         test_cases=test_cases,
     )
 
@@ -4643,6 +4631,112 @@ def test_standalone_result_rounding_modifies_preceding_computation():
     assert not result.issues
 
 
+def test_standalone_result_rounding_requires_the_final_computation():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 + Zuschlag berechnet. "
+        "Das Ergebnis ist auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content(
+        "floor(income * multiplier) + supplement",
+    )
+    case = {
+        "name": "rounded component only",
+        "period": "2026",
+        "input": {"income": 10.25, "supplement": 0.25},
+        "output": {"amount": 20.25},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    "result_clause",
+    [
+        (
+            "6Der sich ergebende Steuerbetrag ist auf den nächsten vollen "
+            "Euro-Betrag abzurunden."
+        ),
+        (
+            "Satz 6: Der sich ergebende Steuerbetrag ist auf den nächsten "
+            "vollen Euro-Betrag abzurunden."
+        ),
+    ],
+)
+def test_statutory_result_rounding_attaches_to_preceding_computation(
+    result_clause: str,
+):
+    source = f"(1) Der Steuerbetrag ist Einkommen * 2. {result_clause}"
+    content = _single_rounding_content("floor(income * multiplier)")
+    if result_clause.startswith("6"):
+        content = content.replace(
+            """\
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:""",
+            f"""\
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: {result_clause!r}
+    versions:""",
+        )
+    case = {
+        "name": "statutory result rounding",
+        "period": "2026",
+        "input": {"income": 10.25},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_integral_input_can_produce_fractional_rounding_operand():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 1,5 berechnet und "
+        "auf volle Euro abgerundet."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 1.5}]
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'floor(income * multiplier)'}]
+"""
+    case = {
+        "name": "computed fractional operand",
+        "input": {"income": 1},
+        "output": {"amount": 1},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
 def test_rounding_accepts_asserted_reached_intermediate_output():
     source = (
         "(1) Der Betrag wird als Einkommen * 2 berechnet und "
@@ -4714,13 +4808,23 @@ rules:
 
 
 @pytest.mark.parametrize(
-    ("formula", "expected_issue"),
+    ("rule_name", "formula", "expected_issue"),
     [
-        ("floor(unrounded_basic_allowance)", False),
-        ("floor(child_allowance)", True),
+        (
+            "basic_allowance",
+            "floor(unrounded_basic_allowance)",
+            False,
+        ),
+        (
+            "basic_allowance_amount",
+            "floor(unrounded_basic_allowance)",
+            False,
+        ),
+        ("basic_allowance", "floor(child_allowance)", True),
     ],
 )
 def test_single_rounding_binds_to_affected_output_stage(
+    rule_name: str,
     formula: str,
     expected_issue: bool,
 ):
@@ -4731,12 +4835,12 @@ module:
   source_verification:
     corpus_citation_path: de/statute/estg/32a
 rules:
-  - name: basic_allowance
+  - name: RULE_NAME
     kind: derived
     source: de/statute/estg/32a(1)
     versions:
       - formula: FORMULA
-""".replace("FORMULA", formula)
+""".replace("FORMULA", formula).replace("RULE_NAME", rule_name)
     operand_name = (
         "child_allowance"
         if "child_allowance" in formula
@@ -4745,7 +4849,7 @@ rules:
     case = {
         "name": "single pure rounding",
         "input": {operand_name: 10.5},
-        "output": {"basic_allowance": 10},
+        "output": {rule_name: 10},
     }
 
     result = _analyze(content, source, test_cases=[case])

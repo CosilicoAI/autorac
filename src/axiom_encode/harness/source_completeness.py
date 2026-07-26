@@ -764,13 +764,26 @@ def _principal_formula_clause_rules(
 def _normalized_formula_clause_text(text: str) -> str:
     """Normalize a clause while ignoring its structural marker."""
 
-    unmarked = re.sub(
-        r"^\s*(?:\((?:\d+[a-z]?|[a-z])\)|\d+[a-z]?\.|[a-z]\))\s*",
+    unmarked = _strip_source_clause_marker(text)
+    return _collapse_text(unmarked)
+
+
+def _strip_source_clause_marker(text: str) -> str:
+    """Remove a leading paragraph/list/Satz marker, including glued statutes."""
+
+    return re.sub(
+        r"^\s*(?:"
+        r"\((?:\d+[a-z]?|[a-z])\)|"
+        r"\d+[a-z]?\.|"
+        r"[a-z]\)|"
+        r"satz\s+\d+[a-z]?\s*:?\s*|"
+        r"\d+(?=(?-i:[A-ZÄÖÜ]))"
+        r")\s*",
         "",
         text,
+        count=1,
         flags=re.IGNORECASE,
     )
-    return _collapse_text(unmarked)
 
 
 def _rounding_direction(text: str) -> str | None:
@@ -1622,7 +1635,7 @@ def _companion_test_issues(
     require_rounding_clause_binding = len(rounding_obligations) > 1
     for obligation in rounding_obligations:
         branch, direction = obligation
-        source_formula_branch = _rounding_source_formula_branch(
+        source_formula_branches = _rounding_source_formula_branches(
             branch,
             formula_branches=formula_branches,
         )
@@ -1643,7 +1656,7 @@ def _companion_test_issues(
                     asserted_by_rule=asserted_by_rule,
                     direction=direction,
                     formula_environment=formula_environment,
-                    source_formula_branch=source_formula_branch,
+                    source_formula_branches=source_formula_branches,
                     rounding_refers_to_result=(
                         _rounding_text_refers_to_result(branch.text)
                     ),
@@ -1767,18 +1780,32 @@ def _rounding_clause_refers_to_previous_result(
 
     return bool(
         previous is not None
-        and previous.path == clause.path
+        and _same_top_level_source_path(previous.path, clause.path)
         and _rounding_only_direction(clause.text) is not None
         and _rounding_text_refers_to_result(clause.text)
         and not re.search(r"\w", source_text[previous.end : clause.start])
     )
 
 
+def _same_top_level_source_path(
+    left: tuple[str, ...],
+    right: tuple[str, ...],
+) -> bool:
+    if not left or not right:
+        return left == right
+    return left[0] == right[0]
+
+
 def _rounding_text_refers_to_result(text: str) -> bool:
+    unmarked = _strip_source_clause_marker(text)
     return bool(
         re.match(
-            r"\s*(?:das\s+ergebnis|the\s+result)\b",
-            text,
+            r"\s*(?:"
+            r"das\s+ergebnis|"
+            r"the\s+result|"
+            r"der\s+sich\s+ergebende\s+steuerbetrag"
+            r")\b",
+            unmarked,
             flags=re.IGNORECASE,
         )
     )
@@ -4462,11 +4489,11 @@ def _source_rounding_obligations(
     return tuple(obligations)
 
 
-def _rounding_source_formula_branch(
+def _rounding_source_formula_branches(
     rounding_branch: SourceStructureBranch,
     *,
     formula_branches: Sequence[SourceStructureBranch],
-) -> SourceStructureBranch | None:
+) -> tuple[SourceStructureBranch, ...]:
     containing = [
         branch
         for branch in formula_branches
@@ -4475,11 +4502,20 @@ def _rounding_source_formula_branch(
         and rounding_branch.end <= branch.end
     ]
     if containing:
-        return min(
-            containing,
-            key=lambda branch: branch.end - branch.start,
+        return (
+            min(
+                containing,
+                key=lambda branch: branch.end - branch.start,
+            ),
         )
-    return None
+    if not _rounding_text_refers_to_result(rounding_branch.text):
+        return ()
+    return tuple(
+        branch
+        for branch in formula_branches
+        if branch.end <= rounding_branch.start
+        and _same_top_level_source_path(branch.path, rounding_branch.path)
+    )
 
 
 def _unwitnessed_exception_branches(
@@ -4964,7 +5000,7 @@ def _fractional_rounding_case_witnesses(
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     direction: str,
     formula_environment: dict[str, Any],
-    source_formula_branch: SourceStructureBranch | None,
+    source_formula_branches: Sequence[SourceStructureBranch],
     rounding_refers_to_result: bool,
     require_clause_binding: bool,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
@@ -5009,6 +5045,7 @@ def _fractional_rounding_case_witnesses(
         for function_name, operand in _rounding_call_operands(
             operative_leaf,
             functions=functions,
+            root_only=rounding_refers_to_result,
         ):
             effective_operand = _rounding_demonstrated_operand(
                 operand,
@@ -5043,8 +5080,9 @@ def _fractional_rounding_case_witnesses(
             ):
                 continue
             if (
-                source_formula_branch is not None
-                and not _rounding_call_binds_source_clause(
+                source_formula_branches
+                and not any(
+                    _rounding_call_binds_source_clause(
                     source_binding_operand,
                     original_operand=effective_operand,
                     operand_value=float(operand_value),
@@ -5056,6 +5094,8 @@ def _fractional_rounding_case_witnesses(
                     require_clause_binding=require_clause_binding,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
+                    )
+                    for source_formula_branch in source_formula_branches
                 )
             ):
                 continue
@@ -5096,11 +5136,29 @@ def _rounding_call_operands(
     formula_text: str,
     *,
     functions: set[str],
+    root_only: bool = False,
 ) -> tuple[tuple[str, str], ...]:
     calls: list[tuple[str, str]] = []
     function_names = {"floor", "ceil"} & functions
     if "nearest" in functions:
         function_names.add("floor")
+    if root_only:
+        with contextlib.suppress(SyntaxError):
+            expression = ast.parse(formula_text.strip(), mode="eval").body
+            if (
+                isinstance(expression, ast.Call)
+                and isinstance(expression.func, ast.Name)
+                and expression.func.id in function_names
+                and len(expression.args) == 1
+                and not expression.keywords
+            ):
+                operand = ast.unparse(expression.args[0])
+                if (
+                    functions != {"nearest"}
+                    or re.search(r"\+\s*0?\.5\b", operand)
+                ):
+                    return ((expression.func.id, operand),)
+        return ()
     for function_name in function_names:
         for operand in _balanced_call_operands(formula_text, function_name):
             if (
@@ -5205,13 +5263,16 @@ def _fractional_input_materially_affects_operand(
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or float(value).is_integer()
         ):
             continue
         aliases = _input_key_names(key) & operand_names
         if not aliases and not uses_derived_operand:
             continue
-        replacement = float(math.floor(float(value)))
+        replacement: int | float
+        if float(value).is_integer():
+            replacement = int(value) + 1
+        else:
+            replacement = float(math.floor(float(value)))
         candidate_inputs = dict(inputs)
         candidate_inputs[key] = replacement
         candidate_case = dict(case)
@@ -5300,7 +5361,7 @@ def _rounding_call_binds_source_clause(
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
     if rounding_refers_to_result:
-        return True
+        return formula_match
     source_has_distinguishing_computation = bool(
         _formula_operation_kinds(source_formula_branch.text)
         or extract_numeric_occurrences(
@@ -5324,9 +5385,25 @@ def _rounding_operand_is_output_stage(
 ) -> bool:
     output_subject = _rounding_stage_subject(rule_name)
     return bool(output_subject) and any(
-        _rounding_stage_subject(identifier) == output_subject
+        _rounding_stage_subject_matches(
+            _rounding_stage_subject(identifier),
+            output_subject,
+        )
         for identifier in _FORMULA_IDENTIFIER.findall(operand)
     )
+
+
+def _rounding_stage_subject_matches(
+    operand_subject: tuple[str, ...],
+    output_subject: tuple[str, ...],
+) -> bool:
+    if not operand_subject:
+        return False
+    shorter, longer = sorted(
+        (operand_subject, output_subject),
+        key=len,
+    )
+    return longer[: len(shorter)] == shorter
 
 
 def _rounding_stage_subject(identifier: str) -> tuple[str, ...]:
