@@ -1049,7 +1049,8 @@ def _payload_runner_identities(payload: dict, source: str) -> list[dict]:
             or identity["name"] in names
         ):
             raise EvalBoardError(
-                f"Suite results carry a malformed runner identity: {source}"
+                "Suite results carry a malformed runner identity without a "
+                f"valid backend, model, or unique name: {source}"
             )
         names.add(identity["name"])
     return identities
