@@ -25,6 +25,23 @@ def load_queue_runner_module():
     return module
 
 
+def eval_artifact_payload(
+    module,
+    kind: str,
+    generation: int | None = None,
+    **fields,
+):
+    schema = (
+        getattr(module, f"EVAL_SUITE_{kind.upper()}_SCHEMA")
+        if generation is None
+        else f"axiom-encode/eval-suite-{kind}/v{generation}"
+    )
+    return {
+        "schema": schema,
+        **fields,
+    }
+
+
 def test_sha256_paths_ignores_file_names(tmp_path):
     module = load_queue_runner_module()
     left = tmp_path / "left"
@@ -44,6 +61,13 @@ def test_sha256_paths_ignores_file_names(tmp_path):
     right_digest = module.sha256_paths([first_right, second_right])
 
     assert left_digest == right_digest
+
+
+def test_snap_consumer_supports_only_eval_artifact_v8():
+    module = load_queue_runner_module()
+
+    assert module.EVAL_SUITE_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v8"
+    assert module.EVAL_SUITE_SUMMARY_SCHEMA == "axiom-encode/eval-suite-summary/v8"
 
 
 def test_subprocess_env_drops_removed_policyengine_interpreter_overrides(
@@ -415,7 +439,9 @@ def test_reconcile_ready_output_items_marks_revalidated_blocked_item_done(tmp_pa
     module = load_queue_runner_module()
     output_dir = tmp_path / "run"
     output_dir.mkdir()
-    (output_dir / "summary.json").write_text('{"all_ready": true}')
+    (output_dir / "summary.json").write_text(
+        module.json.dumps(eval_artifact_payload(module, "summary", all_ready=True))
+    )
     data = {
         "items": [
             {
@@ -427,7 +453,10 @@ def test_reconcile_ready_output_items_marks_revalidated_blocked_item_done(tmp_pa
         ]
     }
 
-    changed, reconciled = module.reconcile_ready_output_items(data)
+    changed, reconciled = module.reconcile_ready_output_items(
+        data,
+        schema_tracker=module.ConsumedSchemaTracker(),
+    )
 
     assert changed is True
     assert reconciled == ["snap_demo"]
@@ -440,7 +469,9 @@ def test_reconcile_stale_running_items_marks_ready_orphan_done(tmp_path):
     module = load_queue_runner_module()
     output_dir = tmp_path / "run"
     output_dir.mkdir()
-    (output_dir / "summary.json").write_text('{"all_ready": true}')
+    (output_dir / "summary.json").write_text(
+        module.json.dumps(eval_artifact_payload(module, "summary", all_ready=True))
+    )
     data = {
         "items": [
             {
@@ -452,7 +483,11 @@ def test_reconcile_stale_running_items_marks_ready_orphan_done(tmp_path):
         ]
     }
 
-    changed = module.reconcile_stale_running_items(data, [])
+    changed = module.reconcile_stale_running_items(
+        data,
+        [],
+        schema_tracker=module.ConsumedSchemaTracker(),
+    )
 
     assert changed is True
     assert data["items"][0]["status"] == "done"
@@ -463,3 +498,214 @@ def test_reconcile_stale_running_items_marks_ready_orphan_done(tmp_path):
     assert data["event_log"][0]["message"] == (
         "snap_demo was left in `running`, but its output is ready; marked done."
     )
+
+
+def test_reconcile_ready_output_items_rejects_schema_less_summary(tmp_path):
+    module = load_queue_runner_module()
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+    (output_dir / "summary.json").write_text('{"all_ready": true}')
+    data = {
+        "items": [
+            {
+                "name": "snap_demo",
+                "status": "blocked",
+                "output_dir": str(output_dir),
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="missing schema"):
+        module.reconcile_ready_output_items(
+            data,
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+    assert data["items"][0]["status"] == "blocked"
+
+
+def test_invalid_output_summary_does_not_fall_back_to_ready_archive(tmp_path):
+    module = load_queue_runner_module()
+    output_dir = tmp_path / "run"
+    archive_dir = tmp_path / "archive"
+    output_dir.mkdir()
+    archive_dir.mkdir()
+    (output_dir / "summary.json").write_text('{"all_ready": false}')
+    (archive_dir / "summary.json").write_text(
+        module.json.dumps(eval_artifact_payload(module, "summary", all_ready=True))
+    )
+    data = {
+        "items": [
+            {
+                "name": "snap_demo",
+                "status": "blocked",
+                "output_dir": str(output_dir),
+                "archive_path": str(archive_dir),
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="missing schema"):
+        module.reconcile_ready_output_items(
+            data,
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+    assert data["items"][0]["status"] == "blocked"
+
+
+def test_consumed_eval_artifacts_reject_mixed_summary_and_results_generations(
+    tmp_path,
+):
+    module = load_queue_runner_module()
+    summary_path = tmp_path / "summary.json"
+    results_path = tmp_path / "results.json"
+    summary_path.write_text(
+        module.json.dumps(
+            eval_artifact_payload(module, "summary", generation=8, all_ready=False)
+        )
+    )
+    results_path.write_text(
+        module.json.dumps(
+            eval_artifact_payload(module, "results", generation=7, results=[])
+        )
+    )
+    tracker = module.ConsumedSchemaTracker()
+
+    module.load_eval_artifact(
+        summary_path,
+        kind="summary",
+        schema_tracker=tracker,
+    )
+    with pytest.raises(ValueError, match="mixed eval-suite schema generations"):
+        module.load_eval_artifact(
+            results_path,
+            kind="results",
+            schema_tracker=tracker,
+        )
+
+
+@pytest.mark.parametrize("kind", ["results", "summary"])
+def test_load_eval_artifact_rejects_unsupported_generation(tmp_path, kind):
+    module = load_queue_runner_module()
+    artifact_path = tmp_path / f"{kind}.json"
+    artifact_path.write_text(
+        module.json.dumps(eval_artifact_payload(module, kind, generation=7))
+    )
+
+    with pytest.raises(ValueError, match=f"unsupported {kind} schema"):
+        module.load_eval_artifact(
+            artifact_path,
+            kind=kind,
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
+def test_run_ledger_rejects_mixed_consumed_generations(tmp_path):
+    module = load_queue_runner_module()
+    ledger_path = tmp_path / "run-ledger.ndjson"
+    ledger_path.write_text(
+        "\n".join(
+            [
+                module.json.dumps(
+                    {
+                        "schema_version": 2,
+                        "run_id": "current",
+                        "consumed_schemas": {
+                            "summary": module.EVAL_SUITE_SUMMARY_SCHEMA,
+                            "results": module.EVAL_SUITE_RESULTS_SCHEMA,
+                        },
+                    }
+                ),
+                module.json.dumps(
+                    {
+                        "schema_version": 2,
+                        "run_id": "future",
+                        "consumed_schemas": {
+                            "summary": "axiom-encode/eval-suite-summary/v9",
+                            "results": "axiom-encode/eval-suite-results/v9",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="mixed eval-suite schema generations"):
+        module.load_run_ledger_ids(
+            ledger_path,
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
+def test_build_run_record_stamps_consumed_schemas_and_v2(tmp_path, monkeypatch):
+    module = load_queue_runner_module()
+    monkeypatch.setattr(module, "git_head", lambda _path: "a" * 40)
+    summary = eval_artifact_payload(
+        module,
+        "summary",
+        all_ready=False,
+        manifest={"effective_runners": ["codex:gpt-5.4"]},
+        readiness={"codex:gpt-5.4": {"ready": False}},
+    )
+    results = eval_artifact_payload(
+        module,
+        "results",
+        results=[
+            {
+                "backend": "codex",
+                "metrics": {},
+            }
+        ],
+    )
+
+    record = module.build_run_record(
+        {
+            "name": "snap_demo",
+            "manifest": None,
+            "corpus_source_sha256": "b" * 64,
+        },
+        reviewer_cli="claude",
+        returncode=1,
+        summary=summary,
+        results=results,
+        archive_path=None,
+        status="blocked",
+        note="not ready",
+        policy_repo_root=tmp_path / "rulespec-us",
+        policyengine_runtime_root=tmp_path / "policyengine-us",
+        schema_tracker=module.ConsumedSchemaTracker(),
+    )
+
+    assert record["schema_version"] == 2
+    assert record["consumed_schemas"] == {
+        "summary": module.EVAL_SUITE_SUMMARY_SCHEMA,
+        "results": module.EVAL_SUITE_RESULTS_SCHEMA,
+    }
+
+
+def test_load_eval_artifact_rejects_present_non_object_json(tmp_path):
+    module = load_queue_runner_module()
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text("[]")
+
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        module.load_eval_artifact(
+            summary_path,
+            kind="summary",
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
+def test_load_eval_artifact_rejects_schema_less_results(tmp_path):
+    module = load_queue_runner_module()
+    results_path = tmp_path / "results.json"
+    results_path.write_text('{"results": []}')
+
+    with pytest.raises(ValueError, match="missing schema"):
+        module.load_eval_artifact(
+            results_path,
+            kind="results",
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )

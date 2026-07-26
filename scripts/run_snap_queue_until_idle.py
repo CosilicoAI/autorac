@@ -69,6 +69,16 @@ DEFAULT_ARCHIVE_ROOT = (
 )
 BENCHMARK_GLOB = "us_snap_*_refresh.yaml"
 SOURCE_TRACKING_VERSION = 2
+RUN_LEDGER_SCHEMA_VERSION = 2
+EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
+EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v8"
+_EVAL_SUITE_SCHEMAS = {
+    "results": EVAL_SUITE_RESULTS_SCHEMA,
+    "summary": EVAL_SUITE_SUMMARY_SCHEMA,
+}
+_EVAL_SUITE_SCHEMA_RE = re.compile(
+    r"^axiom-encode/eval-suite-(results|summary)/v([1-9][0-9]*)$"
+)
 REQUIRED_PATH_ENTRIES = [
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
@@ -112,6 +122,37 @@ class ActiveState:
     finished_at: str = "none"
     progress: str = "none"
     outcome: str = "none"
+
+
+@dataclass
+class ConsumedSchemaTracker:
+    """Keep every artifact consumed by one queue invocation on one generation."""
+
+    generation: int | None = None
+
+    def admit(self, *, kind: str, schema: object, source: str) -> str:
+        if kind not in _EVAL_SUITE_SCHEMAS:
+            raise ValueError(f"Unknown eval-suite artifact kind: {kind}")
+        if not isinstance(schema, str):
+            raise ValueError(f"{source} has a malformed {kind} schema")
+        match = _EVAL_SUITE_SCHEMA_RE.fullmatch(schema)
+        if match is None or match.group(1) != kind:
+            raise ValueError(f"{source} has a malformed {kind} schema: {schema!r}")
+        generation = int(match.group(2))
+        if self.generation is not None and generation != self.generation:
+            raise ValueError(
+                "Refusing mixed eval-suite schema generations in one SNAP ledger "
+                f"invocation: already consumed v{self.generation}, but {source} "
+                f"uses v{generation}"
+            )
+        expected = _EVAL_SUITE_SCHEMAS[kind]
+        if schema != expected:
+            raise ValueError(
+                f"{source} uses unsupported {kind} schema {schema!r}; "
+                f"expected {expected!r}"
+            )
+        self.generation = generation
+        return schema
 
 
 def now_utc() -> str:
@@ -548,28 +589,114 @@ def archive_eval(
     return Path(match.group(1).strip()) if match else None
 
 
-def load_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
+def _validate_eval_artifact_payload(
+    payload: object,
+    *,
+    kind: str,
+    schema_tracker: ConsumedSchemaTracker,
+    source: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError(f"{source} must contain a JSON object")
+    if "schema" not in payload:
+        raise ValueError(f"{source} is missing schema")
+    schema_tracker.admit(kind=kind, schema=payload["schema"], source=source)
+    return payload
+
+
+def load_eval_artifact(
+    path: Path,
+    *,
+    kind: str,
+    schema_tracker: ConsumedSchemaTracker,
+) -> dict[str, Any] | None:
+    if not path.exists() and not path.is_symlink():
         return None
     try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return None
+        payload = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path} is not valid JSON") from exc
+    return _validate_eval_artifact_payload(
+        payload,
+        kind=kind,
+        schema_tracker=schema_tracker,
+        source=str(path),
+    )
 
 
-def load_run_ledger_ids(path: Path) -> set[str]:
+def _validate_consumed_schemas(
+    consumed_schemas: object,
+    *,
+    schema_tracker: ConsumedSchemaTracker,
+    source: str,
+) -> dict[str, str | None]:
+    if not isinstance(consumed_schemas, dict) or set(consumed_schemas) != {
+        "results",
+        "summary",
+    }:
+        raise ValueError(
+            f"{source} must contain exact results and summary consumed schemas"
+        )
+    validated: dict[str, str | None] = {}
+    for kind in ("summary", "results"):
+        schema = consumed_schemas[kind]
+        if schema is None:
+            validated[kind] = None
+            continue
+        validated[kind] = schema_tracker.admit(
+            kind=kind,
+            schema=schema,
+            source=source,
+        )
+    return validated
+
+
+def load_run_ledger_ids(
+    path: Path,
+    *,
+    schema_tracker: ConsumedSchemaTracker,
+) -> set[str]:
     if not path.exists():
         return set()
     ids: set[str] = set()
-    for line in path.read_text().splitlines():
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"SNAP run ledger has malformed JSON at line {line_number}"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"SNAP run ledger has a non-object row at line {line_number}"
+            )
+        schema_version = record.get("schema_version")
+        if type(schema_version) is not int:
+            raise ValueError(
+                "SNAP run ledger has a malformed record schema at line "
+                f"{line_number}: {schema_version!r}"
+            )
+        if schema_version == RUN_LEDGER_SCHEMA_VERSION:
+            _validate_consumed_schemas(
+                record.get("consumed_schemas"),
+                schema_tracker=schema_tracker,
+                source=f"SNAP run ledger line {line_number}",
+            )
+        elif schema_version != 1:
+            raise ValueError(
+                "SNAP run ledger has an unsupported record schema at line "
+                f"{line_number}: {schema_version!r}"
+            )
         run_id = record.get("run_id")
+        if schema_version == RUN_LEDGER_SCHEMA_VERSION and (
+            not isinstance(run_id, str) or not run_id
+        ):
+            raise ValueError(
+                f"SNAP run ledger v2 row at line {line_number} has no run_id"
+            )
         if isinstance(run_id, str) and run_id:
             ids.add(run_id)
     return ids
@@ -635,8 +762,45 @@ def build_run_record(
     note: str,
     policy_repo_root: Path,
     policyengine_runtime_root: Path,
+    schema_tracker: ConsumedSchemaTracker,
     backfilled: bool = False,
 ) -> dict[str, Any]:
+    validated_summary = (
+        _validate_eval_artifact_payload(
+            summary,
+            kind="summary",
+            schema_tracker=schema_tracker,
+            source=f"SNAP run record for {item.get('name') or 'unknown'}",
+        )
+        if summary is not None
+        else None
+    )
+    validated_results = (
+        _validate_eval_artifact_payload(
+            results,
+            kind="results",
+            schema_tracker=schema_tracker,
+            source=f"SNAP run record for {item.get('name') or 'unknown'}",
+        )
+        if results is not None
+        else None
+    )
+    consumed_schemas = _validate_consumed_schemas(
+        {
+            "summary": (
+                validated_summary.get("schema")
+                if validated_summary is not None
+                else None
+            ),
+            "results": (
+                validated_results.get("schema")
+                if validated_results is not None
+                else None
+            ),
+        },
+        schema_tracker=schema_tracker,
+        source=f"SNAP run record for {item.get('name') or 'unknown'}",
+    )
     manifest_path = Path(item["manifest"]).resolve() if item.get("manifest") else None
     corpus_citation_path = item.get("corpus_citation_path")
     output_dir = Path(item["output_dir"]).resolve() if item.get("output_dir") else None
@@ -696,7 +860,8 @@ def build_run_record(
             errors.append(str(row["error"]))
 
     return {
-        "schema_version": 1,
+        "schema_version": RUN_LEDGER_SCHEMA_VERSION,
+        "consumed_schemas": consumed_schemas,
         "recorded_at": now_utc(),
         "run_id": compute_run_id(item),
         "target": item.get("name"),
@@ -770,6 +935,8 @@ def backfill_run_ledger(
     known_ids: set[str],
     policy_repo_root: Path,
     policyengine_runtime_root: Path,
+    *,
+    schema_tracker: ConsumedSchemaTracker,
 ) -> None:
     for item in data.get("items", []):
         if item.get("status") not in {"done", "blocked", "retryable"}:
@@ -782,12 +949,36 @@ def backfill_run_ledger(
         archive_path = (
             Path(item["archive_path"]).resolve() if item.get("archive_path") else None
         )
-        summary = load_json(output_dir / "summary.json") if output_dir else None
-        results = load_json(output_dir / "results.json") if output_dir else None
+        summary = (
+            load_eval_artifact(
+                output_dir / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
+            if output_dir
+            else None
+        )
+        results = (
+            load_eval_artifact(
+                output_dir / "results.json",
+                kind="results",
+                schema_tracker=schema_tracker,
+            )
+            if output_dir
+            else None
+        )
         if summary is None and archive_path:
-            summary = load_json(archive_path / "summary.json")
+            summary = load_eval_artifact(
+                archive_path / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
         if results is None and archive_path:
-            results = load_json(archive_path / "results.json")
+            results = load_eval_artifact(
+                archive_path / "results.json",
+                kind="results",
+                schema_tracker=schema_tracker,
+            )
         record = build_run_record(
             item,
             reviewer_cli=str(data.get("default_reviewer_cli") or "claude"),
@@ -799,6 +990,7 @@ def backfill_run_ledger(
             note=str(item.get("note") or ""),
             policy_repo_root=policy_repo_root,
             policyengine_runtime_root=policyengine_runtime_root,
+            schema_tracker=schema_tracker,
             backfilled=True,
         )
         append_run_record(RUN_LEDGER_PATH, record, known_ids)
@@ -864,7 +1056,10 @@ def write_memory(data: dict[str, Any], active: ActiveState) -> None:
 
 
 def reconcile_stale_running_items(
-    data: dict[str, Any], active_processes: list[str]
+    data: dict[str, Any],
+    active_processes: list[str],
+    *,
+    schema_tracker: ConsumedSchemaTracker,
 ) -> bool:
     if active_processes:
         return False
@@ -879,9 +1074,21 @@ def reconcile_stale_running_items(
         archive_path = (
             Path(item["archive_path"]).resolve() if item.get("archive_path") else None
         )
-        summary = load_json(output_dir / "summary.json") if output_dir else None
+        summary = (
+            load_eval_artifact(
+                output_dir / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
+            if output_dir
+            else None
+        )
         if (not summary or not summary.get("all_ready")) and archive_path:
-            summary = load_json(archive_path / "summary.json")
+            summary = load_eval_artifact(
+                archive_path / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
         if summary and summary.get("all_ready"):
             item["status"] = "done"
             item["finished_at"] = now_utc()
@@ -905,7 +1112,11 @@ def reconcile_stale_running_items(
     return changed
 
 
-def reconcile_ready_output_items(data: dict[str, Any]) -> tuple[bool, list[str]]:
+def reconcile_ready_output_items(
+    data: dict[str, Any],
+    *,
+    schema_tracker: ConsumedSchemaTracker,
+) -> tuple[bool, list[str]]:
     changed = False
     reconciled: list[str] = []
     for item in data.get("items", []):
@@ -917,9 +1128,21 @@ def reconcile_ready_output_items(data: dict[str, Any]) -> tuple[bool, list[str]]
         archive_path = (
             Path(item["archive_path"]).resolve() if item.get("archive_path") else None
         )
-        summary = load_json(output_dir / "summary.json") if output_dir else None
+        summary = (
+            load_eval_artifact(
+                output_dir / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
+            if output_dir
+            else None
+        )
         if (not summary or not summary.get("all_ready")) and archive_path:
-            summary = load_json(archive_path / "summary.json")
+            summary = load_eval_artifact(
+                archive_path / "summary.json",
+                kind="summary",
+                schema_tracker=schema_tracker,
+            )
         if not summary or not summary.get("all_ready"):
             continue
 
@@ -988,8 +1211,15 @@ def process_queue(
         )
         save_queue(queue_path, data)
     reviewer_cli = str(data.get("default_reviewer_cli") or "claude")
-    known_run_ids = load_run_ledger_ids(RUN_LEDGER_PATH)
-    ready_changed, ready_items = reconcile_ready_output_items(data)
+    schema_tracker = ConsumedSchemaTracker()
+    known_run_ids = load_run_ledger_ids(
+        RUN_LEDGER_PATH,
+        schema_tracker=schema_tracker,
+    )
+    ready_changed, ready_items = reconcile_ready_output_items(
+        data,
+        schema_tracker=schema_tracker,
+    )
     if ready_changed:
         append_event(
             data,
@@ -1001,11 +1231,16 @@ def process_queue(
         known_run_ids,
         policy_repo_root,
         policyengine_runtime_root,
+        schema_tracker=schema_tracker,
     )
 
     while True:
         active_processes = find_active_eval_processes()
-        if reconcile_stale_running_items(data, active_processes):
+        if reconcile_stale_running_items(
+            data,
+            active_processes,
+            schema_tracker=schema_tracker,
+        ):
             save_queue(queue_path, data)
         if active_processes:
             active = ActiveState(
@@ -1088,8 +1323,16 @@ def process_queue(
             policy_repo_root=policy_repo_root,
             policyengine_runtime_root=policyengine_runtime_root,
         )
-        summary = load_json(output_dir / "summary.json")
-        results = load_json(output_dir / "results.json")
+        summary = load_eval_artifact(
+            output_dir / "summary.json",
+            kind="summary",
+            schema_tracker=schema_tracker,
+        )
+        results = load_eval_artifact(
+            output_dir / "results.json",
+            kind="results",
+            schema_tracker=schema_tracker,
+        )
         archive_path = (
             archive_eval(
                 output_dir,
@@ -1126,6 +1369,7 @@ def process_queue(
             note=reason,
             policy_repo_root=policy_repo_root,
             policyengine_runtime_root=policyengine_runtime_root,
+            schema_tracker=schema_tracker,
         )
         append_run_record(RUN_LEDGER_PATH, record, known_run_ids)
         save_queue(queue_path, data)
