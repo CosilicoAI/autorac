@@ -2027,6 +2027,9 @@ def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
         provision_metadata_text=(
             f"cache: {tmp_path}/private/provision.json\n"
             "windows_cache: C:\\Users\\example\\private\\provision.json\n"
+            "file_uri: file:///Users/example/private/provision.json\n"
+            "posix_unc: //server/share/private/provision.json\n"
+            "windows_unc: \\\\server\\share\\private\\provision.json\n"
             "url: https://corpus.example/release/1"
         ),
         review_findings_files=[
@@ -2054,7 +2057,10 @@ def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
 
     assert str(tmp_path) not in prompt
     assert r"C:\Users\example\private\provision.json" not in prompt
-    assert prompt.count("<opaque-host-path>") >= 5
+    assert "file:///Users/example/private/provision.json" not in prompt
+    assert "//server/share/private/provision.json" not in prompt
+    assert r"\\server\share\private\provision.json" not in prompt
+    assert prompt.count("<opaque-host-path>") >= 8
     for expected_url in (
         "https://law.example/section/1",
         "https://review.example/finding/1",
@@ -4082,14 +4088,18 @@ class TestClaudePromptEval:
         )
 
     @pytest.mark.parametrize(
-        "stop_reason",
-        [[], {"reason": "max_tokens"}],
+        ("stop_reason", "invalid_type"),
+        [
+            (["private-stop-reason-detail"], "list"),
+            ({"reason": "private-stop-reason-detail"}, "dict"),
+        ],
         ids=["list", "object"],
     )
     def test_prompt_eval_rejects_malformed_stop_reason_without_type_error(
         self,
         tmp_path,
         stop_reason,
+        invalid_type,
     ):
         runner = parse_runner_spec("claude:opus")
         workspace = EvalWorkspace(
@@ -4113,6 +4123,10 @@ class TestClaudePromptEval:
         assert response.text == ""
         assert response.error == (
             "Claude eval JSON envelope requires a nonempty stop_reason"
+        )
+        assert "private-stop-reason-detail" not in json.dumps(response.trace)
+        assert response.trace["result_envelope"]["stop_reason"] == (
+            f"<invalid {invalid_type}>"
         )
 
     def test_prompt_eval_preserves_truncation_priority_over_stderr_quota(
