@@ -501,7 +501,7 @@ def _complete_test_eval_suite(
         assert APPLY_MANIFEST_SIGNING_PRIVATE_KEY_ENV not in os.environ
         call_index += 1
         results = []
-        for raw_spec in runner_specs:
+        for raw_spec in kwargs["runner_specs"]:
             runner = parse_runner_spec(raw_spec)
             result = _fake_eval_result(runner.name, f"case-{call_index}")
             result.backend = runner.backend
@@ -13804,6 +13804,73 @@ cases:
             ("alpha", pytest.approx(10.0)),
             ("beta", pytest.approx(10.0)),
         ]
+
+    def test_runner_timeout_does_not_suppress_other_runner_retry(self, tmp_path):
+        manifest = EvalSuiteManifest(
+            name="Independent runner retries",
+            path=tmp_path / "suite.yaml",
+            runners=[
+                "alpha=claude:opus",
+                "beta=openai:gpt-5.4",
+            ],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        attempts = {"alpha": 0, "beta": 0}
+
+        def run_one_runner(**kwargs):
+            [runner_spec] = kwargs["runner_specs"]
+            runner = parse_runner_spec(runner_spec)
+            attempts[runner.name] += 1
+            source_attestation = _expected_eval_source_attestation(
+                kwargs["source_unit"],
+                rulespec_root=kwargs["policy_path"],
+            )
+            if runner.name == "alpha":
+                return evals_module._suite_case_failure_results(
+                    manifest.cases[0],
+                    [runner],
+                    subprocess.TimeoutExpired(["claude"], timeout=600),
+                    source_attestation=source_attestation,
+                )
+            if attempts[runner.name] == 1:
+                return evals_module._suite_case_failure_results(
+                    manifest.cases[0],
+                    [runner],
+                    RuntimeError("stream disconnected"),
+                    source_attestation=source_attestation,
+                )
+            result = _fake_eval_result(runner.name, "case-one")
+            result.backend = runner.backend
+            result.model = runner.model
+            return _bind_fake_source_results([result], kwargs)
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=run_one_runner,
+        ):
+            results = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+                suite_retry_attempts=1,
+            )
+
+        assert attempts == {"alpha": 1, "beta": 2}
+        assert [result.runner for result in results] == ["alpha", "beta"]
+        assert results[0].timed_out is True
+        assert results[1].success is True
 
     def test_suite_timeout_history_does_not_promote_later_error_to_timeout(
         self,

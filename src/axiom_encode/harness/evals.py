@@ -10,9 +10,11 @@ import math
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
@@ -2508,79 +2510,88 @@ def _run_eval_suite_with_signer(
                 active_case_output_root=active_case_output_root,
             )
             case_timeout_seconds = int(execution_identity["case_timeout_seconds"])
-            with _active_eval_case_budget(case_timeout_seconds):
-                timeout_history: dict[
-                    str,
-                    tuple[int, str | None, str | None, float | None],
-                ] = {}
-                for attempt_index in range(attempts):
-                    try:
-                        if case.kind == "citation":
-                            case_results = run_model_eval(
-                                citations=[case.citation or ""],
-                                runner_specs=resolved_runners,
-                                output_root=case_output_root,
-                                policy_path=policy_repo_root,
-                                runtime_axiom_rules_path=axiom_rules_path,
-                                corpus_release=corpus_release,
-                                mode=case.mode,
-                                extra_context_paths=extra_context,
-                                oracle=case.oracle,
-                                policyengine_runtime=policyengine_runtime,
-                                policyengine_rule_hint=case.policyengine_rule_hint,
-                                rulespec_dependency_roots=(
-                                    manifest.rulespec_dependency_roots
-                                ),
+            case_results: list[EvalResult] = []
+            for runner_spec, parsed_runner in zip(
+                resolved_runners,
+                parsed_runners,
+                strict=True,
+            ):
+                with _active_eval_case_budget(case_timeout_seconds):
+                    timeout_history: dict[
+                        str,
+                        tuple[int, str | None, str | None, float | None],
+                    ] = {}
+                    for attempt_index in range(attempts):
+                        try:
+                            if case.kind == "citation":
+                                runner_case_results = run_model_eval(
+                                    citations=[case.citation or ""],
+                                    runner_specs=[runner_spec],
+                                    output_root=case_output_root,
+                                    policy_path=policy_repo_root,
+                                    runtime_axiom_rules_path=axiom_rules_path,
+                                    corpus_release=corpus_release,
+                                    mode=case.mode,
+                                    extra_context_paths=extra_context,
+                                    oracle=case.oracle,
+                                    policyengine_runtime=policyengine_runtime,
+                                    policyengine_rule_hint=case.policyengine_rule_hint,
+                                    rulespec_dependency_roots=(
+                                        manifest.rulespec_dependency_roots
+                                    ),
+                                )
+                            elif case.kind == "source":
+                                if (
+                                    case_source_unit is None
+                                ):  # pragma: no cover - branch invariant
+                                    raise ValueError(
+                                        "Source eval case was not resolved"
+                                    )
+                                runner_case_results = run_source_eval(
+                                    source_unit=case_source_unit,
+                                    runner_specs=[runner_spec],
+                                    output_root=case_output_root,
+                                    policy_path=policy_repo_root,
+                                    local_corpus_release=corpus_release,
+                                    runtime_axiom_rules_path=axiom_rules_path,
+                                    mode=case.mode,
+                                    extra_context_paths=extra_context,
+                                    oracle=case.oracle,
+                                    policyengine_runtime=policyengine_runtime,
+                                    policyengine_rule_hint=case.policyengine_rule_hint,
+                                    rulespec_dependency_roots=(
+                                        manifest.rulespec_dependency_roots
+                                    ),
+                                )
+                            else:
+                                raise ValueError(
+                                    f"Unsupported eval suite case kind '{case.kind}'"
+                                )
+                        except Exception as exc:
+                            runner_case_results = _suite_case_failure_results(
+                                case,
+                                [parsed_runner],
+                                exc,
+                                source_attestation=expected_source_attestation,
                             )
-                        elif case.kind == "source":
-                            if (
-                                case_source_unit is None
-                            ):  # pragma: no cover - branch invariant
-                                raise ValueError("Source eval case was not resolved")
-                            case_results = run_source_eval(
-                                source_unit=case_source_unit,
-                                runner_specs=resolved_runners,
-                                output_root=case_output_root,
-                                policy_path=policy_repo_root,
-                                local_corpus_release=corpus_release,
-                                runtime_axiom_rules_path=axiom_rules_path,
-                                mode=case.mode,
-                                extra_context_paths=extra_context,
-                                oracle=case.oracle,
-                                policyengine_runtime=policyengine_runtime,
-                                policyengine_rule_hint=case.policyengine_rule_hint,
-                                rulespec_dependency_roots=(
-                                    manifest.rulespec_dependency_roots
-                                ),
-                            )
-                        else:
-                            raise ValueError(
-                                f"Unsupported eval suite case kind '{case.kind}'"
-                            )
-                    except Exception as exc:
-                        case_results = _suite_case_failure_results(
-                            case,
-                            parsed_runners,
-                            exc,
-                            source_attestation=expected_source_attestation,
-                        )
 
-                    _accumulate_suite_case_timeout_attempts(
-                        case_results,
-                        timeout_history,
-                    )
-                    remaining = _remaining_eval_case_budget_seconds()
-                    if remaining is not None and remaining <= 0:
-                        _mark_suite_case_budget_timeout(
-                            case_results,
-                            timeout_seconds=case_timeout_seconds,
+                        _accumulate_suite_case_timeout_attempts(
+                            runner_case_results,
+                            timeout_history,
                         )
-                        break
-                    if (
-                        attempt_index >= attempts - 1
-                        or not _suite_case_results_should_retry(case_results)
-                    ):
-                        break
+                        remaining = _remaining_eval_case_budget_seconds()
+                        if remaining is not None and remaining <= 0:
+                            _mark_suite_case_budget_timeout(
+                                runner_case_results,
+                                timeout_seconds=case_timeout_seconds,
+                            )
+                            break
+                        if (
+                            attempt_index >= attempts - 1
+                            or not _suite_case_results_should_retry(runner_case_results)
+                        ):
+                            break
+                case_results.extend(runner_case_results)
 
             _validate_new_eval_suite_case_results(
                 case,
@@ -12461,6 +12472,26 @@ def _run_claude_prompt_eval(
             timeout_attempts=1,
         )
     duration_ms = int((time.time() - start) * 1000)
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is not None and remaining <= 0:
+        case_timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace={
+                **trace,
+                "timed_out": True,
+                "timeout_stage": "case_budget",
+                "timeout_reason": "wall",
+                "timeout_seconds": case_timeout_seconds,
+            },
+            error="Eval case budget timed out",
+            timed_out=True,
+            timeout_stage="case_budget",
+            timeout_reason="wall",
+            timeout_seconds=case_timeout_seconds,
+            timeout_attempts=1,
+        )
 
     text = result.stdout + result.stderr
     tokens = None
@@ -12592,6 +12623,16 @@ def _run_codex_prompt_eval(
             triggering_timeout_seconds = float(exc.timeout)
             process.kill()
             process.wait()
+        else:
+            remaining = _remaining_eval_case_budget_seconds()
+            if remaining is not None and remaining <= 0:
+                timed_out = True
+                timeout_stage = "case_budget"
+                timeout_reason = "wall"
+                triggering_timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
 
     stdout_text = stdout_path.read_text()
     stderr_text = stderr_path.read_text()
@@ -12655,12 +12696,11 @@ def _run_codex_prompt_eval(
         if file_text:
             final_text = file_text
 
-    if timed_out and not error and not final_text:
-        error = (
-            "Eval case budget timed out"
-            if timeout_stage == "case_budget"
-            else "Codex eval timed out"
-        )
+    if timeout_stage == "case_budget":
+        final_text = ""
+        error = "Eval case budget timed out"
+    elif timed_out and not error and not final_text:
+        error = "Codex eval timed out"
 
     if (
         process.returncode != 0
@@ -13110,6 +13150,85 @@ def _run_openai_prompt_eval(
     )
 
 
+def _post_openai_request_with_wall_deadline(
+    *,
+    headers: dict[str, str],
+    body: dict[str, object],
+    request_timeout: tuple[float, float],
+    wall_seconds: float | None,
+    timeout_attempts: int,
+) -> requests.Response:
+    """Return or raise by the active case wall deadline.
+
+    On the main POSIX thread, an interval timer interrupts the underlying
+    socket call. The daemon-thread fallback still releases the eval caller at
+    the deadline on platforms or embedding threads that cannot own signals;
+    the request retains its independently bounded connect/read timeouts.
+    """
+
+    def post() -> requests.Response:
+        return requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            json=body,
+            timeout=request_timeout,
+        )
+
+    if wall_seconds is None:
+        return post()
+    bounded_wall = max(wall_seconds, 0.001)
+    can_interrupt_socket = (
+        threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "SIGALRM")
+        and hasattr(signal, "ITIMER_REAL")
+        and hasattr(signal, "getitimer")
+        and hasattr(signal, "setitimer")
+        and signal.getitimer(signal.ITIMER_REAL)[0] <= 0
+    )
+    if can_interrupt_socket:
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def expire_request(_signum: int, _frame: object) -> None:
+            raise _openai_case_budget_timeout(
+                timeout_attempts=max(timeout_attempts + 1, 1)
+            )
+
+        signal.signal(signal.SIGALRM, expire_request)
+        signal.setitimer(signal.ITIMER_REAL, bounded_wall)
+        try:
+            return post()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    completed = threading.Event()
+    responses: list[requests.Response] = []
+    errors: list[BaseException] = []
+
+    def post_in_background() -> None:
+        try:
+            responses.append(post())
+        except BaseException as exc:  # pragma: no cover - defensive thread boundary
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    threading.Thread(
+        target=post_in_background,
+        name="axiom-openai-eval-request",
+        daemon=True,
+    ).start()
+    if not completed.wait(timeout=bounded_wall):
+        raise _openai_case_budget_timeout(timeout_attempts=max(timeout_attempts + 1, 1))
+    if errors:
+        raise errors[0]
+    if not responses:  # pragma: no cover - event/list invariant
+        raise requests.RequestException(
+            "OpenAI eval request finished without a response"
+        )
+    return responses[0]
+
+
 def _post_openai_eval_request(
     headers: dict[str, str],
     body: dict[str, object],
@@ -13137,17 +13256,23 @@ def _post_openai_eval_request(
                 min(_OPENAI_REQUEST_READ_TIMEOUT_SECONDS, bounded),
             )
         try:
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
+            response = _post_openai_request_with_wall_deadline(
                 headers=headers,
-                json=body,
-                timeout=request_timeout,
+                body=body,
+                request_timeout=request_timeout,
+                wall_seconds=remaining,
+                timeout_attempts=timeout_attempts,
             )
         except requests.RequestException as exc:
             last_error = exc
             if isinstance(exc, requests.Timeout):
                 timeout_attempts += 1
-                if _openai_timeout_was_case_budget_limited(exc, request_timeout):
+                case_budget_timeout = (
+                    getattr(exc, "timeout_stage", None) == "case_budget"
+                )
+                if case_budget_timeout or _openai_timeout_was_case_budget_limited(
+                    exc, request_timeout
+                ):
                     _bind_openai_case_budget_timeout(
                         exc,
                         timeout_attempts=timeout_attempts,
@@ -13163,6 +13288,8 @@ def _post_openai_eval_request(
                     timeout_reason,
                     timeout_seconds,
                 ) = _openai_timeout_history(exc)
+                if case_budget_timeout:
+                    raise
             remaining = _remaining_eval_case_budget_seconds()
             if remaining is not None and remaining <= 0:
                 if isinstance(exc, requests.Timeout):
