@@ -2026,6 +2026,7 @@ def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
         manifest_file=tmp_path / "context-manifest.json",
         provision_metadata_text=(
             f"cache: {tmp_path}/private/provision.json\n"
+            "windows_cache: C:\\Users\\example\\private\\provision.json\n"
             "url: https://corpus.example/release/1"
         ),
         review_findings_files=[
@@ -2052,7 +2053,8 @@ def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
     )
 
     assert str(tmp_path) not in prompt
-    assert prompt.count("<opaque-host-path>") >= 4
+    assert r"C:\Users\example\private\provision.json" not in prompt
+    assert prompt.count("<opaque-host-path>") >= 5
     for expected_url in (
         "https://law.example/section/1",
         "https://review.example/finding/1",
