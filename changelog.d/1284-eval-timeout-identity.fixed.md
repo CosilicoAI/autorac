@@ -40,6 +40,10 @@ Case identities now expose and bind each case's oracle declaration. Capability
 boards reject successful PolicyEngine cases that omit oracle evidence while
 allowing failed pre-artifact cases to remain outside artifact and oracle
 denominators.
+CLI report admission now delegates execution and row checks to the same strict
+v3 consumer used by capability boards, including canonical RuleSpec topology,
+per-row root jurisdiction, PolicyEngine runtime, and timeout/retry policy
+validation.
 Terminal encoder timeout evidence stops suite-level retries, bounding Claude
 and Codex timeout paths to the two documented artifact-generation attempts
 instead of six.

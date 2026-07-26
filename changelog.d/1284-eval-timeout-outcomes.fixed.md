@@ -16,3 +16,8 @@ terminal-timeout rows that claim a generated artifact. Eval results and
 summaries now use schema v6 with explicit artifact and timeout counts, while
 machine-readable capability boards use schema `axiom-encode/eval-board/v2` for
 the expanded outcome contract.
+Board artifact denominators now require producer-shaped, content-bound output,
+trace, and context-manifest path/digest pairs. Successful PolicyEngine rows
+must carry a passing oracle outcome, passing outcomes may omit an advisory
+score, and artifact-bearing failures cannot evade oracle denominators by
+dropping their metrics.
