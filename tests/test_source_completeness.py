@@ -3858,6 +3858,43 @@ rules:
     assert not pipeline_shaped.issues
 
 
+def test_partial_literal_versions_do_not_become_global_formula_constants():
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: external_factor
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: income * multiplier
+"""
+    case = {
+        "name": "unresolved historical coefficient",
+        "period": "2025",
+        "input": {"income": 10},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch")
+
+
 def _boundary_control_content(
     *,
     formula: str,

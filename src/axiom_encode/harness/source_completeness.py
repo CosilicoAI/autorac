@@ -4575,6 +4575,11 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
         versions = rule.get("versions")
         if not name or not isinstance(versions, list):
             continue
+        formula_version_count = sum(
+            1
+            for version in versions
+            if isinstance(version, dict) and "formula" in version
+        )
         entries: list[tuple[str, str, Any]] = []
         for version in versions:
             if not isinstance(version, dict) or "formula" not in version:
@@ -4593,6 +4598,8 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
                             value,
                         )
                     )
+        if len(entries) != formula_version_count:
+            continue
         values = [value for _start, _end, value in entries]
         if values and all(
             type(value) is type(values[0]) and value == values[0]
