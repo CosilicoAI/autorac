@@ -23503,17 +23503,21 @@ class ValidatorPipeline:
         self,
         rules_file: Path | None,
     ) -> tuple[str, ...]:
+        """Return only artifacts named by this file's direct imports."""
+
         if rules_file is None:
             return ()
         try:
             source_root = self._validation_source_root(rules_file)
-            pending = self._resolve_import_dependencies(rules_file, source_root)
+            dependencies = self._resolve_import_dependencies(
+                rules_file,
+                source_root,
+            )
         except (OSError, ValueError, UnsafeRulespecContextPath):
             return ()
         seen = {rules_file.resolve()}
         contents: list[str] = []
-        while pending:
-            dependency = pending.pop()
+        for dependency in dependencies:
             resolved = dependency.resolve()
             if resolved in seen:
                 continue
@@ -23524,9 +23528,6 @@ class ValidatorPipeline:
                     source_root,
                 )
                 contents.append(dependency.read_text())
-                pending.extend(
-                    self._resolve_import_dependencies(dependency, source_root)
-                )
             except (OSError, ValueError, UnsafeRulespecContextPath):
                 continue
         return tuple(contents)

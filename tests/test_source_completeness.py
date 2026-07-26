@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from axiom_encode.harness import source_completeness as completeness_module
+from axiom_encode.harness import validator_pipeline as validator_pipeline_module
 from axiom_encode.harness.source_completeness import (
     analyze_complete_source_unit,
     authoritative_numeric_recall_text,
@@ -762,6 +763,9 @@ def test_scalar_amount_language_is_not_computation():
     assert not source_states_explicit_computation(
         "Der Freibetrag beträgt 259 Euro."
     )
+    assert not source_states_explicit_computation(
+        "Der Satz beträgt 45 vom Hundert."
+    )
 
 
 def test_scalar_year_span_is_not_computation():
@@ -830,6 +834,80 @@ rules:
         imported_contents=(imported,),
     )
 
+    assert values == (5.0,)
+
+
+def test_complete_import_inventory_does_not_walk_transitive_same_name(
+    tmp_path,
+    monkeypatch,
+):
+    main_file = tmp_path / "main.yaml"
+    direct_file = tmp_path / "direct.yaml"
+    transitive_file = tmp_path / "transitive.yaml"
+    main_content = """\
+format: rulespec/v1
+imports:
+  - de:statutes/direct#threshold
+rules: []
+"""
+    direct_content = """\
+format: rulespec/v1
+imports:
+  - de:statutes/transitive#threshold
+rules:
+  - name: threshold
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5
+"""
+    transitive_content = """\
+format: rulespec/v1
+rules:
+  - name: threshold
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 73
+"""
+    main_file.write_text(main_content)
+    direct_file.write_text(direct_content)
+    transitive_file.write_text(transitive_content)
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path,
+        axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_validation_source_root",
+        lambda _rules_file: tmp_path,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_resolve_import_dependencies",
+        lambda rules_file, _source_root: (
+            [direct_file] if rules_file == main_file else [transitive_file]
+        ),
+    )
+    monkeypatch.setattr(
+        validator_pipeline_module,
+        "validate_rulespec_context_file",
+        lambda path, _source_root: path,
+    )
+
+    imported_contents = pipeline._complete_source_unit_import_contents(main_file)
+    values = collect_artifact_numeric_values(
+        main_content,
+        extract_named_scalars=extract_named_scalar_occurrences,
+        imported_contents=imported_contents,
+    )
+
+    assert imported_contents == (direct_content,)
     assert values == (5.0,)
 
 
@@ -1222,7 +1300,7 @@ rules: []
 def test_each_formula_clause_requires_principal_output_evidence():
     source = (
         "(1) Der erste Betrag ist Einkommen * 2; "
-        "der zweite Betrag ist Einkommen * 3."
+        "der zweite Betrag ist Einkommen * 3 und auf volle Euro abzurunden."
     )
     content = """\
 format: rulespec/v1
@@ -1256,9 +1334,16 @@ rules:
             source:
               corpus_citation_path: de/statute/estg/32a
               excerpt: "Der erste Betrag ist Einkommen * 2;"
+          - path: dtype
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: >-
+                der zweite Betrag ist Einkommen * 3 und auf volle Euro
+                abzurunden.
     versions:
       - effective_from: '2026-01-01'
-        formula: income * first_multiplier
+        formula: floor(income * first_multiplier)
 """
     test_cases = [
         {

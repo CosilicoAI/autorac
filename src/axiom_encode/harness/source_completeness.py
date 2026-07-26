@@ -583,6 +583,25 @@ def _rule_coverage(
 
 
 def _rule_source_excerpts(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
+    return tuple(
+        (citation_path, excerpt)
+        for _path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
+    )
+
+
+def _rule_formula_source_excerpts(
+    rule: dict[str, Any],
+) -> Iterable[tuple[str, str]]:
+    return tuple(
+        (citation_path, excerpt)
+        for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
+        if re.fullmatch(r"versions(?:\[\d+\])?\.formula", path)
+    )
+
+
+def _rule_source_excerpt_atoms(
+    rule: dict[str, Any],
+) -> Iterable[tuple[str, str, str]]:
     metadata = rule.get("metadata")
     proof = metadata.get("proof") if isinstance(metadata, dict) else None
     if not isinstance(proof, dict):
@@ -590,17 +609,18 @@ def _rule_source_excerpts(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
     atoms = proof.get("atoms") if isinstance(proof, dict) else None
     if not isinstance(atoms, list):
         return ()
-    excerpts: list[tuple[str, str]] = []
+    excerpts: list[tuple[str, str, str]] = []
     for atom in atoms:
         source = atom.get("source") if isinstance(atom, dict) else None
+        path = str(atom.get("path") or "").strip() if isinstance(atom, dict) else ""
         excerpt = source.get("excerpt") if isinstance(source, dict) else None
         citation_path = (
             str(source.get("corpus_citation_path") or "").strip()
             if isinstance(source, dict)
             else ""
         )
-        if isinstance(excerpt, str) and excerpt.strip() and citation_path:
-            excerpts.append((citation_path, excerpt.strip()))
+        if isinstance(excerpt, str) and excerpt.strip() and citation_path and path:
+            excerpts.append((path, citation_path, excerpt.strip()))
     return excerpts
 
 
@@ -632,7 +652,7 @@ def _principal_formula_clause_rules(
             clause_rules[clause] = path_rules
             continue
         clause_text = _normalized_formula_clause_text(clause.text)
-        rounding_direction = _rounding_direction(clause.text)
+        rounding_direction = _rounding_only_direction(clause.text)
         clause_rules[clause] = {
             rule_name
             for rule_name in path_rules
@@ -654,7 +674,7 @@ def _principal_formula_clause_rules(
                     excerpt_text in clause_text
                     or clause_text in excerpt_text
                 )
-                for excerpt_citation_path, excerpt in _rule_source_excerpts(
+                for excerpt_citation_path, excerpt in _rule_formula_source_excerpts(
                     principal_rules[rule_name]
                 )
             )
@@ -682,6 +702,21 @@ def _rounding_direction(text: str) -> str | None:
     if _UP_ROUNDING_LANGUAGE.search(text):
         return "upward"
     return "downward"
+
+
+def _rounding_only_direction(text: str) -> str | None:
+    """Return a direction only when rounding is the clause's sole computation."""
+
+    direction = _rounding_direction(text)
+    if direction is None:
+        return None
+    without_rounding = _ROUNDING_LANGUAGE.sub("", text)
+    if (
+        _has_substantive_arithmetic_expression(without_rounding)
+        or _COMPUTATION_LANGUAGE.search(without_rounding)
+    ):
+        return None
+    return direction
 
 
 def _most_specific_excerpt_branch(
