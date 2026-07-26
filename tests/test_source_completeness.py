@@ -4658,6 +4658,7 @@ def test_standalone_result_rounding_requires_the_final_computation():
             "6Der sich ergebende Steuerbetrag ist auf den nächsten vollen "
             "Euro-Betrag abzurunden."
         ),
+        "Satz 2 Das Ergebnis ist auf volle Euro abzurunden.",
         (
             "Satz 6: Der sich ergebende Steuerbetrag ist auf den nächsten "
             "vollen Euro-Betrag abzurunden."
@@ -4669,7 +4670,7 @@ def test_statutory_result_rounding_attaches_to_preceding_computation(
 ):
     source = f"(1) Der Steuerbetrag ist Einkommen * 2. {result_clause}"
     content = _single_rounding_content("floor(income * multiplier)")
-    if result_clause.startswith("6"):
+    if result_clause.startswith(("6", "Satz 2 ")):
         content = content.replace(
             """\
   - name: amount
@@ -4702,6 +4703,66 @@ def test_statutory_result_rounding_attaches_to_preceding_computation(
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+def test_result_rounding_cannot_bind_an_earlier_component():
+    source = (
+        "(1) Der Grundbetrag ist Einkommen * 2. "
+        "Der Endbetrag ist Grundbetrag + Zuschlag. "
+        "Das Ergebnis ist auf volle Euro abzurunden."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: base_amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Der Grundbetrag ist Einkommen * 2.
+    versions: [{formula: 'income * multiplier'}]
+  - name: unrounded_amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Der Endbetrag ist Grundbetrag + Zuschlag.
+    versions: [{formula: 'base_amount + supplement'}]
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'floor(base_amount)'}]
+"""
+    case = {
+        "name": "earlier component rounded",
+        "input": {"income": 10.25, "supplement": 0.25},
+        "output": {
+            "base_amount": 20.5,
+            "unrounded_amount": 20.75,
+            "amount": 20,
+        },
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
 
 
 def test_integral_input_can_produce_fractional_rounding_operand():
@@ -4821,6 +4882,8 @@ rules:
             False,
         ),
         ("basic_allowance", "floor(child_allowance)", True),
+        ("basic_allowance", "floor(basic_allowance_child)", True),
+        ("basic_allowance_amount", "floor(basic)", True),
     ],
 )
 def test_single_rounding_binds_to_affected_output_stage(
@@ -4841,11 +4904,7 @@ rules:
     versions:
       - formula: FORMULA
 """.replace("FORMULA", formula).replace("RULE_NAME", rule_name)
-    operand_name = (
-        "child_allowance"
-        if "child_allowance" in formula
-        else "unrounded_basic_allowance"
-    )
+    operand_name = formula.removeprefix("floor(").removesuffix(")")
     case = {
         "name": "single pure rounding",
         "input": {operand_name: 10.5},

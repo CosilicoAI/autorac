@@ -4510,12 +4510,32 @@ def _rounding_source_formula_branches(
         )
     if not _rounding_text_refers_to_result(rounding_branch.text):
         return ()
-    return tuple(
+    preceding = tuple(
         branch
         for branch in formula_branches
         if branch.end <= rounding_branch.start
         and _same_top_level_source_path(branch.path, rounding_branch.path)
     )
+    if not preceding:
+        return ()
+    if re.match(
+        r"\s*der\s+sich\s+ergebende\s+steuerbetrag\b",
+        _strip_source_clause_marker(rounding_branch.text),
+        flags=re.IGNORECASE,
+    ):
+        interval_branches = tuple(
+            branch
+            for branch in preceding
+            if re.search(
+                r"\b(?:bis|von|ab|unter|über|between|from|through|"
+                r"up\s+to|above|below)\b",
+                branch.text.split(":", 1)[0],
+                flags=re.IGNORECASE,
+            )
+        )
+        if interval_branches:
+            return interval_branches
+    return (max(preceding, key=lambda branch: branch.end),)
 
 
 def _unwitnessed_exception_branches(
@@ -5397,13 +5417,7 @@ def _rounding_stage_subject_matches(
     operand_subject: tuple[str, ...],
     output_subject: tuple[str, ...],
 ) -> bool:
-    if not operand_subject:
-        return False
-    shorter, longer = sorted(
-        (operand_subject, output_subject),
-        key=len,
-    )
-    return longer[: len(shorter)] == shorter
+    return bool(operand_subject) and operand_subject == output_subject
 
 
 def _rounding_stage_subject(identifier: str) -> tuple[str, ...]:
@@ -5429,11 +5443,14 @@ def _rounding_stage_subject(identifier: str) -> tuple[str, ...]:
         "nearest",
         "final",
     }
-    return tuple(
+    subject = tuple(
         token
         for token in re.findall(r"[A-Za-z0-9]+", normalized.lower())
         if token not in stage_tokens
     )
+    if len(subject) > 1 and subject[-1] in {"amount", "value", "result"}:
+        return subject[:-1]
+    return subject
 
 
 def _balanced_call_operands(text: str, function_name: str) -> Iterable[str]:
