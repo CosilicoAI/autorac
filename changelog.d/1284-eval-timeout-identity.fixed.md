@@ -25,7 +25,13 @@ semantic anchors while import order, relative module origins, and sealed-root
 layout remain score-affecting. Git checkout identities must carry exactly the
 producer-owned scope for the encoder and each RuleSpec root, while the rules
 engine must remain whole-checkout scoped; real producer-to-board admission locks
-protect both contracts. Every durable row's admission context must bind back to
+protect both contracts. Checkout origins are either absent or use the producer's
+canonical `github.com/<owner>/<repo>` spelling. RuleSpec execution roots must be
+direct jurisdiction children of a matching `rulespec-<country>` checkout with
+that jurisdiction as the first scoped path, and each durable row must use the
+root matching its citation jurisdiction. PolicyEngine rows additionally bind
+the runtime country, exact RuleSpec checkout pin path, and pin digest to that
+same admitted root. Every durable row's admission context must bind back to
 the suite's exact run, manifest, case, corpus, RuleSpec root, runner set,
 execution identity, and digest, and PolicyEngine metrics must bind to that same
 sealed runtime with a required pass outcome and runtime evidence (the score
