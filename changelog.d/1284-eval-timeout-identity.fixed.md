@@ -44,6 +44,8 @@ CLI report admission now delegates execution and row checks to the same strict
 v3 consumer used by capability boards, including scalar and metric types,
 artifact bindings, canonical RuleSpec topology, per-row root jurisdiction,
 PolicyEngine runtime, and timeout/retry policy validation.
+That shared row admission also binds each result's top-level citation to the
+canonical corpus citation in its authenticated case identity.
 Terminal encoder timeout evidence stops suite-level retries, bounding Claude
 and Codex timeout paths to the two documented artifact-generation attempts
 instead of six.
