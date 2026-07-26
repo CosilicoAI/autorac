@@ -2563,6 +2563,8 @@ class TestCmdEvalSuite:
         fake_summary = MagicMock(
             ready=False,
             total_cases=1,
+            artifact_case_count=1,
+            timeout_count=0,
             success_rate=1.0,
             compile_pass_rate=1.0,
             ci_pass_rate=1.0,
@@ -2668,6 +2670,8 @@ class TestCmdEvalSuite:
         fake_summary = MagicMock(
             ready=True,
             total_cases=1,
+            artifact_case_count=1,
+            timeout_count=0,
             success_rate=1.0,
             compile_pass_rate=1.0,
             ci_pass_rate=1.0,
@@ -2764,6 +2768,8 @@ class TestCmdEvalSuite:
         fake_summary = MagicMock(
             ready=True,
             total_cases=1,
+            artifact_case_count=1,
+            timeout_count=0,
             success_rate=1.0,
             compile_pass_rate=1.0,
             ci_pass_rate=1.0,
@@ -2855,6 +2861,12 @@ class TestCmdEvalSuite:
             "model": "gpt-5.4",
             "success": False,
             "error": "You've hit your usage limit.",
+            "failure_kind": "error",
+            "timed_out": False,
+            "timeout_stage": None,
+            "timeout_reason": None,
+            "timeout_seconds": None,
+            "timeout_attempts": 0,
             **_write_test_eval_artifacts(tmp_path / "out", "usage-limit"),
             "metrics": {
                 "compile_pass": False,
@@ -2866,6 +2878,8 @@ class TestCmdEvalSuite:
         fake_summary = MagicMock(
             ready=False,
             total_cases=2,
+            artifact_case_count=2,
+            timeout_count=0,
             success_rate=0.0,
             compile_pass_rate=0.0,
             ci_pass_rate=0.0,
@@ -3297,6 +3311,8 @@ class TestCmdEvalSuiteReport:
             "axiom-encode/eval-suite-results/v1",
             "axiom-encode/eval-suite-results/v2",
             "axiom-encode/eval-suite-results/v3",
+            "axiom-encode/eval-suite-results/v4",
+            "axiom-encode/eval-suite-results/v5",
         ],
     )
     def test_rejects_legacy_result_payload_without_translation(
@@ -3525,6 +3541,12 @@ class TestCmdEvalSuiteRevalidate:
             "duration_ms": 1,
             "success": False,
             "error": "old validation failure",
+            "failure_kind": "validation",
+            "timed_out": False,
+            "timeout_stage": None,
+            "timeout_reason": None,
+            "timeout_seconds": None,
+            "timeout_attempts": 0,
             "generation_prompt_sha256": "generation-digest",
             "input_tokens": 1,
             "output_tokens": 1,
@@ -3602,6 +3624,8 @@ class TestCmdEvalSuiteRevalidate:
         summary = MagicMock(
             ready=fresh_success,
             total_cases=1,
+            artifact_case_count=1,
+            timeout_count=0,
             success_rate=float(fresh_success),
             compile_pass_rate=float(compile_pass),
             ci_pass_rate=float(ci_pass),
@@ -3945,7 +3969,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v5",
+                    "schema": "axiom-encode/eval-suite-summary/v6",
                     "manifest": payload["manifest"],
                     "evidence": payload["evidence"],
                     "coverage": payload["coverage"],
@@ -4430,7 +4454,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v5",
+                    "schema": "axiom-encode/eval-suite-summary/v6",
                     "manifest": current_payload["manifest"],
                     "evidence": current_payload["evidence"],
                     "coverage": current_payload["coverage"],

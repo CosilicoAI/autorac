@@ -18,7 +18,7 @@ but share case identities), and runner sets may differ — that is the
 add-a-model path. Duplicate runner names across payloads are refused rather
 than merged: two runs of one runner are two boards, not one.
 
-The board consumes canonical v5 suite payloads and refuses anything else:
+The board consumes canonical v6 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
 whose case identity does not match the manifest, coverage claims the result
 matrix contradicts, and malformed metric types are all hard errors rather
@@ -48,7 +48,7 @@ _RESULTS_FILE_NAME = "results.json"
 # The one producer schema this consumer understands. A new producer version
 # must be reviewed here before boards fold it; test_eval_board locks this to
 # the producer constant in cli.py.
-SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v5"
+SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
@@ -171,8 +171,11 @@ class BoardRunnerStats:
         )
 
     @property
-    def generalist_review_pass_rate(self) -> float:
-        return _rate(self.generalist_review_pass_count, self.cases_run)
+    def generalist_review_pass_rate(self) -> float | None:
+        return _optional_rate(
+            self.generalist_review_pass_count,
+            self.artifact_case_count,
+        )
 
     @property
     def mean_generalist_review_score(self) -> float | None:

@@ -160,6 +160,7 @@ from .harness.eval_board import (
 )
 from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
+    _DEFAULT_SUITE_RETRY_ATTEMPTS,
     _EVAL_RESULT_ADMISSION_SCHEMA,
     _EVAL_RESULT_ARTIFACT_SPECS,
     _bind_eval_result_payload,
@@ -178,6 +179,7 @@ from .harness.evals import (
     _rulespec_root_execution_identity,
     _source_metadata_citation_path,
     _source_metadata_with_attestation,
+    _suite_retry_attempts_from_execution_identity,
     _validate_eval_result_artifact_binding,
     _validate_eval_result_artifacts,
     _validate_eval_suite_run_identity,
@@ -46848,6 +46850,8 @@ def _serialize_readiness_summary(summary) -> dict:
         return summary
     return {
         "total_cases": getattr(summary, "total_cases", None),
+        "artifact_case_count": getattr(summary, "artifact_case_count", None),
+        "timeout_count": getattr(summary, "timeout_count", None),
         "success_rate": getattr(summary, "success_rate", None),
         "compile_pass_rate": getattr(summary, "compile_pass_rate", None),
         "ci_pass_rate": getattr(summary, "ci_pass_rate", None),
@@ -46871,8 +46875,8 @@ def _serialize_readiness_summary(summary) -> dict:
 
 
 _EVAL_SUITE_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
-_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v5"
-_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v5"
+_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
+_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v6"
 _EVAL_SUITE_REVALIDATION_MARKER = ".eval-suite-revalidation.json"
 
 
@@ -46945,6 +46949,7 @@ def _load_verified_eval_suite_artifacts(
     require_complete: bool,
     policyengine_runtime: PolicyEngineRuntime | None = None,
     revalidate_persisted_results: bool = True,
+    suite_retry_attempts: int | None = None,
 ) -> dict[str, object]:
     """Load one suite output only after the harness validates every identity."""
 
@@ -46969,6 +46974,33 @@ def _load_verified_eval_suite_artifacts(
         max_bytes=256 * 1024 * 1024,
         required=False,
     )
+    if suite_retry_attempts is None:
+        try:
+            persisted_run_state = json.loads((state_raw_before or b"").decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("suite-run.json is malformed") from exc
+        if not isinstance(persisted_run_state, dict):
+            raise ValueError("suite-run.json must contain a JSON object")
+        if persisted_run_state.get("status") != "completed":
+            raise ValueError(
+                "Incomplete eval-suite verification requires the current "
+                "suite_retry_attempts"
+            )
+        persisted_identity = persisted_run_state.get("execution_identity")
+        persisted_identity_sha256 = persisted_run_state.get("execution_identity_sha256")
+        if (
+            not isinstance(persisted_identity, dict)
+            or not isinstance(persisted_identity_sha256, str)
+            or persisted_identity_sha256
+            != _eval_suite_execution_identity_sha256(persisted_identity)
+        ):
+            raise ValueError(
+                "suite-run.json has an inconsistent execution identity digest"
+            )
+        suite_retry_attempts = _suite_retry_attempts_from_execution_identity(
+            persisted_identity,
+            artifact_name="suite-run.json execution identity",
+        )
     manifest_identity = _build_eval_suite_manifest_identity(manifest)
     rulespec_roots = _eval_suite_rulespec_roots(manifest, policy_repo_path)
     policyengine_cases = [
@@ -46990,6 +47022,7 @@ def _load_verified_eval_suite_artifacts(
         axiom_rules_path,
         rulespec_roots,
         policyengine_runtime=policyengine_runtime if policyengine_cases else None,
+        suite_retry_attempts=suite_retry_attempts,
     )
     _run_id, _started_at, results, completed_case_indexes = (
         _load_eval_suite_resume_state(
@@ -47606,6 +47639,7 @@ def cmd_eval_suite(args):
             corpus_release=corpus_release,
             policyengine_runtime=policyengine_runtime,
             require_complete=False,
+            suite_retry_attempts=_DEFAULT_SUITE_RETRY_ATTEMPTS,
         )
     except ValueError as exc:
         print(str(exc))
@@ -47660,10 +47694,15 @@ def cmd_eval_suite(args):
     for runner, summary in readiness.items():
         print(f"{runner}: {'READY' if summary.ready else 'NOT READY'}")
         print(
-            f"  cases={summary.total_cases} success={summary.success_rate:.1%} "
-            f"compile={summary.compile_pass_rate:.1%} ci={summary.ci_pass_rate:.1%} "
-            f"zero_ungrounded={summary.zero_ungrounded_rate:.1%} "
-            f"generalist_review={summary.generalist_review_pass_rate:.1%}"
+            f"  cases={summary.total_cases} "
+            f"artifacts={summary.artifact_case_count} "
+            f"timeouts={summary.timeout_count} "
+            f"success={_format_percent(summary.success_rate)} "
+            f"compile={_format_percent(summary.compile_pass_rate)} "
+            f"ci={_format_percent(summary.ci_pass_rate)} "
+            f"zero_ungrounded={_format_percent(summary.zero_ungrounded_rate)} "
+            "generalist_review="
+            f"{_format_percent(summary.generalist_review_pass_rate)}"
         )
         if summary.mean_generalist_review_score is not None:
             print(
@@ -47845,6 +47884,12 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
         )
         result.success = validation_error is None
         result.error = validation_error
+        result.failure_kind = None if result.success else "validation"
+        result.timed_out = False
+        result.timeout_stage = None
+        result.timeout_reason = None
+        result.timeout_seconds = None
+        result.timeout_attempts = 0
         if not isinstance(result.admission, dict):  # verified admission invariant
             raise ValueError(
                 f"Result for case '{case.name}' is missing its signed admission"
@@ -47925,10 +47970,15 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
     for runner, summary in readiness.items():
         print(f"{runner}: {'READY' if summary.ready else 'NOT READY'}")
         print(
-            f"  cases={summary.total_cases} success={summary.success_rate:.1%} "
-            f"compile={summary.compile_pass_rate:.1%} ci={summary.ci_pass_rate:.1%} "
-            f"zero_ungrounded={summary.zero_ungrounded_rate:.1%} "
-            f"generalist_review={summary.generalist_review_pass_rate:.1%}"
+            f"  cases={summary.total_cases} "
+            f"artifacts={summary.artifact_case_count} "
+            f"timeouts={summary.timeout_count} "
+            f"success={_format_percent(summary.success_rate)} "
+            f"compile={_format_percent(summary.compile_pass_rate)} "
+            f"ci={_format_percent(summary.ci_pass_rate)} "
+            f"zero_ungrounded={_format_percent(summary.zero_ungrounded_rate)} "
+            "generalist_review="
+            f"{_format_percent(summary.generalist_review_pass_rate)}"
         )
         if summary.mean_generalist_review_score is not None:
             print(

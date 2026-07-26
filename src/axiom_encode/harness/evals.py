@@ -246,6 +246,7 @@ _CODEX_DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 _CODEX_LONG_SOURCE_CHAR_THRESHOLD = 40_000
 _CODEX_LONG_SOURCE_TIMEOUT_SECONDS = 1800
 _CODEX_LONG_SOURCE_IDLE_TIMEOUT_SECONDS = 900
+_DEFAULT_SUITE_RETRY_ATTEMPTS = 2
 _EMPTY_ARTIFACT_MAX_ATTEMPTS = 2
 _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
 _OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
@@ -984,6 +985,8 @@ def _validate_eval_result_artifact_binding(
 ) -> None:
     """Require paths and SHA-256 digests to describe the exact result artifacts."""
 
+    if not isinstance(payload.get("success"), bool):
+        raise ValueError(f"{artifact_name} success must be a boolean")
     for field_name in (
         "duration_ms",
         "input_tokens",
@@ -1232,11 +1235,13 @@ class EvalReadinessSummary:
     """Aggregated readiness summary for one runner across a suite."""
 
     total_cases: int
+    artifact_case_count: int
+    timeout_count: int
     success_rate: float
-    compile_pass_rate: float
-    ci_pass_rate: float
-    zero_ungrounded_rate: float
-    generalist_review_pass_rate: float
+    compile_pass_rate: float | None
+    ci_pass_rate: float | None
+    zero_ungrounded_rate: float | None
+    generalist_review_pass_rate: float | None
     mean_generalist_review_score: float | None
     policyengine_case_count: int
     policyengine_pass_rate: float | None
@@ -2323,7 +2328,7 @@ def run_eval_suite(
     policy_repo_path: Path,
     corpus_release: _corpus_resolver.LocalCorpusRelease,
     policyengine_runtime: PolicyEngineRuntime | None = None,
-    suite_retry_attempts: int = 2,
+    suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
     resume_existing: bool = False,
 ) -> list[EvalResult]:
     """Run a suite while keeping its evidence signer out of child environments."""
@@ -2467,7 +2472,9 @@ def _run_eval_suite_with_signer(
                     case_source_unit,
                     rulespec_root=policy_repo_root,
                 )
-            attempts = max(suite_retry_attempts, 0) + 1
+            attempts = int(
+                _eval_timeout_retry_policy(suite_retry_attempts)["suite_max_attempts"]
+            )
             active_case_index = index
             active_case_name = case.name
             active_case_started_at = _utc_now_iso()
@@ -3237,7 +3244,7 @@ def _build_eval_suite_execution_identity(
     rulespec_roots: tuple[str, ...],
     *,
     policyengine_runtime: PolicyEngineRuntime | None = None,
-    suite_retry_attempts: int = 2,
+    suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
 ) -> dict[str, object]:
     """Return every executable and RuleSpec input identity used by a suite."""
 
@@ -3259,13 +3266,7 @@ def _build_eval_suite_execution_identity(
                 "request_read_seconds": _OPENAI_REQUEST_READ_TIMEOUT_SECONDS,
             },
         },
-        "timeout_retry_policy": {
-            "empty_artifact_max_attempts": _EMPTY_ARTIFACT_MAX_ATTEMPTS,
-            "suite_max_attempts": max(suite_retry_attempts, 0) + 1,
-            "suite_retries_after_timeout": False,
-            "openai_request_max_attempts": _OPENAI_REQUEST_MAX_ATTEMPTS,
-            "openai_request_backoff_seconds": list(_OPENAI_REQUEST_BACKOFF_SECONDS),
-        },
+        "timeout_retry_policy": _eval_timeout_retry_policy(suite_retry_attempts),
         "axiom_encode": encoder_identity,
         "axiom_rules_engine": _git_checkout_execution_identity(axiom_rules_path),
         "policyengine_runtime": (
@@ -3280,6 +3281,44 @@ def _build_eval_suite_execution_identity(
             _rulespec_root_execution_identity(Path(root)) for root in rulespec_roots
         ],
     }
+
+
+def _eval_timeout_retry_policy(suite_retry_attempts: int) -> dict[str, object]:
+    """Return the retry limits that bound one suite case's execution."""
+
+    if isinstance(suite_retry_attempts, bool) or not isinstance(
+        suite_retry_attempts, int
+    ):
+        raise TypeError("suite_retry_attempts must be an integer")
+    return {
+        "empty_artifact_max_attempts": _EMPTY_ARTIFACT_MAX_ATTEMPTS,
+        "suite_max_attempts": max(suite_retry_attempts, 0) + 1,
+        "suite_retries_after_timeout": False,
+        "openai_request_max_attempts": _OPENAI_REQUEST_MAX_ATTEMPTS,
+        "openai_request_backoff_seconds": list(_OPENAI_REQUEST_BACKOFF_SECONDS),
+    }
+
+
+def _suite_retry_attempts_from_execution_identity(
+    identity: object,
+    *,
+    artifact_name: str,
+) -> int:
+    """Recover the suite retry count from a persisted v3 execution identity."""
+
+    if not isinstance(identity, dict):
+        raise ValueError(f"{artifact_name} is missing its timeout retry policy")
+    retry_policy = identity.get("timeout_retry_policy")
+    if not isinstance(retry_policy, dict):
+        raise ValueError(f"{artifact_name} has a malformed timeout retry policy")
+    suite_max_attempts = retry_policy.get("suite_max_attempts")
+    if (
+        isinstance(suite_max_attempts, bool)
+        or not isinstance(suite_max_attempts, int)
+        or suite_max_attempts <= 0
+    ):
+        raise ValueError(f"{artifact_name} has a malformed timeout retry policy")
+    return suite_max_attempts - 1
 
 
 def _eval_suite_execution_identity_sha256(identity: dict[str, object]) -> str:
@@ -4738,7 +4777,7 @@ def _eval_result_from_payload(
         trace_sha256=payload.get("trace_sha256"),
         context_manifest_sha256=payload.get("context_manifest_sha256"),
         duration_ms=int(payload.get("duration_ms", 0) or 0),
-        success=bool(payload.get("success", False)),
+        success=payload["success"],
         error=payload.get("error"),
         generation_prompt_sha256=payload.get("generation_prompt_sha256"),
         input_tokens=int(payload.get("input_tokens", 0) or 0),
@@ -4917,41 +4956,31 @@ def summarize_readiness(
 ) -> EvalReadinessSummary:
     """Summarize suite readiness for one runner."""
     total_cases = len(results)
+    artifact_results = [result for result in results if result.metrics is not None]
+    artifact_case_count = len(artifact_results)
+    timeout_count = sum(1 for result in results if result.timed_out)
     success_rate = _fraction(
         sum(1 for result in results if result.success), total_cases
     )
-    compile_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.compile_pass
-        ),
-        total_cases,
+    compile_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.compile_pass),
+        artifact_case_count,
     )
-    ci_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.ci_pass
-        ),
-        total_cases,
+    ci_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.ci_pass),
+        artifact_case_count,
     )
-    zero_ungrounded_rate = _fraction(
+    zero_ungrounded_rate = _optional_fraction(
         sum(
             1
-            for result in results
-            if result.metrics is not None
-            and result.metrics.ungrounded_numeric_count == 0
+            for result in artifact_results
+            if result.metrics.ungrounded_numeric_count == 0
         ),
-        total_cases,
+        artifact_case_count,
     )
-    generalist_review_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.generalist_review_pass
-        ),
-        total_cases,
+    generalist_review_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.generalist_review_pass),
+        artifact_case_count,
     )
     generalist_scores = [
         result.metrics.generalist_review_score
@@ -5064,6 +5093,8 @@ def summarize_readiness(
 
     return EvalReadinessSummary(
         total_cases=total_cases,
+        artifact_case_count=artifact_case_count,
+        timeout_count=timeout_count,
         success_rate=success_rate,
         compile_pass_rate=compile_pass_rate,
         ci_pass_rate=ci_pass_rate,
@@ -5133,6 +5164,14 @@ def _fraction(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return round(numerator / denominator, 6)
+
+
+def _optional_fraction(numerator: int, denominator: int) -> float | None:
+    """Return a rounded fraction or None when no artifact entered the metric."""
+
+    if denominator <= 0:
+        return None
+    return _fraction(numerator, denominator)
 
 
 def _min_gate(
@@ -7348,7 +7387,14 @@ def _run_prompt_eval_with_empty_artifact_retry(
     policyengine_rule_hint: str | None = None,
     artifact_root: Path | None = None,
 ) -> tuple[EvalPromptResponse, bool, int, frozenset[Path]]:
-    """Run an eval and retry once if no RuleSpec artifact can be materialized."""
+    """Run an eval within the execution-identity-bound artifact attempt limit."""
+
+    if (
+        isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, bool)
+        or not isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, int)
+        or _EMPTY_ARTIFACT_MAX_ATTEMPTS <= 0
+    ):
+        raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
     materialized_paths: set[Path] = set()
     response = _run_prompt_eval(runner, workspace, prompt)
     wrote_artifact = _materialize_eval_artifact(
@@ -7368,22 +7414,23 @@ def _run_prompt_eval_with_empty_artifact_retry(
         target_file_name=target_file_name,
         include_tests=include_tests,
     )
-    retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
-    retry_wrote_artifact = _materialize_eval_artifact(
-        retry_response.text,
-        output_file,
-        source_text=source_text,
-        workspace_root=workspace.root,
-        policyengine_rule_hint=policyengine_rule_hint,
-        artifact_root=artifact_root,
-        materialized_paths=materialized_paths,
-    )
-    return (
-        _combine_retry_response(response, retry_response, retry_prompt),
-        retry_wrote_artifact,
-        1,
-        frozenset(materialized_paths),
-    )
+    retry_count = 0
+    for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
+        retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
+        retry_count += 1
+        response = _combine_retry_response(response, retry_response, retry_prompt)
+        wrote_artifact = _materialize_eval_artifact(
+            retry_response.text,
+            output_file,
+            source_text=source_text,
+            workspace_root=workspace.root,
+            policyengine_rule_hint=policyengine_rule_hint,
+            artifact_root=artifact_root,
+            materialized_paths=materialized_paths,
+        )
+        if wrote_artifact or not _response_allows_empty_artifact_retry(retry_response):
+            break
+    return response, wrote_artifact, retry_count, frozenset(materialized_paths)
 
 
 def _run_single_eval(
@@ -12399,6 +12446,7 @@ def _run_codex_prompt_eval(
     terminated_after_output = False
     timed_out = False
     timeout_reason = None
+    triggering_timeout_seconds: float | None = None
     with (
         tempfile.TemporaryDirectory(prefix="axiom-codex-home-") as codex_home_dir,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
@@ -12428,9 +12476,17 @@ def _run_codex_prompt_eval(
             )
         except subprocess.TimeoutExpired as exc:
             timed_out = True
-            timeout_reason = (
-                "idle" if exc.timeout == codex_idle_timeout_seconds else "wall"
+            timeout_reason = getattr(
+                exc,
+                "timeout_reason",
+                (
+                    "idle"
+                    if exc.timeout == codex_idle_timeout_seconds
+                    and codex_idle_timeout_seconds != codex_timeout_seconds
+                    else "wall"
+                ),
             )
+            triggering_timeout_seconds = float(exc.timeout)
             process.kill()
             process.wait()
 
@@ -12518,7 +12574,10 @@ def _run_codex_prompt_eval(
             "timed_out": timed_out,
             "timeout_stage": "encoder",
             "timeout_reason": timeout_reason,
-            "timeout_seconds": codex_timeout_seconds,
+            "timeout_seconds": (
+                triggering_timeout_seconds if timed_out else codex_timeout_seconds
+            ),
+            "wall_timeout_seconds": codex_timeout_seconds,
             "idle_timeout_seconds": codex_idle_timeout_seconds,
             "events": events,
         },
@@ -12527,7 +12586,7 @@ def _run_codex_prompt_eval(
         timed_out=timed_out,
         timeout_stage="encoder" if timed_out else None,
         timeout_reason=timeout_reason,
-        timeout_seconds=codex_timeout_seconds if timed_out else None,
+        timeout_seconds=triggering_timeout_seconds if timed_out else None,
         timeout_attempts=1 if timed_out else 0,
     )
 
@@ -12663,7 +12722,9 @@ def _wait_for_codex_process(
 
         now = time.time()
         if now - start > timeout:
-            raise subprocess.TimeoutExpired(process.args, timeout)
+            error = subprocess.TimeoutExpired(process.args, timeout)
+            error.timeout_reason = "wall"
+            raise error
 
         current_heartbeat_snapshot = _snapshot_activity()
         if current_heartbeat_snapshot != heartbeat_snapshot:
@@ -12676,7 +12737,9 @@ def _wait_for_codex_process(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            raise subprocess.TimeoutExpired(process.args, max_idle_seconds)
+            error = subprocess.TimeoutExpired(process.args, max_idle_seconds)
+            error.timeout_reason = "idle"
+            raise error
 
         if last_message_file.exists():
             try:
@@ -12784,6 +12847,16 @@ def _run_openai_prompt_eval(
     except requests.RequestException as exc:
         duration_ms = int((time.time() - start) * 1000)
         timed_out = isinstance(exc, requests.Timeout)
+        timeout_reason = None
+        timeout_seconds = None
+        if isinstance(exc, requests.ConnectTimeout):
+            timeout_reason = "connect"
+            timeout_seconds = _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS
+        elif isinstance(exc, requests.ReadTimeout):
+            timeout_reason = "read"
+            timeout_seconds = _OPENAI_REQUEST_READ_TIMEOUT_SECONDS
+        elif timed_out:
+            timeout_reason = "request"
         return EvalPromptResponse(
             text="",
             duration_ms=duration_ms,
@@ -12794,18 +12867,14 @@ def _run_openai_prompt_eval(
                 "request_body": body,
                 "timed_out": timed_out,
                 "timeout_stage": "encoder" if timed_out else None,
-                "timeout_reason": "wall" if timed_out else None,
-                "timeout_seconds": (
-                    _OPENAI_REQUEST_READ_TIMEOUT_SECONDS if timed_out else None
-                ),
+                "timeout_reason": timeout_reason,
+                "timeout_seconds": timeout_seconds,
             },
             error=str(exc),
             timed_out=timed_out,
             timeout_stage="encoder" if timed_out else None,
-            timeout_reason="wall" if timed_out else None,
-            timeout_seconds=(
-                _OPENAI_REQUEST_READ_TIMEOUT_SECONDS if timed_out else None
-            ),
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
             timeout_attempts=1 if timed_out else 0,
         )
     duration_ms = int((time.time() - start) * 1000)
@@ -12882,13 +12951,21 @@ def _post_openai_eval_request(
             last_error = exc
             if attempt == attempts:
                 raise
-            time.sleep(min(2 ** (attempt - 1), 10))
+            time.sleep(
+                _OPENAI_REQUEST_BACKOFF_SECONDS[
+                    min(attempt - 1, len(_OPENAI_REQUEST_BACKOFF_SECONDS) - 1)
+                ]
+            )
             continue
 
         last_response = response
         if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts:
             return response
-        time.sleep(min(2 ** (attempt - 1), 10))
+        time.sleep(
+            _OPENAI_REQUEST_BACKOFF_SECONDS[
+                min(attempt - 1, len(_OPENAI_REQUEST_BACKOFF_SECONDS) - 1)
+            ]
+        )
 
     if last_response is not None:
         return last_response
