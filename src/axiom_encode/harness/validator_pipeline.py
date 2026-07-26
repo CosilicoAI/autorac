@@ -23481,7 +23481,9 @@ class ValidatorPipeline:
         artifact_numeric_values = collect_artifact_numeric_values(
             content,
             extract_named_scalars=extract_named_scalar_occurrences,
-            imported_contents=self._complete_source_unit_import_contents(rules_file),
+            imported_symbol_contents=(
+                self._complete_source_unit_import_symbol_contents(rules_file)
+            ),
         )
         numeric_occurrence_extractor = functools.partial(
             extract_typed_numeric_inventory_occurrences_from_text,
@@ -23499,38 +23501,43 @@ class ValidatorPipeline:
         )
         return list(completeness.issues)
 
-    def _complete_source_unit_import_contents(
+    def _complete_source_unit_import_symbol_contents(
         self,
         rules_file: Path | None,
-    ) -> tuple[str, ...]:
-        """Return only artifacts named by this file's direct imports."""
+    ) -> tuple[tuple[str, str], ...]:
+        """Bind every directly imported symbol to its exact resolved artifact."""
 
         if rules_file is None:
             return ()
         try:
             source_root = self._validation_source_root(rules_file)
-            dependencies = self._resolve_import_dependencies(
-                rules_file,
-                source_root,
-            )
+            import_items = self._extract_import_items(rules_file.read_text())
         except (OSError, ValueError, UnsafeRulespecContextPath):
             return ()
-        seen = {rules_file.resolve()}
-        contents: list[str] = []
-        for dependency in dependencies:
-            resolved = dependency.resolve()
-            if resolved in seen:
+        seen: set[tuple[Path, str]] = set()
+        bindings: list[tuple[str, str]] = []
+        for import_item in import_items:
+            _target, separator, imported_symbol = import_item.rpartition("#")
+            imported_symbol = imported_symbol.strip()
+            if not separator or not imported_symbol:
                 continue
-            seen.add(resolved)
             try:
-                dependency = validate_rulespec_context_file(
-                    dependency,
-                    source_root,
+                dependency = _resolve_rulespec_import_file_static(
+                    import_item,
+                    rules_file=rules_file,
+                    policy_repo_path=source_root,
+                    rulespec_dependency_roots=self.rulespec_dependency_roots,
                 )
-                contents.append(dependency.read_text())
+                if dependency is None:
+                    continue
+                binding_key = (dependency.resolve(), imported_symbol)
+                if binding_key in seen:
+                    continue
+                seen.add(binding_key)
+                bindings.append((imported_symbol, dependency.read_text()))
             except (OSError, ValueError, UnsafeRulespecContextPath):
                 continue
-        return tuple(contents)
+        return tuple(bindings)
 
     def _rulespec_compile_roots(self) -> tuple[Path, ...]:
         """Return the exact country checkouts authorized for engine compilation."""

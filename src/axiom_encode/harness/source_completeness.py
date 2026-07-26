@@ -1033,7 +1033,7 @@ def collect_artifact_numeric_values(
     content: str,
     *,
     extract_named_scalars: NamedScalarExtractor,
-    imported_contents: Sequence[str] = (),
+    imported_symbol_contents: Sequence[tuple[str, str]] = (),
     additional_values: Iterable[float] = (),
 ) -> tuple[float, ...]:
     """Collect numeric representations credited by strict recall accounting."""
@@ -1044,29 +1044,15 @@ def collect_artifact_numeric_values(
         for item in extract_named_scalars(content)
         if hasattr(item, "value")
     )
-    imported_symbols = _rulespec_import_symbols(content)
-    for artifact_content in imported_contents:
+    for imported_symbol, artifact_content in imported_symbol_contents:
         values.extend(
             float(item.value)
             for item in extract_named_scalars(artifact_content)
             if hasattr(item, "value")
             and _named_scalar_base_name(str(getattr(item, "name", "")))
-            in imported_symbols
+            == imported_symbol
         )
     return tuple(values)
-
-
-def _rulespec_import_symbols(content: str) -> set[str]:
-    with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
-        payload = yaml.safe_load(content)
-        imports = payload.get("imports") if isinstance(payload, dict) else None
-        if isinstance(imports, list):
-            return {
-                item.rsplit("#", 1)[1]
-                for item in imports
-                if isinstance(item, str) and "#" in item
-            }
-    return set()
 
 
 def _named_scalar_base_name(name: str) -> str:

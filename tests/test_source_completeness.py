@@ -831,7 +831,7 @@ rules:
     values = collect_artifact_numeric_values(
         content,
         extract_named_scalars=extract_named_scalar_occurrences,
-        imported_contents=(imported,),
+        imported_symbol_contents=(("needed_amount", imported),),
     )
 
     assert values == (5.0,)
@@ -888,27 +888,106 @@ rules:
         lambda _rules_file: tmp_path,
     )
     monkeypatch.setattr(
-        pipeline,
-        "_resolve_import_dependencies",
-        lambda rules_file, _source_root: (
-            [direct_file] if rules_file == main_file else [transitive_file]
+        validator_pipeline_module,
+        "_resolve_rulespec_import_file_static",
+        lambda import_path, **_kwargs: (
+            direct_file
+            if import_path == "de:statutes/direct#threshold"
+            else transitive_file
         ),
     )
-    monkeypatch.setattr(
-        validator_pipeline_module,
-        "validate_rulespec_context_file",
-        lambda path, _source_root: path,
-    )
 
-    imported_contents = pipeline._complete_source_unit_import_contents(main_file)
+    imported_symbol_contents = (
+        pipeline._complete_source_unit_import_symbol_contents(main_file)
+    )
     values = collect_artifact_numeric_values(
         main_content,
         extract_named_scalars=extract_named_scalar_occurrences,
-        imported_contents=imported_contents,
+        imported_symbol_contents=imported_symbol_contents,
     )
 
-    assert imported_contents == (direct_content,)
+    assert imported_symbol_contents == (("threshold", direct_content),)
     assert values == (5.0,)
+
+
+def test_complete_import_inventory_binds_same_name_to_exact_direct_file(
+    tmp_path,
+    monkeypatch,
+):
+    main_file = tmp_path / "main.yaml"
+    first_file = tmp_path / "first.yaml"
+    second_file = tmp_path / "second.yaml"
+    main_content = """\
+format: rulespec/v1
+imports:
+  - de:statutes/first#threshold
+  - de:statutes/second#other
+rules: []
+"""
+    first_content = """\
+format: rulespec/v1
+rules:
+  - name: threshold
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5
+"""
+    second_content = """\
+format: rulespec/v1
+rules:
+  - name: other
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 11
+  - name: threshold
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 73
+"""
+    main_file.write_text(main_content)
+    first_file.write_text(first_content)
+    second_file.write_text(second_content)
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path,
+        axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_validation_source_root",
+        lambda _rules_file: tmp_path,
+    )
+    monkeypatch.setattr(
+        validator_pipeline_module,
+        "_resolve_rulespec_import_file_static",
+        lambda import_path, **_kwargs: {
+            "de:statutes/first#threshold": first_file,
+            "de:statutes/second#other": second_file,
+        }[import_path],
+    )
+
+    imported_symbol_contents = (
+        pipeline._complete_source_unit_import_symbol_contents(main_file)
+    )
+    values = collect_artifact_numeric_values(
+        main_content,
+        extract_named_scalars=extract_named_scalar_occurrences,
+        imported_symbol_contents=imported_symbol_contents,
+    )
+
+    assert imported_symbol_contents == (
+        ("threshold", first_content),
+        ("other", second_content),
+    )
+    assert values == (5.0, 11.0)
 
 
 def test_glued_satz_markers_are_paragraph_children_not_list_children():
