@@ -9745,6 +9745,13 @@ _PROMPT_HTTP_URL_PATTERN = re.compile(
     r"https?://[^\s<>{}\[\]\"'`]+",
     flags=re.IGNORECASE,
 )
+_PROMPT_FILE_URI_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])file:[^\s<>{}\[\]\"'`]+",
+    flags=re.IGNORECASE,
+)
+_PROMPT_UNC_HOST_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?://|\\\\)[^\s<>{}\[\]\"'`]+"
+)
 _PROMPT_WINDOWS_HOST_PATH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])[^\s<>{}\[\]\"'`]+"
 )
@@ -9758,9 +9765,17 @@ def _prompt_safe_dynamic_text(value: str) -> str:
     """Redact embedded host paths while leaving HTTP(S) URLs byte-identical."""
 
     def redact_non_url(segment: str) -> str:
-        redacted = _PROMPT_WINDOWS_HOST_PATH_PATTERN.sub(
+        redacted = _PROMPT_FILE_URI_PATTERN.sub(
             _OPAQUE_HOST_PATH,
             segment,
+        )
+        redacted = _PROMPT_UNC_HOST_PATH_PATTERN.sub(
+            _OPAQUE_HOST_PATH,
+            redacted,
+        )
+        redacted = _PROMPT_WINDOWS_HOST_PATH_PATTERN.sub(
+            _OPAQUE_HOST_PATH,
+            redacted,
         )
         return _PROMPT_POSIX_HOST_PATH_PATTERN.sub(_OPAQUE_HOST_PATH, redacted)
 
@@ -14047,10 +14062,26 @@ def _run_claude_prompt_eval(
         )
 
     payload = parsed_payload
-    trace["result_envelope"] = {
-        key: payload.get(key) for key in ("type", "subtype", "is_error", "stop_reason")
-    }
     stop_reason = payload.get("stop_reason")
+    traceable_stop_reasons = {
+        "end_turn",
+        "stop_sequence",
+        "max_tokens",
+        "model_context_window_exceeded",
+    }
+    traced_stop_reason = (
+        stop_reason
+        if isinstance(stop_reason, str) and stop_reason in traceable_stop_reasons
+        else (
+            None if stop_reason is None else f"<invalid {type(stop_reason).__name__}>"
+        )
+    )
+    trace["result_envelope"] = {
+        "type": payload.get("type"),
+        "subtype": payload.get("subtype"),
+        "is_error": payload.get("is_error"),
+        "stop_reason": traced_stop_reason,
+    }
     if (
         payload.get("type") == "result"
         and isinstance(stop_reason, str)
@@ -14123,7 +14154,7 @@ def _run_claude_prompt_eval(
             text="",
             duration_ms=duration_ms,
             trace=trace,
-            error=f"Claude eval did not complete: stop_reason={stop_reason}",
+            error="Claude eval did not complete: unrecognized stop_reason",
         )
     text = payload.get("result")
     if not isinstance(text, str):
