@@ -13566,32 +13566,122 @@ def _run_claude_prompt_eval(
             timeout_attempts=1,
         )
 
-    text = result.stdout + result.stderr
+    if result.stderr:
+        stderr_bytes = result.stderr.encode("utf-8", errors="replace")
+        trace["stderr_diagnostic"] = {
+            "byte_count": len(stderr_bytes),
+            "sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        }
+
     tokens = None
     actual_cost = None
-    error = None
-
     try:
-        payload = json.loads(text)
-        trace["json_result"] = payload
-        usage = payload.get("usage", {}) or {}
-        tokens = TokenUsage(
-            input_tokens=int(usage.get("input_tokens", 0) or 0),
-            output_tokens=int(usage.get("output_tokens", 0) or 0),
-            cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
-            cache_creation_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
-        )
-        actual_cost = payload.get("total_cost_usd")
-        text = payload.get("result", "") or ""
-        if payload.get("is_error"):
-            error = text or "Claude eval returned an error"
+        parsed_payload = json.loads(result.stdout)
     except json.JSONDecodeError:
-        trace["raw_output"] = result.stdout + result.stderr
-        if result.returncode != 0:
-            error = (result.stdout + result.stderr).strip() or "Claude eval failed"
+        stdout_bytes = result.stdout.encode("utf-8", errors="replace")
+        trace["stdout_diagnostic"] = {
+            "byte_count": len(stdout_bytes),
+            "sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        }
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval stdout did not contain a valid JSON object",
+        )
 
-    if result.returncode != 0 and not error:
-        error = (result.stdout + result.stderr).strip() or "Claude eval failed"
+    if not isinstance(parsed_payload, dict):
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval stdout must be a JSON object",
+        )
+
+    payload = parsed_payload
+    trace["result_envelope"] = {
+        key: payload.get(key) for key in ("type", "subtype", "is_error", "stop_reason")
+    }
+    if payload.get("type") != "result":
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires type='result'",
+        )
+    if payload.get("subtype") != "success":
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires subtype='success'",
+        )
+    if not isinstance(payload.get("is_error"), bool):
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires boolean is_error",
+        )
+    stop_reason = payload.get("stop_reason")
+    if not isinstance(stop_reason, str) or not stop_reason.strip():
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires a nonempty stop_reason",
+        )
+    if payload["is_error"]:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval returned an error",
+        )
+    if stop_reason in {"max_tokens", "model_context_window_exceeded"}:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error=f"Claude eval output was truncated: stop_reason={stop_reason}",
+            failure_kind="output_truncated",
+        )
+    if stop_reason not in {"end_turn", "stop_sequence"}:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error=f"Claude eval did not complete: stop_reason={stop_reason}",
+        )
+    text = payload.get("result")
+    if not isinstance(text, str):
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires a string result",
+        )
+    usage = payload.get("usage", {}) or {}
+    if not isinstance(usage, dict):
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope usage must be an object",
+        )
+    tokens = TokenUsage(
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+        cache_creation_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+    )
+    actual_cost = payload.get("total_cost_usd")
+    trace["json_result"] = payload
+
+    error = None
+    if result.returncode != 0:
+        text = ""
+        error = f"Claude eval failed with exit code {result.returncode}"
 
     return EvalPromptResponse(
         text=text,

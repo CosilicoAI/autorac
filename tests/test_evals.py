@@ -3438,6 +3438,22 @@ class TestCorpusSourceResolution:
         assert result.error == "Generated RuleSpec failed CI validation"
 
 
+def _claude_result_stdout(
+    result: str = "review complete",
+    **overrides,
+) -> str:
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "stop_reason": "end_turn",
+        "result": result,
+        "usage": {},
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
 class TestClaudePromptEval:
     def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
         runner = parse_runner_spec("claude:opus")
@@ -3455,7 +3471,7 @@ class TestClaudePromptEval:
             return subprocess.CompletedProcess(
                 args=command,
                 returncode=0,
-                stdout=json.dumps({"result": "review complete", "usage": {}}),
+                stdout=_claude_result_stdout(),
                 stderr="",
             )
 
@@ -3470,6 +3486,152 @@ class TestClaudePromptEval:
         assert command.count("-p") == 1
         assert prompt not in command
         assert observed["prompt"] == prompt.encode("utf-8")
+
+    def test_prompt_eval_parses_required_envelope_from_stdout_only(self, tmp_path):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout("valid output"),
+            stderr="warning: receiver diagnostic",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == "valid output"
+        assert response.error is None
+        assert "warning: receiver diagnostic" not in json.dumps(response.trace)
+        assert response.trace["stderr_diagnostic"]["byte_count"] == len(
+            completed.stderr.encode("utf-8")
+        )
+
+    @pytest.mark.parametrize(
+        ("stdout", "expected_error"),
+        [
+            ("not json", "valid JSON object"),
+            (json.dumps(["not", "an", "object"]), "JSON object"),
+            (
+                _claude_result_stdout(type="assistant"),
+                "type='result'",
+            ),
+            (
+                _claude_result_stdout(subtype="error_during_execution"),
+                "subtype='success'",
+            ),
+            (
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "result": "plausible artifact",
+                    }
+                ),
+                "stop_reason",
+            ),
+            (
+                _claude_result_stdout(is_error="false"),
+                "is_error",
+            ),
+        ],
+    )
+    def test_prompt_eval_rejects_malformed_required_json_envelope(
+        self,
+        tmp_path,
+        stdout,
+        expected_error,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=stdout,
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert expected_error in response.error
+
+    def test_prompt_eval_discards_is_error_result_text(self, tmp_path):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(
+                "=== FILE: must-not-materialize.yaml ===\nformat: rulespec/v1\n",
+                is_error=True,
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == "Claude eval returned an error"
+
+    @pytest.mark.parametrize(
+        "stop_reason",
+        ["max_tokens", "model_context_window_exceeded"],
+    )
+    def test_prompt_eval_rejects_truncated_stop_reason(
+        self,
+        tmp_path,
+        stop_reason,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(
+                "=== FILE: partial.yaml ===\nformat: rulespec/v1\n",
+                stop_reason=stop_reason,
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.failure_kind == "output_truncated"
+        assert stop_reason in response.error
 
     @pytest.mark.parametrize(
         ("spec", "expected_effort"),
@@ -3493,7 +3655,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stdout=_claude_result_stdout(),
             stderr="",
         )
 
@@ -3519,7 +3681,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stdout=_claude_result_stdout(),
             stderr="",
         )
         environment = evals_module.EvalCliEnvironment(
@@ -3556,7 +3718,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stdout=_claude_result_stdout(),
             stderr="",
         )
 
@@ -3617,7 +3779,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps({"result": "late success", "usage": {}}),
+            stdout=_claude_result_stdout("late success"),
             stderr="",
         )
 
@@ -3675,7 +3837,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stdout=_claude_result_stdout(),
             stderr="",
         )
 
@@ -3707,12 +3869,7 @@ class TestClaudePromptEval:
         completed = subprocess.CompletedProcess(
             args=[],
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "result": "review complete",
-                    "usage": {"input_tokens": 2, "output_tokens": 3},
-                }
-            ),
+            stdout=_claude_result_stdout(usage={"input_tokens": 2, "output_tokens": 3}),
             stderr="",
         )
 
