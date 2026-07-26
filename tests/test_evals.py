@@ -1900,13 +1900,68 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
         machine_root = tmp_path / machine_name
         machine_root.mkdir()
         source_file = machine_root / "source.txt"
-        source_file.write_text("The source amount is 12.")
-        rulespec_root = machine_root / "rulespec-us" / "us"
+        source_file.write_text(
+            "The source amount is 12. See https://law.example/legal/section-1."
+        )
+        rulespec_root = _canonical_rulespec_content_root(machine_root, "us")
         roots.append(rulespec_root)
+        existing_target = rulespec_root / "statutes" / "26" / "63" / "f.yaml"
+        existing_target.parent.mkdir(parents=True)
+        existing_target.write_text(
+            "format: rulespec/v1\n"
+            "imports:\n"
+            "  - us:statutes/26/151#missing_symbol\n"
+            "rules: []\n"
+        )
+        unresolved_target = rulespec_root / "statutes" / "26" / "151.yaml"
+        unresolved_target.parent.mkdir(parents=True, exist_ok=True)
+        unresolved_target.write_text(
+            "format: rulespec/v1\n"
+            "rules:\n"
+            "  - name: another_symbol\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    unit: USD\n"
+            "    period: Year\n"
+            "    versions:\n"
+            "      - effective_from: '2025-01-01'\n"
+            "        value: 12\n"
+        )
+        copied_target = machine_root / "context" / "existing-target.yaml"
+        copied_target.parent.mkdir()
+        copied_target.write_text(existing_target.read_text())
+        review_findings = machine_root / "review-findings" / "01-findings.md"
+        review_findings.parent.mkdir()
+        review_findings.write_text(
+            f"- Inspect {machine_root}/private/reviewer-notes.json.\n"
+            "- Preserve https://review.example/findings/one.\n"
+        )
+        context_files = [
+            EvalContextFile(
+                source_path=str(existing_target),
+                workspace_path="context/existing-target.yaml",
+                import_path="us:statutes/26/63/f",
+                kind="existing_target",
+            )
+        ]
         workspace = EvalWorkspace(
             root=machine_root,
             source_text_file=source_file,
             manifest_file=machine_root / "context-manifest.json",
+            context_files=context_files,
+            provision_metadata_text=(
+                f"cache_file: {machine_root}/private/provision-cache.json\n"
+                "authority_url: https://corpus.example/releases/current"
+            ),
+            review_findings_files=[
+                EvalContextFile(
+                    source_path=str(review_findings),
+                    workspace_path="review-findings/01-findings.md",
+                    import_path="review-findings/01-findings.md",
+                    kind="mandatory_review_findings",
+                    label=str(machine_root / "private" / "review-label.md"),
+                )
+            ],
             source_metadata={
                 "source_attestation": {
                     "requested_corpus_citation_path": "us/statute/example/section-1",
@@ -1914,6 +1969,10 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
                     "row": {
                         "citation_path": "us/statute/example/section-1",
                         "source_path": str(machine_root / "corpus" / "source.json"),
+                        "diagnostic": (
+                            f"loaded from {machine_root}/private/source-cache.json"
+                        ),
+                        "authority_url": "https://metadata.example/source/one",
                     },
                 }
             },
@@ -1921,12 +1980,16 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
         prompts.append(
             _build_eval_prompt(
                 "us/statute/example/section-1",
-                "cold",
+                "repo-augmented",
                 workspace,
-                [],
+                context_files,
                 target_file_name="target.yaml",
                 include_tests=True,
                 runner_backend="codex",
+                validation_retry_feedback=[
+                    f"validator cache: {machine_root}/private/validator.json",
+                    "docs: https://validator.example/errors/unresolved-import",
+                ],
             )
         )
 
@@ -1939,6 +2002,64 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
     assert "<opaque-host-path>" in prompts[0]
     assert all(str(root) not in prompts[0] for root in roots)
     assert str(tmp_path) not in prompts[0]
+    for expected_url in (
+        "https://law.example/legal/section-1",
+        "https://review.example/findings/one",
+        "https://corpus.example/releases/current",
+        "https://metadata.example/source/one",
+        "https://validator.example/errors/unresolved-import",
+    ):
+        assert expected_url in prompts[0]
+
+
+def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("Legal source. See https://law.example/section/1.")
+    review_findings = tmp_path / "review-findings.md"
+    review_findings.write_text(
+        f"- Inspect {tmp_path}/private/reviewer.json.\n"
+        "- Keep https://review.example/finding/1.\n"
+    )
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+        provision_metadata_text=(
+            f"cache: {tmp_path}/private/provision.json\n"
+            "url: https://corpus.example/release/1"
+        ),
+        review_findings_files=[
+            EvalContextFile(
+                source_path=str(review_findings),
+                workspace_path="review-findings.md",
+                import_path="review-findings.md",
+                kind="mandatory_review_findings",
+                label=str(tmp_path / "private" / "review-label.md"),
+            )
+        ],
+    )
+
+    prompt = _build_eval_prompt(
+        "us/statute/example/section-1",
+        "cold",
+        workspace,
+        [],
+        target_file_name="target.yaml",
+        validation_retry_feedback=[
+            f"validator read {tmp_path}/private/validator-output.json",
+            "See https://validator.example/errors/one.",
+        ],
+    )
+
+    assert str(tmp_path) not in prompt
+    assert prompt.count("<opaque-host-path>") >= 4
+    for expected_url in (
+        "https://law.example/section/1",
+        "https://review.example/finding/1",
+        "https://corpus.example/release/1",
+        "https://validator.example/errors/one",
+    ):
+        assert expected_url in prompt
 
 
 def test_provision_metadata_rendering_preserves_full_content(tmp_path):
@@ -3926,6 +4047,104 @@ class TestClaudePromptEval:
         assert response.error == "Claude eval stopped by usage limit"
         assert secret not in json.dumps(response.trace)
 
+    def test_prompt_eval_classifies_usage_limit_from_non_object_json_stderr(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "private-claude-stderr-detail"
+        stderr_text = f"{secret}: usage limit reached"
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(["not", "an", "object"]),
+            stderr=stderr_text,
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == "Claude eval stopped by usage limit"
+        assert secret not in json.dumps(response.trace)
+        assert response.trace["stderr_diagnostic"]["byte_count"] == len(
+            stderr_text.encode()
+        )
+
+    @pytest.mark.parametrize(
+        "stop_reason",
+        [[], {"reason": "max_tokens"}],
+        ids=["list", "object"],
+    )
+    def test_prompt_eval_rejects_malformed_stop_reason_without_type_error(
+        self,
+        tmp_path,
+        stop_reason,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(stop_reason=stop_reason),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == (
+            "Claude eval JSON envelope requires a nonempty stop_reason"
+        )
+
+    def test_prompt_eval_preserves_truncation_priority_over_stderr_quota(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=_claude_result_stdout(
+                "partial",
+                subtype="error_during_execution",
+                is_error=True,
+                stop_reason="max_tokens",
+            ),
+            stderr="usage limit reached",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.failure_kind == "output_truncated"
+        assert "max_tokens" in response.error
+
     @pytest.mark.parametrize(
         "stop_reason",
         ["max_tokens", "model_context_window_exceeded"],
@@ -4314,6 +4533,76 @@ class TestCodexPromptEval:
         result = _fake_eval_result("codex-gpt-5.4", "sample")
         result.error = response.error
         assert evals_module._eval_result_indicates_usage_limit(result)
+
+    @pytest.mark.parametrize(
+        ("turn_failure", "expected_error", "expected_failure_kind"),
+        [
+            (
+                "receiver unavailable",
+                "Codex eval stopped by usage limit",
+                "error",
+            ),
+            (
+                "max_tokens output limit reached",
+                "Codex eval output was truncated by receiver limits",
+                "output_truncated",
+            ),
+        ],
+        ids=["generic-failure-yields-to-quota", "truncation-retains-priority"],
+    )
+    def test_prompt_eval_prioritizes_mixed_terminal_diagnostics(
+        self,
+        tmp_path,
+        turn_failure,
+        expected_error,
+        expected_failure_kind,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "private-mixed-codex-diagnostic"
+        stderr_text = f"{secret}: usage limit reached\n"
+        event_line = json.dumps(
+            {
+                "type": "turn.failed",
+                "error": {"message": turn_failure},
+            }
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 1
+                stdout.write(event_line + "\n")
+                stdout.flush()
+                stderr.write(stderr_text)
+                stderr.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error == expected_error
+        assert response.failure_kind == expected_failure_kind
+        assert secret not in json.dumps(response.trace)
 
     def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
         runner = parse_runner_spec("codex:gpt-5.4")
@@ -21457,6 +21746,8 @@ rules:
         assert "us:statutes/26/151#exemption_individual_eligible" in prompt
         assert "does not export `exemption_individual_eligible`" in prompt
         assert "defer the affected executable surface" in prompt
+        assert str(section_151) not in prompt
+        assert "<opaque-host-path>" in prompt
 
     def test_repo_augmented_context_resolves_statute_prefixed_dependencies(
         self, tmp_path
@@ -22249,9 +22540,11 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         class FakePopen:
             def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
                 self.args = cmd
-                self.returncode = 0
+                self.returncode = 1
                 stdout.write(event_lines + "\n")
                 stdout.flush()
+                stderr.write(f"{secret}: usage limit reached\n")
+                stderr.flush()
 
             def poll(self):
                 return self.returncode
