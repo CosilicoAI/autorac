@@ -5,8 +5,9 @@ backoffs, responses that arrive after the deadline, empty-artifact retries, and
 all suite retries. Each runner-case receives an independent fresh budget, so
 runner order and runner-set membership cannot consume another runner's
 allowance or suppress its retries. Deterministic artifact validation and
-optional reviewers are post-generation work and are not misrepresented as
-preemptible by this budget.
+optional reviewers pause rather than consume the generation budget, so they
+cannot suppress a permitted generation retry and are not misrepresented as
+preemptible work.
 Capability boards require the complete v3 identity, validate every nested
 checkout and nonempty directory RuleSpec-root field, verify the complete sealed
 PolicyEngine runtime-v2 identity and wrapper digest, require that runtime
