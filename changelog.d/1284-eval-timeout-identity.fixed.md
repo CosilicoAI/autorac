@@ -30,6 +30,10 @@ the suite's exact run, manifest, case, corpus, RuleSpec root, runner set,
 execution identity, and digest, and PolicyEngine metrics must bind to that same
 sealed runtime with a required pass outcome and runtime evidence (the score
 remains optional) rather than a producer-impossible partial combination.
+Case identities now expose and bind each case's oracle declaration. Capability
+boards reject successful PolicyEngine cases that omit oracle evidence while
+allowing failed pre-artifact cases to remain outside artifact and oracle
+denominators.
 Terminal encoder timeout evidence stops suite-level retries, bounding Claude
 and Codex timeout paths to the two documented artifact-generation attempts
 instead of six.
