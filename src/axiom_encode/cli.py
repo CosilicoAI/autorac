@@ -2023,7 +2023,11 @@ def main():
         "--runner",
         action="append",
         default=[],
-        help=f"Runner spec [name=]backend:model. Defaults to claude:opus and {DEFAULT_GPT_RUNNER}",
+        help=(
+            "Runner spec [name=]backend:model[@effort]. Omission uses the "
+            "receiver default; effort records a request and Claude may remain "
+            f"adaptive. Defaults to claude:opus and {DEFAULT_GPT_RUNNER}"
+        ),
     )
     _add_gpt_backend_argument(eval_parser)
     eval_parser.add_argument(
@@ -2084,7 +2088,11 @@ def main():
         "--runner",
         action="append",
         default=[],
-        help=f"Runner spec [name=]backend:model. Defaults to claude:opus and {DEFAULT_GPT_RUNNER}",
+        help=(
+            "Runner spec [name=]backend:model[@effort]. Omission uses the "
+            "receiver default; effort records a request and Claude may remain "
+            f"adaptive. Defaults to claude:opus and {DEFAULT_GPT_RUNNER}"
+        ),
     )
     _add_gpt_backend_argument(eval_source_parser)
     eval_source_parser.add_argument(
@@ -47374,6 +47382,7 @@ def _load_verified_eval_suite_artifacts(
     execution_identity = _build_eval_suite_execution_identity(
         axiom_rules_path,
         rulespec_roots,
+        parsed_runners=parsed_runners,
         policyengine_runtime=policyengine_runtime if policyengine_cases else None,
         suite_retry_attempts=suite_retry_attempts,
     )

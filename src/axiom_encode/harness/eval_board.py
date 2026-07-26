@@ -13,10 +13,12 @@ same score-affecting execution identity (encoder, rules engine, RuleSpec
 content/toolchain/waivers, per-case-runner generation/retry budget, backend
 timeout policy, timeout retry policy, PolicyEngine runtime) — compared after
 dropping location-only fields, so the same toolchain checked out at different
-paths still folds. The manifest content hash may differ (single-runner variants
-of one suite differ byte-wise but share case identities), and runner sets may
-differ — that is the add-a-model path. Duplicate runner names across payloads
-are refused rather than merged: two runs of one runner are two boards, not one.
+paths still folds. Requested effort may differ across distinct runner names,
+while same-name runs must match. The manifest content hash may differ
+(single-runner variants of one suite differ byte-wise but share case
+identities), and runner sets may differ — that is the add-a-model path.
+Duplicate runner names across payloads are refused rather than merged: two
+runs of one runner are two boards, not one.
 
 The board consumes canonical v6 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
@@ -60,18 +62,23 @@ SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
-SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
+SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v4"
 
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
 SUPPORTED_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
-EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v2"
+EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v3"
+_RUNNER_EFFORTS_BY_BACKEND = {
+    "claude": frozenset({"low", "medium", "high", "max"}),
+    "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
+    "openai": frozenset({"low", "medium", "high", "xhigh"}),
+}
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
 _RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
-# These exact scopes are part of the v3 producer contract. Admission keeps
+# These exact scopes are part of the v4 producer contract. Admission keeps
 # independent literals so a producer scope change cannot silently widen or
 # narrow what an existing board consumer accepts.
 _ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
@@ -122,6 +129,7 @@ class BoardRunnerStats:
     runner: str
     backend: str
     model: str
+    requested_effort: str | None
     source: str
     cases_run: int
     artifact_case_count: int
@@ -1231,8 +1239,52 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             "Suite results execution identity has a missing or malformed "
             f"timeout retry policy: {source}"
         )
+    runner_identities = _payload_runner_identities(payload, source)
+    runner_efforts = identity.get("runner_efforts")
+    if not isinstance(runner_efforts, list) or len(runner_efforts) != len(
+        runner_identities
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has missing or malformed "
+            f"requested effort declarations: {source}"
+        )
+    for runner_effort, runner_identity in zip(
+        runner_efforts,
+        runner_identities,
+        strict=True,
+    ):
+        backend = runner_identity["backend"]
+        requested_effort = (
+            runner_effort.get("requested_effort")
+            if isinstance(runner_effort, dict)
+            else None
+        )
+        uses_receiver_default = (
+            runner_effort.get("uses_receiver_default")
+            if isinstance(runner_effort, dict)
+            else None
+        )
+        if (
+            not isinstance(runner_effort, dict)
+            or set(runner_effort)
+            != {"name", "requested_effort", "uses_receiver_default"}
+            or runner_effort.get("name") != runner_identity["name"]
+            or (
+                requested_effort is not None
+                and (
+                    not isinstance(requested_effort, str)
+                    or requested_effort not in _RUNNER_EFFORTS_BY_BACKEND[backend]
+                )
+            )
+            or uses_receiver_default is not (requested_effort is None)
+        ):
+            raise EvalBoardError(
+                "Suite results execution identity has a malformed requested "
+                f"effort for runner {runner_identity['name']!r}: {source}"
+            )
     if set(identity) != {
         "schema",
+        "runner_efforts",
         "case_timeout_seconds",
         "runner_timeouts",
         "timeout_retry_policy",
@@ -1242,7 +1294,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         "rulespec_roots",
     }:
         raise EvalBoardError(
-            f"Suite results execution identity has unexpected v3 fields: {source}"
+            f"Suite results execution identity has unexpected v4 fields: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -1882,6 +1934,7 @@ def fold_eval_board(
     reference_source = ""
     runner_sources: dict[str, str] = {}
     runner_identities: dict[str, dict] = {}
+    runner_effort_identities: dict[str, dict] = {}
     runner_results: dict[str, dict[int, dict]] = {}
     sources: dict[str, str] = {}
     incomplete_sources: list[str] = []
@@ -1901,7 +1954,12 @@ def fold_eval_board(
         execution_identity, execution_digest = _payload_execution_identity(
             payload, source
         )
-        normalized_execution = normalized_execution_identity(execution_identity)
+        common_execution_identity = dict(execution_identity)
+        common_execution_identity.pop("runner_efforts")
+        normalized_execution = normalized_execution_identity(common_execution_identity)
+        payload_runner_efforts = {
+            effort["name"]: effort for effort in execution_identity["runner_efforts"]
+        }
         execution_identity_sha256s[source] = execution_digest
 
         if reference_cases is None:
@@ -1947,6 +2005,17 @@ def fold_eval_board(
         for identity in payload_runner_identities:
             name = identity.get("name")
             assert isinstance(name, str)
+            effort_identity = payload_runner_efforts[name]
+            prior_effort_identity = runner_effort_identities.get(name)
+            if (
+                prior_effort_identity is not None
+                and prior_effort_identity != effort_identity
+            ):
+                raise EvalBoardError(
+                    f"Runner {name!r} requests a different effort in "
+                    f"{runner_sources[name]} and {source}; same-name runs must "
+                    "use the same requested effort, including receiver default"
+                )
             if name in runner_sources:
                 raise EvalBoardError(
                     f"Runner {name!r} appears in both {runner_sources[name]} "
@@ -1955,6 +2024,7 @@ def fold_eval_board(
                 )
             runner_sources[name] = source
             runner_identities[name] = identity
+            runner_effort_identities[name] = effort_identity
             runner_results[name] = {}
             payload_runner_names.add(name)
 
@@ -2079,6 +2149,7 @@ def fold_eval_board(
             runner=name,
             backend=identity["backend"],
             model=identity["model"],
+            requested_effort=runner_effort_identities[name]["requested_effort"],
             source=runner_sources[name],
             cases_run=0,
             artifact_case_count=0,
@@ -2198,6 +2269,8 @@ def eval_board_to_json(board: EvalBoard) -> dict:
                 "runner": stats.runner,
                 "backend": stats.backend,
                 "model": stats.model,
+                "requested_effort": stats.requested_effort,
+                "uses_receiver_default": stats.requested_effort is None,
                 "source": stats.source,
                 "cases_run": stats.cases_run,
                 "artifact_case_count": stats.artifact_case_count,
@@ -2288,11 +2361,12 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
     )
     lines.append("")
     header = (
-        "| runner | model | gate pass | timeouts | artifacts | compile | ci | grounded | "
-        "src coverage | review | review score | oracle | median s | mean $ |"
+        "| runner | model | requested effort | gate pass | timeouts | artifacts | "
+        "compile | ci | grounded | src coverage | review | review score | oracle | "
+        "median s | mean $ |"
     )
     lines.append(header)
-    lines.append("|" + "---|" * 14)
+    lines.append("|" + "---|" * 15)
     for stats in ordered:
         oracle = (
             f"{stats.policyengine_pass_count}/{stats.policyengine_case_count}"
@@ -2300,12 +2374,13 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
             else "—"
         )
         lines.append(
-            "| {runner} | {model} | {gate} | {timeouts} | {artifacts} | "
+            "| {runner} | {model} | {effort} | {gate} | {timeouts} | {artifacts} | "
             "{compile} | {ci} | {grounded} | "
             "{coverage} | {review} | {review_score} | {oracle} | {median} | "
             "{cost} |".format(
                 runner=stats.runner,
                 model=stats.model,
+                effort=stats.requested_effort or "default (receiver)",
                 gate=f"{stats.gate_pass_count}/{stats.cases_run} "
                 f"({_format_percent(stats.gate_pass_rate)})",
                 timeouts=stats.timeout_count,
@@ -2367,6 +2442,7 @@ def render_eval_board_text(board: EvalBoard) -> str:
     for stats in ordered:
         lines.append(
             f"{stats.runner:<{name_width}}  "
+            f"requested effort {stats.requested_effort or 'default (receiver)'}  "
             f"gate {stats.gate_pass_count}/{stats.cases_run} "
             f"({_format_percent(stats.gate_pass_rate)})  "
             f"T timeout {stats.timeout_count}  "

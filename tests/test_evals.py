@@ -1,5 +1,6 @@
 """Tests for model comparison eval helpers."""
 
+import copy
 import hashlib
 import json
 import os
@@ -180,7 +181,11 @@ def _test_eval_suite_execution_identity() -> dict[str, object]:
             "tree_sha256": "1" * 64,
         },
     ):
-        return _build_eval_suite_execution_identity(Path("/tmp/axiom-rules"), ())
+        return _build_eval_suite_execution_identity(
+            Path("/tmp/axiom-rules"),
+            (),
+            parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -16111,6 +16116,7 @@ cases:
         new_execution_identity = _build_eval_suite_execution_identity(
             axiom_rules_path,
             rulespec_roots,
+            parsed_runners=[parse_runner_spec(spec) for spec in manifest.runners],
         )
         state_path = output_root / "suite-run.json"
         state = json.loads(state_path.read_text())
@@ -16136,7 +16142,14 @@ cases:
 
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
-                "schema": "axiom-encode/eval-execution-identity/v3",
+                "schema": "axiom-encode/eval-execution-identity/v4",
+                "runner_efforts": [
+                    {
+                        "name": "test",
+                        "requested_effort": None,
+                        "uses_receiver_default": True,
+                    }
+                ],
                 "case_timeout_seconds": 3600,
                 "runner_timeouts": {
                     "claude": {"wall_seconds": 1800},
@@ -16202,7 +16215,14 @@ cases:
 
         identity = _test_eval_suite_execution_identity()
 
-        assert identity["schema"] == "axiom-encode/eval-execution-identity/v3"
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v4"
+        assert identity["runner_efforts"] == [
+            {
+                "name": "test",
+                "requested_effort": None,
+                "uses_receiver_default": True,
+            }
+        ]
         assert identity["case_timeout_seconds"] == 2400
         assert identity["runner_timeouts"] == {
             "claude": {"wall_seconds": 1234},
@@ -16229,6 +16249,60 @@ cases:
             "openai_request_max_attempts": 6,
             "openai_request_backoff_seconds": [1, 2, 4, 8, 10],
         }
+
+    def test_execution_identity_records_requested_effort_and_receiver_default(self):
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            identity = _build_eval_suite_execution_identity(
+                Path("/tmp/axiom-rules"),
+                (),
+                parsed_runners=(
+                    parse_runner_spec("default=openai:gpt-5.4"),
+                    parse_runner_spec("high=codex:gpt-5.6-sol@high"),
+                    parse_runner_spec("adaptive=claude:claude-opus-5@max"),
+                ),
+            )
+
+        assert identity["runner_efforts"] == [
+            {
+                "name": "default",
+                "requested_effort": None,
+                "uses_receiver_default": True,
+            },
+            {
+                "name": "high",
+                "requested_effort": "high",
+                "uses_receiver_default": False,
+            },
+            {
+                "name": "adaptive",
+                "requested_effort": "max",
+                "uses_receiver_default": False,
+            },
+        ]
+
+    def test_resume_identity_rejects_different_requested_effort(self):
+        persisted_identity = _test_eval_suite_execution_identity()
+        payload = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+        }
+        current_identity = copy.deepcopy(persisted_identity)
+        current_identity["runner_efforts"][0] = {
+            "name": "test",
+            "requested_effort": "high",
+            "uses_receiver_default": False,
+        }
+
+        with pytest.raises(ValueError, match="requested runner effort"):
+            _validate_eval_suite_execution_identity(payload, current_identity)
 
     def test_resume_identity_rejects_different_claude_timeout(
         self,
@@ -16301,6 +16375,7 @@ cases:
             identity = _build_eval_suite_execution_identity(
                 Path("/tmp/axiom-rules"),
                 (),
+                parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
                 suite_retry_attempts=0,
             )
 
@@ -16319,6 +16394,7 @@ cases:
             identity = _build_eval_suite_execution_identity(
                 Path("/tmp/axiom-rules"),
                 (),
+                parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
                 suite_retry_attempts=0,
             )
 
@@ -16449,6 +16525,7 @@ cases:
         execution_identity = _build_eval_suite_execution_identity(
             axiom_rules_path,
             rulespec_roots,
+            parsed_runners=[parse_runner_spec(spec) for spec in manifest.runners],
         )
         self.persisted_result_revalidation.reset_mock()
 

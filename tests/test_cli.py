@@ -487,7 +487,10 @@ def _test_eval_evidence_keys(monkeypatch):
 
 def _test_eval_runner_identity(spec: str) -> dict[str, str]:
     alias, target = spec.split("=", 1) if "=" in spec else ("", spec)
-    backend, model = target.split(":", 1)
+    backend, model_and_effort = target.split(":", 1)
+    model, separator, _effort = model_and_effort.rpartition("@")
+    if not separator:
+        model = model_and_effort
     name = alias or f"{backend}-{model}"
     return {"name": name, "backend": backend, "model": model}
 
@@ -604,7 +607,21 @@ def _fake_verified_eval_suite_artifacts(
         "validation_waiver_set_sha256": "8" * 64,
     }
     execution_identity = {
-        "schema": "axiom-encode/eval-execution-identity/v3",
+        "schema": "axiom-encode/eval-execution-identity/v4",
+        "runner_efforts": [
+            {
+                "name": identity["name"],
+                "requested_effort": (
+                    spec.rpartition("@")[2] if "@" in spec.rsplit(":", 1)[1] else None
+                ),
+                "uses_receiver_default": "@" not in spec.rsplit(":", 1)[1],
+            }
+            for spec, identity in zip(
+                effective_runners,
+                runner_identities,
+                strict=True,
+            )
+        ],
         "case_timeout_seconds": 3600,
         "runner_timeouts": {
             "claude": {"wall_seconds": 1800},
@@ -3295,6 +3312,7 @@ class TestCmdEvalSuite:
         from axiom_encode.harness.evals import (
             _build_eval_suite_execution_identity,
             _eval_suite_execution_identity_sha256,
+            parse_runner_spec,
         )
 
         output_root = tmp_path / "suite"
@@ -3309,6 +3327,7 @@ class TestCmdEvalSuite:
             persisted_identity = _build_eval_suite_execution_identity(
                 tmp_path / "axiom-rules-engine",
                 (),
+                parsed_runners=(parse_runner_spec("codex:gpt-5.4"),),
                 suite_retry_attempts=0,
             )
         run_state = {

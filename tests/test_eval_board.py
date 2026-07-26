@@ -27,6 +27,7 @@ from axiom_encode.harness.evals import (
     _build_eval_suite_execution_identity,
     _eval_suite_execution_identity_sha256,
     load_eval_suite_manifest,
+    parse_runner_spec,
 )
 from axiom_encode.harness.evals import (
     _canonical_json_sha256 as evals_canonical_json_sha256,
@@ -173,6 +174,7 @@ def _execution_identity(
     claude_timeout_seconds=1800,
     codex_timeout_seconds=600,
     suite_max_attempts=3,
+    runner_efforts=None,
 ):
     """A payload execution identity mirroring the current producer shape."""
     rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
@@ -188,6 +190,17 @@ def _execution_identity(
     )
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
+        "runner_efforts": (
+            [
+                {
+                    "name": "terra",
+                    "requested_effort": None,
+                    "uses_receiver_default": True,
+                }
+            ]
+            if runner_efforts is None
+            else copy.deepcopy(runner_efforts)
+        ),
         "case_timeout_seconds": case_timeout_seconds,
         "runner_timeouts": {
             "claude": {"wall_seconds": claude_timeout_seconds},
@@ -398,6 +411,7 @@ def _payload(
     results_sha256=None,
     coverage_overrides=None,
     evidence_overrides=None,
+    requested_efforts=None,
     schema=SUPPORTED_RESULTS_SCHEMA,
 ):
     case_identities = CASE_IDENTITIES if case_identities is None else case_identities
@@ -418,6 +432,16 @@ def _payload(
     }
     if execution_identity is None:
         execution_identity = _execution_identity()
+    execution_identity = copy.deepcopy(execution_identity)
+    requested_efforts = {} if requested_efforts is None else requested_efforts
+    execution_identity["runner_efforts"] = [
+        {
+            "name": name,
+            "requested_effort": requested_efforts.get(name),
+            "uses_receiver_default": requested_efforts.get(name) is None,
+        }
+        for name, _backend, _model in runners
+    ]
     if execution_identity_sha256 is None:
         execution_identity_sha256 = evals_canonical_json_sha256(execution_identity)
     bound_results = []
@@ -583,7 +607,7 @@ def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
     assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v6"
     assert (
-        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v3"
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v4"
     )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
@@ -608,7 +632,11 @@ def test_real_producer_identity_matches_consumer_contract():
     exercises the producer's actual schema string, digest function, and
     field shapes against the consumer's constants and normalizer.
     """
-    identity = _build_eval_suite_execution_identity(REPO_ROOT, ())
+    identity = _build_eval_suite_execution_identity(
+        REPO_ROOT,
+        (),
+        parsed_runners=(parse_runner_spec("terra=codex:gpt-5.6-terra"),),
+    )
     assert identity["schema"] == SUPPORTED_EXECUTION_IDENTITY_SCHEMA
     digest = _eval_suite_execution_identity_sha256(identity)
     assert digest == eval_board_module._canonical_json_sha256(identity)
@@ -621,6 +649,7 @@ def test_real_producer_identity_matches_consumer_contract():
     assert identity["case_timeout_seconds"] == normalized["case_timeout_seconds"]
     assert identity["runner_timeouts"] == normalized["runner_timeouts"]
     assert identity["timeout_retry_policy"] == normalized["timeout_retry_policy"]
+    assert identity["runner_efforts"] == normalized["runner_efforts"]
 
 
 def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
@@ -657,6 +686,7 @@ def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
     identity = _build_eval_suite_execution_identity(
         REPO_ROOT,
         (str(content_root),),
+        parsed_runners=(parse_runner_spec("terra=codex:gpt-5.6-terra"),),
     )
     digest = _eval_suite_execution_identity_sha256(identity)
 
@@ -675,6 +705,13 @@ def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
     admitted_identity, admitted_digest = eval_board_module._payload_execution_identity(
         {
             "evidence": {
+                "effective_runner_identities": [
+                    {
+                        "name": "terra",
+                        "backend": "codex",
+                        "model": "gpt-5.6-terra",
+                    }
+                ],
                 "execution_identity": identity,
                 "execution_identity_sha256": digest,
             }
@@ -1106,6 +1143,21 @@ def test_fold_refuses_unknown_execution_identity_schema(tmp_path):
         ),
     )
     with pytest.raises(EvalBoardError, match="execution identity carries schema"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_malformed_requested_effort_identity(tmp_path):
+    path = _write_payload(
+        tmp_path,
+        "malformed-effort.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            requested_efforts={"terra": "minimal"},
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="requested effort"):
         fold_eval_board([path])
 
 
@@ -1955,6 +2007,79 @@ def test_fold_refuses_mismatched_execution_identity(tmp_path):
     assert "Mixed toolchains" in markdown
 
 
+def test_fold_allows_distinct_runner_names_to_request_different_efforts(tmp_path):
+    low = _write_payload(
+        tmp_path,
+        "low.json",
+        _payload(
+            [("sol-low", "codex", "gpt-5.6-sol")],
+            [
+                _result(
+                    "sol-low",
+                    case,
+                    model="gpt-5.6-sol",
+                )
+                for case in CASE_IDENTITIES
+            ],
+            requested_efforts={"sol-low": "low"},
+        ),
+    )
+    high = _write_payload(
+        tmp_path,
+        "high.json",
+        _payload(
+            [("sol-high", "codex", "gpt-5.6-sol")],
+            [
+                _result(
+                    "sol-high",
+                    case,
+                    model="gpt-5.6-sol",
+                )
+                for case in CASE_IDENTITIES
+            ],
+            requested_efforts={"sol-high": "high"},
+        ),
+    )
+
+    board = fold_eval_board([low, high])
+
+    assert {runner.runner: runner.requested_effort for runner in board.runners} == {
+        "sol-low": "low",
+        "sol-high": "high",
+    }
+
+
+@pytest.mark.parametrize("allow_mixed_toolchains", [False, True])
+def test_fold_refuses_effort_mismatch_for_same_runner_name(
+    tmp_path,
+    allow_mixed_toolchains,
+):
+    low = _write_payload(
+        tmp_path,
+        "low.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            requested_efforts={"sol": "low"},
+        ),
+    )
+    high = _write_payload(
+        tmp_path,
+        "high.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            requested_efforts={"sol": "high"},
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="requested effort"):
+        fold_eval_board(
+            [low, high],
+            allow_mixed_toolchains=allow_mixed_toolchains,
+        )
+
+
 def test_fold_refuses_mismatched_encoder_timeout(tmp_path):
     left = _write_payload(
         tmp_path,
@@ -2196,6 +2321,13 @@ def test_fold_refuses_policyengine_runtime_path_topology(
         eval_board_module._payload_execution_identity(
             {
                 "evidence": {
+                    "effective_runner_identities": [
+                        {
+                            "name": "terra",
+                            "backend": "codex",
+                            "model": "gpt-5.6-terra",
+                        }
+                    ],
                     "execution_identity": execution_identity,
                     "execution_identity_sha256": execution_digest,
                 }
@@ -2957,16 +3089,21 @@ def test_renderers_and_exports(tmp_path):
     assert "# Eval board — EncodeBench UK v1" in markdown
     assert "uk-rulespec-2026-07-14" in markdown
     assert "| terra |" in markdown
+    assert "| requested effort |" in markdown
+    assert "default (receiver)" in markdown
     assert "01 alpha" in markdown
 
     text = render_eval_board_text(board)
     assert "gate 1/3" in text
+    assert "requested effort default (receiver)" in text
     grid_lines = [line for line in text.splitlines() if line.startswith("  0")]
     assert [line.split()[-1] for line in grid_lines] == ["P", "F", "E"]
 
     payload = eval_board_to_json(board)
-    assert payload["schema"] == "axiom-encode/eval-board/v2"
+    assert payload["schema"] == "axiom-encode/eval-board/v3"
     assert payload["runners"][0]["gate_pass_count"] == 1
+    assert payload["runners"][0]["requested_effort"] is None
+    assert payload["runners"][0]["uses_receiver_default"] is True
     expected_digest = terra_payload["evidence"]["execution_identity_sha256"]
     assert payload["execution_identity_sha256s"] == {str(terra_path): expected_digest}
     assert len(payload["cells"]) == 3

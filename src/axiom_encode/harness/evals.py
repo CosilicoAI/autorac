@@ -264,7 +264,7 @@ _RUNNER_EFFORTS_BY_BACKEND = {
     "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
     "openai": frozenset({"low", "medium", "high", "xhigh"}),
 }
-EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
+EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v4"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
     default=None,
@@ -2463,6 +2463,7 @@ def _run_eval_suite_with_signer(
         _build_eval_suite_execution_identity(
             axiom_rules_path,
             rulespec_roots,
+            parsed_runners=parsed_runners,
             policyengine_runtime=policyengine_runtime,
             suite_retry_attempts=suite_retry_attempts,
         )
@@ -2470,6 +2471,7 @@ def _run_eval_suite_with_signer(
         else _build_eval_suite_execution_identity(
             axiom_rules_path,
             rulespec_roots,
+            parsed_runners=parsed_runners,
             suite_retry_attempts=suite_retry_attempts,
         )
     )
@@ -3360,6 +3362,7 @@ def _build_eval_suite_execution_identity(
     axiom_rules_path: Path,
     rulespec_roots: tuple[str, ...],
     *,
+    parsed_runners: Sequence[EvalRunnerSpec],
     policyengine_runtime: PolicyEngineRuntime | None = None,
     suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
 ) -> dict[str, object]:
@@ -3373,6 +3376,14 @@ def _build_eval_suite_execution_identity(
     encoder_identity["version"] = __version__
     return {
         "schema": EVAL_EXECUTION_IDENTITY_SCHEMA,
+        "runner_efforts": [
+            {
+                "name": runner.name,
+                "requested_effort": runner.effort,
+                "uses_receiver_default": runner.effort is None,
+            }
+            for runner in parsed_runners
+        ],
         # Each case-runner receives this full deadline for artifact generation
         # and every retry. Deterministic validation and optional reviewers run
         # after generation and deliberately are not presented as preemptible.
@@ -3425,7 +3436,7 @@ def _suite_retry_attempts_from_execution_identity(
     *,
     artifact_name: str,
 ) -> int:
-    """Recover the suite retry count from a persisted v3 execution identity."""
+    """Recover the suite retry count from a persisted v4 execution identity."""
 
     if not isinstance(identity, dict):
         raise ValueError(f"{artifact_name} is missing its timeout retry policy")
@@ -3468,6 +3479,11 @@ def _validate_eval_suite_execution_identity(
         raise ValueError(
             f"Cannot resume eval suite: {artifact_name} has an inconsistent "
             "executable toolchain identity digest"
+        )
+    if persisted.get("runner_efforts") != expected_identity.get("runner_efforts"):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "requested runner effort execution identity"
         )
     if persisted.get("case_timeout_seconds") != expected_identity.get(
         "case_timeout_seconds"
