@@ -1702,7 +1702,7 @@ _TABLE_RATE_HEADER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TEMPORAL_YEAR_BODY = r"(?:18|19|20)\d{2}"
-_TEMPORAL_YEAR_TOKEN_PATTERN = re.compile(rf"(?<!\d){_TEMPORAL_YEAR_BODY}(?!\d)")
+_TEMPORAL_YEAR_TOKEN_PATTERN = re.compile(rf"(?<!\w){_TEMPORAL_YEAR_BODY}(?!\w)")
 _GERMAN_MONTH_NAME_BODY = (
     r"(?:jan(?:uar)?|feb(?:ruar)?|märz|maerz|mrz|apr(?:il)?|mai|"
     r"jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
@@ -1711,51 +1711,54 @@ _GERMAN_MONTH_NAME_BODY = (
 _GERMAN_DAY_MONTH_YEAR_PATTERN = re.compile(
     rf"(?<!\w)(?P<day>0?[1-9]|[12]\d|3[01])\.\s*"
     rf"{_GERMAN_MONTH_NAME_BODY}\s+(?:des\s+Jahres\s+)?"
-    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _GERMAN_MONTH_YEAR_PATTERN = re.compile(
     rf"\b{_GERMAN_MONTH_NAME_BODY}\s+(?:des\s+Jahres\s+)?"
-    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _ENGLISH_MONTH_DAY_YEAR_PATTERN = re.compile(
     rf"\b{_MONTH_NAME_BODY}\s+(?P<day>0?[1-9]|[12]\d|3[01])"
-    rf"(?:st|nd|rd|th)?\s*,?\s*(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?:st|nd|rd|th)?\s*,?\s*(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _ENGLISH_DAY_MONTH_YEAR_PATTERN = re.compile(
     rf"(?<!\w)(?P<day>0?[1-9]|[12]\d|3[01])"
     rf"(?:st|nd|rd|th)?\s+{_MONTH_NAME_BODY}\s+"
-    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _ENGLISH_MONTH_YEAR_PATTERN = re.compile(
-    rf"\b{_MONTH_NAME_BODY}\s+(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"\b{_MONTH_NAME_BODY}\s+(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _TEMPORAL_YEAR_CUE_PATTERN = re.compile(
     rf"\b(?:"
     rf"jahr(?:es|e|en)?|kalenderjahr(?:es|e|en)?|"
-    rf"veranlagungszeitraum(?:s|es)?|besteuerungszeitraum(?:s|es)?|"
+    rf"veranlagungszeitr(?:aum(?:s|es)?|äume(?:n)?)|"
+    rf"besteuerungszeitr(?:aum(?:s|es)?|äume(?:n)?)|"
     rf"steuerjahr(?:es|e|en)?|"
     rf"years?|calendar\s+years?|tax(?:able)?\s+years?|assessment\s+years?"
-    rf")\b\s*(?:[:=]\s*)?(?P<years>{_TEMPORAL_YEAR_BODY}"
+    rf")\b\s*(?:[:=]\s*)?"
+    rf"(?:(?:vor|nach|ab|bis|seit|before|after|from|through)\s+)?"
+    rf"(?P<years>{_TEMPORAL_YEAR_BODY}(?!\w)"
     rf"(?:\s*(?:bis|to|through|thru|[-–—/]|,|und|and|or)\s*"
-    rf"{_TEMPORAL_YEAR_BODY})*)",
+    rf"{_TEMPORAL_YEAR_BODY}(?!\w))*)",
     re.IGNORECASE,
 )
 _TEMPORAL_YEAR_RANGE_PATTERN = re.compile(
-    rf"(?<!\d)(?P<start>{_TEMPORAL_YEAR_BODY})(?!\d)\s*"
+    rf"(?<!\w)(?P<start>{_TEMPORAL_YEAR_BODY})(?!\w)\s*"
     rf"(?:bis(?:\s+(?:einschließlich|einschl\.?))?|to|through|thru|"
     rf"[-\u2010-\u2015])\s*"
-    rf"(?P<end>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?P<end>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
     rf"\b(?:ab(?:\s+dem)?|bis(?:\s+zum)?|vom|seit|zum|"
     rf"from|since|until|effective\s+from)\s+"
-    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\w)",
     re.IGNORECASE,
 )
 _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
@@ -6196,6 +6199,7 @@ def _complete_typed_year_occurrences(
     typed_year_spans = {
         span
         for span in collector.temporal_component_spans
+        if _locale_numeric_envelope_has_token_boundaries(collector.source, span)
         if _TEMPORAL_YEAR_TOKEN_PATTERN.fullmatch(
             collector.source[span[0] : span[1]]
         )

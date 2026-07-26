@@ -8295,6 +8295,7 @@ def test_de_numeric_profile_types_local_rate_context(source_text, expected):
         ("zum 31. Dezember des Jahres 2025", [31.0, 2025.0]),
         ("Jahr: 2025", [2025.0]),
         ("Jahre 2022/2025", [2022.0, 2025.0]),
+        ("für Veranlagungszeiträume vor 1996", [1996.0]),
     ),
 )
 def test_typed_temporal_occurrences_stay_grounding_only(
@@ -8319,6 +8320,25 @@ def test_typed_temporal_occurrences_stay_grounding_only(
         occurrence.raw == source_text[occurrence.start : occurrence.end]
         for occurrence in grounding
     )
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+@pytest.mark.parametrize("source_text", ("Jahr 2025a", "year 2025_code"))
+def test_temporal_year_recovery_respects_numeric_token_boundaries(
+    profile,
+    source_text,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    assert all(occurrence.value != 2025 for occurrence in grounding)
+    assert all(occurrence.value != 2025 for occurrence in inventory)
 
 
 @pytest.mark.parametrize("profile", ("legacy", "de-DE"))
