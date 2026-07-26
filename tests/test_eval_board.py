@@ -1425,6 +1425,85 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
         fold_eval_board([left, upgraded])
 
 
+@pytest.mark.parametrize("topology_change", ["sys_path_order", "module_origin"])
+def test_policyengine_import_topology_is_score_affecting(topology_change):
+    left_runtime = _policyengine_runtime_identity(root="/ci/pe-uk")
+    right_runtime = _policyengine_runtime_identity(root="/home/runner/pe-uk")
+    right_identity = right_runtime["identity"]
+    if topology_change == "sys_path_order":
+        right_identity["initial_sys_path"].reverse()
+        right_identity["effective_sys_path"] = [
+            right_identity["repository_root"],
+            right_identity["site_packages_root"],
+            *right_identity["initial_sys_path"],
+        ]
+    else:
+        right_identity["packages"]["policyengine-uk"]["module_origin"] = (
+            f"{right_identity['repository_root']}/alternate_policyengine_uk/"
+            "__init__.py"
+        )
+    right_runtime["sha256"] = evals_canonical_json_sha256(right_identity)
+
+    left = _execution_identity(policyengine_runtime=left_runtime)
+    right = _execution_identity(policyengine_runtime=right_runtime)
+
+    assert normalized_execution_identity(left) != normalized_execution_identity(right)
+
+
+@pytest.mark.parametrize(
+    "topology_change",
+    [
+        "effective_sys_path",
+        "initial_sys_path",
+        "python_prefix",
+        "country_module_origin",
+        "core_module_origin",
+        "metadata_root",
+    ],
+)
+def test_fold_refuses_policyengine_runtime_path_topology(
+    tmp_path,
+    topology_change,
+):
+    runtime = _policyengine_runtime_identity()
+    runtime_identity = runtime["identity"]
+    if topology_change == "effective_sys_path":
+        runtime_identity["effective_sys_path"][0:2] = reversed(
+            runtime_identity["effective_sys_path"][0:2]
+        )
+    elif topology_change == "initial_sys_path":
+        runtime_identity["initial_sys_path"][0] = "/tmp/ambient-python"
+        runtime_identity["effective_sys_path"][2] = "/tmp/ambient-python"
+    elif topology_change == "python_prefix":
+        runtime_identity["python_prefix"] = "/tmp/ambient-prefix"
+    elif topology_change == "country_module_origin":
+        runtime_identity["packages"]["policyengine-uk"]["module_origin"] = (
+            "/tmp/policyengine_uk/__init__.py"
+        )
+    elif topology_change == "core_module_origin":
+        runtime_identity["packages"]["policyengine-core"]["module_origin"] = (
+            f"{runtime_identity['repository_root']}/policyengine_core/__init__.py"
+        )
+    else:
+        runtime_identity["packages"]["policyengine-core"]["metadata_root"] = (
+            runtime_identity["repository_root"]
+        )
+    runtime["sha256"] = evals_canonical_json_sha256(runtime_identity)
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    execution_digest = evals_canonical_json_sha256(execution_identity)
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        eval_board_module._payload_execution_identity(
+            {
+                "evidence": {
+                    "execution_identity": execution_identity,
+                    "execution_identity_sha256": execution_digest,
+                }
+            },
+            f"malformed {topology_change}",
+        )
+
+
 def test_normalized_execution_identity_drops_location_fields():
     identity = _execution_identity(
         checkout="/somewhere/deep",
@@ -1438,12 +1517,7 @@ def test_normalized_execution_identity_drops_location_fields():
     for key in (
         '"path"',
         '"toolchain_root"',
-        '"repository_root"',
-        '"venv_root"',
-        '"python_executable"',
-        '"effective_sys_path"',
-        '"module_origin"',
-        '"metadata_root"',
+        '"rulespec_runtime_pin_path"',
     ):
         assert key not in rendered
     # Score-affecting fields survive.
@@ -1451,6 +1525,16 @@ def test_normalized_execution_identity_drops_location_fields():
     assert identity["rulespec_roots"][0]["validation_waiver_set_sha256"] in rendered
     assert '"locked_versions"' in rendered
     assert '"1.9.0"' in rendered
+    for key in (
+        '"repository_root"',
+        '"venv_root"',
+        '"python_executable"',
+        '"initial_sys_path"',
+        '"effective_sys_path"',
+        '"module_origin"',
+        '"metadata_root"',
+    ):
+        assert key in rendered
 
 
 def test_fold_refuses_duplicate_runner(tmp_path):
