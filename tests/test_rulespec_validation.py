@@ -39,6 +39,7 @@ from axiom_encode.harness.validator_pipeline import (
     _extract_json_object,
     _infer_us_state_code_from_rulespec_path,
     _normalize_us_tax_filing_status,
+    _normalize_validation_staging_text,
     _policyengine_expected_float,
     _policyengine_period_string,
     _policyengine_us_snap_input_aliases,
@@ -1776,6 +1777,61 @@ def test_rulespec_companion_runner_uses_rows_for_absolute_list_outputs(
     assert outputs is not None
     assert captured_request is not None
     assert captured_request["queries"][0]["entity_id"] == "payment-1"
+
+
+def test_rulespec_row_output_length_issue_order_is_deterministic(tmp_path):
+    class StableHashName(str):
+        def __new__(cls, value: str, hash_value: int):
+            instance = super().__new__(cls, value)
+            instance.hash_value = hash_value
+            return instance
+
+        def __hash__(self):
+            return self.hash_value
+
+    policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+    )
+    z_output = StableHashName("z_output", 0)
+    a_output = StableHashName("a_output", 1)
+
+    outputs, issues = pipeline._run_rulespec_derived_test_case(
+        binary=tmp_path / "engine",
+        compiled_path=tmp_path / "compiled.json",
+        case={
+            "input": {},
+            "tables": {"Payment": [{"payment_amount": 300}]},
+            "output": {
+                z_output: [300, 400],
+                a_output: [300, 400],
+            },
+        },
+        case_name="ordered_failure",
+        case_index=1,
+        period={
+            "period_kind": "tax_year",
+            "start": "2026-01-01",
+            "end": "2026-12-31",
+        },
+        output_names=[z_output, a_output],
+        derived_by_key={
+            z_output: {"entity": "Payment"},
+            a_output: {"entity": "Payment"},
+        },
+        require_legal_input_keys=False,
+        legal_ids_by_friendly_name={},
+        declared_relation_names=set(),
+        module_target=None,
+    )
+
+    assert outputs is None
+    assert issues == [
+        "Test case `ordered_failure` output `a_output` expected 2 row value(s), "
+        "but `tables.Payment` has 1 row(s)."
+    ]
 
 
 def test_cross_statute_definition_import_check_uses_cited_title_and_existing_targets(
@@ -14462,6 +14518,49 @@ rules:
     assert len(issues) == 1
     assert "Rule name includes citation suffix" in issues[0]
     assert "_2_c" in issues[0]
+
+
+def test_rule_name_path_suffix_prefers_deterministic_most_specific_suffix(tmp_path):
+    class AdversarialSuffixes(set):
+        def __iter__(self):
+            return iter(("b", "a_b"))
+
+    repo = tmp_path / "rulespec-us"
+    rules_file = repo / "statutes" / "7" / "2015" / "a" / "b.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = """format: rulespec/v1
+rules:
+  - name: person_exempt_a_b
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Month
+"""
+
+    with patch.object(
+        validator_pipeline,
+        "_path_suffix_tokens_for_rule_name",
+        return_value=AdversarialSuffixes({"b", "a_b"}),
+    ):
+        issues = find_rule_name_path_suffix_issues(
+            content,
+            rules_file=rules_file,
+            policy_repo_path=repo,
+        )
+
+    assert len(issues) == 1
+    assert "ends with `_a_b`" in issues[0]
+
+
+def test_validation_staging_normalization_requires_a_left_path_boundary(tmp_path):
+    staging_root = tmp_path / "stage"
+    embedded = f"token{staging_root}/compiled.json"
+    standalone = f"{staging_root}/compiled.json"
+
+    assert _normalize_validation_staging_text(
+        f"{embedded} {standalone}",
+        staging_root,
+    ) == f"{embedded} <rulespec-validation-root>/compiled.json"
 
 
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):

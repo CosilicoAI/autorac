@@ -79,6 +79,7 @@ from axiom_encode.harness.evals import (
     _repo_augmented_context_root,
     _resolve_context_imports,
     _resolve_eval_output_path,
+    _reviewer_independent_metrics,
     _rulespec_validation_target,
     _run_claude_prompt_eval,
     _run_codex_prompt_eval,
@@ -5595,6 +5596,69 @@ def test_eval_result_payload_round_trips_prompt_digests():
 
 
 class TestEvaluateArtifact:
+    def test_reviewer_independent_metrics_are_byte_identical_across_staging_roots(
+        self,
+        tmp_path,
+    ):
+        policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+        generated = _generated_rulespec_file_path(
+            tmp_path / "out",
+            "statutes/1/a.yaml",
+        )
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        corpus_release = _write_test_corpus_provision(tmp_path / "bound-release")
+        observed_staging_roots: list[Path] = []
+
+        def fake_binary(pipeline):
+            assert pipeline.validation_staging_root is not None
+            observed_staging_roots.append(pipeline.validation_staging_root)
+            return Path("/opt/axiom-rules-engine")
+
+        def compile_timeout(**kwargs):
+            raise subprocess.TimeoutExpired(
+                [
+                    str(kwargs["binary"]),
+                    "compile",
+                    "--program",
+                    str(kwargs["program"]),
+                    "--output",
+                    str(kwargs["output"]),
+                ],
+                timeout=60,
+            )
+
+        with (
+            patch.object(ValidatorPipeline, "_axiom_rules_binary", fake_binary),
+            patch(
+                "axiom_encode.harness.validator_pipeline.run_rulespec_compile",
+                side_effect=compile_timeout,
+            ),
+        ):
+            metrics_by_run = [
+                evaluate_artifact(
+                    local_corpus_release=corpus_release,
+                    rulespec_file=generated,
+                    policy_repo_root=policy_repo,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    source_text="No numeric values.",
+                    skip_reviewers=True,
+                )
+                for _ in range(2)
+            ]
+
+        projections = [
+            json.dumps(
+                _reviewer_independent_metrics(metrics),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            for metrics in metrics_by_run
+        ]
+        unique_staging_roots = list(dict.fromkeys(observed_staging_roots))
+        assert len(unique_staging_roots) == 2
+        assert projections[0] == projections[1]
+
     def test_validates_generated_artifact_inside_policy_repo_overlay(self, tmp_path):
         policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us-ny")
         generated = (
@@ -5756,6 +5820,20 @@ class TestEvaluateArtifact:
             assert validation_file.with_name(
                 "msa-assistance-standards-2026.test.yaml"
             ).exists()
+
+    def test_validation_root_prefers_nearest_nested_canonical_root(self, tmp_path):
+        outer_root = _canonical_rulespec_content_root(tmp_path / "outer", "us")
+        nested_root = _canonical_rulespec_content_root(
+            outer_root / "nested",
+            "us",
+        )
+        validation_file = nested_root / "statutes" / "1" / "a.yaml"
+        validation_file.parent.mkdir(parents=True)
+        validation_file.write_text("format: rulespec/v1\nrules: []\n")
+
+        assert (
+            _validation_policy_repo_root(validation_file, outer_root) == nested_root
+        )
 
     def test_validation_overlay_rejects_aliased_country_worktree(self, tmp_path):
         monorepo = tmp_path / "repos" / "rulespec-us-mn-msa-20260627"
