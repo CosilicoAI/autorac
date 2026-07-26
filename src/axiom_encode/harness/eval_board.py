@@ -41,6 +41,11 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Literal
 
+from axiom_encode.harness.policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_SCHEMA,
+    POLICYENGINE_RUNTIME_SCHEMA,
+)
+
 BoardCellState = Literal["pass", "fail", "timeout", "error", "missing"]
 
 _RESULTS_FILE_NAME = "results.json"
@@ -488,15 +493,12 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
         "validation_waiver_set_sha256",
     }:
         return False
-    content_state = value.get("content_state")
     file_count = value.get("file_count")
     return (
         _is_nonempty_string(value.get("path"))
-        and content_state in {"missing", "file", "directory"}
+        and value.get("content_state") == "directory"
         and _is_sha256_hex(value.get("content_sha256"))
         and _is_nonnegative_int(file_count)
-        and (content_state != "missing" or file_count == 0)
-        and (content_state != "file" or file_count == 1)
         and _is_nonempty_string(value.get("toolchain_root"))
         and _valid_checkout_execution_identity(
             value.get("checkout_identity"),
@@ -504,6 +506,145 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
         )
         and _is_sha256_hex(value.get("toolchain_contract_sha256"))
         and _is_sha256_hex(value.get("validation_waiver_set_sha256"))
+    )
+
+
+def _valid_policyengine_package_identity(
+    value: object,
+    *,
+    distribution: str,
+    version: str,
+) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"distribution", "version", "module_origin", "metadata_root"}
+        and value.get("distribution") == distribution
+        and value.get("version") == version
+        and _is_nonempty_string(value.get("module_origin"))
+        and _is_nonempty_string(value.get("metadata_root"))
+    )
+
+
+def _valid_policyengine_runtime_identity(value: object) -> bool:
+    """Accept exactly the sealed runtime-v2 identity emitted by the producer."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "country",
+        "official_repository_url",
+        "trusted_git_commit",
+        "official_tree_sha256",
+        "official_tree_file_count",
+        "official_tree_byte_count",
+        "rulespec_runtime_pin_path",
+        "rulespec_runtime_pin_schema",
+        "rulespec_runtime_pin_sha256",
+        "repository_root",
+        "checkout_execution_tree_sha256",
+        "checkout_execution_file_count",
+        "checkout_execution_byte_count",
+        "venv_root",
+        "venv_execution_tree_sha256",
+        "venv_execution_file_count",
+        "venv_execution_byte_count",
+        "stdlib_root",
+        "site_packages_root",
+        "pyproject_sha256",
+        "uv_lock_sha256",
+        "locked_versions",
+        "python_version",
+        "python_implementation",
+        "python_executable",
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+        "initial_sys_path",
+        "effective_sys_path",
+        "isolated",
+        "no_site",
+        "packages",
+    }:
+        return False
+    country = value.get("country")
+    country_package = f"policyengine-{country}"
+    locked_versions = value.get("locked_versions")
+    packages = value.get("packages")
+    python_version = value.get("python_version")
+    initial_sys_path = value.get("initial_sys_path")
+    effective_sys_path = value.get("effective_sys_path")
+    location_fields = (
+        "rulespec_runtime_pin_path",
+        "repository_root",
+        "venv_root",
+        "stdlib_root",
+        "site_packages_root",
+        "python_executable",
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+    )
+    digest_fields = (
+        "official_tree_sha256",
+        "rulespec_runtime_pin_sha256",
+        "checkout_execution_tree_sha256",
+        "venv_execution_tree_sha256",
+        "pyproject_sha256",
+        "uv_lock_sha256",
+    )
+    count_fields = (
+        "official_tree_file_count",
+        "official_tree_byte_count",
+        "checkout_execution_file_count",
+        "checkout_execution_byte_count",
+        "venv_execution_file_count",
+        "venv_execution_byte_count",
+    )
+    if (
+        value.get("schema") != POLICYENGINE_RUNTIME_SCHEMA
+        or country not in {"us", "uk"}
+        or value.get("official_repository_url")
+        != f"https://github.com/PolicyEngine/policyengine-{country}"
+        or not (
+            isinstance(value.get("trusted_git_commit"), str)
+            and len(value["trusted_git_commit"]) == 40
+            and set(value["trusted_git_commit"]) <= _SHA256_HEX
+        )
+        or value.get("rulespec_runtime_pin_schema") != POLICYENGINE_RUNTIME_PIN_SCHEMA
+        or any(not _is_sha256_hex(value.get(field)) for field in digest_fields)
+        or any(not _is_positive_int(value.get(field)) for field in count_fields)
+        or any(not _is_nonempty_string(value.get(field)) for field in location_fields)
+        or not isinstance(locked_versions, dict)
+        or set(locked_versions) != {"policyengine-core", country_package}
+        or any(not _is_nonempty_string(version) for version in locked_versions.values())
+        or not isinstance(python_version, str)
+        or len(python_version.split(".")) != 3
+        or any(
+            not component or not component.isdigit()
+            for component in python_version.split(".")
+        )
+        or value.get("python_implementation") != "cpython"
+        or type(value.get("isolated")) is not int
+        or value["isolated"] != 1
+        or type(value.get("no_site")) is not int
+        or value["no_site"] != 1
+        or not isinstance(initial_sys_path, list)
+        or not initial_sys_path
+        or any(not _is_nonempty_string(path) for path in initial_sys_path)
+        or not isinstance(effective_sys_path, list)
+        or any(not _is_nonempty_string(path) for path in effective_sys_path)
+        or not isinstance(packages, dict)
+        or set(packages) != {"policyengine-core", country_package}
+    ):
+        return False
+    return all(
+        _valid_policyengine_package_identity(
+            packages[distribution],
+            distribution=distribution,
+            version=locked_versions[distribution],
+        )
+        for distribution in ("policyengine-core", country_package)
     )
 
 
@@ -515,8 +656,7 @@ def _valid_policyengine_runtime_wrapper(value: object) -> bool:
     if (
         not isinstance(value, dict)
         or set(value) != {"identity", "sha256"}
-        or not isinstance(value.get("identity"), dict)
-        or not value["identity"]
+        or not _valid_policyengine_runtime_identity(value.get("identity"))
         or not _is_sha256_hex(value.get("sha256"))
     ):
         return False
@@ -579,6 +719,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             require_version=False,
         )
         or not isinstance(rulespec_roots, list)
+        or not rulespec_roots
         or any(
             not _valid_rulespec_root_execution_identity(root) for root in rulespec_roots
         )
@@ -1149,6 +1290,19 @@ def fold_eval_board(
                     f"#{case_index} in {source}"
                 )
             _validate_result_types(result, context=context)
+            metrics = _result_metrics(result)
+            if (
+                execution_identity["policyengine_runtime"] is None
+                and metrics is not None
+                and (
+                    metrics.get("policyengine_pass") is not None
+                    or metrics.get("policyengine_score") is not None
+                )
+            ):
+                raise EvalBoardError(
+                    f"{context} carries PolicyEngine oracle evidence without "
+                    "a bound PolicyEngine runtime execution identity"
+                )
             runner_results[runner][case_index] = result
 
         complete = _payload_completeness(

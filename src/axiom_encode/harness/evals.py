@@ -13299,7 +13299,7 @@ def _post_openai_eval_request(
                     )
                     raise
                 raise _openai_case_budget_timeout(
-                    timeout_attempts=max(timeout_attempts, 1)
+                    timeout_attempts=timeout_attempts + 1
                 ) from exc
             if attempt == attempts:
                 if timeout_attempts:
