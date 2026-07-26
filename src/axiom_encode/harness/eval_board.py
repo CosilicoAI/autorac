@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -77,6 +78,7 @@ _ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
 _RULESPEC_TOOLCHAIN_PATHSPEC = ".axiom/toolchain.toml"
 _RULESPEC_RUNTIME_PIN_PATHSPEC = ".axiom/policyengine-runtime.toml"
 _RULESPEC_WAIVER_PATHSPEC = "known-validation-gaps.yaml"
+_GITHUB_ORIGIN_REPOSITORY_RE = re.compile(r"github[.]com/[^/\s]+/[^/\s]+")
 
 # Location-only identity fields: where a checkout lives never affects scores,
 # so normalized execution identities drop these before comparison.
@@ -555,6 +557,15 @@ def _is_git_object_hex(value: object) -> bool:
     )
 
 
+def _valid_origin_repository(value: object) -> bool:
+    """Accept only the producer's normalized GitHub repository spelling."""
+
+    return (
+        isinstance(value, str)
+        and _GITHUB_ORIGIN_REPOSITORY_RE.fullmatch(value) is not None
+    )
+
+
 def _valid_checkout_execution_identity(
     value: object,
     *,
@@ -587,7 +598,9 @@ def _valid_checkout_execution_identity(
         return (
             _is_nonempty_string(value.get("path"))
             and _is_git_object_hex(value.get("commit"))
-            and (origin_repository is None or _is_nonempty_string(origin_repository))
+            and (
+                origin_repository is None or _valid_origin_repository(origin_repository)
+            )
             and type(value.get("dirty")) is bool
             and _is_sha256_hex(value.get("working_tree_sha256"))
             and (
@@ -640,6 +653,41 @@ def _relative_identity_path(path: str, root: str) -> str | None:
     return None
 
 
+def _rulespec_root_topology(path: object, toolchain_root: object) -> str | None:
+    """Return the jurisdiction for one canonical direct checkout child."""
+
+    if not isinstance(path, str) or not isinstance(toolchain_root, str):
+        return None
+    windows_paths = "\\" in path or "\\" in toolchain_root
+    path_class = PureWindowsPath if windows_paths else PurePosixPath
+    candidate = path_class(path)
+    checkout = path_class(toolchain_root)
+    canonical_candidate = str(candidate) if windows_paths else candidate.as_posix()
+    canonical_checkout = str(checkout) if windows_paths else checkout.as_posix()
+    if (
+        not candidate.is_absolute()
+        or not checkout.is_absolute()
+        or canonical_candidate != path
+        or canonical_checkout != toolchain_root
+        or (
+            not windows_paths
+            and (path.startswith("//") or toolchain_root.startswith("//"))
+        )
+        or ".." in candidate.parts
+        or ".." in checkout.parts
+        or candidate.parent != checkout
+    ):
+        return None
+    checkout_match = re.fullmatch(r"rulespec-([a-z]{2})", checkout.name)
+    if checkout_match is None:
+        return None
+    country = checkout_match.group(1)
+    jurisdiction = candidate.name
+    if re.fullmatch(rf"{re.escape(country)}(?:-[a-z0-9]+)*", jurisdiction) is None:
+        return None
+    return jurisdiction
+
+
 def _valid_rulespec_root_execution_identity(value: object) -> bool:
     """Validate the complete RuleSpec root identity before path normalization."""
 
@@ -660,13 +708,13 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
     toolchain_root = value.get("toolchain_root")
     if not _is_nonempty_string(path) or not _is_nonempty_string(toolchain_root):
         return False
-    content_pathspec = _relative_identity_path(path, toolchain_root)
-    if content_pathspec is None:
+    jurisdiction = _rulespec_root_topology(path, toolchain_root)
+    if jurisdiction is None:
         return False
     expected_pathspecs = tuple(
         dict.fromkeys(
             (
-                content_pathspec,
+                jurisdiction,
                 _RULESPEC_TOOLCHAIN_PATHSPEC,
                 _RULESPEC_RUNTIME_PIN_PATHSPEC,
                 _RULESPEC_WAIVER_PATHSPEC,
