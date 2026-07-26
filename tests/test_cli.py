@@ -3805,6 +3805,7 @@ class TestCmdEvalSuiteReport:
             "axiom-encode/eval-suite-results/v3",
             "axiom-encode/eval-suite-results/v4",
             "axiom-encode/eval-suite-results/v5",
+            "axiom-encode/eval-suite-results/v6",
         ],
     )
     def test_rejects_legacy_result_payload_without_translation(

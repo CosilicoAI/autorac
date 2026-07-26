@@ -1397,7 +1397,7 @@ def test_fold_refuses_unknown_schema(tmp_path):
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
-            schema="axiom-encode/eval-suite-results/v1",
+            schema="axiom-encode/eval-suite-results/v6",
         ),
     )
     with pytest.raises(EvalBoardError, match="folds only"):
