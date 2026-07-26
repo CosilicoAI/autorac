@@ -22648,7 +22648,8 @@ def _normalize_validation_staging_text(
         root_variants.update({str(resolved_root), resolved_root.as_posix()})
     for root_text in sorted(root_variants, key=len, reverse=True):
         normalized = re.sub(
-            rf"(?<![A-Za-z0-9_./\\-]){re.escape(root_text)}(?=$|[\\/])",
+            rf"(?<![A-Za-z0-9_./\\-]){re.escape(root_text)}"
+            rf"(?=$|[\\/]|[^A-Za-z0-9_./\\-])",
             placeholder,
             normalized,
         )
