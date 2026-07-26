@@ -165,6 +165,16 @@ def _execution_identity(
 ):
     """A payload execution identity mirroring the current producer shape."""
     rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
+    runtime_identity = (
+        policyengine_runtime.get("identity")
+        if isinstance(policyengine_runtime, dict)
+        else None
+    )
+    runtime_pin_sha256 = (
+        runtime_identity.get("rulespec_runtime_pin_sha256")
+        if isinstance(runtime_identity, dict)
+        else None
+    )
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
         "case_timeout_seconds": case_timeout_seconds,
@@ -229,10 +239,12 @@ def _execution_identity(
                     "pathspecs": [
                         "uk",
                         ".axiom/toolchain.toml",
+                        ".axiom/policyengine-runtime.toml",
                         "known-validation-gaps.yaml",
                     ],
                 },
                 "toolchain_contract_sha256": "ef" * 32,
+                "policyengine_runtime_pin_sha256": runtime_pin_sha256,
                 "validation_waiver_set_sha256": "12" * 32,
             }
         ],
@@ -595,6 +607,7 @@ def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
     assert identity["rulespec_roots"][0]["checkout_identity"]["pathspecs"] == [
         "us",
         ".axiom/toolchain.toml",
+        ".axiom/policyengine-runtime.toml",
         "known-validation-gaps.yaml",
     ]
     admitted_identity, admitted_digest = eval_board_module._payload_execution_identity(
@@ -1169,6 +1182,7 @@ def test_fold_refuses_nondirectory_rulespec_root(
         "toolchain_root",
         "checkout_identity",
         "toolchain_contract_sha256",
+        "policyengine_runtime_pin_sha256",
         "validation_waiver_set_sha256",
     ],
 )

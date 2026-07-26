@@ -15841,6 +15841,12 @@ cases:
 
         _manifest, _release, _output, _engine = _complete_test_eval_suite(tmp_path)
         checkout = tmp_path / "rulespec-us"
+        runtime_pin = checkout / ".axiom" / "policyengine-runtime.toml"
+        runtime_pin_bytes = (
+            b'[policyengine_runtime]\nschema = "axiom-policyengine-runtime-pin/v1"\n'
+            b'git_commit = "1111111111111111111111111111111111111111"\n'
+        )
+        runtime_pin.write_bytes(runtime_pin_bytes)
         subprocess.run(["git", "init", "-q", str(checkout)], check=True)
         subprocess.run(
             ["git", "-C", str(checkout), "config", "user.email", "test@example.com"],
@@ -15862,8 +15868,13 @@ cases:
         assert checkout_identity["pathspecs"] == [
             "us",
             ".axiom/toolchain.toml",
+            ".axiom/policyengine-runtime.toml",
             "known-validation-gaps.yaml",
         ]
+        assert (
+            clean_identity["policyengine_runtime_pin_sha256"]
+            == hashlib.sha256(runtime_pin_bytes).hexdigest()
+        )
         assert checkout_identity["dirty"] is False
         assert (
             checkout_identity["commit"]
@@ -15879,6 +15890,20 @@ cases:
         (checkout / ".git" / "FETCH_HEAD").write_text("mutable git metadata\n")
         irrelevant_identity = _rulespec_root_execution_identity(checkout / "us")
         assert irrelevant_identity == clean_identity
+
+        changed_pin_bytes = runtime_pin_bytes.replace(b"1111", b"2222", 1)
+        runtime_pin.write_bytes(changed_pin_bytes)
+        dirty_pin_identity = _rulespec_root_execution_identity(checkout / "us")
+        assert (
+            dirty_pin_identity["policyengine_runtime_pin_sha256"]
+            == hashlib.sha256(changed_pin_bytes).hexdigest()
+        )
+        assert dirty_pin_identity["checkout_identity"]["dirty"] is True
+        assert (
+            dirty_pin_identity["checkout_identity"]["working_tree_sha256"]
+            != checkout_identity["working_tree_sha256"]
+        )
+        runtime_pin.write_bytes(runtime_pin_bytes)
 
         rulespec_file = checkout / "us" / "statutes" / "untracked.yaml"
         rulespec_file.parent.mkdir(parents=True)

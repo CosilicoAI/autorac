@@ -92,6 +92,7 @@ from .eval_prompt_surface import (
 )
 from .observability import emit_eval_result, extract_reasoning_output_tokens
 from .policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_PATH,
     POLICYENGINE_RUNTIME_SCHEMA,
     PolicyEngineRuntime,
     PolicyEngineRuntimeError,
@@ -3240,11 +3241,20 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
     toolchain = load_rulespec_toolchain(content_root)
     waiver_digest = verify_rulespec_validation_waiver_set(content_root)
     contract_path = toolchain.root / ".axiom" / "toolchain.toml"
+    runtime_pin_path = toolchain.root / POLICYENGINE_RUNTIME_PIN_PATH
     try:
         contract_digest = hashlib.sha256(contract_path.read_bytes()).hexdigest()
     except OSError as exc:
         raise ValueError(
             f"Could not read RuleSpec toolchain contract: {contract_path}"
+        ) from exc
+    try:
+        runtime_pin_digest = hashlib.sha256(runtime_pin_path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        runtime_pin_digest = None
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read RuleSpec PolicyEngine runtime pin: {runtime_pin_path}"
         ) from exc
     tree_identity = _deterministic_tree_identity(content_root)
     try:
@@ -3258,6 +3268,7 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
             (
                 content_pathspec,
                 ".axiom/toolchain.toml",
+                POLICYENGINE_RUNTIME_PIN_PATH.as_posix(),
                 VALIDATION_WAIVER_SET_PATH,
             )
         )
@@ -3273,6 +3284,7 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
             pathspecs=checkout_pathspecs,
         ),
         "toolchain_contract_sha256": contract_digest,
+        "policyengine_runtime_pin_sha256": runtime_pin_digest,
         "validation_waiver_set_sha256": waiver_digest,
     }
 

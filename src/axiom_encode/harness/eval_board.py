@@ -75,6 +75,7 @@ _RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 # narrow what an existing board consumer accepts.
 _ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
 _RULESPEC_TOOLCHAIN_PATHSPEC = ".axiom/toolchain.toml"
+_RULESPEC_RUNTIME_PIN_PATHSPEC = ".axiom/policyengine-runtime.toml"
 _RULESPEC_WAIVER_PATHSPEC = "known-validation-gaps.yaml"
 
 # Location-only identity fields: where a checkout lives never affects scores,
@@ -648,6 +649,7 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
         "toolchain_root",
         "checkout_identity",
         "toolchain_contract_sha256",
+        "policyengine_runtime_pin_sha256",
         "validation_waiver_set_sha256",
     }:
         return False
@@ -664,11 +666,13 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
             (
                 content_pathspec,
                 _RULESPEC_TOOLCHAIN_PATHSPEC,
+                _RULESPEC_RUNTIME_PIN_PATHSPEC,
                 _RULESPEC_WAIVER_PATHSPEC,
             )
         )
     )
     checkout_identity = value.get("checkout_identity")
+    runtime_pin_digest = value.get("policyengine_runtime_pin_sha256")
     return (
         value.get("content_state") == "directory"
         and _is_sha256_hex(value.get("content_sha256"))
@@ -681,6 +685,7 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
             expected_git_pathspecs=expected_pathspecs,
         )
         and _is_sha256_hex(value.get("toolchain_contract_sha256"))
+        and (runtime_pin_digest is None or _is_sha256_hex(runtime_pin_digest))
         and _is_sha256_hex(value.get("validation_waiver_set_sha256"))
     )
 
@@ -994,6 +999,8 @@ def _valid_policyengine_rulespec_binding(
         ).as_posix()
         if (
             pin_path == expected_pin
+            and root.get("policyengine_runtime_pin_sha256")
+            == runtime.get("rulespec_runtime_pin_sha256")
             and _posix_identity_relative(pin_path, toolchain_root)
             == ".axiom/policyengine-runtime.toml"
         ):
