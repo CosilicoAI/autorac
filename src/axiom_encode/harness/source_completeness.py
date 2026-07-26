@@ -115,8 +115,12 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"summe\s+(?:aus|der|von)|unterschied|differenz|"
     r"geteilt\s+durch|durch\s+(?:\d+|[a-zäöüß]+)\s+geteilt|"
     r"multipliziert\s+mit|"
+    r"\d+(?:[.,]\d+)?\s*-?fach(?:e[nsrm]?)?|"
     r"(?:vermindert|erhöht|gekürzt|vermehrt)\s+um|"
+    r"(?:erhöht|mindert|vermindert|kürzt|vermehrt)\s+sich\s+um|"
     r"(?:abzüglich|zuzüglich)|prozent\s+(?:des|der|von)|"
+    r"\d+(?:[.,]\d+)?\s+(?:vom\s+hundert|v\.?\s*h\.?)\s+"
+    r"(?:des|der|von)|"
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
     r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
@@ -151,6 +155,7 @@ _EXCEPTION_LANGUAGE = re.compile(
     r"does\s+not\s+apply|notwithstanding|vorbehaltlich|ausnahme|"
     r"es\s+sei\s+denn|gilt\s+nicht(?:\s*,?\s*wenn)?|"
     r"findet\s+keine\s+anwendung|soweit\s+nicht|"
+    r"außer|ausgenommen|abweichend\s+von|jedoch\s+nicht|"
     r"(?:[1-9]\d?)?voraussetzung[^.;]{0,160}\bnicht\b"
     r")",
     flags=re.IGNORECASE,
@@ -180,7 +185,7 @@ _ABSATZ_REFERENCE = re.compile(
     flags=re.IGNORECASE,
 )
 _SATZ_REFERENCE = re.compile(
-    r"\b(?:Satz|Sätze)\s*(?P<label>\d+)\b",
+    r"\b(?:Satz(?:es)?|Sätze)\s*(?P<label>\d+)\b",
     flags=re.IGNORECASE,
 )
 _NUMMER_REFERENCE = re.compile(
@@ -203,7 +208,7 @@ _ENGLISH_LEGAL_CITATION = re.compile(
     flags=re.IGNORECASE,
 )
 _STRUCTURAL_REFERENCE = re.compile(
-    r"\b(?:Absatz|Abs\.|Satz|Sätze|Nummer|Nr\.|Buchstabe|Buchst\.)"
+    r"\b(?:Absatz|Abs\.|Satz(?:es)?|Sätze|Nummer|Nr\.|Buchstabe|Buchst\.)"
     r"\s*\d*[a-z]?\b",
     flags=re.IGNORECASE,
 )
@@ -424,24 +429,47 @@ def _analyze_rulespec_payload(
             "encoded nor precisely deferred."
         )
 
-    computation_branches = tuple(
-        branch for branch in branches if source_states_explicit_computation(branch.text)
+    active_branches = tuple(
+        branch
+        for branch in branches
+        if not _path_is_deferred(branch.path, deferred_paths)
+    )
+    all_formula_branches = _source_formula_branches(
+        source_text,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    formula_branches = _source_formula_branches(
+        source_text,
+        branches=branches,
+        active_branches=active_branches,
+        deferred_paths=deferred_paths,
+    )
+    principal_formula_clause_rules = _principal_formula_clause_rules(
+        formula_branches,
+        principal_rules=principal_rules,
+        principal_rule_paths=principal_rule_paths,
+        corpus_citation_path=corpus_citation_path,
     )
     source_has_computation = source_states_explicit_computation(source_text)
     if source_has_computation:
-        if computation_branches:
-            for branch in computation_branches:
-                if _path_covered(branch.path, principal_paths, deferred_paths):
+        if formula_branches:
+            for branch in formula_branches:
+                if principal_formula_clause_rules[branch]:
                     continue
                 issues.append(
                     "[complete-source-unit:formula-output] "
-                    f"Explicit source computation in "
+                    f"Explicit source computation {branch.label} in "
                     f"{_branch_citation(corpus_citation_path, branch)} has no "
                     "principal derived/relation output (`derived` or "
                     "`derived_relation`) and is not "
                     "precisely deferred; parameter-only representation is invalid."
                 )
-        elif not _path_covered((), principal_paths, deferred_paths):
+        elif (
+            not all_formula_branches
+            and not _path_covered((), principal_paths, deferred_paths)
+        ):
             issues.append(
                 "[complete-source-unit:formula-output] Explicit source computation "
                 "has no principal derived/relation output (`derived` or "
@@ -478,11 +506,13 @@ def _analyze_rulespec_payload(
             "`module.summary` is not consulted."
         )
 
-    if source_has_computation and principal_rules:
+    if formula_branches and principal_rules:
         issues.extend(
             _companion_test_issues(
                 principal_rules,
                 principal_rule_paths=principal_rule_paths,
+                principal_formula_clause_rules=principal_formula_clause_rules,
+                formula_branches=formula_branches,
                 branches=branches,
                 source_text=source_text,
                 corpus_citation_path=corpus_citation_path,
@@ -572,6 +602,86 @@ def _rule_source_excerpts(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
         if isinstance(excerpt, str) and excerpt.strip() and citation_path:
             excerpts.append((citation_path, excerpt.strip()))
     return excerpts
+
+
+def _principal_formula_clause_rules(
+    formula_branches: Sequence[SourceStructureBranch],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    corpus_citation_path: str,
+) -> dict[SourceStructureBranch, set[str]]:
+    """Bind each computation clause to principal output evidence.
+
+    A direct source path is sufficient when its structural branch contains one
+    computation. When several computations share that path, each one needs a
+    source-verbatim proof excerpt on the principal rule that claims it.
+    """
+
+    clause_count_by_path: dict[tuple[str, ...], int] = {}
+    for clause in formula_branches:
+        clause_count_by_path[clause.path] = (
+            clause_count_by_path.get(clause.path, 0) + 1
+        )
+
+    clause_rules: dict[SourceStructureBranch, set[str]] = {}
+    normalized_citation_path = corpus_citation_path.strip("/").lower()
+    for clause in formula_branches:
+        path_rules = set(_rules_covering_branch(clause, principal_rule_paths))
+        if clause_count_by_path[clause.path] == 1:
+            clause_rules[clause] = path_rules
+            continue
+        clause_text = _normalized_formula_clause_text(clause.text)
+        rounding_direction = _rounding_direction(clause.text)
+        clause_rules[clause] = {
+            rule_name
+            for rule_name in path_rules
+            if (
+                rounding_direction is not None
+                and _rule_implements_rounding(
+                    principal_rules[rule_name],
+                    rounding_direction,
+                )
+            )
+            or any(
+                (
+                    excerpt_text := _normalized_formula_clause_text(excerpt)
+                )
+                and excerpt_citation_path.strip("/").lower()
+                == normalized_citation_path
+                and source_states_explicit_computation(excerpt)
+                and (
+                    excerpt_text in clause_text
+                    or clause_text in excerpt_text
+                )
+                for excerpt_citation_path, excerpt in _rule_source_excerpts(
+                    principal_rules[rule_name]
+                )
+            )
+        }
+    return clause_rules
+
+
+def _normalized_formula_clause_text(text: str) -> str:
+    """Normalize a clause while ignoring its structural marker."""
+
+    unmarked = re.sub(
+        r"^\s*(?:\((?:\d+[a-z]?|[a-z])\)|\d+[a-z]?\.|[a-z]\))\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return _collapse_text(unmarked)
+
+
+def _rounding_direction(text: str) -> str | None:
+    if not _ROUNDING_LANGUAGE.search(text):
+        return None
+    if _NEAREST_ROUNDING_LANGUAGE.search(text):
+        return "nearest"
+    if _UP_ROUNDING_LANGUAGE.search(text):
+        return "upward"
+    return "downward"
 
 
 def _most_specific_excerpt_branch(
@@ -824,7 +934,22 @@ def _path_covered(
     encoded_paths: set[tuple[str, ...]],
     deferred_paths: set[tuple[str, ...]],
 ) -> bool:
-    return path in encoded_paths or path in deferred_paths
+    return path in encoded_paths or _path_is_deferred(path, deferred_paths)
+
+
+def _path_is_deferred(
+    path: tuple[str, ...],
+    deferred_paths: set[tuple[str, ...]],
+) -> bool:
+    """Let a precise non-root deferral cover its structural descendants."""
+
+    if not path:
+        return () in deferred_paths
+    return any(
+        deferred_path
+        and path[: len(deferred_path)] == deferred_path
+        for deferred_path in deferred_paths
+    )
 
 
 def _branch_citation(
@@ -917,6 +1042,8 @@ def _companion_test_issues(
     principal_rules: dict[str, dict[str, Any]],
     *,
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
+    formula_branches: Sequence[SourceStructureBranch],
     branches: Sequence[SourceStructureBranch],
     source_text: str,
     corpus_citation_path: str,
@@ -952,18 +1079,12 @@ def _companion_test_issues(
     active_branches = [
         branch
         for branch in branches
-        if branch.path not in deferred_paths
+        if not _path_is_deferred(branch.path, deferred_paths)
     ]
-    formula_branches = _source_formula_branches(
-        source_text,
-        branches=branches,
-        active_branches=active_branches,
-        deferred_paths=deferred_paths,
-    )
     missing_formula_branches = _unwitnessed_formula_branches(
         formula_branches,
         principal_rules=principal_rules,
-        principal_rule_paths=principal_rule_paths,
+        principal_formula_clause_rules=principal_formula_clause_rules,
         asserted_by_rule=asserted_by_rule,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
@@ -1185,10 +1306,12 @@ def _span_is_deferred(
     branches: Sequence[SourceStructureBranch],
     deferred_paths: set[tuple[str, ...]],
 ) -> bool:
+    if not branches:
+        return () in deferred_paths
     return any(
         branch.start <= start
         and end <= branch.end
-        and branch.path in deferred_paths
+        and _path_is_deferred(branch.path, deferred_paths)
         for branch in branches
     )
 
@@ -1218,7 +1341,7 @@ def _unwitnessed_formula_branches(
     branches: Sequence[SourceStructureBranch],
     *,
     principal_rules: dict[str, dict[str, Any]],
-    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[SourceStructureBranch, ...]:
@@ -1228,7 +1351,7 @@ def _unwitnessed_formula_branches(
         branch: _formula_branch_test_witnesses(
             branch,
             principal_rules=principal_rules,
-            principal_rule_paths=principal_rule_paths,
+            rule_names=principal_formula_clause_rules[branch],
             asserted_by_rule=asserted_by_rule,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
@@ -1269,7 +1392,7 @@ def _formula_branch_test_witnesses(
     branch: SourceStructureBranch,
     *,
     principal_rules: dict[str, dict[str, Any]],
-    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> set[tuple[str, int]]:
@@ -1278,7 +1401,7 @@ def _formula_branch_test_witnesses(
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
     witnesses: set[tuple[str, int]] = set()
-    for rule_name in _rules_covering_branch(branch, principal_rule_paths):
+    for rule_name in sorted(rule_names):
         selector_names = _rule_numeric_selector_names(principal_rules[rule_name])
         for case in asserted_by_rule.get(rule_name, ()):
             if interval is None:
@@ -1346,7 +1469,8 @@ def _formula_interval_from_text(
 ) -> _NumericInterval | None:
     lowered = text.lower()
     keyword = re.search(
-        r"\b(?:von|from|unter|less\s+than|below|bis|up\s+to|höchstens|"
+        r"\b(?:zwischen|between|von|from|unter|less\s+than|below|"
+        r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
         r"at\s+most|über|more\s+than|above|ab|at\s+least|mindestens)\b",
         lowered,
     )
@@ -1363,6 +1487,13 @@ def _formula_interval_from_text(
     if not occurrences:
         return None
     lowered_range = range_text.lower()
+    if re.match(r"(?:zwischen|between)\b", lowered_range) and re.search(
+        r"\b(?:und|and)\b",
+        lowered_range,
+    ):
+        if len(occurrences) < 2:
+            return None
+        return _NumericInterval(occurrences[0], True, occurrences[1], True)
     if re.match(r"(?:von|from)\b", lowered_range) and re.search(
         r"\b(?:bis|to|through)\b",
         lowered_range,
@@ -1372,7 +1503,10 @@ def _formula_interval_from_text(
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
     if re.match(r"(?:unter|less\s+than|below)\b", lowered_range):
         return _NumericInterval(None, False, occurrences[0], False)
-    if re.match(r"(?:bis|up\s+to|höchstens|at\s+most)\b", lowered_range):
+    if re.match(
+        r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most)\b",
+        lowered_range,
+    ):
         return _NumericInterval(None, False, occurrences[0], True)
     if re.match(r"(?:über|more\s+than|above)\b", lowered_range):
         return _NumericInterval(occurrences[0], False, None, False)
@@ -1838,8 +1972,9 @@ def _source_boundary_obligations(
         first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
         prefix = first_line.split(":", 1)[0]
         if not re.search(
-            r"\b(?:bis|von|ab|unter|über|from|to|through|less\s+than|"
-            r"more\s+than|at\s+least|up\s+to|above|below)\b",
+            r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|through|"
+            r"less\s+than|more\s+than|at\s+least|up\s+to|above|below|"
+            r"nicht\s+mehr\s+als)\b",
             prefix,
             flags=re.IGNORECASE,
         ):

@@ -677,7 +677,7 @@ rules: []
     assert _has_issue(result, "(2)", "source branch")
 
 
-def test_parent_deferral_does_not_blanket_nested_list_branches():
+def test_precise_non_root_deferral_covers_nested_list_branches():
     content = """\
 format: rulespec/v1
 module:
@@ -694,8 +694,7 @@ rules: []
 
     result = _analyze(content, source, test_cases=[])
 
-    assert _has_issue(result, "1.", "source branch")
-    assert _has_issue(result, "2.", "source branch")
+    assert not result.issues
 
 
 @pytest.mark.parametrize(
@@ -705,10 +704,47 @@ rules: []
         "Der Betrag ist die Summe aus Einkommen und Zuschlag.",
         "Der Betrag wird um 20 Prozent des Einkommens vermindert.",
         "Der Betrag ist durch drei geteilt zu berechnen.",
+        "Der Betrag erhöht sich um 25 Euro.",
+        "Der Betrag mindert sich um 25 Euro.",
+        "Der Betrag entspricht dem 1,5fachen des Einkommens.",
+        "Der Betrag beträgt 45 vom Hundert des Einkommens.",
     ],
 )
 def test_common_german_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    ("source", "parameter_value"),
+    [
+        ("(1) Der Betrag erhöht sich um 25 Euro.", 25),
+        ("(1) Der Betrag mindert sich um 25 Euro.", 25),
+        ("(1) Der Betrag entspricht dem 1,5fachen des Einkommens.", 1.5),
+        ("(1) Der Betrag beträgt 45 vom Hundert des Einkommens.", 0.45),
+    ],
+)
+def test_common_german_formula_language_rejects_parameter_only(
+    source: str,
+    parameter_value: float,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: formula_constant
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: {parameter_value}
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "parameter-only")
 
 
 @pytest.mark.parametrize(
@@ -857,6 +893,29 @@ def test_exact_released_estg_32a_structure_paths():
     )
 
 
+def test_released_estg_32a_typed_absatz_6_deferral_passes():
+    source = "(6) " + RELEASED_ESTG_32A_BODY.split("\n(6) ", 1)[1]
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
+      reason: >-
+        Absatz 6 cannot be computed until the exact joint-assessment
+        eligibility conditions under EStG section 26 are available.
+      blocked_by:
+        - de:statutes/estg/26#joint_assessment_eligibility
+rules: []
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert not result.issues
+    assert not _pipeline_issues(content, source, test_cases=[])
+
+
 def test_released_estg_32a_constants_without_tariff_output_fail():
     values = (
         occurrence.value
@@ -969,6 +1028,59 @@ b) Von 74 Euro an: Einkommen * 3.
         branch.path[-1] == "b" and occurrence.value == 74
         for branch, occurrence in obligations
     )
+
+
+def test_common_german_range_boundaries_are_inventoried():
+    source = """\
+(1) Die Berechnung umfasst:
+1. Zwischen 100 und 200 Euro: Einkommen * 2;
+2. Nicht mehr als 300 Euro: Einkommen * 3.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        branches,
+        narrative_formula_branches=formula_branches,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    boundaries = {
+        (branch.path, occurrence.value)
+        for branch, occurrence in obligations
+    }
+
+    assert (("1", "1"), 100) in boundaries
+    assert (("1", "1"), 200) in boundaries
+    assert (("1", "2"), 300) in boundaries
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "außer bei einer Befreiung",
+        "ausgenommen Härtefälle",
+        "abweichend von der Hauptregel",
+        "jedoch nicht bei Einzelveranlagung",
+    ],
+)
+def test_common_german_exception_language_is_inventoried(phrase: str):
+    source = f"(1) Die Steuer ist Einkommen * 2, {phrase}."
+    branches = recognize_source_structure(source)
+
+    obligations = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert obligations
+    assert obligations[0].path == ("1",)
 
 
 def test_nested_editorial_omission_does_not_drop_operative_paragraph():
@@ -1105,6 +1217,70 @@ rules: []
 
     assert _has_issue(unrelated, "explicit source computation", "principal")
     assert not whole_unit.issues
+
+
+def test_each_formula_clause_requires_principal_output_evidence():
+    source = (
+        "(1) Der erste Betrag ist Einkommen * 2; "
+        "der zweite Betrag ist Einkommen * 3."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: first_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: unused_second_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: computed_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: "Der erste Betrag ist Einkommen * 2;"
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * first_multiplier
+"""
+    test_cases = [
+        {
+            "name": "first ordinary case",
+            "input": {"income": 10},
+            "output": {"computed_amount": 20},
+        },
+        {
+            "name": "second ordinary case",
+            "input": {"income": 20},
+            "output": {"computed_amount": 40},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=test_cases)
+
+    assert _has_issue(
+        result,
+        "formula-output",
+        "formula clause 2",
+        "principal",
+    )
 
 
 COMPANION_COVERAGE_SOURCE = """\
