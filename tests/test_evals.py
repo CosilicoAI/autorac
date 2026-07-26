@@ -6944,7 +6944,7 @@ rules: []
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
 
-    def test_generated_numeric_grounding_uses_embedded_operating_excerpt(
+    def test_generated_numeric_grounding_uses_authoritative_module_source(
         self, tmp_path
     ):
         source_text = (
@@ -6995,9 +6995,175 @@ rules:
                 local_corpus_release=corpus_release,
             )
 
+        assert metrics.ci_pass
+        assert metrics.grounded_numeric_count == 1
+        assert metrics.ungrounded_numeric_count == 0
+
+    def test_generated_numeric_grounding_never_uses_module_summary(self, tmp_path):
+        source_text = (
+            "(a) Households in which each member receives qualifying public "
+            "assistance shall be eligible."
+        )
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path="us/statute/7/2014",
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "statutes" / "7" / "2014" / "a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/7/2014
+  summary: The unrelated standard deduction is $144.
+rules:
+  - name: unrelated_standard_deduction_amount
+    kind: parameter
+    dtype: Money
+    period: Month
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 144
+"""
+        )
+
+        compile_result = ValidationResult("compile", True, issues=[])
+        ci_result = ValidationResult("ci", True, issues=[])
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=compile_result,
+            ),
+            patch.object(ValidatorPipeline, "_run_ci", return_value=ci_result),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "us"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text=source_text,
+                local_corpus_release=corpus_release,
+            )
+
         assert not metrics.ci_pass
         assert metrics.ungrounded_numeric_count == 1
         assert any("144" in issue for issue in metrics.ci_issues)
+
+    def test_numeric_grounding_uses_de_profile_from_source_citation(self, tmp_path):
+        source_text = "Der Betrag beläuft sich auf 1 034,87 Punkte."
+        citation_path = "de/statute/estg/32a"
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path=citation_path,
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "statutes" / "estg" / "32a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: german_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 1034.87
+"""
+        )
+
+        compile_result = ValidationResult("compile", True, issues=[])
+        ci_result = ValidationResult("ci", True, issues=[])
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=compile_result,
+            ),
+            patch.object(ValidatorPipeline, "_run_ci", return_value=ci_result),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text=source_text,
+                source_citation_path=citation_path,
+                local_corpus_release=corpus_release,
+            )
+
+        assert metrics.ci_pass
+        assert metrics.grounded_numeric_count == 1
+        assert metrics.ungrounded_numeric_count == 0
+        assert metrics.source_numeric_occurrence_count == 1
+        assert metrics.missing_source_numeric_occurrence_count == 0
+
+    def test_numeric_grounding_uses_citation_only_de_proof_source(self, tmp_path):
+        module_citation = "de/statute/example/1"
+        proof_citation = "de/statute/example/2"
+        module_source = "Der Haupttext enthält keinen maßgeblichen Betrag."
+        proof_source = "Der maßgebliche Betrag ist 1 034,87 Punkte."
+        corpus_release = _write_test_corpus_release(
+            tmp_path,
+            [
+                {"citation_path": module_citation, "body": module_source},
+                {"citation_path": proof_citation, "body": proof_source},
+            ],
+        )
+        rulespec_file = tmp_path / "statutes" / "example" / "1.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {module_citation}
+rules:
+  - name: german_amount
+    kind: parameter
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: amount
+            source:
+              corpus_citation_path: {proof_citation}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 1034.87
+"""
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", True, issues=[]),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", True, issues=[]),
+            ),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text=module_source,
+                source_citation_path=module_citation,
+                local_corpus_release=corpus_release,
+                skip_reviewers=True,
+            )
+
+        assert metrics.ci_pass
+        assert metrics.grounded_numeric_count == 1
+        assert metrics.ungrounded_numeric_count == 0
 
     def test_generated_numeric_grounding_uses_proof_excerpts_with_compact_summary(
         self, tmp_path

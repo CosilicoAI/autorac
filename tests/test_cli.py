@@ -75,6 +75,7 @@ from axiom_encode.cli import (
     _find_rulespec_dependents,
     _generated_result_source_metadata,
     _git_changed_files,
+    _grounded_formula_literal_for_scalar_expression,
     _has_zero_output_test,
     _hoist_nested_test_tables,
     _import_base_to_repo_file,
@@ -7287,6 +7288,41 @@ def test_closest_exact_source_excerpt_rejects_unrelated_numeric_text():
     assert repaired is None
 
 
+def test_closest_exact_source_excerpt_uses_de_numeric_profile():
+    source_text = (
+        "Der Betrag ist laut Tabelle 34,87 Euro.\n\n"
+        "Der maßgebliche Betrag ist laut Gesetz 1 034,87 Euro."
+    )
+
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt="Der Betrag ist laut Tabelle 1 034,87 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired == "Der maßgebliche Betrag ist laut Gesetz 1 034,87 Euro."
+
+
+def test_closest_exact_source_excerpt_rejects_malformed_de_numeric_span():
+    repaired = _closest_exact_source_excerpt(
+        source_text="Der Betrag ist laut Tabelle 1 234,56 Euro.",
+        excerpt="Der Betrag ist laut Tabelle 1,234.56 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_malformed_de_span_with_valid_number():
+    repaired = _closest_exact_source_excerpt(
+        source_text="Absatz 2: Der maßgebliche Betrag ist 1 234,56 Euro.",
+        excerpt="Absatz 2: Der maßgebliche Betrag ist 1,234.56 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
 def test_repair_generated_undeclared_money_unit(tmp_path):
     output_root = tmp_path / "out"
     rules_file = output_root / "model" / "policies" / "benefit.yaml"
@@ -7361,6 +7397,53 @@ rules:
     assert payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"] == {
         "corpus_citation_path": "ca/policy/example",
         "excerpt": "$533 with 2 children",
+    }
+
+
+def test_repair_generated_nonexact_proof_excerpt_uses_atom_numeric_profile(tmp_path):
+    output_root = tmp_path / "out"
+    rules_file = output_root / "model" / "policies" / "benefit.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(
+        """format: rulespec/v1
+module:
+  summary: |-
+    Der Betrag ist laut Tabelle 34,87 Euro.
+
+    Der maßgebliche Betrag ist laut Gesetz 1 034,87 Euro.
+rules:
+- name: german_amount
+  kind: parameter
+  dtype: Money
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: de/statute/example/1
+          excerpt: Der Betrag ist laut Tabelle 1 034,87 Euro.
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 1034.87
+"""
+    )
+    result = SimpleNamespace(output_file=str(rules_file))
+
+    repaired = _try_repair_generated_nonexact_proof_excerpts_for_apply(
+        result,
+        output_root=output_root,
+        issues=[
+            "Proof source evidence not found: rule `german_amount` "
+            "proof atom 0 `source.excerpt` does not appear in `de/statute/example/1`."
+        ],
+    )
+
+    assert repaired == ["german_amount[0]"]
+    payload = yaml.safe_load(rules_file.read_text())
+    assert payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"] == {
+        "corpus_citation_path": "de/statute/example/1",
+        "excerpt": "Der maßgebliche Betrag ist laut Gesetz 1 034,87 Euro.",
     }
 
 
@@ -15430,6 +15513,38 @@ rules:
         assert (
             derived["versions"][0]["formula"]
             == "applicable_income_limitation_rate_scalar_limit"
+        )
+
+    def test_fraction_collapse_uses_proof_excerpt_citation_numeric_profile(self):
+        def rule(citation_path):
+            return {
+                "metadata": {
+                    "proof": {
+                        "atoms": [
+                            {
+                                "source": {
+                                    "corpus_citation_path": citation_path,
+                                    "excerpt": "Der Betrag ist 1 034,87 Punkte.",
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+
+        assert (
+            _grounded_formula_literal_for_scalar_expression(
+                rule("de/statute/estg/32a"),
+                "103487 / 100",
+            )
+            == "1034.87"
+        )
+        assert (
+            _grounded_formula_literal_for_scalar_expression(
+                rule("xx/statute/act/1"),
+                "103487 / 100",
+            )
+            is None
         )
 
     def test_embedded_scalar_literal_repair_reuses_existing_scalar_parameter(
