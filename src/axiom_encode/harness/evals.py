@@ -8065,6 +8065,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
     include_tests: bool,
     policyengine_rule_hint: str | None = None,
     artifact_root: Path | None = None,
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> tuple[EvalPromptResponse, bool, int, frozenset[Path]]:
     """Run an eval within the execution-identity-bound artifact attempt limit."""
 
@@ -8077,7 +8078,12 @@ def _run_prompt_eval_with_empty_artifact_retry(
         ):
             raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
         materialized_paths: set[Path] = set()
-        response = _run_prompt_eval(runner, workspace, prompt)
+        response = _run_prompt_eval(
+            runner,
+            workspace,
+            prompt,
+            cli_environment=cli_environment,
+        )
         if _discard_artifacts_after_terminal_infra_response(
             response,
             output_file=output_file,
@@ -8122,7 +8128,12 @@ def _run_prompt_eval_with_empty_artifact_retry(
         )
         retry_count = 0
         for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
-            retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
+            retry_response = _run_prompt_eval(
+                runner,
+                workspace,
+                retry_prompt,
+                cli_environment=cli_environment,
+            )
             retry_count += 1
             terminal_infra_attempt = _discard_artifacts_after_terminal_infra_response(
                 retry_response,
@@ -8366,6 +8377,7 @@ def _run_single_eval(
             include_tests=include_tests,
             policyengine_rule_hint=policyengine_rule_hint,
             artifact_root=artifact_root,
+            cli_environment=cli_environment,
         )
     )
     wrote_artifact = wrote_artifact and output_file in materialized_paths
@@ -8616,6 +8628,7 @@ def _run_single_source_eval(
             include_tests=True,
             policyengine_rule_hint=policyengine_rule_hint,
             artifact_root=artifact_root,
+            cli_environment=cli_environment,
         )
     )
     wrote_artifact = wrote_artifact and output_file in materialized_paths
@@ -13277,6 +13290,8 @@ def _run_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
     prompt: str,
+    *,
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> EvalPromptResponse:
     """Run one prompt-only eval through the selected local CLI."""
     _enforce_eval_prompt_limit(prompt)
@@ -13306,9 +13321,19 @@ def _run_prompt_eval(
             timeout_attempts=1,
         )
     if runner.backend == "claude":
-        return _run_claude_prompt_eval(runner, workspace, prompt)
+        return _run_claude_prompt_eval(
+            runner,
+            workspace,
+            prompt,
+            cli_environment=cli_environment,
+        )
     if runner.backend == "codex":
-        return _run_codex_prompt_eval(runner, workspace, prompt)
+        return _run_codex_prompt_eval(
+            runner,
+            workspace,
+            prompt,
+            cli_environment=cli_environment,
+        )
     if runner.backend == "openai":
         return _run_openai_prompt_eval(runner, workspace, prompt)
     raise ValueError(f"Unsupported backend: {runner.backend}")
@@ -13318,10 +13343,13 @@ def _run_claude_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
     prompt: str,
+    *,
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> EvalPromptResponse:
     """Run prompt-only eval via Claude CLI."""
+    _validate_eval_cli_environment(runner, cli_environment)
     cmd = [
-        "claude",
+        cli_environment.executable if cli_environment is not None else "claude",
         "--print",
         "--output-format",
         "json",
@@ -13458,8 +13486,11 @@ def _run_codex_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
     prompt: str,
+    *,
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> EvalPromptResponse:
     """Run prompt-only eval via Codex CLI."""
+    _validate_eval_cli_environment(runner, cli_environment)
     configured_timeout_seconds, codex_idle_timeout_seconds = _codex_prompt_timeouts(
         workspace
     )
@@ -13490,7 +13521,11 @@ def _run_codex_prompt_eval(
         receiver_workspace_root = Path(receiver_workspace_dir)
         last_message_file = receiver_workspace_root / ".codex-last-message.txt"
         cmd = [
-            resolve_codex_cli(),
+            (
+                cli_environment.executable
+                if cli_environment is not None
+                else resolve_codex_cli()
+            ),
             "exec",
             "--json",
             "--skip-git-repo-check",

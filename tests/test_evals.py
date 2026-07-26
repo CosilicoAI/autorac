@@ -3248,6 +3248,38 @@ class TestClaudePromptEval:
         else:
             assert command[command.index("--effort") + 1] == expected_effort
 
+    def test_prompt_eval_uses_the_preflight_verified_executable(self, tmp_path):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stderr="",
+        )
+        environment = evals_module.EvalCliEnvironment(
+            backend="claude",
+            executable="/verified/bin/claude",
+            version="2.1.test (Claude Code)",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ) as mock_run:
+            _run_claude_prompt_eval(
+                runner,
+                workspace,
+                "review this",
+                cli_environment=environment,
+            )
+
+        assert mock_run.call_args.args[0][0] == "/verified/bin/claude"
+
     def test_prompt_eval_uses_configurable_encoder_timeout_and_records_it(
         self,
         tmp_path,
@@ -3456,6 +3488,52 @@ class TestClaudePromptEval:
 
 
 class TestCodexPromptEval:
+    def test_prompt_eval_uses_the_preflight_verified_executable(self, tmp_path):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        observed_commands: list[list[str]] = []
+        environment = evals_module.EvalCliEnvironment(
+            backend="codex",
+            executable="/verified/bin/codex",
+            version="codex-cli 0.test",
+            executable_sha256="d" * 64,
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                observed_commands.append(cmd)
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            _run_codex_prompt_eval(
+                runner,
+                workspace,
+                "prompt",
+                cli_environment=environment,
+            )
+
+        assert observed_commands[0][0] == "/verified/bin/codex"
+
     @pytest.mark.parametrize(
         ("spec", "expected_config"),
         [
