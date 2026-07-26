@@ -1016,7 +1016,11 @@ def _deferred_coverage(
         else:
             precise = (
                 reason_identifies_dependency
-                and _reason_dependency_is_source_bound(reason, source_scope_text)
+                and _reason_dependency_is_source_bound(
+                    reason,
+                    source_scope_text,
+                    corpus_citation_path=corpus_citation_path,
+                )
             )
         if precise:
             covered.add(path)
@@ -1066,16 +1070,21 @@ def _reason_identifies_blocker(
         " ",
         reason.lower(),
     ).strip()
-    if (
-        target_instrument is not None
-        and corpus_instrument is not None
-        and target_instrument != corpus_instrument
-        and not _reason_names_target_instrument(
-            normalized_reason,
-            target_instrument,
-        )
-    ):
-        return False
+    if target_instrument is not None and corpus_instrument is not None:
+        if target_instrument[:2] != corpus_instrument[:2]:
+            if not _reason_names_absolute_target(
+                normalized_reason,
+                target_instrument,
+            ):
+                return False
+        elif (
+            target_instrument[2] != corpus_instrument[2]
+            and not _reason_names_target_instrument(
+                normalized_reason,
+                target_instrument,
+            )
+        ):
+            return False
     explicit_sections = {
         match.group("section").lower()
         for match in _EXPLICIT_LEGAL_SECTION_REFERENCE.finditer(reason)
@@ -1131,19 +1140,50 @@ def _reason_names_target_instrument(
     )
 
 
-def _reason_dependency_is_source_bound(reason: str, source_scope_text: str) -> bool:
+def _reason_names_absolute_target(
+    normalized_reason: str,
+    target_instrument: tuple[str, str, str],
+) -> bool:
+    jurisdiction, collection, instrument = target_instrument
+    absolute_target = " ".join((jurisdiction, collection, instrument))
+    plural_absolute_target = " ".join(
+        (jurisdiction, f"{collection}s", instrument)
+    )
+    return any(
+        re.search(
+            rf"(?<![a-z0-9äöüß]){re.escape(candidate)}"
+            r"(?![a-z0-9äöüß])",
+            normalized_reason,
+        )
+        for candidate in (absolute_target, plural_absolute_target)
+    )
+
+
+def _reason_dependency_is_source_bound(
+    reason: str,
+    source_scope_text: str,
+    *,
+    corpus_citation_path: str,
+) -> bool:
     """Require a prose-only dependency citation to occur in the deferred source."""
 
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
         dependency = match.group(0).strip()
         if "#" in dependency and ":" in dependency:
-            if _reason_identifies_blocker(source_scope_text, dependency):
+            if _reason_identifies_blocker(
+                source_scope_text,
+                dependency,
+                corpus_citation_path=corpus_citation_path,
+            ):
                 return True
             continue
         section_match = re.search(r"\d+[a-z]?", dependency, flags=re.IGNORECASE)
+        corpus_target = _rulespec_target_base(corpus_citation_path)
+        corpus_instrument_target = corpus_target.rsplit("/", 1)[0]
         if section_match and _reason_identifies_blocker(
             source_scope_text,
-            f"xx:statutes/source/{section_match.group(0)}#dependency",
+            f"{corpus_instrument_target}/{section_match.group(0)}#dependency",
+            corpus_citation_path=corpus_citation_path,
         ):
             return True
         normalized_dependency = re.sub(
@@ -1734,7 +1774,7 @@ def _formula_branch_test_witnesses(
                             ),
                         )
                     ):
-                        leaf = _collapse_text(execution.leaf).lower()
+                        leaf = _formula_leaf_semantic_key(execution.leaf)
                         witnesses.add((rule_name, f"leaf:{leaf}"))
                 else:
                     witnesses.add((rule_name, f"case:{id(case)}"))
@@ -1778,6 +1818,11 @@ def _formula_execution_matches_source_branch(
 ) -> bool:
     """Bind a reached leaf to numeric evidence in its exact source formula."""
 
+    source_operations = _formula_operation_kinds(branch.text)
+    if source_operations and not source_operations.issubset(
+        _formula_operation_kinds(execution.leaf)
+    ):
+        return False
     source_occurrences = tuple(
         extract_numeric_occurrences(
             authoritative_numeric_recall_text(branch.text)
@@ -1822,6 +1867,127 @@ def _formula_execution_matches_source_branch(
         )
         for source_occurrence in computation_occurrences
     )
+
+
+def _formula_operation_kinds(text: str) -> set[str]:
+    operations: set[str] = set()
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        for node in ast.walk(expression):
+            if isinstance(node, ast.BinOp):
+                if isinstance(node.op, ast.Add):
+                    operations.add("add")
+                elif isinstance(node.op, ast.Sub):
+                    operations.add("subtract")
+                elif isinstance(node.op, ast.Mult):
+                    operations.add("multiply")
+                elif isinstance(node.op, ast.Div):
+                    operations.add("divide")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                lowered = node.func.id.lower()
+                if "sum" in lowered:
+                    operations.add("add")
+                elif "product" in lowered:
+                    operations.add("multiply")
+    lowered_text = text.lower()
+    operation_patterns = {
+        "add": (
+            r"(?:\+|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
+            r"\berhöh\w*\s+(?:sich\s+)?um\b)"
+        ),
+        "subtract": (
+            r"(?:\s[−–-]\s|\bunterschied\b|\bdifferenz\b|"
+            r"\bdifference\s+between\b|\babzüglich\b|"
+            r"\b(?:vermindert|gekürzt|mindert|kürzt)\w*\s+"
+            r"(?:sich\s+)?um\b)"
+        ),
+        "multiply": (
+            r"(?:[*×·•∗∙]|\bprodukt\b|\bproduct\s+of\b|"
+            r"\bmultipl\w*\b|\bvervielfach\w*\b|\bmal\b|"
+            r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
+        ),
+        "divide": (
+            r"(?:/|\bgeteilt\b|\bdivided\b|\bhälfte\b|\bhalf\s+of\b)"
+        ),
+    }
+    operations.update(
+        operation
+        for operation, pattern in operation_patterns.items()
+        if re.search(pattern, lowered_text, flags=re.IGNORECASE)
+    )
+    return operations
+
+
+def _formula_leaf_semantic_key(leaf: str) -> str:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(leaf.strip(), mode="eval").body
+        return repr(_canonical_formula_node(expression))
+    return _collapse_text(leaf).lower()
+
+
+def _canonical_formula_node(node: ast.AST) -> Any:
+    if isinstance(node, ast.Name):
+        return "name", node.id.lower()
+    if isinstance(node, ast.Constant):
+        return "constant", type(node.value).__name__, repr(node.value)
+    if isinstance(node, ast.BinOp):
+        operator = type(node.op).__name__
+        if isinstance(node.op, (ast.Add, ast.Mult)):
+            operands = _commutative_formula_operands(node, type(node.op))
+            return (
+                "binop",
+                operator,
+                tuple(sorted(repr(operand) for operand in operands)),
+            )
+        return (
+            "binop",
+            operator,
+            _canonical_formula_node(node.left),
+            _canonical_formula_node(node.right),
+        )
+    if isinstance(node, ast.UnaryOp):
+        return (
+            "unary",
+            type(node.op).__name__,
+            _canonical_formula_node(node.operand),
+        )
+    if isinstance(node, ast.Call):
+        return (
+            "call",
+            _canonical_formula_node(node.func),
+            tuple(_canonical_formula_node(argument) for argument in node.args),
+        )
+    if isinstance(node, ast.Compare):
+        return (
+            "compare",
+            _canonical_formula_node(node.left),
+            tuple(type(operator).__name__ for operator in node.ops),
+            tuple(
+                _canonical_formula_node(comparator)
+                for comparator in node.comparators
+            ),
+        )
+    return ast.dump(node, annotate_fields=True, include_attributes=False).lower()
+
+
+def _commutative_formula_operands(
+    node: ast.BinOp,
+    operator_type: type[ast.operator],
+) -> tuple[Any, ...]:
+    operands: list[Any] = []
+
+    def collect(candidate: ast.AST) -> None:
+        if (
+            isinstance(candidate, ast.BinOp)
+            and isinstance(candidate.op, operator_type)
+        ):
+            collect(candidate.left)
+            collect(candidate.right)
+        else:
+            operands.append(_canonical_formula_node(candidate))
+
+    collect(node)
+    return tuple(operands)
 
 
 def _numeric_occurrences_are_equivalent(

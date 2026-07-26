@@ -711,6 +711,8 @@ rules: []
         "de:statutes/estg/9999#bemessungsgrundlage",
         "de:statutes/fake/26#bemessungsgrundlage",
         "xx:statutes/anything/26#bemessungsgrundlage",
+        "xx:statutes/estg/26#bemessungsgrundlage",
+        "de:regulations/estg/26#bemessungsgrundlage",
     ],
 )
 def test_deferral_symbol_cannot_mask_a_conflicting_citation(blocker: str):
@@ -725,6 +727,26 @@ module:
         Absatz 1 cannot be computed because the Bemessungsgrundlage is missing.
       blocked_by:
         - {blocker}
+rules: []
+"""
+    source = "(1) Maßgeblich ist die Bemessungsgrundlage nach § 26."
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "(1)", "deferral", "dependency")
+
+
+def test_prose_deferral_rejects_wrong_absolute_jurisdiction():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/1#amount
+      reason: >-
+        Cannot be computed until
+        xx:statutes/estg/26#bemessungsgrundlage is available.
 rules: []
 """
     source = "(1) Maßgeblich ist die Bemessungsgrundlage nach § 26."
@@ -3090,6 +3112,47 @@ formula: |-
         MULTI_PARAGRAPH_FORMULA_SOURCE,
         test_cases=cases,
     )
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_commutative_duplicate_cannot_witness_different_source_operations():
+    source = """\
+(1) Der erste Betrag ist die Summe aus Einkommen und Zuschlag.
+(2) Der zweite Betrag ist der Unterschied zwischen Einkommen und Zuschlag.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if first_order:
+            income + supplement
+          else:
+            supplement + income
+"""
+    cases = [
+        {
+            "name": f"sum order {first_order}",
+            "input": {
+                "first_order": first_order,
+                "income": 10,
+                "supplement": 3,
+            },
+            "output": {"amount": 13},
+        }
+        for first_order in (False, True)
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
 
     assert _has_issue(result, "formula branch", "distinct")
 
