@@ -96,6 +96,13 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert (
+        "encode both\n  values as separate grounded `kind: parameter` rules"
+        in complete_prompt
+    )
+    assert "calendar constants `12`, `52`, `365`, `4`, or `24`" in complete_prompt
+    assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
+    assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "missing dependency or citation" in complete_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
@@ -215,6 +222,13 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert (
+        "encode both\n  values as separate grounded `kind: parameter` rules"
+        in complete_prompt
+    )
+    assert "calendar constants `12`, `52`, `365`, `4`, or `24`" in complete_prompt
+    assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
+    assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
