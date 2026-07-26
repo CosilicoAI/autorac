@@ -279,6 +279,10 @@ _EXCEPTION_LANGUAGE = re.compile(
     r")",
     flags=re.IGNORECASE,
 )
+_APPLICABILITY_LANGUAGE = re.compile(
+    r"\b(?:wenn|falls|sofern|when|if)\b",
+    flags=re.IGNORECASE,
+)
 _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
     r"(?:"
     r"§{1,2}\s*\d+[a-z]?|"
@@ -583,6 +587,14 @@ def _analyze_rulespec_payload(
         active_branches=active_branches,
         deferred_paths=deferred_paths,
     )
+    control_branches = _source_control_branches(
+        source_text,
+        branches=branches,
+        active_branches=active_branches,
+        deferred_paths=deferred_paths,
+        formula_branches=formula_branches,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
     principal_formula_clause_rules = _principal_formula_clause_rules(
         formula_branches,
         principal_rules=principal_rules,
@@ -613,6 +625,17 @@ def _analyze_rulespec_payload(
                 "`derived_relation`); "
                 "parameter-only representation is invalid."
             )
+    for branch in control_branches:
+        if _rules_covering_branch(branch, principal_rule_paths):
+            continue
+        issues.append(
+            "[complete-source-unit:formula-output] Source-stated control "
+            f"{branch.label} in "
+            f"{_branch_citation(corpus_citation_path, branch)} has no "
+            "principal derived/relation output (`derived` or "
+            "`derived_relation`) and is not precisely deferred; "
+            "parameter-only representation is invalid."
+        )
 
     source_occurrences = tuple(
         extract_numeric_occurrences(authoritative_numeric_recall_text(source_text))
@@ -1697,9 +1720,10 @@ def _companion_test_issues(
                 )
             )
             issues.append(
-                "[complete-source-unit:tests] Source-stated exceptions require "
-                "paired positive/blocking cases that assert the affected principal "
-                "output and toggle its excluding formula selector; missing at "
+                "[complete-source-unit:tests] Source-stated exceptions or "
+                "applicability conditions require paired positive/blocking cases "
+                "that assert the affected principal output and toggle its "
+                "controlling formula selector; missing at "
                 f"{missing_citations}."
             )
 
@@ -1849,6 +1873,79 @@ def _source_formula_branches(
             continue
         obligations.append(obligation)
     return tuple(obligations)
+
+
+def _source_control_branches(
+    source_text: str,
+    *,
+    branches: Sequence[SourceStructureBranch],
+    active_branches: Sequence[SourceStructureBranch],
+    deferred_paths: set[tuple[str, ...]],
+    formula_branches: Sequence[SourceStructureBranch],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> tuple[SourceStructureBranch, ...]:
+    """Return active boundary, exception, and applicability control clauses."""
+
+    boundary_branches = active_branches or (
+        SourceStructureBranch(
+            (),
+            "source-unit",
+            "source unit",
+            source_text,
+            0,
+            len(source_text),
+        ),
+    )
+    controlled = [
+        branch
+        for branch, boundary in _source_boundary_obligations(
+            boundary_branches,
+            narrative_formula_branches=formula_branches,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        if not _source_boundary_is_temporal(branch, boundary)
+    ]
+    controlled.extend(
+        _source_exception_branches(
+            source_text,
+            branches=branches,
+            active_branches=active_branches,
+            deferred_paths=deferred_paths,
+        )
+    )
+    return tuple(
+        {
+            (branch.path, branch.start, branch.end): branch
+            for branch in controlled
+        }.values()
+    )
+
+
+def _source_boundary_is_temporal(
+    branch: SourceStructureBranch,
+    boundary: NumericOccurrenceLike,
+) -> bool:
+    """Keep effective-period bounds eligible for parameter versioning."""
+
+    if not 1800 <= float(boundary.value) <= 2200:
+        return False
+    relative_start = max(0, boundary.start)
+    relative_end = max(relative_start, boundary.end)
+    context = branch.text[
+        max(0, relative_start - 80) : min(len(branch.text), relative_end + 80)
+    ]
+    return re.search(
+        r"\b(?:"
+        r"veranlagungszeitraum|besteuerungszeitraum|kalenderjahr|steuerjahr|"
+        r"tax\s+year|calendar\s+year|effective|effective_from|"
+        r"zeitraum|jahr|january|february|march|april|may|june|july|"
+        r"august|september|october|november|december|"
+        r"januar|februar|märz|april|mai|juni|juli|august|september|"
+        r"oktober|november|dezember"
+        r")\b",
+        context,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _rounding_clause_refers_to_previous_result(
@@ -4723,7 +4820,7 @@ def _source_exception_branches(
         tuple[int, int, str],
         list[re.Match[str]],
     ] = {}
-    for match in _EXCEPTION_LANGUAGE.finditer(source_text):
+    for match in _source_exception_or_applicability_matches(source_text):
         if _span_is_deferred(
             match.start(),
             match.end(),
@@ -4797,6 +4894,23 @@ def _source_exception_branches(
         {
             (branch.path, branch.start, branch.end): branch
             for branch in obligations
+        }.values()
+    )
+
+
+def _source_exception_or_applicability_matches(
+    source_text: str,
+) -> tuple[re.Match[str], ...]:
+    """Return ordered, de-duplicated negative and positive condition cues."""
+
+    matches = (
+        *_EXCEPTION_LANGUAGE.finditer(source_text),
+        *_APPLICABILITY_LANGUAGE.finditer(source_text),
+    )
+    return tuple(
+        {
+            (match.start(), match.end()): match
+            for match in sorted(matches, key=lambda item: (item.start(), item.end()))
         }.values()
     )
 
@@ -4985,7 +5099,7 @@ def _source_exception_condition_text(text: str) -> str:
     """Return the condition region without the ordinary claim subject."""
 
     clause = _strip_source_clause_marker(text)
-    marker = _EXCEPTION_LANGUAGE.search(clause)
+    marker = next(iter(_source_exception_or_applicability_matches(clause)), None)
     if marker is None:
         return clause
     suffix = clause[marker.start() :]

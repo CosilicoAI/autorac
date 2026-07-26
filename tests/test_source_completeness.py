@@ -1959,6 +1959,36 @@ rules:
     assert _has_issue(result, "formula-output", "control", "parameter-only")
 
 
+def test_piecewise_condition_rejects_constants_only():
+    source = (
+        "(1) Wenn das Einkommen 100 Euro nicht übersteigt, beträgt die "
+        "Steuer 10 Euro; anderenfalls 20 Euro."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: lower_amount
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 10}]
+  - name: upper_amount
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 20}]
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "control", "parameter-only")
+
+
 def test_positive_applicability_condition_requires_paired_cases():
     source = (
         "(1) Der Zuschlag beträgt 259 Euro, wenn die Person "
