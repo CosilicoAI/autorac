@@ -5725,6 +5725,32 @@ def test_equal_codex_wall_and_idle_limits_preserve_triggering_reason(tmp_path):
     assert exc_info.value.timeout_reason == "wall"
 
 
+def test_wait_for_codex_process_rejects_completion_after_wall_timeout(
+    tmp_path,
+    monkeypatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+    class CompletesLate:
+        args = ["codex", "exec"]
+
+        def poll(self):
+            clock[0] = 106.0
+            return 0
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        _wait_for_codex_process(
+            CompletesLate(),
+            tmp_path / "last-message.txt",
+            timeout=5,
+            poll_interval=0,
+        )
+
+    assert exc_info.value.timeout == 5
+    assert exc_info.value.timeout_reason == "wall"
+
+
 def test_run_source_eval_does_not_retry_when_first_response_writes_rulespec(tmp_path):
     policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
     corpus_release, source_unit = _write_test_source_unit(
