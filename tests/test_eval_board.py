@@ -262,6 +262,33 @@ def _execution_identity(
     }
 
 
+def _append_rulespec_root(
+    identity,
+    *,
+    jurisdiction,
+    checkout=None,
+    runtime_pin_sha256="copied",
+):
+    """Expose another producer-shaped jurisdiction root for admission tests."""
+
+    root = copy.deepcopy(identity["rulespec_roots"][0])
+    country = jurisdiction.split("-", 1)[0]
+    if checkout is None:
+        original_checkout = root["toolchain_root"]
+        checkout = f"{original_checkout.rsplit('/', 1)[0]}/rulespec-{country}"
+    root["path"] = f"{checkout}/{jurisdiction}"
+    root["toolchain_root"] = checkout
+    root["checkout_identity"]["path"] = checkout
+    root["checkout_identity"]["origin_repository"] = (
+        f"github.com/TheAxiomFoundation/rulespec-{country}"
+    )
+    root["checkout_identity"]["pathspecs"][0] = jurisdiction
+    if runtime_pin_sha256 != "copied":
+        root["policyengine_runtime_pin_sha256"] = runtime_pin_sha256
+    identity["rulespec_roots"].append(root)
+    return root
+
+
 def _metrics(
     *,
     compile_pass=True,
@@ -527,6 +554,18 @@ def _rebind_payload_results(payload):
     payload["coverage"]["results_sha256"] = cli._eval_suite_json_sha256(
         payload["results"]
     )
+
+
+def _bind_result_to_rulespec_root(payload, row_index, root):
+    """Refresh one row's producer admission after selecting another root."""
+
+    payload["results"][row_index]["admission"]["rulespec"] = {
+        "policy_repo_root": root["path"],
+        "root_content_sha256": root["content_sha256"],
+        "toolchain_contract_sha256": root["toolchain_contract_sha256"],
+        "validation_waiver_set_sha256": root["validation_waiver_set_sha256"],
+    }
+    _rebind_payload_results(payload)
 
 
 def test_supported_schema_matches_producer():
@@ -1072,6 +1111,99 @@ def test_fold_refuses_rules_engine_identity_with_pathspecs(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "origin_repository",
+    [
+        "https://github.com/TheAxiomFoundation/axiom-encode",
+        "ssh://git@github.com/TheAxiomFoundation/axiom-encode",
+        "git@github.com:TheAxiomFoundation/axiom-encode",
+        "github.com:443/TheAxiomFoundation/axiom-encode",
+        "GitHub.com/TheAxiomFoundation/axiom-encode",
+        "github.com//axiom-encode",
+        "github.com/TheAxiomFoundation/",
+        "github.com/TheAxiomFoundation/axiom-encode/extra",
+        "github.com/The Axiom Foundation/axiom-encode",
+        "github.com/TheAxiomFoundation/axiom encode",
+    ],
+)
+def test_fold_refuses_noncanonical_checkout_origin_repository(
+    tmp_path,
+    origin_repository,
+):
+    identity = _execution_identity()
+    identity["axiom_encode"]["origin_repository"] = origin_repository
+    path = _write_payload(
+        tmp_path,
+        "noncanonical-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "checkout_selector",
+    ["axiom_encode", "axiom_rules_engine", "rulespec"],
+)
+def test_fold_applies_origin_contract_to_every_git_checkout(
+    tmp_path,
+    checkout_selector,
+):
+    identity = _execution_identity()
+    if checkout_selector == "rulespec":
+        checkout = identity["rulespec_roots"][0]["checkout_identity"]
+    else:
+        checkout = identity[checkout_selector]
+    checkout["origin_repository"] = (
+        "https://github.com/TheAxiomFoundation/producer-impossible"
+    )
+    path = _write_payload(
+        tmp_path,
+        f"noncanonical-{checkout_selector}-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "origin_repository",
+    [
+        None,
+        "github.com/Axiom-Foundation/axiom.encode.git?ref=release#signed",
+    ],
+)
+def test_fold_accepts_producer_checkout_origin_variants(
+    tmp_path,
+    origin_repository,
+):
+    identity = _execution_identity()
+    identity["axiom_encode"]["origin_repository"] = origin_repository
+    path = _write_payload(
+        tmp_path,
+        "valid-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].cases_run == len(CASE_IDENTITIES)
+
+
+@pytest.mark.parametrize(
     "pathspecs",
     [
         None,
@@ -1107,6 +1239,139 @@ def test_fold_refuses_rulespec_identity_with_nonproducer_pathspecs(
     )
 
     with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("toolchain_root", "root_path", "first_pathspec"),
+    [
+        ("ci/rulespec-uk", "ci/rulespec-uk/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/./uk", "uk"),
+        ("/ci/./rulespec-uk", "/ci/./rulespec-uk/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/regions/uk", "regions/uk"),
+        ("/ci/policy-uk", "/ci/policy-uk/uk", "uk"),
+        ("/ci/rulespec-us", "/ci/rulespec-us/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/uk_private", "uk_private"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk", "."),
+        ("/ci/rulespec-uk/", "/ci/rulespec-uk/uk/", "uk"),
+    ],
+)
+def test_fold_refuses_noncanonical_rulespec_root_topology(
+    tmp_path,
+    toolchain_root,
+    root_path,
+    first_pathspec,
+):
+    identity = _execution_identity()
+    root = identity["rulespec_roots"][0]
+    root["toolchain_root"] = toolchain_root
+    root["path"] = root_path
+    root["checkout_identity"]["path"] = toolchain_root
+    root["checkout_identity"]["pathspecs"][0] = first_pathspec
+    path = _write_payload(
+        tmp_path,
+        "noncanonical-rulespec-root.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_allows_multiple_direct_jurisdiction_roots_in_one_checkout(tmp_path):
+    identity = _execution_identity()
+    scotland_root = _append_rulespec_root(
+        identity,
+        jurisdiction="uk-scotland",
+    )
+    case_identities = copy.deepcopy(CASE_IDENTITIES)
+    case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in case_identities],
+        case_identities=case_identities,
+        execution_identity=identity,
+    )
+    _bind_result_to_rulespec_root(payload, 0, scotland_root)
+    path = _write_payload(tmp_path, "multiple-jurisdictions.json", payload)
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].cases_run == len(case_identities)
+
+
+def test_fold_refuses_row_admitted_under_different_citation_jurisdiction(tmp_path):
+    identity = _execution_identity()
+    _append_rulespec_root(identity, jurisdiction="uk-scotland")
+    case_identities = copy.deepcopy(CASE_IDENTITIES)
+    case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+    path = _write_payload(
+        tmp_path,
+        "wrong-row-jurisdiction.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in case_identities],
+            case_identities=case_identities,
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="RuleSpec.*jurisdiction"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("binding_mismatch", ["country", "checkout", "pin_digest"])
+def test_fold_refuses_policyengine_row_unbound_from_its_admitted_rulespec_root(
+    tmp_path,
+    binding_mismatch,
+):
+    runtime = _policyengine_runtime_identity()
+    identity = _execution_identity(policyengine_runtime=runtime)
+    case_identities = _case_identities_with_policyengine(1)
+    if binding_mismatch == "country":
+        case_identities[0]["corpus_citation_path"] = "us/statute/usc/26/32/a"
+        admitted_root = _append_rulespec_root(identity, jurisdiction="us")
+    elif binding_mismatch == "checkout":
+        admitted_root = _append_rulespec_root(
+            identity,
+            jurisdiction="uk",
+            checkout="/foreign/rulespec-uk",
+        )
+    else:
+        case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+        admitted_root = _append_rulespec_root(
+            identity,
+            jurisdiction="uk-scotland",
+            runtime_pin_sha256="99" * 32,
+        )
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [
+            _result(
+                "terra",
+                case_identities[0],
+                metrics=_metrics(
+                    policyengine_pass=True,
+                    policyengine_score=1.0,
+                ),
+            ),
+            *[_result("terra", case) for case in case_identities[1:]],
+        ],
+        case_identities=case_identities,
+        execution_identity=identity,
+    )
+    _bind_result_to_rulespec_root(payload, 0, admitted_root)
+    path = _write_payload(
+        tmp_path,
+        f"policyengine-row-{binding_mismatch}.json",
+        payload,
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*RuleSpec"):
         fold_eval_board([path])
 
 
