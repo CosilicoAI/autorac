@@ -2161,6 +2161,44 @@ def test_build_eval_prompt_rejects_host_paths_in_authoritative_context(tmp_path)
         )
 
 
+def test_build_eval_prompt_preserves_relative_paths_and_urls_in_authority(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    context_path = workspace_root / "context" / "allowed.yaml"
+    context_path.parent.mkdir(parents=True)
+    source_file = workspace_root / "source.txt"
+    source_text = "See ./schedule-a and https://law.example/statute/section-1 exactly."
+    context_text = (
+        "format: rulespec/v1\n"
+        "# See ../shared/definitions.yaml and "
+        "https://rules.example/context/definitions.\n"
+        "rules: []\n"
+    )
+    source_file.write_text(source_text)
+    context_path.write_text(context_text)
+    workspace = EvalWorkspace(
+        root=workspace_root,
+        source_text_file=source_file,
+        manifest_file=workspace_root / "context-manifest.json",
+    )
+    context_file = EvalContextFile(
+        source_path=str(context_path),
+        workspace_path="context/allowed.yaml",
+        import_path="us:statutes/example/allowed",
+        kind="allowed_context",
+    )
+
+    prompt = _build_eval_prompt(
+        "us/statute/example/section-1",
+        "repo-augmented",
+        workspace,
+        [context_file],
+        target_file_name="target.yaml",
+    )
+
+    assert source_text in prompt
+    assert context_text in prompt
+
+
 def test_provision_metadata_rendering_preserves_full_content(tmp_path):
     workspace = prepare_eval_workspace(
         citation="dk/statute/benefit/section-1",
@@ -4803,6 +4841,60 @@ class TestCodexPromptEval:
             "type": "error",
             "failure_kind": "error",
         }
+
+    def test_prompt_eval_classifies_nested_error_event_quota_before_redaction(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "/Users/private/receiver/quota-diagnostic.json"
+        event_line = json.dumps(
+            {
+                "type": "error",
+                "details": {
+                    "diagnostic": secret,
+                    "reason": "usage limit reached",
+                },
+            }
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 1
+                stdout.write(event_line + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error == "Codex eval stopped by usage limit"
+        assert response.failure_kind == "error"
+        assert secret not in json.dumps(response.trace)
+        assert response.trace["events"] == [
+            {"type": "error", "failure_kind": "usage_limit"}
+        ]
 
     def test_prompt_eval_redacts_hostile_item_type_from_integrity_evidence(
         self,

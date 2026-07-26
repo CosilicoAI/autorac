@@ -9819,7 +9819,7 @@ _PROMPT_WINDOWS_HOST_PATH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])[^\s<>{}\[\]\"'`]+"
 )
 _PROMPT_POSIX_HOST_PATH_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9/])/(?!/)[^\s<>{}\[\]\"'`]+"
+    r"(?<![A-Za-z0-9/.])/(?!/)[^\s<>{}\[\]\"'`]+"
 )
 _OPAQUE_HOST_PATH = "<opaque-host-path>"
 
@@ -9852,6 +9852,20 @@ def _prompt_safe_dynamic_text(value: str) -> str:
     return "".join(rendered)
 
 
+def _require_path_free_authoritative_prompt_text(
+    value: str,
+    *,
+    label: str,
+) -> str:
+    """Return exact authority bytes or fail closed if they contain a host path."""
+
+    if _prompt_safe_dynamic_text(value) != value:
+        raise ValueError(
+            f"{label} contains an absolute host path; refusing to build eval prompt"
+        )
+    return value
+
+
 def _prompt_safe_source_metadata(value: object) -> object:
     """Return metadata with host filesystem paths replaced by an opaque token."""
 
@@ -9882,7 +9896,15 @@ def _build_rulespec_eval_prompt(
     validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
-    source_text = workspace.source_text_file.read_text()
+    source_text = _require_path_free_authoritative_prompt_text(
+        workspace.source_text_file.read_text(),
+        label="authoritative source text",
+    )
+    prompt_policyengine_rule_hint = (
+        _prompt_safe_dynamic_text(policyengine_rule_hint)
+        if policyengine_rule_hint
+        else policyengine_rule_hint
+    )
     corpus_citation_path = _workspace_corpus_citation_path(workspace)
     prompt_context_files = [
         item
@@ -10141,7 +10163,7 @@ Import and context rules:
             oracle_rule = (
                 "- Every non-empty test `output:` mapping must assert the "
                 f"canonical RuleSpec output whose local name is "
-                f"`{policyengine_rule_hint}`; use its full "
+                f"`{prompt_policyengine_rule_hint}`; use its full "
                 "`jurisdiction:path#rule` id when the artifact has a legal "
                 "pointer.\n"
             )
@@ -10150,7 +10172,7 @@ Import and context rules:
                 "- Because the PolicyEngine hint is not a valid local RuleSpec "
                 "identifier, tests must assert the source-faithful RuleSpec "
                 "output generated for this file rather than the dotted "
-                f"PolicyEngine path `{policyengine_rule_hint}`.\n"
+                f"PolicyEngine path `{prompt_policyengine_rule_hint}`.\n"
             )
         canonical_target_rule = ""
         if target_ref_prefix:
@@ -10275,18 +10297,18 @@ Return ONLY raw RuleSpec YAML for `{target_file_name}`. Do not include fences or
     target_hint = ""
     if policyengine_rule_hint:
         hinted_output_reference = (
-            f"`{policyengine_rule_hint}`"
+            f"`{prompt_policyengine_rule_hint}`"
             if policyengine_hint_is_rulespec_identifier
             else "the source-faithful oracle-facing output"
         )
         oracle_test_guidance = (
             "assert the canonical RuleSpec output whose local name is "
-            f"`{policyengine_rule_hint}` in every non-empty `output:` mapping"
+            f"`{prompt_policyengine_rule_hint}` in every non-empty `output:` mapping"
             if policyengine_hint_is_rulespec_identifier
             else "assert the generated source-faithful output in every non-empty `output:` mapping"
         )
         naming_guidance = (
-            f"- Name the main derived rule `{policyengine_rule_hint}` unless the source clearly defines a different canonical concept."
+            f"- Name the main derived rule `{prompt_policyengine_rule_hint}` unless the source clearly defines a different canonical concept."
             if policyengine_hint_is_rulespec_identifier
             else (
                 "- Choose a source-faithful snake_case RuleSpec concept name "
@@ -10303,7 +10325,7 @@ Return ONLY raw RuleSpec YAML for `{target_file_name}`. Do not include fences or
 Preferred principal output:
 - Treat the PolicyEngine hint as an oracle-semantic hint, not as a license to
   copy PolicyEngine internals into RuleSpec. Name the main derived rule
-  `{policyengine_rule_hint}` only when that value is already a valid local
+  `{prompt_policyengine_rule_hint}` only when that value is already a valid local
   RuleSpec identifier. If the hint is a dotted PolicyEngine parameter path,
   slash path, or other non-RuleSpec identifier, choose a source-faithful
   snake_case RuleSpec concept name and keep the hinted PolicyEngine path only
@@ -11454,6 +11476,10 @@ def _format_inline_context_snippets(
             ) from exc
         except OSError as exc:
             raise ValueError(f"Could not inline context file: {path}") from exc
+        content = _require_path_free_authoritative_prompt_text(
+            content,
+            label="authoritative context",
+        )
         content_separator = "" if content.endswith("\n") else "\n"
         snippets.append(
             f"=== BEGIN CONTEXT FILE: {item.workspace_path} ===\n"
@@ -13971,6 +13997,23 @@ def _receiver_value_indicates_usage_limit(
     return False
 
 
+def _traceable_receiver_envelope_discriminator(
+    value: object,
+    *,
+    allowed_strings: frozenset[str] = frozenset(),
+    allow_bool: bool = False,
+) -> object:
+    """Project an envelope discriminator without retaining arbitrary text."""
+
+    if value is None:
+        return None
+    if allow_bool and type(value) is bool:
+        return value
+    if isinstance(value, str) and value in allowed_strings:
+        return value
+    return f"<invalid {type(value).__name__}>"
+
+
 def _run_claude_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
@@ -14140,9 +14183,18 @@ def _run_claude_prompt_eval(
         )
     )
     trace["result_envelope"] = {
-        "type": payload.get("type"),
-        "subtype": payload.get("subtype"),
-        "is_error": payload.get("is_error"),
+        "type": _traceable_receiver_envelope_discriminator(
+            payload.get("type"),
+            allowed_strings=frozenset({"result"}),
+        ),
+        "subtype": _traceable_receiver_envelope_discriminator(
+            payload.get("subtype"),
+            allowed_strings=frozenset({"success"}),
+        ),
+        "is_error": _traceable_receiver_envelope_discriminator(
+            payload.get("is_error"),
+            allow_bool=True,
+        ),
         "stop_reason": traced_stop_reason,
     }
     if (
@@ -14172,7 +14224,7 @@ def _run_claude_prompt_eval(
             error="Claude eval JSON envelope requires type='result'",
         )
     non_success_envelope = (
-        payload.get("subtype") != "success" or payload.get("is_error") is True
+        payload.get("subtype") != "success" or payload.get("is_error") is not False
     )
     if non_success_envelope and any(
         _receiver_value_indicates_usage_limit(payload.get(field))
@@ -14412,6 +14464,9 @@ def _run_codex_prompt_eval(
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
+        if not isinstance(payload, dict):
+            events.append({"type": f"<invalid {type(payload).__name__} event>"})
+            continue
 
         event_type = payload.get("type")
         if event_type in {"item.started", "item.updated", "item.completed"}:
@@ -14442,10 +14497,9 @@ def _run_codex_prompt_eval(
                     )
                 failure_kind = "integrity"
             elif item_type not in {"agent_message", "reasoning"}:
-                reported_item_type = (
-                    item_type
-                    if isinstance(item_type, str) and item_type.strip()
-                    else f"<invalid {event_type}>"
+                reported_item_type = _codex_trace_identifier(
+                    item_type,
+                    fallback="<invalid item type>",
                 )
                 if reported_item_type not in unexpected_accesses:
                     unexpected_accesses.append(reported_item_type)
@@ -14456,10 +14510,10 @@ def _run_codex_prompt_eval(
                         f"{reported_item_type}"
                     )
                 failure_kind = "integrity"
-        elif payload.get("type") == "turn.completed":
+        elif event_type == "turn.completed":
             events.append(payload)
             usage_payload = payload.get("usage") or {}
-        elif payload.get("type") == "turn.failed":
+        elif event_type == "turn.failed":
             raw_error = payload.get("error")
             failure_message = (
                 str(raw_error.get("message", "") or "")
@@ -14499,20 +14553,29 @@ def _run_codex_prompt_eval(
                 failure_kind = "error"
                 error = "Codex eval turn failed"
                 events.append({"type": "turn.failed", "failure_kind": "error"})
-        elif payload.get("type") == "error":
-            raw_error = payload.get("message")
-            if _receiver_value_indicates_usage_limit(raw_error):
+        elif event_type == "error":
+            terminal_receiver_failure = True
+            if _receiver_value_indicates_usage_limit(payload):
                 receiver_usage_limit_detected = True
                 events.append({"type": "error", "failure_kind": "usage_limit"})
                 if failure_kind not in {"integrity", "output_truncated"}:
                     error = "Codex eval stopped by usage limit"
                     failure_kind = "error"
             else:
-                events.append(payload)
+                events.append({"type": "error", "failure_kind": "error"})
                 if failure_kind not in {"integrity", "output_truncated"}:
-                    error = raw_error or "Codex eval error"
+                    error = "Codex eval error"
+                    failure_kind = "error"
         else:
-            events.append(payload)
+            events.append(
+                {
+                    "type": _codex_trace_identifier(
+                        event_type,
+                        fallback="<invalid event type>",
+                        allow_dots=True,
+                    )
+                }
+            )
 
     tokens = None
     if usage_payload is not None:
@@ -14624,18 +14687,44 @@ def _codex_failure_is_output_truncated(message: str) -> bool:
     )
 
 
+def _codex_trace_identifier(
+    value: object,
+    *,
+    fallback: str,
+    allow_dots: bool = False,
+) -> str:
+    """Return one bounded receiver discriminator or a fixed redaction marker."""
+
+    pattern = r"[a-z][a-z0-9_.-]{0,63}" if allow_dots else r"[a-z][a-z0-9_-]{0,63}"
+    if isinstance(value, str) and re.fullmatch(pattern, value):
+        return value
+    return fallback
+
+
 def _redact_codex_tool_event(payload: dict) -> dict:
     """Keep tool-attempt evidence without persisting receiver output bodies."""
 
     raw_item = payload.get("item")
     item = raw_item if isinstance(raw_item, dict) else {}
-    redacted_item = {
-        key: value
-        for key in ("type", "command", "status")
-        if isinstance((value := item.get(key)), (str, int, float, bool))
-    }
+    redacted_item: dict[str, object] = {}
+    if "type" in item:
+        redacted_item["type"] = _codex_trace_identifier(
+            item.get("type"),
+            fallback="<invalid item type>",
+        )
+    if isinstance(item.get("command"), str):
+        redacted_item["command"] = item["command"]
+    if "status" in item:
+        redacted_item["status"] = _codex_trace_identifier(
+            item.get("status"),
+            fallback="<invalid status>",
+        )
     return {
-        "type": payload.get("type"),
+        "type": _codex_trace_identifier(
+            payload.get("type"),
+            fallback="<invalid event type>",
+            allow_dots=True,
+        ),
         "item": redacted_item,
     }
 
@@ -14645,16 +14734,29 @@ def _redact_codex_integrity_trace_event(payload: dict) -> dict:
 
     event_type = payload.get("type")
     redacted: dict = {
-        "type": event_type if isinstance(event_type, str) else "<invalid event>"
+        "type": _codex_trace_identifier(
+            event_type,
+            fallback="<invalid event type>",
+            allow_dots=True,
+        )
     }
+    failure_kind = payload.get("failure_kind")
+    if failure_kind in {"error", "integrity", "output_truncated", "usage_limit"}:
+        redacted["failure_kind"] = failure_kind
     if event_type in {"item.started", "item.updated", "item.completed"}:
         raw_item = payload.get("item")
         item = raw_item if isinstance(raw_item, dict) else {}
-        redacted_item = {
-            key: value
-            for key in ("type", "status")
-            if isinstance((value := item.get(key)), (str, int, float, bool))
-        }
+        redacted_item: dict[str, object] = {}
+        if "type" in item:
+            redacted_item["type"] = _codex_trace_identifier(
+                item.get("type"),
+                fallback="<invalid item type>",
+            )
+        if "status" in item:
+            redacted_item["status"] = _codex_trace_identifier(
+                item.get("status"),
+                fallback="<invalid status>",
+            )
         redacted["item"] = redacted_item
     elif event_type == "turn.completed":
         raw_usage = payload.get("usage")
