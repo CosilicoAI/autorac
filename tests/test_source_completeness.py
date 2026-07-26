@@ -1912,6 +1912,95 @@ def test_complete_companion_suite_covers_source_controls():
     assert not result.issues
 
 
+@pytest.mark.parametrize(
+    ("source", "extra_parameter"),
+    [
+        (
+            "(1) Der Zuschlag beträgt 259 Euro bis zu einem Einkommen "
+            "von 100 Euro.",
+            """\
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+""",
+        ),
+        (
+            "(1) Der Zuschlag beträgt 259 Euro, außer bei einer Befreiung.",
+            "",
+        ),
+        (
+            "(1) Der Zuschlag beträgt 259 Euro, wenn die Person "
+            "anspruchsberechtigt ist.",
+            "",
+        ),
+    ],
+)
+def test_controlled_scalar_source_rejects_parameter_only(
+    source: str,
+    extra_parameter: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: supplement_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: 259}}]
+{extra_parameter}"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "control", "parameter-only")
+
+
+def test_positive_applicability_condition_requires_paired_cases():
+    source = (
+        "(1) Der Zuschlag beträgt 259 Euro, wenn die Person "
+        "anspruchsberechtigt ist."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: supplement_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 259}]
+  - name: payable_supplement
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 'if is_eligible: supplement_amount else: 0'
+"""
+
+    def case(is_eligible: bool) -> dict[str, object]:
+        return {
+            "name": f"eligible={is_eligible}",
+            "input": {"is_eligible": is_eligible},
+            "output": {"payable_supplement": 259 if is_eligible else 0},
+        }
+
+    positive_only = _analyze(content, source, test_cases=[case(True)])
+    paired = _analyze(
+        content,
+        source,
+        test_cases=[case(False), case(True)],
+    )
+
+    assert _has_issue(positive_only, "applicability", "paired")
+    assert not paired.issues
+
+
 def test_predicate_only_boundary_requires_an_exact_boundary_case():
     source = "(1) Der Anspruch gilt bis 100 Euro Einkommen."
     content = """\
