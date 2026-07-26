@@ -21,7 +21,8 @@ error or terminal partial is cleared before artifact materialization so it
 cannot be scored.
 Capability boards render overflow, truncation, and integrity failures
 distinctly and never score their artifacts. Eval suites preflight each local
-CLI's version and required flags once before case dispatch, execute that exact
-binary, and require Claude/Codex versions plus the Codex executable digest, and
-OpenAI endpoint, response model, service tier, and request ceiling, in
-result/verdict schema v7.
+CLI's version and required flags before case dispatch, execute that exact
+launcher, and bind both launcher and resolved native-receiver digests into
+execution identity v5 and each local result row. Suite results and summaries
+use schema v8; OpenAI rows continue to bind the endpoint, response model,
+service tier, and request ceiling.
