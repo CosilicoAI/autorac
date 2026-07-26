@@ -3679,6 +3679,12 @@ class TestCmdEvalSuite:
                 return_value=persisted_identity,
             ) as mock_build_identity,
             patch(
+                "axiom_encode.cli._preflight_eval_cli_runners",
+                side_effect=AssertionError(
+                    "historical verification must not probe a live receiver"
+                ),
+            ) as mock_preflight,
+            patch(
                 "axiom_encode.cli._load_eval_suite_resume_state",
                 return_value=(
                     "12345678-1234-4234-8234-123456789abc",
@@ -3696,11 +3702,14 @@ class TestCmdEvalSuite:
                 policy_repo_path=tmp_path / "rulespec-us",
                 corpus_release=SimpleNamespace(),
                 require_complete=True,
-                cli_environments=_test_eval_cli_environments(),
             )
 
         assert verified["complete"] is True
+        mock_preflight.assert_not_called()
         assert mock_build_identity.call_args.kwargs["suite_retry_attempts"] == 0
+        assert mock_build_identity.call_args.kwargs["receiver_environments"] == (
+            persisted_identity["receiver_environments"]
+        )
 
 
 class TestCmdEvalSuiteReport:
