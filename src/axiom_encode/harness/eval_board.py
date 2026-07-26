@@ -67,6 +67,7 @@ EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v2"
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
+_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
 # These exact scopes are part of the v3 producer contract. Admission keeps
 # independent literals so a producer scope change cannot silently widen or
@@ -1282,6 +1283,68 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     )
 
 
+def _validate_result_execution_admission(
+    result: dict,
+    *,
+    execution_identity: dict,
+    execution_identity_sha256: str,
+    context: str,
+) -> None:
+    """Bind each durable row to the exact execution identity in its evidence."""
+
+    admission = result.get("admission")
+    admitted_execution = (
+        admission.get("execution") if isinstance(admission, dict) else None
+    )
+    if (
+        not isinstance(admission, dict)
+        or admission.get("schema") != _RESULT_ADMISSION_SCHEMA
+        or not isinstance(admitted_execution, dict)
+        or set(admitted_execution) != {"identity", "sha256"}
+        or admitted_execution.get("identity") != execution_identity
+        or admitted_execution.get("sha256") != execution_identity_sha256
+    ):
+        raise EvalBoardError(
+            f"{context} admission execution identity does not match the suite evidence"
+        )
+
+
+def _validate_result_policyengine_runtime_evidence(
+    result: dict,
+    *,
+    execution_identity: dict,
+    context: str,
+) -> None:
+    """Bind oracle metrics to the exact sealed runtime admitted for the suite."""
+
+    metrics = _result_metrics(result)
+    if metrics is None:
+        return
+    metric_identity = metrics.get("policyengine_runtime_identity")
+    metric_digest = metrics.get("policyengine_runtime_identity_sha256")
+    has_oracle_evidence = any(
+        value is not None
+        for value in (
+            metrics.get("policyengine_pass"),
+            metrics.get("policyengine_score"),
+            metric_identity,
+            metric_digest,
+        )
+    )
+    if not has_oracle_evidence:
+        return
+    expected_runtime = execution_identity.get("policyengine_runtime")
+    if (
+        not isinstance(expected_runtime, dict)
+        or metric_identity != expected_runtime.get("identity")
+        or metric_digest != expected_runtime.get("sha256")
+    ):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime evidence does not match the "
+            "suite execution identity"
+        )
+
+
 def _validate_result_case_binding(
     eval_case: dict,
     reference_cases: list[dict],
@@ -1484,6 +1547,13 @@ def fold_eval_board(
                     f"Result row #{position} in {source} is missing its "
                     f"{_RESULT_SHA256_FIELD} binding or does not match it"
                 )
+            context = f"Result row #{position} in {source}"
+            _validate_result_execution_admission(
+                result,
+                execution_identity=execution_identity,
+                execution_identity_sha256=execution_digest,
+                context=context,
+            )
             runner = result.get("runner")
             if not isinstance(runner, str) or runner not in payload_runner_names:
                 raise EvalBoardError(
@@ -1504,7 +1574,6 @@ def fold_eval_board(
                 raise EvalBoardError(
                     f"Result row #{position} in {source} carries no case identity"
                 )
-            context = f"Result row #{position} in {source}"
             case_index = _validate_result_case_binding(
                 eval_case,
                 case_identities,
@@ -1516,19 +1585,11 @@ def fold_eval_board(
                     f"#{case_index} in {source}"
                 )
             _validate_result_types(result, context=context)
-            metrics = _result_metrics(result)
-            if (
-                execution_identity["policyengine_runtime"] is None
-                and metrics is not None
-                and (
-                    metrics.get("policyengine_pass") is not None
-                    or metrics.get("policyengine_score") is not None
-                )
-            ):
-                raise EvalBoardError(
-                    f"{context} carries PolicyEngine oracle evidence without "
-                    "a bound PolicyEngine runtime execution identity"
-                )
+            _validate_result_policyengine_runtime_evidence(
+                result,
+                execution_identity=execution_identity,
+                context=context,
+            )
             runner_results[runner][case_index] = result
 
         complete = _payload_completeness(
