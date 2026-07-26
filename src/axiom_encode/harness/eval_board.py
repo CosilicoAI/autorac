@@ -51,7 +51,16 @@ from axiom_encode.harness.policyengine_runtime import (
     POLICYENGINE_RUNTIME_SCHEMA,
 )
 
-BoardCellState = Literal["pass", "fail", "timeout", "error", "missing"]
+BoardCellState = Literal[
+    "pass",
+    "fail",
+    "timeout",
+    "context_overflow",
+    "output_truncated",
+    "integrity",
+    "error",
+    "missing",
+]
 
 _RESULTS_FILE_NAME = "results.json"
 
@@ -73,6 +82,7 @@ _RUNNER_EFFORTS_BY_BACKEND = {
     "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
     "openai": frozenset({"low", "medium", "high", "xhigh"}),
 }
+_INFRA_FAILURE_KINDS = frozenset({"context_overflow", "output_truncated", "integrity"})
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
@@ -1489,9 +1499,16 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     if error is not None and not isinstance(error, str):
         raise EvalBoardError(f"{context} error must be null or a string, got {error!r}")
     failure_kind = result.get("failure_kind")
-    if failure_kind not in {None, "timeout", "validation", "error"}:
+    if failure_kind not in {
+        None,
+        "timeout",
+        "validation",
+        "error",
+        *_INFRA_FAILURE_KINDS,
+    }:
         raise EvalBoardError(
-            f"{context} failure_kind must be null, timeout, validation, or error"
+            f"{context} failure_kind must be null, timeout, validation, error, "
+            "context_overflow, output_truncated, or integrity"
         )
     timed_out = result.get("timed_out")
     if not isinstance(timed_out, bool):
@@ -1549,6 +1566,15 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     ):
         raise EvalBoardError(
             f"{context} timeout row must have attempts and no generated artifact "
+            "or artifact metrics"
+        )
+    if failure_kind in _INFRA_FAILURE_KINDS and (
+        metrics is not None
+        or bool(result.get("output_file"))
+        or result.get("generated_output_sha256") is not None
+    ):
+        raise EvalBoardError(
+            f"{context} {failure_kind} row must have no generated artifact "
             "or artifact metrics"
         )
     if failure_kind == "validation" and metrics is None:
@@ -1872,6 +1898,14 @@ def _cell_for_result(result: dict) -> BoardCell:
         error = result.get("error")
         detail = str(error)[:200] if error else "encoder or case budget timed out"
         return BoardCell(state="timeout", duration_ms=duration_ms, detail=detail)
+    if failure_kind in _INFRA_FAILURE_KINDS:
+        error = result.get("error")
+        detail = str(error)[:200] if error else failure_kind.replace("_", " ")
+        return BoardCell(
+            state=failure_kind,
+            duration_ms=duration_ms,
+            detail=detail,
+        )
     metrics = _result_metrics(result)
     failed: list[str] = []
     if metrics is not None:
@@ -2227,6 +2261,9 @@ _CELL_GLYPHS: dict[BoardCellState, str] = {
     "pass": "P",
     "fail": "F",
     "timeout": "T",
+    "context_overflow": "C",
+    "output_truncated": "X",
+    "integrity": "I",
     "error": "E",
     "missing": "·",
 }
@@ -2403,6 +2440,7 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
     lines.append("")
     lines.append(
         "P = gate pass, F = validation/gate fail, T = encoder/case timeout, "
+        "C = context overflow, X = output truncated, I = integrity error, "
         "E = encode error, · = not run."
     )
     lines.append("")
@@ -2453,7 +2491,10 @@ def render_eval_board_text(board: EvalBoard) -> str:
             f"median {_format_optional(stats.median_duration_seconds, '{:.0f}s')}"
         )
     lines.append("")
-    lines.append("Grid (P pass / F fail / T timeout / E error / · not run):")
+    lines.append(
+        "Grid (P pass / F fail / T timeout / C context overflow / "
+        "X output truncated / I integrity error / E error / · not run):"
+    )
     for case in board.cases:
         cells = " ".join(
             _CELL_GLYPHS[board.cells[(case.index, stats.runner)].state]

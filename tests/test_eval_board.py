@@ -950,6 +950,85 @@ def test_board_distinguishes_timeout_validation_failure_and_plain_error(tmp_path
     assert "T timeout" in render_eval_board_text(board)
 
 
+def test_board_renders_distinct_infra_failure_states(tmp_path):
+    failure_kinds = (
+        ("context_overflow", "Prompt exceeds the shared receiver limit"),
+        ("output_truncated", "Receiver stopped at its output-token limit"),
+        ("integrity", "Codex read an undeclared path"),
+    )
+    results = [
+        _result(
+            "terra",
+            case,
+            success=False,
+            error=error,
+            metrics=None,
+            failure_kind=failure_kind,
+        )
+        for case, (failure_kind, error) in zip(
+            CASE_IDENTITIES, failure_kinds, strict=True
+        )
+    ]
+    path = _write_payload(
+        tmp_path,
+        "infra-failures.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    board = fold_eval_board([path])
+
+    assert [board.cells[(index, "terra")].state for index in range(1, 4)] == [
+        "context_overflow",
+        "output_truncated",
+        "integrity",
+    ]
+    assert [cell["state"] for cell in eval_board_to_json(board)["cells"]] == [
+        "context_overflow",
+        "output_truncated",
+        "integrity",
+    ]
+    markdown = render_eval_board_markdown(board)
+    assert "C = context overflow" in markdown
+    assert "X = output truncated" in markdown
+    assert "I = integrity error" in markdown
+    assert "| 01 alpha | C |" in markdown
+    assert "| 02 beta | X |" in markdown
+    assert "| 03 gamma | I |" in markdown
+    text = render_eval_board_text(board)
+    assert "C context overflow" in text
+    assert "X output truncated" in text
+    assert "I integrity error" in text
+    grid_rows = [line for line in text.splitlines() if line.startswith("  0")]
+    assert grid_rows[0].endswith("C")
+    assert grid_rows[1].endswith("X")
+    assert grid_rows[2].endswith("I")
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["context_overflow", "output_truncated", "integrity"]
+)
+def test_fold_refuses_infra_failure_that_claims_a_generated_artifact(
+    tmp_path, failure_kind
+):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0] = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error=f"{failure_kind} failure",
+        metrics=_metrics(),
+        failure_kind=failure_kind,
+    )
+    path = _write_payload(
+        tmp_path,
+        f"artifact-mislabeled-as-{failure_kind}.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="no generated artifact"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
     timeout_result = _result(
         "fable",
