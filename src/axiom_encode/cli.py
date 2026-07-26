@@ -162,10 +162,7 @@ from .harness.eval_board import (
     _payload_execution_identity as _eval_board_payload_execution_identity,
 )
 from .harness.eval_board import (
-    _validate_result_execution_admission as _eval_board_validate_result_execution_admission,
-)
-from .harness.eval_board import (
-    _validate_result_policyengine_runtime_evidence as _eval_board_validate_result_policyengine_runtime_evidence,
+    _validate_result_row_admission as _eval_board_validate_result_row_admission,
 )
 from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
@@ -49231,7 +49228,7 @@ def _validated_eval_suite_report_payload(
         ):
             raise ValueError("Eval suite result uses a different runner identity")
         try:
-            _eval_board_validate_result_execution_admission(
+            _eval_board_validate_result_row_admission(
                 result,
                 run_identity=run_identity,
                 suite_name=str(manifest_identity.get("name")),
@@ -49241,12 +49238,6 @@ def _validated_eval_suite_report_payload(
                 runner_identities=runner_identities,
                 execution_identity=execution_identity,
                 execution_identity_sha256=execution_identity_sha256,
-                context="Eval suite report result",
-            )
-            _eval_board_validate_result_policyengine_runtime_evidence(
-                result,
-                case_identity=canonical_case,
-                execution_identity=execution_identity,
                 context="Eval suite report result",
             )
         except EvalBoardError as exc:

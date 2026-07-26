@@ -1738,6 +1738,42 @@ def _validate_result_policyengine_runtime_evidence(
         )
 
 
+def _validate_result_row_admission(
+    result: dict,
+    *,
+    run_identity: dict,
+    suite_name: str,
+    manifest_identity: dict,
+    case_identity: dict,
+    corpus_identity: dict,
+    runner_identities: list[dict],
+    execution_identity: dict,
+    execution_identity_sha256: str,
+    context: str,
+) -> None:
+    """Apply the complete shared admission policy for one durable result row."""
+
+    _validate_result_execution_admission(
+        result,
+        run_identity=run_identity,
+        suite_name=suite_name,
+        manifest_identity=manifest_identity,
+        case_identity=case_identity,
+        corpus_identity=corpus_identity,
+        runner_identities=runner_identities,
+        execution_identity=execution_identity,
+        execution_identity_sha256=execution_identity_sha256,
+        context=context,
+    )
+    _validate_result_types(result, context=context)
+    _validate_result_policyengine_runtime_evidence(
+        result,
+        case_identity=case_identity,
+        execution_identity=execution_identity,
+        context=context,
+    )
+
+
 def _validate_result_case_binding(
     eval_case: dict,
     reference_cases: list[dict],
@@ -1955,7 +1991,7 @@ def fold_eval_board(
                 case_identities,
                 context=context,
             )
-            _validate_result_execution_admission(
+            _validate_result_row_admission(
                 result,
                 run_identity=run_identity,
                 suite_name=suite_name,
@@ -1972,13 +2008,6 @@ def fold_eval_board(
                     f"Duplicate result for runner {runner!r} case "
                     f"#{case_index} in {source}"
                 )
-            _validate_result_types(result, context=context)
-            _validate_result_policyengine_runtime_evidence(
-                result,
-                case_identity=case_identities[case_index - 1],
-                execution_identity=execution_identity,
-                context=context,
-            )
             runner_results[runner][case_index] = result
 
         complete = _payload_completeness(
