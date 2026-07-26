@@ -1120,6 +1120,25 @@ def test_bkgg_amendment_context_is_proof_evidence_never_an_import_target(tmp_pat
     assert "proof-citation targets only" in prompt
     assert "NEVER top-level\n`imports:` targets" in prompt
     assert "effective-dated\n`versions` of rules in this target module" in prompt
+    amendment_item = next(
+        item for item in workspace.context_files if item.kind == "corpus_amendment_act"
+    )
+    assert amendment_item.import_path is None
+    assert amendment_item.citation_path == amendment_citation
+    manifest = json.loads(workspace.manifest_file.read_text())
+    amendment_manifest_item = next(
+        item
+        for item in manifest["context_files"]
+        if item["kind"] == "corpus_amendment_act"
+    )
+    assert "import_path" not in amendment_manifest_item
+    assert amendment_manifest_item["citation_path"] == amendment_citation
+
+    hydrated_root = tmp_path / "hydrated-eval-root"
+    hydrated_root.mkdir()
+    _hydrate_eval_root(hydrated_root, workspace)
+
+    assert not list(hydrated_root.rglob("document-1.yaml"))
 
 
 def test_unrelated_newer_amendment_is_excluded_from_target_context(tmp_path):

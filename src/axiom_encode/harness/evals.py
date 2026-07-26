@@ -867,9 +867,21 @@ class EvalContextFile:
 
     source_path: str
     workspace_path: str
-    import_path: str
+    import_path: str | None
     kind: str
     label: str | None = None
+    citation_path: str | None = None
+
+
+def _eval_context_file_manifest_payload(item: EvalContextFile) -> dict[str, object]:
+    """Serialize context without mislabeling proof evidence as an import."""
+
+    payload = asdict(item)
+    if item.import_path is None:
+        payload.pop("import_path")
+    if item.citation_path is None:
+        payload.pop("citation_path")
+    return payload
 
 
 @dataclass
@@ -5572,9 +5584,10 @@ def prepare_eval_workspace(
             EvalContextFile(
                 source_path=document.citation_path,
                 workspace_path=str(workspace_relative_path),
-                import_path=document.citation_path,
+                import_path=None,
                 kind="corpus_amendment_act",
                 label=document.title,
+                citation_path=document.citation_path,
             )
         )
     context_corpus_root = _repo_augmented_context_root(axiom_rules_path)
@@ -5687,7 +5700,9 @@ def prepare_eval_workspace(
                     if provision_metadata_file is not None
                     else None
                 ),
-                "context_files": [asdict(item) for item in context_files],
+                "context_files": [
+                    _eval_context_file_manifest_payload(item) for item in context_files
+                ],
                 "review_findings_files": review_findings_evidence,
             },
             indent=2,
@@ -10562,6 +10577,11 @@ def _format_context_file_listing(
     context_hash = _context_file_hash(item.source_path)
     hash_detail = f"; context hash `{context_hash}`" if context_hash else ""
     export_detail = _context_file_export_detail(item)
+    if item.import_path is None:
+        return (
+            f"- inspect `{item.workspace_path}`{hash_detail}{details}{kind}; "
+            "proof evidence only"
+        )
     if item.workspace_path == item.import_path:
         return f"- `{item.workspace_path}`{hash_detail}{export_detail}{details}{kind}"
     return (
@@ -12942,6 +12962,8 @@ def _hydrate_eval_root(
     for item in workspace.context_files:
         workspace_path = Path(item.workspace_path)
         if not workspace_path.parts or workspace_path.parts[0] != "context":
+            continue
+        if item.kind == "corpus_amendment_act" or item.import_path is None:
             continue
 
         target_relative = _import_target_to_path(item.import_path)
