@@ -190,7 +190,7 @@ def test_validate_dependent_cascade_accepts_only_direct_dependent(
         repo,
         "us/regulation/42/435/555",
         "us/regulation/42/435/559",
-    ) == dependent.relative_to(repo / "us")
+    ) == (dependent.relative_to(repo / "us"),)
 
 
 def test_validate_dependent_cascade_rejects_unrelated_dependent(
@@ -213,7 +213,30 @@ def test_validate_dependent_cascade_rejects_unrelated_dependent(
         )
 
 
-def test_validate_dependent_cascade_rejects_multiple_direct_dependents(
+def test_validate_dependent_cascade_accepts_all_direct_dependents(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_module(repo, "regulations/42-cfr/435/555.yaml")
+    dependents = []
+    for section in ("559", "561"):
+        dependents.append(
+            _write_module(
+                repo,
+                f"regulations/42-cfr/435/{section}.yaml",
+                imports=("regulations/42-cfr/435/555",),
+            ).relative_to(repo / "us")
+        )
+
+    assert validate_dependent_cascade(
+        repo,
+        "us/regulation/42/435/555",
+        "us/regulation/42/435/559",
+        "us/regulation/42/435/561",
+    ) == tuple(dependents)
+
+
+def test_validate_dependent_cascade_rejects_incomplete_direct_dependents(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)

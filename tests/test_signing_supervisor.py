@@ -1836,6 +1836,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["dependent_citation"]["required"] is False
     assert inputs["dependent_review_finding"]["required"] is False
+    assert inputs["second_dependent_citation"]["required"] is False
+    assert inputs["second_dependent_review_finding"]["required"] is False
     assert inputs["queue_id"]["required"] is False
     assert inputs["queue_item_id"]["required"] is False
     assert inputs["queue_manifest_sha256"]["required"] is False
@@ -1974,10 +1976,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     cascade_step = next(
         step for step in steps if step.get("name") == "Validate dependent cascade"
     )
-    assert cascade_step["if"] == "${{ inputs.dependent_citation != '' }}"
+    assert "inputs.dependent_citation != ''" in cascade_step["if"]
+    assert "inputs.second_dependent_citation != ''" in cascade_step["if"]
     assert "validate-dependent-cascade" in cascade_step["run"]
+    assert 'dependent_citations=("$DEPENDENT_CITATION")' in cascade_step["run"]
     assert (
-        '"$RULESPEC_CHECKOUT" "$CITATION" "$DEPENDENT_CITATION"'
+        'dependent_citations+=("$SECOND_DEPENDENT_CITATION")' in (cascade_step["run"])
+    )
+    assert (
+        '"$RULESPEC_CHECKOUT" "$CITATION" "${dependent_citations[@]}"'
         in (cascade_step["run"])
     )
 
@@ -2008,6 +2015,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert "args+=(--apply-target-only)" in command
     assert '--output "$RUNNER_TEMP/generated/$output_lane"' in command
+    assert '"$SECOND_DEPENDENT_CITATION"' in command
+    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2' in command
     assert 'run_signed_encode "$CITATION" "$REVIEW_FINDING" true target' in command
     assert (
         '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent' in command
@@ -2398,7 +2407,11 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
     assert upload["with"]["retention-days"] == 90
 
 
-def test_targeted_signed_reencode_orders_target_and_dependent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dependent_count", [0, 1, 2])
+def test_targeted_signed_reencode_orders_target_and_dependents(
+    tmp_path: Path,
+    dependent_count: int,
+) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
     )
@@ -2429,45 +2442,146 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
 
+    environment = {
+        **os.environ,
+        "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "CALLS_PATH": str(calls_path),
+        "CITATION": "us/regulation/42/435/555",
+        "DEPENDENT_CITATION": "",
+        "DEPENDENT_REVIEW_FINDING": "",
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "REVIEW_FINDING": "Preserve the target source.",
+        "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SECOND_DEPENDENT_CITATION": "",
+        "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        "SIGNER_STUB": str(signer_stub),
+    }
+    if dependent_count >= 1:
+        environment.update(
+            {
+                "DEPENDENT_CITATION": "us/regulation/42/435/559",
+                "DEPENDENT_REVIEW_FINDING": "Preserve the dependent source.",
+            }
+        )
+    if dependent_count == 2:
+        environment.update(
+            {
+                "SECOND_DEPENDENT_CITATION": "us/regulation/42/435/561",
+                "SECOND_DEPENDENT_REVIEW_FINDING": (
+                    "Preserve the second dependent source."
+                ),
+            }
+        )
+
     subprocess.run(
         ["bash", "-c", command],
         check=True,
-        env={
-            **os.environ,
-            "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
-            "CALLS_PATH": str(calls_path),
-            "CITATION": "us/regulation/42/435/555",
-            "DEPENDENT_CITATION": "us/regulation/42/435/559",
-            "DEPENDENT_REVIEW_FINDING": "Preserve the dependent source.",
-            "GITHUB_WORKSPACE": str(tmp_path),
-            "REVIEW_FINDING": "Preserve the target source.",
-            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
-            "RUNNER_TEMP": str(runner_temp),
-            "SIGNER_STUB": str(signer_stub),
-        },
+        env=environment,
     )
 
     calls = [
         json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert len(calls) == 2
+    assert len(calls) == dependent_count + 1
     encode_args = [call[call.index("--") + 1 :] for call in calls]
     assert encode_args[0][-1] == "us/regulation/42/435/555"
-    assert "--apply-target-only" in encode_args[0]
-    assert encode_args[1][-1] == "us/regulation/42/435/559"
-    assert "--apply-target-only" not in encode_args[1]
+    assert ("--apply-target-only" in encode_args[0]) is (dependent_count > 0)
     assert (
         Path(encode_args[0][encode_args[0].index("--review-findings") + 1])
         .read_text(encoding="utf-8")
         .strip()
         == "Preserve the target source."
     )
-    assert (
-        Path(encode_args[1][encode_args[1].index("--review-findings") + 1])
-        .read_text(encoding="utf-8")
-        .strip()
-        == "Preserve the dependent source."
+    if dependent_count >= 1:
+        assert encode_args[1][-1] == "us/regulation/42/435/559"
+        assert "--apply-target-only" not in encode_args[1]
+        assert (
+            Path(encode_args[1][encode_args[1].index("--review-findings") + 1])
+            .read_text(encoding="utf-8")
+            .strip()
+            == "Preserve the dependent source."
+        )
+    if dependent_count == 2:
+        assert encode_args[2][-1] == "us/regulation/42/435/561"
+        assert "--apply-target-only" not in encode_args[2]
+        assert (
+            Path(encode_args[2][encode_args[2].index("--review-findings") + 1])
+            .read_text(encoding="utf-8")
+            .strip()
+            == "Preserve the second dependent source."
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        (
+            {
+                "SECOND_DEPENDENT_CITATION": "us/regulation/42/435/561",
+                "SECOND_DEPENDENT_REVIEW_FINDING": "Preserve the second source.",
+            },
+            "first dependent citation is required before a second dependent",
+        ),
+        (
+            {
+                "DEPENDENT_CITATION": "us/regulation/42/435/559",
+                "DEPENDENT_REVIEW_FINDING": "Preserve the dependent source.",
+                "SECOND_DEPENDENT_CITATION": "us/regulation/42/435/559",
+                "SECOND_DEPENDENT_REVIEW_FINDING": "Preserve the second source.",
+            },
+            "second dependent citation must be unique",
+        ),
+        (
+            {
+                "DEPENDENT_CITATION": "us/regulation/42/435/559",
+                "DEPENDENT_REVIEW_FINDING": "Preserve the dependent source.",
+                "SECOND_DEPENDENT_REVIEW_FINDING": "Preserve the second source.",
+            },
+            "second dependent citation is required with its review finding",
+        ),
+    ],
+)
+def test_targeted_signed_reencode_rejects_invalid_second_dependent_inputs(
+    tmp_path: Path,
+    overrides: dict[str, str],
+    error: str,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
     )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    )
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    environment = {
+        **os.environ,
+        "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "CITATION": "us/regulation/42/435/555",
+        "DEPENDENT_CITATION": "",
+        "DEPENDENT_REVIEW_FINDING": "",
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "REVIEW_FINDING": "Preserve the target source.",
+        "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SECOND_DEPENDENT_CITATION": "",
+        "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        **overrides,
+    }
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode != 0
+    assert error in completed.stderr
 
 
 def test_targeted_review_finding_temp_file_is_valid_context(tmp_path: Path) -> None:
@@ -2651,6 +2765,7 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
 
     target_citation = "us/regulation/42/435/555"
     dependent_citation = "us/regulation/42/435/559"
+    second_dependent_citation = "us/regulation/42/435/561"
     generated_root = tmp_path / "generated"
     contexts: dict[str, bytes] = {}
     for citation, context_citation, lane, section, finding in (
@@ -2667,6 +2782,13 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
             dependent_lane,
             "559",
             "Preserve the dependent source.\n",
+        ),
+        (
+            second_dependent_citation,
+            second_dependent_citation,
+            "dependent-2",
+            "561",
+            "Preserve the second dependent source.\n",
         ),
     ):
         context_payload = {
@@ -2724,6 +2846,8 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
             "CITATION": target_citation,
             "DEPENDENT_CITATION": dependent_citation,
             "DEPENDENT_REVIEW_FINDING_PRESENT": "true",
+            "SECOND_DEPENDENT_CITATION": second_dependent_citation,
+            "SECOND_DEPENDENT_REVIEW_FINDING_PRESENT": "true",
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
@@ -2739,6 +2863,9 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
     assert packaged_target.read_bytes() == contexts[target_citation]
     assert (artifact / "dependent-context-manifest.json").read_bytes() == contexts[
         dependent_citation
+    ]
+    assert (artifact / "dependent-2-context-manifest.json").read_bytes() == contexts[
+        second_dependent_citation
     ]
 
 

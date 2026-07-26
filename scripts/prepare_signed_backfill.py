@@ -166,20 +166,27 @@ def _citation_rulespec_path(citation: str) -> tuple[str, PurePosixPath]:
 def validate_dependent_cascade(
     repo: Path,
     target_citation: str,
-    dependent_citation: str,
-) -> PurePosixPath:
-    """Require the supplied module to be the target's only direct dependent."""
+    *dependent_citations: str,
+) -> tuple[PurePosixPath, ...]:
+    """Require the supplied modules to be all of the target's direct dependents."""
 
     import yaml
 
     target_jurisdiction, target_relative = _citation_rulespec_path(target_citation)
-    dependent_jurisdiction, dependent_relative = _citation_rulespec_path(
-        dependent_citation
-    )
-    if target_jurisdiction != dependent_jurisdiction:
-        raise ValueError("target and dependent must use the same jurisdiction")
-    if target_relative == dependent_relative:
-        raise ValueError("dependent citation must differ from the target citation")
+    if not dependent_citations:
+        raise ValueError("at least one dependent citation is required")
+    dependent_relatives: list[PurePosixPath] = []
+    for dependent_citation in dependent_citations:
+        dependent_jurisdiction, dependent_relative = _citation_rulespec_path(
+            dependent_citation
+        )
+        if target_jurisdiction != dependent_jurisdiction:
+            raise ValueError("target and dependents must use the same jurisdiction")
+        if target_relative == dependent_relative:
+            raise ValueError("dependent citation must differ from the target citation")
+        dependent_relatives.append(dependent_relative)
+    if len(set(dependent_relatives)) != len(dependent_relatives):
+        raise ValueError("dependent citations must be unique")
 
     repo_prefix = "rulespec-"
     if not repo.name.startswith(repo_prefix):
@@ -192,11 +199,14 @@ def validate_dependent_cascade(
 
     content_root = repo / target_jurisdiction
     target_path = content_root / target_relative
-    dependent_path = content_root / dependent_relative
     if not target_path.is_file() or target_path.is_symlink():
         raise ValueError("target citation has no regular baseline RuleSpec module")
-    if not dependent_path.is_file() or dependent_path.is_symlink():
-        raise ValueError("dependent citation has no regular baseline RuleSpec module")
+    for dependent_relative in dependent_relatives:
+        dependent_path = content_root / dependent_relative
+        if not dependent_path.is_file() or dependent_path.is_symlink():
+            raise ValueError(
+                "dependent citation has no regular baseline RuleSpec module"
+            )
 
     target_import = target_relative.with_suffix("").as_posix()
     canonical_target_import = f"{target_jurisdiction}:{target_import}"
@@ -233,14 +243,14 @@ def validate_dependent_cascade(
                     PurePosixPath(candidate.relative_to(content_root).as_posix())
                 )
 
-    expected = {dependent_relative}
+    expected = set(dependent_relatives)
     if direct_dependents != expected:
         rendered = ", ".join(map(str, sorted(direct_dependents))) or "<none>"
         raise ValueError(
-            "target direct-dependent set does not exactly match supplied dependent: "
+            "target direct-dependent set does not exactly match supplied dependents: "
             f"{rendered}"
         )
-    return dependent_relative
+    return tuple(dependent_relatives)
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -384,7 +394,7 @@ def main() -> None:
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
     cascade_parser.add_argument("repo", type=Path)
     cascade_parser.add_argument("target_citation")
-    cascade_parser.add_argument("dependent_citation")
+    cascade_parser.add_argument("dependent_citations", nargs="+")
     args = parser.parse_args()
     try:
         if args.command == "validate-country":
@@ -415,7 +425,7 @@ def main() -> None:
                 validate_dependent_cascade(
                     args.repo,
                     args.target_citation,
-                    args.dependent_citation,
+                    *args.dependent_citations,
                 )
             )
         else:
