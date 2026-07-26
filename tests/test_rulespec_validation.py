@@ -14557,10 +14557,13 @@ def test_validation_staging_normalization_requires_a_left_path_boundary(tmp_path
     embedded = f"token{staging_root}/compiled.json"
     standalone = f"{staging_root}/compiled.json"
 
-    assert _normalize_validation_staging_text(
-        f"{embedded} {standalone}",
-        staging_root,
-    ) == f"{embedded} <rulespec-validation-root>/compiled.json"
+    assert (
+        _normalize_validation_staging_text(
+            f"{embedded} {standalone}",
+            staging_root,
+        )
+        == f"{embedded} <rulespec-validation-root>/compiled.json"
+    )
 
 
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):

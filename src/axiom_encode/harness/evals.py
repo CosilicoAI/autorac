@@ -252,6 +252,10 @@ _EVAL_CASE_TIMEOUT_SECONDS: ContextVar[int | None] = ContextVar(
     "_EVAL_CASE_TIMEOUT_SECONDS",
     default=None,
 )
+_RULESPEC_VALIDATION_STAGING_ROOT: ContextVar[Path | None] = ContextVar(
+    "_RULESPEC_VALIDATION_STAGING_ROOT",
+    default=None,
+)
 _POLICYENGINE_HINT_BROAD_PLACEHOLDER_RE = re.compile(
     r"\b(?:"
     r"person_is_described_in_[A-Za-z0-9_]*"
@@ -6603,12 +6607,7 @@ def _evaluate_artifact_in_scope(
         validation_policy_repo_root = _validation_policy_repo_root(
             validation_file, policy_repo_root
         )
-        source_policy_repo_root = Path(policy_repo_root).resolve()
-        validation_staging_root = (
-            validation_policy_repo_root.parent.parent
-            if validation_policy_repo_root != source_policy_repo_root
-            else None
-        )
+        validation_staging_root = _RULESPEC_VALIDATION_STAGING_ROOT.get()
         validation_dependency_roots = _validation_rulespec_dependency_roots(
             validation_file=validation_file,
             policy_repo_root=policy_repo_root,
@@ -6642,6 +6641,9 @@ def _evaluate_artifact_in_scope(
                     error=str(exc),
                     issues=[str(exc)],
                 )
+            policyengine_result = pipeline._normalize_validation_staging_result(
+                policyengine_result
+            )
         oracle_context: dict[str, dict[str, object]] = {}
         if policyengine_result is not None:
             oracle_context["policyengine"] = {
@@ -7027,22 +7029,18 @@ def _validation_policy_repo_root(validation_file: Path, policy_repo_root: Path) 
             "Validation requires an exact direct jurisdiction child of a "
             f"canonical rulespec-<country> checkout: {policy_repo_root}"
         )
-    source_root = Path(policy_repo_root).resolve()
-    if _is_under_root(validation_file, source_root):
-        return source_root
+    resolved_validation_file = validation_file.resolve()
+    for candidate in resolved_validation_file.parents:
+        if canonical_rulespec_root_identity(candidate) != source_identity:
+            continue
+        relative = resolved_validation_file.relative_to(candidate)
+        if relative.parts and relative.parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+            return candidate
 
-    relative = _relative_rulespec_source_path(validation_file)
-    if relative is None:
-        raise UnsafeRulespecContextPath(
-            f"Validation file has no canonical RuleSpec source path: {validation_file}"
-        )
-    validation_root = validation_file.resolve().parents[len(relative.parts) - 1]
-    if canonical_rulespec_root_identity(validation_root) != source_identity:
-        raise UnsafeRulespecContextPath(
-            "Validation file is not under the explicitly authorized canonical "
-            f"RuleSpec root {source_identity}: {validation_file}"
-        )
-    return validation_root
+    raise UnsafeRulespecContextPath(
+        "Validation file is not under the explicitly authorized canonical "
+        f"RuleSpec root {source_identity}: {validation_file}"
+    )
 
 
 def _validation_rulespec_dependency_roots(
@@ -7061,7 +7059,10 @@ def _validation_rulespec_dependency_roots(
         policy_repo_root,
     )
     source_root = Path(policy_repo_root).resolve()
-    if source_root == validation_root:
+    if (
+        source_root == validation_root
+        or _RULESPEC_VALIDATION_STAGING_ROOT.get() is None
+    ):
         return normalized
 
     validation_checkout = validation_root.parent
@@ -7232,7 +7233,11 @@ def _rulespec_validation_target(
         )
     policy_root = Path(policy_repo_root).resolve()
     if _is_under_root(rulespec_file, policy_root):
-        yield validate_rulespec_context_file(rulespec_file, policy_root)
+        staging_token = _RULESPEC_VALIDATION_STAGING_ROOT.set(None)
+        try:
+            yield validate_rulespec_context_file(rulespec_file, policy_root)
+        finally:
+            _RULESPEC_VALIDATION_STAGING_ROOT.reset(staging_token)
         return
     relative = _relative_rulespec_source_path(rulespec_file)
     if relative is None:
@@ -7295,7 +7300,11 @@ def _rulespec_validation_target(
                 f"{validation_file.stem}.test.yaml"
             )
             shutil.copy2(companion_test, validation_test)
-        yield validation_file
+        staging_token = _RULESPEC_VALIDATION_STAGING_ROOT.set(overlay_parent)
+        try:
+            yield validation_file
+        finally:
+            _RULESPEC_VALIDATION_STAGING_ROOT.reset(staging_token)
 
 
 def _relative_rulespec_source_path(path: Path) -> Path | None:

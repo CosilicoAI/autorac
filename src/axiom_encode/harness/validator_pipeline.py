@@ -123,6 +123,7 @@ _SENSITIVE_ENV_NAME_MARKERS = (
     "TOKEN",
 )
 _VALIDATION_STAGING_ROOT_PLACEHOLDER = "<rulespec-validation-root>"
+_VALIDATION_TEMP_ROOT_PLACEHOLDER = "<rulespec-validation-temp>"
 _AUTHORITATIVE_CORPUS_RELEASE: ContextVar[LocalCorpusRelease | None] = ContextVar(
     "axiom_authoritative_corpus_release",
     default=None,
@@ -16850,7 +16851,10 @@ def find_rule_name_path_suffix_issues(
             if not name:
                 continue
             normalized = name.lower()
-            for suffix in suffixes:
+            for suffix in sorted(
+                suffixes,
+                key=lambda value: (-len(value.split("_")), -len(value), value),
+            ):
                 if normalized.endswith(f"_{suffix}"):
                     issues.append(
                         "Rule name includes citation suffix: "
@@ -20691,14 +20695,20 @@ class ValidationResult:
 def _normalize_validation_staging_text(
     text: str,
     staging_root: Path,
+    *,
+    placeholder: str = _VALIDATION_STAGING_ROOT_PLACEHOLDER,
 ) -> str:
     """Replace one harness-owned staging prefix while preserving its suffix."""
     normalized = text
-    root_variants = {str(staging_root), staging_root.as_posix()}
+    root = Path(staging_root)
+    root_variants = {str(root), root.as_posix()}
+    with contextlib.suppress(OSError):
+        resolved_root = root.resolve()
+        root_variants.update({str(resolved_root), resolved_root.as_posix()})
     for root_text in sorted(root_variants, key=len, reverse=True):
         normalized = re.sub(
-            rf"{re.escape(root_text)}(?=$|[\\/])",
-            _VALIDATION_STAGING_ROOT_PLACEHOLDER,
+            rf"(?<![A-Za-z0-9_./\\-]){re.escape(root_text)}(?=$|[\\/])",
+            placeholder,
             normalized,
         )
     return normalized
@@ -21191,6 +21201,7 @@ class ValidatorPipeline:
             if validation_staging_root is not None
             else None
         )
+        self._validation_temporary_roots: list[Path] = []
         self.enable_oracles = enable_oracles
         self.oracle_validators = (
             ("policyengine",) if oracle_validators is None else oracle_validators
@@ -21286,24 +21297,41 @@ class ValidatorPipeline:
         self,
         result: ValidationResult,
     ) -> ValidationResult:
-        """Remove only this validation's ephemeral root from recorded text."""
-        if self.validation_staging_root is None:
-            return result
-        result.issues = [
-            _normalize_validation_staging_text(issue, self.validation_staging_root)
-            for issue in result.issues
+        """Remove every harness-owned ephemeral root from recorded text."""
+        normalization_roots = [
+            (root, _VALIDATION_TEMP_ROOT_PLACEHOLDER)
+            for root in self._validation_temporary_roots
         ]
+        if self.validation_staging_root is not None:
+            normalization_roots.append(
+                (
+                    self.validation_staging_root,
+                    _VALIDATION_STAGING_ROOT_PLACEHOLDER,
+                )
+            )
+        if not normalization_roots:
+            return result
+
+        def normalize(text: str) -> str:
+            for root, placeholder in normalization_roots:
+                text = _normalize_validation_staging_text(
+                    text,
+                    root,
+                    placeholder=placeholder,
+                )
+            return text
+
+        result.issues = [normalize(issue) for issue in result.issues]
         if result.error is not None:
-            result.error = _normalize_validation_staging_text(
-                result.error,
-                self.validation_staging_root,
-            )
+            result.error = normalize(result.error)
         if result.raw_output is not None:
-            result.raw_output = _normalize_validation_staging_text(
-                result.raw_output,
-                self.validation_staging_root,
-            )
+            result.raw_output = normalize(result.raw_output)
         return result
+
+    def _register_validation_temporary_root(self, root: Path) -> None:
+        """Record an inner harness temp root for persisted-text normalization."""
+
+        self._validation_temporary_roots.append(Path(root))
 
     def _pythonpath_env(self) -> dict[str, str]:
         """Build an env that prefers the configured Axiom rules engine checkout."""
@@ -21754,6 +21782,7 @@ class ValidatorPipeline:
         issues: list[str] = []
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
+                self._register_validation_temporary_root(Path(tmpdir))
                 output_path = Path(tmpdir) / "compiled.json"
                 result, payload = self._compile_rulespec_to_artifact(
                     rules_file, output_path
@@ -22473,7 +22502,7 @@ class ValidatorPipeline:
                     f"list but has no `tables.{query_entity}` rows."
                 ]
             expected_row_count = len(table_rows)
-            for output_name in row_ordered_outputs:
+            for output_name in sorted(row_ordered_outputs):
                 expected_value = output_values_by_runtime_key.get(output_name)
                 if (
                     isinstance(expected_value, list)
@@ -22808,6 +22837,7 @@ class ValidatorPipeline:
 
         tmpdir_cm = tempfile.TemporaryDirectory()
         tmpdir = Path(tmpdir_cm.name)
+        self._register_validation_temporary_root(tmpdir)
         try:
             compiled_path = tmpdir / "compiled.json"
             compile_result, payload = self._compile_rulespec_to_artifact(

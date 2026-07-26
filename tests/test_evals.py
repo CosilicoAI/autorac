@@ -5657,6 +5657,10 @@ class TestEvaluateArtifact:
         ]
         unique_staging_roots = list(dict.fromkeys(observed_staging_roots))
         assert len(unique_staging_roots) == 2
+        assert all(
+            b"<rulespec-validation-temp>/compiled.json" in projection
+            for projection in projections
+        )
         assert projections[0] == projections[1]
 
     def test_validates_generated_artifact_inside_policy_repo_overlay(self, tmp_path):
@@ -5831,9 +5835,7 @@ class TestEvaluateArtifact:
         validation_file.parent.mkdir(parents=True)
         validation_file.write_text("format: rulespec/v1\nrules: []\n")
 
-        assert (
-            _validation_policy_repo_root(validation_file, outer_root) == nested_root
-        )
+        assert _validation_policy_repo_root(validation_file, outer_root) == nested_root
 
     def test_validation_overlay_rejects_aliased_country_worktree(self, tmp_path):
         monorepo = tmp_path / "repos" / "rulespec-us-mn-msa-20260627"
