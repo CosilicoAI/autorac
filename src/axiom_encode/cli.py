@@ -169,6 +169,7 @@ from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
     _DEFAULT_SUITE_RETRY_ATTEMPTS,
     _EVAL_RESULT_ARTIFACT_SPECS,
+    EVAL_EXECUTION_IDENTITY_SCHEMA,
     EvalCliEnvironment,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
@@ -184,6 +185,7 @@ from .harness.evals import (
     _load_eval_suite_resume_state,
     _preflight_eval_cli_runners,
     _render_eval_result_verdict_evidence,
+    _resolve_eval_cli_environments,
     _rulespec_root_execution_identity,
     _source_metadata_citation_path,
     _source_metadata_with_attestation,
@@ -47199,8 +47201,17 @@ def _serialize_eval_result(result) -> dict:
                 result, "generation_prompt_sha256", None
             ),
             "claude_cli_version": getattr(result, "claude_cli_version", None),
+            "claude_cli_launcher_sha256": getattr(
+                result, "claude_cli_launcher_sha256", None
+            ),
+            "claude_cli_native_sha256": getattr(
+                result, "claude_cli_native_sha256", None
+            ),
             "codex_cli_version": getattr(result, "codex_cli_version", None),
-            "codex_cli_sha256": getattr(result, "codex_cli_sha256", None),
+            "codex_cli_launcher_sha256": getattr(
+                result, "codex_cli_launcher_sha256", None
+            ),
+            "codex_cli_native_sha256": getattr(result, "codex_cli_native_sha256", None),
             "openai_endpoint": getattr(result, "openai_endpoint", None),
             "openai_response_model_id": getattr(
                 result, "openai_response_model_id", None
@@ -47266,8 +47277,8 @@ def _serialize_readiness_summary(summary) -> dict:
 
 
 _EVAL_SUITE_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
-_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v7"
-_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v7"
+_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
+_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v8"
 _EVAL_SUITE_REVALIDATION_MARKER = ".eval-suite-revalidation.json"
 
 
@@ -47341,6 +47352,7 @@ def _load_verified_eval_suite_artifacts(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     revalidate_persisted_results: bool = True,
     suite_retry_attempts: int | None = None,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> dict[str, object]:
     """Load one suite output only after the harness validates every identity."""
 
@@ -47353,6 +47365,10 @@ def _load_verified_eval_suite_artifacts(
     parsed_runners = [parse_runner_spec(spec) for spec in effective_runners]
     if not parsed_runners:
         raise ValueError("Eval suite must have at least one effective runner")
+    cli_environments = _resolve_eval_cli_environments(
+        parsed_runners,
+        cli_environments,
+    )
 
     state_raw_before = _read_eval_suite_artifact_bytes(
         output_root,
@@ -47413,6 +47429,7 @@ def _load_verified_eval_suite_artifacts(
         axiom_rules_path,
         rulespec_roots,
         parsed_runners=parsed_runners,
+        cli_environments=cli_environments,
         policyengine_runtime=policyengine_runtime if policyengine_cases else None,
         suite_retry_attempts=suite_retry_attempts,
     )
@@ -47974,9 +47991,12 @@ def cmd_eval_suite(args):
     auto_resume_delay_seconds = max(getattr(args, "auto_resume_delay_seconds", 0), 0)
     resume_existing = getattr(args, "resume", False)
     recovery_count = 0
+    parsed_runners = [parse_runner_spec(spec) for spec in effective_runners]
+    cli_environments: dict[str, EvalCliEnvironment] = {}
 
     while True:
         try:
+            cli_environments = _preflight_eval_cli_runners(parsed_runners)
             results = run_eval_suite(
                 manifest=manifest,
                 output_root=args.output,
@@ -47985,6 +48005,7 @@ def cmd_eval_suite(args):
                 corpus_release=corpus_release,
                 policyengine_runtime=policyengine_runtime,
                 resume_existing=resume_existing,
+                cli_environments=cli_environments,
             )
         except KeyboardInterrupt:
             raise
@@ -48033,6 +48054,7 @@ def cmd_eval_suite(args):
             policyengine_runtime=policyengine_runtime,
             require_complete=False,
             suite_retry_attempts=_DEFAULT_SUITE_RETRY_ATTEMPTS,
+            cli_environments=cli_environments,
         )
     except ValueError as exc:
         print(str(exc))
@@ -48207,6 +48229,9 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
     ):
         print("suite-run.json is missing effective runner identities")
         sys.exit(1)
+    cli_environments = _preflight_eval_cli_runners(
+        [parse_runner_spec(spec) for spec in effective_runners]
+    )
     try:
         verified_output = _load_verified_eval_suite_artifacts(
             output_root=source_output,
@@ -48218,6 +48243,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             policyengine_runtime=policyengine_runtime,
             require_complete=True,
             revalidate_persisted_results=False,
+            cli_environments=cli_environments,
         )
     except ValueError as exc:
         print(str(exc))
@@ -48414,6 +48440,7 @@ def _load_verified_eval_suite_archive_payload(
     policy_repo_path: Path,
     corpus_path: Path,
     policyengine_runtime_root: Path | None = None,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> dict:
     """Verify a complete suite against current live inputs before archiving."""
 
@@ -48459,6 +48486,7 @@ def _load_verified_eval_suite_archive_payload(
         corpus_release=corpus_release,
         policyengine_runtime=policyengine_runtime,
         require_complete=True,
+        cli_environments=cli_environments,
     )
     if verified_output["run_state"] != run_state:
         raise ValueError("suite-run.json changed while archive admission was verified")
@@ -48520,6 +48548,33 @@ def _load_verified_eval_suite_archive_payload(
     return result_payload
 
 
+def _preflight_eval_suite_output_receivers(
+    output_root: Path,
+) -> dict[str, EvalCliEnvironment]:
+    """Preflight only the local receivers persisted for one suite output."""
+
+    state_raw = _read_eval_suite_artifact_bytes(
+        output_root,
+        "suite-run.json",
+        max_bytes=8 * 1024 * 1024,
+    )
+    try:
+        run_state = json.loads((state_raw or b"").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("suite-run.json is malformed") from exc
+    manifest = run_state.get("manifest") if isinstance(run_state, dict) else None
+    effective_runners = (
+        manifest.get("effective_runners") if isinstance(manifest, dict) else None
+    )
+    if not isinstance(effective_runners, list) or any(
+        not isinstance(spec, str) or not spec for spec in effective_runners
+    ):
+        raise ValueError("suite-run.json is missing effective runner identities")
+    return _preflight_eval_cli_runners(
+        [parse_runner_spec(spec) for spec in effective_runners]
+    )
+
+
 _EVAL_SUITE_ARCHIVE_CONTROL_FILES = {
     "suite-run.json": 8 * 1024 * 1024,
     "suite-results.jsonl": 256 * 1024 * 1024,
@@ -48532,11 +48587,9 @@ _EVAL_SUITE_ARCHIVE_METADATA_SCHEMA = "axiom-encode/eval-suite-archive-metadata/
 _EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_SCHEMA = (
     "axiom-encode/eval-suite-archive-index-migration/v1"
 )
-_EVAL_SUITE_ARCHIVE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
-_EVAL_SUITE_ARCHIVE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v8"
-_EVAL_SUITE_ARCHIVE_EXECUTION_IDENTITY_SCHEMA = (
-    "axiom-encode/eval-execution-identity/v5"
-)
+_EVAL_SUITE_ARCHIVE_RESULTS_SCHEMA = _EVAL_SUITE_RESULTS_SCHEMA
+_EVAL_SUITE_ARCHIVE_SUMMARY_SCHEMA = _EVAL_SUITE_SUMMARY_SCHEMA
+_EVAL_SUITE_ARCHIVE_EXECUTION_IDENTITY_SCHEMA = EVAL_EXECUTION_IDENTITY_SCHEMA
 _EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V1_FIELDS = frozenset(
     {
         "archived_at",
@@ -49673,11 +49726,13 @@ def cmd_eval_suite_archive(args):
         label="Axiom Corpus",
     )
     try:
+        cli_environments = _preflight_eval_suite_output_receivers(source_output)
         verified_payload = _load_verified_eval_suite_archive_payload(
             source_output,
             axiom_rules_path=axiom_rules_path,
             policy_repo_path=policy_repo_path,
             corpus_path=corpus_path,
+            cli_environments=cli_environments,
             **(
                 {"policyengine_runtime_root": args.policyengine_runtime_root}
                 if getattr(args, "policyengine_runtime_root", None) is not None
@@ -49761,6 +49816,7 @@ def cmd_eval_suite_archive(args):
                     axiom_rules_path=axiom_rules_path,
                     policy_repo_path=policy_repo_path,
                     corpus_path=corpus_path,
+                    cli_environments=cli_environments,
                     **(
                         {"policyengine_runtime_root": (args.policyengine_runtime_root)}
                         if getattr(args, "policyengine_runtime_root", None) is not None
@@ -50520,6 +50576,7 @@ def cmd_eval_suite_report(args):
             or preflight_payload.get("schema") != _EVAL_SUITE_RESULTS_SCHEMA
         ):
             raise ValueError("Eval suite result payload uses an unsupported schema")
+        cli_environments = _preflight_eval_suite_output_receivers(result_json.parent)
         payload = _load_verified_eval_suite_archive_payload(
             result_json.parent,
             axiom_rules_path=_resolve_explicit_existing_directory(
@@ -50534,6 +50591,7 @@ def cmd_eval_suite_report(args):
                 args.corpus_path,
                 label="Axiom Corpus",
             ),
+            cli_environments=cli_environments,
             **(
                 {"policyengine_runtime_root": args.policyengine_runtime_root}
                 if getattr(args, "policyengine_runtime_root", None) is not None

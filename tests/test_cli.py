@@ -499,6 +499,31 @@ def _test_eval_runner_identity(spec: str) -> dict[str, str]:
     return {"name": name, "backend": backend, "model": model}
 
 
+def _test_eval_cli_environments() -> dict[str, EvalCliEnvironment]:
+    """Return complete path-bound test doubles for both local receivers."""
+
+    return {
+        "claude": EvalCliEnvironment(
+            backend="claude",
+            executable="/tools/claude",
+            version="2.1.test (Claude Code)",
+            executable_sha256="a" * 64,
+            launcher_sha256="a" * 64,
+            native_executable="/tools/vendor/claude",
+            native_sha256="b" * 64,
+        ),
+        "codex": EvalCliEnvironment(
+            backend="codex",
+            executable="/tools/codex",
+            version="codex-cli 0.test",
+            executable_sha256="c" * 64,
+            launcher_sha256="c" * 64,
+            native_executable="/tools/vendor/codex",
+            native_sha256="d" * 64,
+        ),
+    }
+
+
 def _write_test_eval_artifacts(root: Path, name: str) -> dict[str, str]:
     artifact_root = root / "test-eval-artifacts" / name
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -526,9 +551,12 @@ def _complete_test_eval_result_payload(result: dict) -> dict:
     result.setdefault("unexpected_accesses", [])
     if result.get("backend") == "claude":
         result.setdefault("claude_cli_version", "2.1.test (Claude Code)")
+        result.setdefault("claude_cli_launcher_sha256", "a" * 64)
+        result.setdefault("claude_cli_native_sha256", "b" * 64)
     elif result.get("backend") == "codex":
         result.setdefault("codex_cli_version", "codex-cli 0.test")
-        result.setdefault("codex_cli_sha256", "d" * 64)
+        result.setdefault("codex_cli_launcher_sha256", "c" * 64)
+        result.setdefault("codex_cli_native_sha256", "d" * 64)
     elif result.get("backend") == "openai":
         result.setdefault(
             "openai_endpoint",
@@ -631,8 +659,17 @@ def _fake_verified_eval_suite_artifacts(
         "policyengine_runtime_pin_sha256": "d" * 64,
         "validation_waiver_set_sha256": "8" * 64,
     }
+    receiver_environments = {
+        backend: {
+            "cli_version": environment.version,
+            "launcher_sha256": environment.launcher_sha256,
+            "native_sha256": environment.native_sha256,
+        }
+        for backend, environment in _test_eval_cli_environments().items()
+        if any(identity["backend"] == backend for identity in runner_identities)
+    }
     execution_identity = {
-        "schema": "axiom-encode/eval-execution-identity/v4",
+        "schema": "axiom-encode/eval-execution-identity/v5",
         "runner_efforts": [
             {
                 "name": identity["name"],
@@ -647,6 +684,7 @@ def _fake_verified_eval_suite_artifacts(
                 strict=True,
             )
         ],
+        "receiver_environments": receiver_environments,
         "case_timeout_seconds": 3600,
         "runner_timeouts": {
             "claude": {"wall_seconds": 1800},
@@ -750,9 +788,12 @@ def _fake_verified_eval_suite_artifacts(
                 _complete_test_eval_result_payload(result)
             elif backend == "claude":
                 result.claude_cli_version = "2.1.test (Claude Code)"
+                result.claude_cli_launcher_sha256 = "a" * 64
+                result.claude_cli_native_sha256 = "b" * 64
             elif backend == "codex":
                 result.codex_cli_version = "codex-cli 0.test"
-                result.codex_cli_sha256 = "d" * 64
+                result.codex_cli_launcher_sha256 = "c" * 64
+                result.codex_cli_native_sha256 = "d" * 64
             elif backend == "openai":
                 result.openai_endpoint = "https://api.openai.com/v1/responses"
                 result.openai_response_model_id = result.model
@@ -2847,20 +2888,7 @@ def test_eval_citations_require_one_canonical_policy_content_root(tmp_path):
 class TestDirectEvalCliPreflight:
     @staticmethod
     def _cli_environments() -> dict[str, EvalCliEnvironment]:
-        return {
-            "claude": EvalCliEnvironment(
-                backend="claude",
-                executable="/tools/claude",
-                version="claude 9.9.9",
-                executable_sha256="a" * 64,
-            ),
-            "codex": EvalCliEnvironment(
-                backend="codex",
-                executable="/tools/codex",
-                version="codex 9.9.9",
-                executable_sha256="b" * 64,
-            ),
-        }
+        return _test_eval_cli_environments()
 
     def test_cmd_eval_preflights_effective_runners_and_binds_environments(
         self, tmp_path
@@ -2977,6 +3005,20 @@ class TestCmdEvalSuite:
         monkeypatch.setattr(
             "axiom_encode.cli._eval_suite_corpus_release",
             lambda *_args, **_kwargs: fake_release,
+        )
+        test_environments = _test_eval_cli_environments()
+
+        def preflight(runners):
+            exercised_backends = {runner.backend for runner in runners}
+            return {
+                backend: environment
+                for backend, environment in test_environments.items()
+                if backend in exercised_backends
+            }
+
+        monkeypatch.setattr(
+            "axiom_encode.cli._preflight_eval_cli_runners",
+            preflight,
         )
 
     def test_preflights_effective_receivers_once_and_shares_exact_environment(
@@ -3555,10 +3597,10 @@ class TestCmdEvalSuite:
             run_state=verified["run_state"],
             completed_case_indexes=set(),
         )
-        assert payload["schema"] == "axiom-encode/eval-suite-results/v7"
+        assert payload["schema"] == "axiom-encode/eval-suite-results/v8"
         assert payload["evidence"]["schema"] == ("axiom-encode/eval-suite-evidence/v5")
         assert _eval_suite_summary_payload(payload)["schema"] == (
-            "axiom-encode/eval-suite-summary/v7"
+            "axiom-encode/eval-suite-summary/v8"
         )
 
         assert payload["coverage"]["complete"] is False
@@ -3589,6 +3631,7 @@ class TestCmdEvalSuite:
                 tmp_path / "axiom-rules-engine",
                 (),
                 parsed_runners=(parse_runner_spec("codex:gpt-5.4"),),
+                cli_environments=_test_eval_cli_environments(),
                 suite_retry_attempts=0,
             )
         run_state = {
@@ -3639,6 +3682,7 @@ class TestCmdEvalSuite:
                 policy_repo_path=tmp_path / "rulespec-us",
                 corpus_release=SimpleNamespace(),
                 require_complete=True,
+                cli_environments=_test_eval_cli_environments(),
             )
 
         assert verified["complete"] is True
@@ -3646,6 +3690,13 @@ class TestCmdEvalSuite:
 
 
 class TestCmdEvalSuiteReport:
+    @pytest.fixture(autouse=True)
+    def _inject_receiver_preflight(self, monkeypatch):
+        monkeypatch.setattr(
+            "axiom_encode.cli._preflight_eval_suite_output_receivers",
+            lambda _output_root: _test_eval_cli_environments(),
+        )
+
     def test_groups_duplicate_paths_by_case_index(self):
         results = []
         for case_index, case_name in ((1, "first"), (2, "second")):
@@ -4039,6 +4090,7 @@ class TestCmdEvalSuiteReport:
             "axiom-encode/eval-suite-results/v4",
             "axiom-encode/eval-suite-results/v5",
             "axiom-encode/eval-suite-results/v6",
+            "axiom-encode/eval-suite-results/v7",
         ],
     )
     def test_rejects_legacy_result_payload_without_translation(
@@ -4082,6 +4134,13 @@ class TestCmdEvalSuiteReport:
 
 
 class TestCmdEvalSuiteRevalidate:
+    @pytest.fixture(autouse=True)
+    def _inject_receiver_preflight(self, monkeypatch):
+        monkeypatch.setattr(
+            "axiom_encode.cli._preflight_eval_cli_runners",
+            lambda _runners: _test_eval_cli_environments(),
+        )
+
     @pytest.mark.parametrize("persisted_identity", [None, "wrong-release"])
     def test_revalidation_rejects_missing_or_changed_release_identity(
         self,
@@ -4641,6 +4700,13 @@ def _archive_registry_migration_boundary(legacy_rows: int) -> dict:
 
 
 class TestCmdEvalSuiteArchive:
+    @pytest.fixture(autouse=True)
+    def _inject_receiver_preflight(self, monkeypatch):
+        monkeypatch.setattr(
+            "axiom_encode.cli._preflight_eval_suite_output_receivers",
+            lambda _output_root: _test_eval_cli_environments(),
+        )
+
     def test_archive_metadata_stamps_payload_and_effort_identity_schemas(
         self,
         tmp_path,
@@ -4653,6 +4719,18 @@ class TestCmdEvalSuiteArchive:
         published_archive_dir = tmp_path / "archives" / "suite"
         execution_identity = {
             "schema": "axiom-encode/eval-execution-identity/v5",
+            "receiver_environments": {
+                "claude": {
+                    "cli_version": "2.1.test (Claude Code)",
+                    "launcher_sha256": "a" * 64,
+                    "native_sha256": "b" * 64,
+                },
+                "codex": {
+                    "cli_version": "codex-cli 0.test",
+                    "launcher_sha256": "c" * 64,
+                    "native_sha256": "d" * 64,
+                },
+            },
             "runner_efforts": [
                 {
                     "name": "claude-claude-opus-4-1",
@@ -4753,6 +4831,13 @@ class TestCmdEvalSuiteArchive:
             "sha256": "a" * 64,
             "execution_identity": {
                 "schema": "axiom-encode/eval-execution-identity/v5",
+                "receiver_environments": {
+                    "codex": {
+                        "cli_version": "codex-cli 0.test",
+                        "launcher_sha256": "c" * 64,
+                        "native_sha256": "d" * 64,
+                    }
+                },
                 "runner_efforts": [
                     {
                         "name": "codex-gpt-5.4",
@@ -5112,7 +5197,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v7",
+                    "schema": "axiom-encode/eval-suite-summary/v8",
                     "manifest": payload["manifest"],
                     "evidence": payload["evidence"],
                     "coverage": payload["coverage"],
@@ -5609,7 +5694,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v7",
+                    "schema": "axiom-encode/eval-suite-summary/v8",
                     "manifest": current_payload["manifest"],
                     "evidence": current_payload["evidence"],
                     "coverage": current_payload["coverage"],
@@ -5641,25 +5726,35 @@ class TestCmdEvalSuiteArchive:
             json=False,
         )
 
-        with patch(
-            "axiom_encode.cli._load_verified_eval_suite_archive_payload",
-            return_value=current_payload,
-        ) as mock_verify:
+        cli_environments = _test_eval_cli_environments()
+        with (
+            patch(
+                "axiom_encode.cli._preflight_eval_suite_output_receivers",
+                return_value=cli_environments,
+            ) as receiver_preflight,
+            patch(
+                "axiom_encode.cli._load_verified_eval_suite_archive_payload",
+                return_value=current_payload,
+            ) as mock_verify,
+        ):
             cmd_eval_suite_archive(args)
 
         archive_dir = archive_root / "wave21-rerun16"
+        receiver_preflight.assert_called_once_with(source_output.resolve())
         assert mock_verify.call_args_list == [
             call(
                 source_output.resolve(),
                 axiom_rules_path=axiom_rules_path,
                 policy_repo_path=policy_repo_path,
                 corpus_path=corpus_path,
+                cli_environments=cli_environments,
             ),
             call(
                 archive_dir,
                 axiom_rules_path=axiom_rules_path,
                 policy_repo_path=policy_repo_path,
                 corpus_path=corpus_path,
+                cli_environments=cli_environments,
             ),
         ]
         assert archive_dir.exists()
@@ -12240,20 +12335,7 @@ class TestCmdEncode:
         )
 
         encoder_root = Path(__file__).resolve().parents[1]
-        self.cli_environments = {
-            "claude": EvalCliEnvironment(
-                backend="claude",
-                executable="/tools/claude",
-                version="claude 9.9.9",
-                executable_sha256="a" * 64,
-            ),
-            "codex": EvalCliEnvironment(
-                backend="codex",
-                executable="/tools/codex",
-                version="codex 9.9.9",
-                executable_sha256="b" * 64,
-            ),
-        }
+        self.cli_environments = _test_eval_cli_environments()
 
         def test_git_checkout_identity(raw_checkout, *, pathspecs=()):
             checkout = Path(raw_checkout).resolve()
