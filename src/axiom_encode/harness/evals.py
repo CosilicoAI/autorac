@@ -6374,11 +6374,9 @@ def _evaluate_artifact_in_scope(
                 )
 
     content = rulespec_file.read_text()
-    numeric_proof_source_texts = (
-        pipeline._numeric_source_texts_for_rulespec_content(
-            content,
-            source_texts=None,
-        )
+    numeric_proof_source_texts = pipeline._numeric_source_texts_for_rulespec_content(
+        content,
+        source_texts=None,
     )
     embedded_source = extract_embedded_source_text(content)
     numeric_source_text = extract_numeric_grounding_source_text(content)
@@ -6397,9 +6395,7 @@ def _evaluate_artifact_in_scope(
                 numeric_source_citation_path = _module_numeric_citation_path(
                     numeric_payload
                 )
-    numeric_profile = _numeric_profile_for_citation_path(
-        numeric_source_citation_path
-    )
+    numeric_profile = _numeric_profile_for_citation_path(numeric_source_citation_path)
     half_up_helper_count = min(
         source_backed_half_up_rounding_helper_count(content, source_text),
         source_backed_half_up_rounding_helper_count(
@@ -6439,9 +6435,7 @@ def _evaluate_artifact_in_scope(
     semantic_source_occurrence_coverage = Counter[float]()
     if half_up_helper_count:
         semantic_source_occurrence_coverage[5.0] = half_up_helper_count
-    source_is_table = _source_text_looks_like_table(
-        numeric_validation_source_text
-    )
+    source_is_table = _source_text_looks_like_table(numeric_validation_source_text)
     inline_table_formula_occurrences = (
         _inline_table_formula_numeric_occurrences(content)
         if source_is_table

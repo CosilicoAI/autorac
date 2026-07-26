@@ -7956,9 +7956,7 @@ def test_de_numeric_profile_accepts_wogg_group_widths(source_text, expected):
 )
 def test_de_numeric_profile_reserves_malformed_spans_without_suffixes(source_text):
     assert extract_numbers_from_text(source_text, profile="de-DE") == set()
-    assert (
-        extract_numeric_occurrences_from_text(source_text, profile="de-DE") == []
-    )
+    assert extract_numeric_occurrences_from_text(source_text, profile="de-DE") == []
 
 
 @pytest.mark.parametrize(
@@ -8031,10 +8029,7 @@ def test_de_numeric_profile_reads_unicode_unary_minus(source_text, expected):
 
 
 def test_de_numeric_profile_keeps_expression_subtraction_binary():
-    source_text = (
-        "0,42 \u2219 x \u2013 11 135,63; "
-        "0,45 \u00b7 x \u2212 19 470,38"
-    )
+    source_text = "0,42 \u2219 x \u2013 11 135,63; 0,45 \u00b7 x \u2212 19 470,38"
 
     assert extract_numbers_from_text(source_text, profile="de-DE") == {
         0.42,
@@ -9353,9 +9348,7 @@ rules:
 """
 
     source_text = (
-        "Qualifying children | Applicable percentage\n"
-        "| None | 7.65 |\n"
-        "| One | 34 |"
+        "Qualifying children | Applicable percentage\n| None | 7.65 |\n| One | 34 |"
     )
 
     assert find_ungrounded_numeric_issues(content, source_text=source_text) == []
@@ -31218,11 +31211,7 @@ def test_source_verification_uses_de_profile_for_scalar_and_table_values():
                   2: 19470.38
         """
     ).strip()
-    source_text = (
-        "Der Betrag ist 1 034,87 Euro.\n"
-        "1 | 11 135,63\n"
-        "2 | 19 470,38"
-    )
+    source_text = "Der Betrag ist 1 034,87 Euro.\n1 | 11 135,63\n2 | 19 470,38"
 
     assert (
         find_source_verification_issues(
@@ -31264,11 +31253,7 @@ def test_source_verification_de_profile_rejects_us_numeric_spans():
                   2: 2345.67
         """
     ).strip()
-    source_text = (
-        "Der Betrag ist 1,234.56 Euro.\n"
-        "1 | 1,234.56\n"
-        "2 | 2,345.67"
-    )
+    source_text = "Der Betrag ist 1,234.56 Euro.\n1 | 1,234.56\n2 | 2,345.67"
 
     issues = find_source_verification_issues(
         content,

@@ -28908,19 +28908,12 @@ def _closest_exact_source_excerpt(
         return _safe_wrapped_direct_source_match(source, direct_match)
 
     query_tokens = _proof_excerpt_match_tokens(query)
-    query_numbers = set(
-        extract_numbers_from_text(query, profile=numeric_profile)
-    )
-    if (
-        _has_malformed_profiled_numeric_envelope(
-            query,
-            profile=numeric_profile,
-        )
-        or (
-            numeric_profile != "legacy"
-            and re.search(r"\d", query)
-            and not query_numbers
-        )
+    query_numbers = set(extract_numbers_from_text(query, profile=numeric_profile))
+    if _has_malformed_profiled_numeric_envelope(
+        query,
+        profile=numeric_profile,
+    ) or (
+        numeric_profile != "legacy" and re.search(r"\d", query) and not query_numbers
     ):
         return None
     scored: list[tuple[float, _SourceExcerptCandidate]] = []

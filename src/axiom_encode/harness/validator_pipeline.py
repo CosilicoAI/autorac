@@ -2768,9 +2768,7 @@ def _rule_atom_numeric_evidence_items_by_path(
                 )
             )
             if excerpt_is_body_bound:
-                fragments.append(
-                    _NumericEvidenceItem(citation_identity, text.strip())
-                )
+                fragments.append(_NumericEvidenceItem(citation_identity, text.strip()))
         table = source.get("table")
         if isinstance(table, dict):
             for cell in table.values():
@@ -5750,10 +5748,7 @@ def _numeric_profile_for_citation_path(citation_path: str | None) -> str:
 
 def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
     prefix_index = sign_index - 1
-    while (
-        prefix_index >= 0
-        and text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES
-    ):
+    while prefix_index >= 0 and text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES:
         prefix_index -= 1
     if prefix_index < 0:
         return True
@@ -5836,10 +5831,7 @@ def _iter_locale_numeric_envelopes(
                 separator_end = index
                 while separator_end < len(text) and text[separator_end] in ".,":
                     separator_end += 1
-                if (
-                    separator_end < len(text)
-                    and text[separator_end].isdigit()
-                ):
+                if separator_end < len(text) and text[separator_end].isdigit():
                     index = separator_end
                     continue
                 break
@@ -5907,8 +5899,10 @@ def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
         return None
     mantissa = scientific.group("mantissa")
     exponent = (
-        scientific.group("exponent") or ""
-    ).replace("\u2013", "-").replace("\u2212", "-")
+        (scientific.group("exponent") or "")
+        .replace("\u2013", "-")
+        .replace("\u2212", "-")
+    )
 
     if profile == "de-DE":
         if mantissa.count(",") > 1:
@@ -5969,8 +5963,7 @@ def _has_malformed_profiled_numeric_envelope(
     cleaned = _clean_source_text_for_numeric_extraction(text)
     return any(
         _locale_numeric_envelope_has_token_boundaries(cleaned, span)
-        and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
-        is None
+        and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile) is None
         for span in _iter_locale_numeric_envelopes(cleaned, profile=profile)
     )
 
@@ -7165,9 +7158,8 @@ def evaluate_numeric_grounding_values_scoped(
                 continue
 
             evidence_items = (
-                ([module_evidence] if module_evidence is not None else [])
-                + list(evidence_items_by_path.get(anchor_path, ()))
-            )
+                [module_evidence] if module_evidence is not None else []
+            ) + list(evidence_items_by_path.get(anchor_path, ()))
             source_occurrences, decimal_place_scale_values = _numeric_evidence_index(
                 evidence_items,
                 suppress_ambiguous_half_up_terms=(
@@ -8500,9 +8492,7 @@ def repair_source_table_open_ended_bound_sentinels(
         if source_text is not None
         else (extract_numeric_grounding_source_text(content) or "").strip()
     )
-    profile = _numeric_profile_for_citation_path(
-        _module_numeric_citation_path(payload)
-    )
+    profile = _numeric_profile_for_citation_path(_module_numeric_citation_path(payload))
     source_occurrences = (
         extract_typed_numeric_occurrences_from_text(source, profile=profile)
         if source
