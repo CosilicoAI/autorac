@@ -326,6 +326,38 @@ class TestAgentSDKBackend:
             assert resp.tokens is not None
 
     @pytest.mark.asyncio
+    async def test_encode_async_rejects_max_tokens_partial(self, tmp_path):
+        """A max-token stop is an infrastructure failure, never a scored artifact."""
+        backend = AgentSDKBackend(api_key="test-key")
+        output_path = tmp_path / "partial.yaml"
+        output_path.write_text("stale_or_partial: true\n")
+
+        mock_anthropic = Mock()
+        mock_client = Mock()
+        mock_response = Mock(
+            content=[Mock(text="partial: response")],
+            stop_reason="max_tokens",
+            usage=Mock(input_tokens=100, output_tokens=16_384),
+        )
+        mock_client.messages = Mock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        mock_anthropic.AsyncAnthropic = Mock(return_value=mock_client)
+
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            resp = await backend.encode_async(
+                EncoderRequest(
+                    citation="26 USC 1",
+                    source_text="Test",
+                    output_path=output_path,
+                )
+            )
+
+        assert not resp.success
+        assert resp.rulespec_content == ""
+        assert resp.error is not None
+        assert "max_tokens" in resp.error
+
+    @pytest.mark.asyncio
     async def test_encode_batch_parallel(self):
         """encode_batch() runs multiple encodings in parallel."""
         backend = AgentSDKBackend(api_key="test-key")
