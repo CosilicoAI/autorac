@@ -7857,6 +7857,17 @@ def test_closest_exact_source_excerpt_rejects_ambiguous_canonical_span():
     assert repaired is None
 
 
+def test_closest_exact_source_excerpt_rejects_identical_cross_record_matches():
+    excerpt = "Der Wert beträgt 25 Euro."
+    repaired = _closest_exact_source_excerpt(
+        source_text=(excerpt + PROOF_EVIDENCE_SEGMENT_SEPARATOR + excerpt),
+        excerpt=excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
 def test_closest_exact_source_excerpt_rejects_changed_number_in_near_match():
     source_text = (
         "In § 6a Absatz 2 Satz 4 werden die Wörter „ab 1. Juli 2022“ gestrichen "

@@ -29155,7 +29155,7 @@ def _closest_exact_source_excerpt(
         if canonical_matches:
             return canonical_matches[0] if len(canonical_matches) == 1 else None
     if len(segments) > 1:
-        matches = {
+        matches = [
             candidate
             for segment in segments
             if (
@@ -29165,8 +29165,8 @@ def _closest_exact_source_excerpt(
                     numeric_profile=numeric_profile,
                 )
             )
-        }
-        return next(iter(matches)) if len(matches) == 1 else None
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     candidates = _exact_source_excerpt_candidate_spans(source)
     direct_match = re.search(whitespace_pattern, source, flags=re.IGNORECASE)
