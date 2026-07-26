@@ -7341,8 +7341,7 @@ rules:
         pass_source_citation_path,
     ):
         authoritative_source_text = (
-            "(1) Der Freibetrag beträgt 259 Euro; "
-            "der Zuschlag beträgt 73 Euro."
+            "(1) Der Freibetrag beträgt 259 Euro; der Zuschlag beträgt 73 Euro."
         )
         caller_source_summary = "(1) Der Freibetrag beträgt 259 Euro."
         corpus_release = _write_test_corpus_provision(
@@ -7395,9 +7394,7 @@ rules:
         assert any("73" in issue for issue in metrics.numeric_occurrence_issues)
 
     def test_complete_mode_numeric_recall_is_summary_invariant(self, tmp_path):
-        source_text = (
-            "If the 3rd digit is 5 or more, increase the 2nd digit by 1."
-        )
+        source_text = "If the 3rd digit is 5 or more, increase the 2nd digit by 1."
         citation_path = "ca/policy/cra/example/rounding"
         corpus_release = _write_test_corpus_provision(
             tmp_path,
@@ -13212,18 +13209,19 @@ class TestEvalSuiteManifest:
         explicit_off_case = replace(default_case, require_complete_source_unit=False)
         complete_case = replace(default_case, require_complete_source_unit=True)
 
-        default_identity = evals_module._canonical_eval_suite_case_payload(
-            default_case
-        )
+        default_identity = evals_module._canonical_eval_suite_case_payload(default_case)
         assert default_case.require_complete_source_unit is False
         assert (
             evals_module._canonical_eval_suite_case_payload(explicit_off_case)
             == default_identity
         )
         assert "require_complete_source_unit" not in default_identity
-        assert evals_module._canonical_eval_suite_case_payload(complete_case)[
-            "require_complete_source_unit"
-        ] is True
+        assert (
+            evals_module._canonical_eval_suite_case_payload(complete_case)[
+                "require_complete_source_unit"
+            ]
+            is True
+        )
 
     @pytest.mark.parametrize("value", [None, 0, 1, "true", []])
     def test_complete_source_unit_case_mode_requires_a_boolean(
@@ -20182,9 +20180,7 @@ def test_persisted_revalidation_keeps_complete_source_unit_mode():
         require_complete_source_unit=True,
     )
 
-    assert (
-        evaluate_mock.call_args.kwargs["require_complete_source_unit"] is True
-    )
+    assert evaluate_mock.call_args.kwargs["require_complete_source_unit"] is True
 
 
 @pytest.mark.parametrize(

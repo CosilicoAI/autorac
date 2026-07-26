@@ -1010,12 +1010,12 @@ def _validate_eval_result_artifact_binding(
 
     if not isinstance(payload.get("success"), bool):
         raise ValueError(f"{artifact_name} success must be a boolean")
-    if "require_complete_source_unit" in payload and type(
-        payload["require_complete_source_unit"]
-    ) is not bool:
+    if (
+        "require_complete_source_unit" in payload
+        and type(payload["require_complete_source_unit"]) is not bool
+    ):
         raise ValueError(
-            f"{artifact_name} has invalid boolean field "
-            "'require_complete_source_unit'"
+            f"{artifact_name} has invalid boolean field 'require_complete_source_unit'"
         )
     for field_name in (
         "duration_ms",
@@ -3543,10 +3543,7 @@ def _validate_new_eval_suite_case_results(
                 f"Eval suite case '{case.name}' returned runner '{result.runner}' "
                 f"with mode '{result.mode}' instead of '{case.mode}'"
             )
-        if (
-            result.require_complete_source_unit
-            is not case.require_complete_source_unit
-        ):
+        if result.require_complete_source_unit is not case.require_complete_source_unit:
             raise ValueError(
                 f"Eval suite case '{case.name}' returned runner '{result.runner}' "
                 "with a different complete-source-unit mode"
@@ -3985,10 +3982,7 @@ def _validate_persisted_eval_suite_case_group(
                 "Cannot resume eval suite: suite-results.jsonl row uses a "
                 f"different mode for case '{case.name}' runner '{runner_name}'"
             )
-        if (
-            result.require_complete_source_unit
-            is not case.require_complete_source_unit
-        ):
+        if result.require_complete_source_unit is not case.require_complete_source_unit:
             raise ValueError(
                 "Cannot resume eval suite: suite-results.jsonl row uses a "
                 "different complete-source-unit mode for case "

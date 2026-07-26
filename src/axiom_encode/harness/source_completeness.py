@@ -158,9 +158,7 @@ _LETTER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[a-z]{1,2})\))[ \t]+",
     flags=re.IGNORECASE,
 )
-_GLUED_SENTENCE_MARKER = re.compile(
-    r"(?<![\w])(?P<label>[1-9]\d?)(?=[A-ZÄÖÜ])"
-)
+_GLUED_SENTENCE_MARKER = re.compile(r"(?<![\w])(?P<label>[1-9]\d?)(?=[A-ZÄÖÜ])")
 _EXPLICIT_SENTENCE_MARKER = re.compile(
     r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
     r"(?P<label>[1-9]\d?)(?:[ \t]*:[ \t]*|[ \t]+)(?=[A-ZÄÖÜ])",
@@ -395,7 +393,9 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
             continue
         path = (label,)
         branches.append(
-            SourceStructureBranch(path, "paragraph", match.group("marker"), text, start, end)
+            SourceStructureBranch(
+                path, "paragraph", match.group("marker"), text, start, end
+            )
         )
         paragraph_segments.append((path, start, end, text))
 
@@ -469,12 +469,12 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
             if _is_editorial_omission(text):
                 continue
             branches.append(
-                SourceStructureBranch(path, "sentence", f"Satz {label}", text, start, end)
+                SourceStructureBranch(
+                    path, "sentence", f"Satz {label}", text, start, end
+                )
             )
 
-    unique = {
-        (branch.path, branch.kind, branch.start): branch for branch in branches
-    }
+    unique = {(branch.path, branch.kind, branch.start): branch for branch in branches}
     return tuple(
         sorted(
             unique.values(),
@@ -649,9 +649,8 @@ def _analyze_rulespec_payload(
                     "`derived_relation`) and is not "
                     "precisely deferred; parameter-only representation is invalid."
                 )
-        elif (
-            not all_formula_branches
-            and not _path_covered((), principal_paths, deferred_paths)
+        elif not all_formula_branches and not _path_covered(
+            (), principal_paths, deferred_paths
         ):
             issues.append(
                 "[complete-source-unit:formula-output] Explicit source computation "
@@ -841,9 +840,7 @@ def _principal_formula_clause_rules(
 
     clause_count_by_path: dict[tuple[str, ...], int] = {}
     for clause in formula_branches:
-        clause_count_by_path[clause.path] = (
-            clause_count_by_path.get(clause.path, 0) + 1
-        )
+        clause_count_by_path[clause.path] = clause_count_by_path.get(clause.path, 0) + 1
 
     clause_rules: dict[SourceStructureBranch, set[str]] = {}
     normalized_citation_path = corpus_citation_path.strip("/").lower()
@@ -865,16 +862,10 @@ def _principal_formula_clause_rules(
                 )
             )
             or any(
-                (
-                    excerpt_text := _normalized_formula_clause_text(excerpt)
-                )
-                and excerpt_citation_path.strip("/").lower()
-                == normalized_citation_path
+                (excerpt_text := _normalized_formula_clause_text(excerpt))
+                and excerpt_citation_path.strip("/").lower() == normalized_citation_path
                 and source_states_explicit_computation(excerpt)
-                and (
-                    excerpt_text in clause_text
-                    or clause_text in excerpt_text
-                )
+                and (excerpt_text in clause_text or clause_text in excerpt_text)
                 for excerpt_citation_path, excerpt in _rule_formula_source_excerpts(
                     principal_rules[rule_name]
                 )
@@ -925,10 +916,9 @@ def _rounding_only_direction(text: str) -> str | None:
     if direction is None:
         return None
     without_rounding = _ROUNDING_LANGUAGE.sub("", text)
-    if (
-        _has_substantive_arithmetic_expression(without_rounding)
-        or _COMPUTATION_LANGUAGE.search(without_rounding)
-    ):
+    if _has_substantive_arithmetic_expression(
+        without_rounding
+    ) or _COMPUTATION_LANGUAGE.search(without_rounding):
         return None
     return direction
 
@@ -1119,11 +1109,11 @@ def _deferred_coverage(
         reason = str(record.get("reason") or "").strip()
         blocked_by = record.get("blocked_by")
         normalized_base_target = base_target.lower()
-        blocker_targets = tuple(
-            item.strip()
-            for item in blocked_by
-            if isinstance(item, str)
-        ) if isinstance(blocked_by, list) else ()
+        blocker_targets = (
+            tuple(item.strip() for item in blocked_by if isinstance(item, str))
+            if isinstance(blocked_by, list)
+            else ()
+        )
         exact_blockers = (
             bool(blocker_targets)
             and len(blocker_targets) == len(blocked_by)
@@ -1136,11 +1126,10 @@ def _deferred_coverage(
                 )
                 and item.lower() != output.lower()
                 and not (
-                    item.lower().split("#", 1)[0]
-                    == normalized_base_target
-                    or item.lower().split("#", 1)[0].startswith(
-                        f"{normalized_base_target}/"
-                    )
+                    item.lower().split("#", 1)[0] == normalized_base_target
+                    or item.lower()
+                    .split("#", 1)[0]
+                    .startswith(f"{normalized_base_target}/")
                 )
                 for item in blocker_targets
             )
@@ -1239,12 +1228,11 @@ def _reason_identifies_blocker(
                 target_instrument,
             ):
                 return False
-        elif (
-            target_instrument[2] != corpus_instrument[2]
-            and not _reason_names_target_instrument(
-                normalized_reason,
-                target_instrument,
-            )
+        elif target_instrument[2] != corpus_instrument[
+            2
+        ] and not _reason_names_target_instrument(
+            normalized_reason,
+            target_instrument,
         ):
             return False
     explicit_sections = {
@@ -1295,10 +1283,13 @@ def _source_scope_identifies_blocker(
     if not references:
         return True
     for reference in references:
-        clause_start = max(
-            source_scope_text.rfind(separator, 0, reference.start())
-            for separator in (".", ";", "\n")
-        ) + 1
+        clause_start = (
+            max(
+                source_scope_text.rfind(separator, 0, reference.start())
+                for separator in (".", ";", "\n")
+            )
+            + 1
+        )
         following_stops = [
             position
             for separator in (".", ";", "\n")
@@ -1358,12 +1349,15 @@ def _source_clause_links_dependency(
         flags=re.IGNORECASE,
     ):
         return True
-    return re.search(
-        r"\b(?:voraussetzung\w*|bedingung\w*|conditions?)"
-        r"[^.;]{0,160}\b(?:vorliegen|erfüllt|bestehen|apply|hold)\b",
-        clause,
-        flags=re.IGNORECASE,
-    ) is not None
+    return (
+        re.search(
+            r"\b(?:voraussetzung\w*|bedingung\w*|conditions?)"
+            r"[^.;]{0,160}\b(?:vorliegen|erfüllt|bestehen|apply|hold)\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _citation_instrument_identity(
@@ -1403,9 +1397,7 @@ def _reason_names_absolute_target(
 ) -> bool:
     jurisdiction, collection, instrument = target_instrument
     absolute_target = " ".join((jurisdiction, collection, instrument))
-    plural_absolute_target = " ".join(
-        (jurisdiction, f"{collection}s", instrument)
-    )
+    plural_absolute_target = " ".join((jurisdiction, f"{collection}s", instrument))
     return any(
         re.search(
             rf"(?<![a-z0-9äöüß]){re.escape(candidate)}"
@@ -1490,9 +1482,10 @@ def _reason_names_external_dependency(
         ):
             if section_match.group(1).lower() == current_section:
                 continue
-        if normalized.rstrip("/").endswith(
-            f"/{current_section}"
-        ) and "#" not in normalized:
+        if (
+            normalized.rstrip("/").endswith(f"/{current_section}")
+            and "#" not in normalized
+        ):
             continue
         return True
     return False
@@ -1552,8 +1545,7 @@ def _path_is_deferred(
     if not path:
         return () in deferred_paths
     return any(
-        deferred_path
-        and path[: len(deferred_path)] == deferred_path
+        deferred_path and path[: len(deferred_path)] == deferred_path
         for deferred_path in deferred_paths
     )
 
@@ -1746,11 +1738,7 @@ def _companion_test_issues(
     cases = [case for case in cases if case not in colliding_cases]
 
     asserted_by_rule = {
-        name: [
-            case
-            for case in cases
-            if name in _test_case_output_names(case)
-        ]
+        name: [case for case in cases if name in _test_case_output_names(case)]
         for name in principal_rules
     }
     for name, asserted_cases in asserted_by_rule.items():
@@ -1795,9 +1783,7 @@ def _companion_test_issues(
         narrative_formula_branches=formula_branches,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
-    missing_boundaries: list[
-        tuple[SourceStructureBranch, NumericOccurrenceLike]
-    ] = []
+    missing_boundaries: list[tuple[SourceStructureBranch, NumericOccurrenceLike]] = []
     for branch, boundary in boundary_obligations:
         if _branch_boundary_test_witnesses(
             branch,
@@ -1939,10 +1925,7 @@ def _case_input_principal_output_collisions(
     if not isinstance(inputs, dict):
         return set()
     return set().union(
-        *(
-            _input_key_names(key) & principal_rule_names
-            for key in inputs
-        ),
+        *(_input_key_names(key) & principal_rule_names for key in inputs),
         set(),
     )
 
@@ -2038,8 +2021,7 @@ def _source_control_branches(
     )
     return tuple(
         {
-            (branch.path, branch.start, branch.end): branch
-            for branch in controlled
+            (branch.path, branch.start, branch.end): branch for branch in controlled
         }.values()
     )
 
@@ -2229,9 +2211,7 @@ def _most_specific_containing_branch(
     branches: Sequence[SourceStructureBranch],
 ) -> SourceStructureBranch | None:
     candidates = [
-        branch
-        for branch in branches
-        if branch.start <= start and end <= branch.end
+        branch for branch in branches if branch.start <= start and end <= branch.end
     ]
     return max(
         candidates,
@@ -2414,15 +2394,15 @@ def _formula_execution_matches_source_branch(
     if source_multiplier is not None and (
         source_multiplier.value is None
         or not (
-        _formula_has_numeric_factor(
-            operative_leaf,
-            binding_environment,
-            source_multiplier.value,
-        )
-        or (
-            math.isclose(source_multiplier.value, 2.0)
-            and _formula_is_duplicate_addition(operative_leaf)
-        )
+            _formula_has_numeric_factor(
+                operative_leaf,
+                binding_environment,
+                source_multiplier.value,
+            )
+            or (
+                math.isclose(source_multiplier.value, 2.0)
+                and _formula_is_duplicate_addition(operative_leaf)
+            )
         )
     ):
         return False
@@ -2470,9 +2450,7 @@ def _formula_execution_matches_source_branch(
         ):
             return False
     source_occurrences = tuple(
-        extract_numeric_occurrences(
-            authoritative_numeric_recall_text(branch.text)
-        )
+        extract_numeric_occurrences(authoritative_numeric_recall_text(branch.text))
     )
     boundaries = (
         ()
@@ -2606,9 +2584,14 @@ def _explicit_source_arithmetic_topology(text: str) -> Any | None:
 def _normalized_source_arithmetic_expression(text: str) -> str:
     normalized = re.sub(
         r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+,\d+",
-        lambda number: number.group(0).replace(" ", "").replace(".", "").replace(
-            ",",
-            ".",
+        lambda number: (
+            number.group(0)
+            .replace(" ", "")
+            .replace(".", "")
+            .replace(
+                ",",
+                ".",
+            )
         ),
         text,
     )
@@ -2701,9 +2684,7 @@ def _formula_arithmetic_topology_node(
             operands = tuple(
                 sorted(
                     flattened,
-                    key=lambda operand: repr(
-                        _topology_without_variable_names(operand)
-                    ),
+                    key=lambda operand: repr(_topology_without_variable_names(operand)),
                 )
             )
         return "binop", operator, operands
@@ -2720,11 +2701,7 @@ def _formula_arithmetic_topology_node(
 
 
 def _topology_without_variable_names(topology: Any) -> Any:
-    if (
-        isinstance(topology, tuple)
-        and len(topology) == 2
-        and topology[0] == "variable"
-    ):
+    if isinstance(topology, tuple) and len(topology) == 2 and topology[0] == "variable":
         return ("variable",)
     if isinstance(topology, tuple):
         return tuple(_topology_without_variable_names(item) for item in topology)
@@ -2735,11 +2712,7 @@ def _canonicalize_topology_variables(topology: Any) -> Any:
     identities: dict[str, int] = {}
 
     def canonicalize(item: Any) -> Any:
-        if (
-            isinstance(item, tuple)
-            and len(item) == 2
-            and item[0] == "variable"
-        ):
+        if isinstance(item, tuple) and len(item) == 2 and item[0] == "variable":
             name = str(item[1])
             identity = identities.setdefault(name, len(identities))
             return "variable", identity
@@ -2935,10 +2908,7 @@ def _source_number_token_value(token: str) -> float | None:
 
 
 def _source_number_token_is_symbolic(token: str) -> bool:
-    return (
-        token.isalpha()
-        and (len(token) == 1 or token.isupper())
-    )
+    return token.isalpha() and (len(token) == 1 or token.isupper())
 
 
 def _source_contextual_number_word(
@@ -2952,9 +2922,7 @@ def _source_contextual_number_word(
             token = match.group("number")
             if _source_number_token_is_symbolic(token):
                 return None
-            return _NamedSourceNumber(
-                _GERMAN_CARDINAL_VALUES.get(token.lower())
-            )
+            return _NamedSourceNumber(_GERMAN_CARDINAL_VALUES.get(token.lower()))
     return None
 
 
@@ -3086,9 +3054,9 @@ def _formula_is_duplicate_addition(text: str) -> bool:
             expression.op,
             ast.Add,
         ):
-            return _canonical_formula_node(
-                expression.left
-            ) == _canonical_formula_node(expression.right)
+            return _canonical_formula_node(expression.left) == _canonical_formula_node(
+                expression.right
+            )
     return False
 
 
@@ -3233,8 +3201,7 @@ def _formula_node_is_provably_nonzero(
         and expression.func.id == "max"
     ):
         return any(
-            (known := _known_numeric_formula_value(argument, environment))
-            is not None
+            (known := _known_numeric_formula_value(argument, environment)) is not None
             and known > 0
             for argument in expression.args
         )
@@ -3279,8 +3246,7 @@ def _canonical_formula_node(node: ast.AST) -> Any:
             _canonical_formula_node(node.left),
             tuple(type(operator).__name__ for operator in node.ops),
             tuple(
-                _canonical_formula_node(comparator)
-                for comparator in node.comparators
+                _canonical_formula_node(comparator) for comparator in node.comparators
             ),
         )
     return ast.dump(node, annotate_fields=True, include_attributes=False).lower()
@@ -3293,10 +3259,7 @@ def _commutative_formula_operands(
     operands: list[Any] = []
 
     def collect(candidate: ast.AST) -> None:
-        if (
-            isinstance(candidate, ast.BinOp)
-            and isinstance(candidate.op, operator_type)
-        ):
+        if isinstance(candidate, ast.BinOp) and isinstance(candidate.op, operator_type):
             collect(candidate.left)
             collect(candidate.right)
         else:
@@ -3550,9 +3513,7 @@ def _execute_formula_text(
             )
         )
         selected_text = (
-            selected_text[: node.start]
-            + selected_body
-            + selected_text[node.end :]
+            selected_text[: node.start] + selected_body + selected_text[node.end :]
         )
     return None
 
@@ -3634,8 +3595,9 @@ def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
                         cursor,
                         "elif",
                         candidate[
-                            chain_header.start("condition") :
-                            chain_header.end("condition")
+                            chain_header.start("condition") : chain_header.end(
+                                "condition"
+                            )
                         ].strip(),
                     )
                 )
@@ -3651,9 +3613,7 @@ def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
             break
         chain_end = lines[cursor][0] if cursor < len(lines) else len(text)
         conditions = tuple(
-            condition
-            for _line_index, kind, condition in headers
-            if kind != "else"
+            condition for _line_index, kind, condition in headers if kind != "else"
         )
         choices: list[str] = []
         for header_index, (line_index, _kind, _condition) in enumerate(headers):
@@ -3721,9 +3681,7 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
         if not arm_headers:
             continue
         choices: list[str] = []
-        for arm_index, (line_index, _pattern, inline_body) in enumerate(
-            arm_headers
-        ):
+        for arm_index, (line_index, _pattern, inline_body) in enumerate(arm_headers):
             body_end = (
                 lines[arm_headers[arm_index + 1][0]][0]
                 if arm_index + 1 < len(arm_headers)
@@ -3731,21 +3689,13 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
             )
             trailing_body = text[lines[line_index][2] : body_end]
             choices.append(
-                "\n".join(
-                    part
-                    for part in (inline_body, trailing_body)
-                    if part.strip()
-                )
+                "\n".join(part for part in (inline_body, trailing_body) if part.strip())
             )
         return _FormulaBranchNode(
             start,
             chain_end,
             "match",
-            (
-                line[
-                    header.start("selector") : header.end("selector")
-                ].strip(),
-            ),
+            (line[header.start("selector") : header.end("selector")].strip(),),
             tuple(pattern for _line_index, pattern, _body in arm_headers),
             tuple(choices),
         )
@@ -3781,27 +3731,23 @@ def _first_inline_if_node(text: str) -> _FormulaBranchNode | None:
         conditions = [text[candidate.end() : colon].strip()]
         conditions.extend(
             text[condition_start:condition_end].strip()
-            for kind, _start, _body_start, condition_start, condition_end
-            in chain_headers
+            for kind, _start, _body_start, condition_start, condition_end in chain_headers
             if kind == "elif"
         )
         body_boundaries = [
             header_start
-            for _kind, header_start, _body_start, _condition_start, _condition_end
-            in chain_headers
+            for _kind, header_start, _body_start, _condition_start, _condition_end in chain_headers
         ]
         body_starts = [
             colon + 1,
             *(
                 header_body_start
-                for kind, _header_start, header_body_start, _start, _end
-                in chain_headers
+                for kind, _header_start, header_body_start, _start, _end in chain_headers
                 if kind == "elif"
             ),
         ]
         choices = [
-            text[start:stop]
-            for start, stop in zip(body_starts, body_boundaries)
+            text[start:stop] for start, stop in zip(body_starts, body_boundaries)
         ]
         choices.append(text[else_body_start:end])
         return _FormulaBranchNode(
@@ -3961,9 +3907,7 @@ def _formula_expression_end(
         elif character == "," and len(stack) == len(initial_stack):
             return index
         elif (
-            stop_at_semicolon
-            and character == ";"
-            and len(stack) == len(initial_stack)
+            stop_at_semicolon and character == ";" and len(stack) == len(initial_stack)
         ):
             return index
     return limit
@@ -4045,10 +3989,7 @@ def _rule_text_has_branching_formula(formula_text: str) -> bool:
 
 
 def _formula_execution_outcome(execution: _FormulaExecution) -> str:
-    return "/".join(
-        f"{step.kind}:{step.choice}"
-        for step in execution.trace
-    )
+    return "/".join(f"{step.kind}:{step.choice}" for step in execution.trace)
 
 
 def _formula_execution_leaf_is_computational(
@@ -4074,17 +4015,10 @@ def _formula_execution_references_names(
     *,
     selectors_only: bool = False,
 ) -> bool:
-    texts = [
-        selector
-        for step in execution.trace
-        for selector in step.selectors
-    ]
+    texts = [selector for step in execution.trace for selector in step.selectors]
     if not selectors_only:
         texts.append(execution.leaf)
-    return any(
-        set(_FORMULA_IDENTIFIER.findall(text)) & names
-        for text in texts
-    )
+    return any(set(_FORMULA_IDENTIFIER.findall(text)) & names for text in texts)
 
 
 def _same_formula_value(left: Any, right: Any) -> bool:
@@ -4208,10 +4142,7 @@ def _evaluate_condition_expression(
     if isinstance(expression, ast.BinOp):
         left = _evaluate_condition_expression(expression.left, environment)
         right = _evaluate_condition_expression(expression.right, environment)
-        if (
-            left is _UNRESOLVED_CONDITION_VALUE
-            or right is _UNRESOLVED_CONDITION_VALUE
-        ):
+        if left is _UNRESOLVED_CONDITION_VALUE or right is _UNRESOLVED_CONDITION_VALUE:
             return _UNRESOLVED_CONDITION_VALUE
         with contextlib.suppress(ArithmeticError, TypeError, ValueError):
             if isinstance(expression.op, ast.Add):
@@ -4272,17 +4203,12 @@ def _evaluate_condition_expression(
             _evaluate_condition_expression(argument, environment)
             for argument in expression.args
         ]
-        if any(
-            value is _UNRESOLVED_CONDITION_VALUE
-            for value in values
-        ):
+        if any(value is _UNRESOLVED_CONDITION_VALUE for value in values):
             return _UNRESOLVED_CONDITION_VALUE
         with contextlib.suppress(ArithmeticError, TypeError, ValueError):
             if function_name in {"holds", "not_holds"} and len(values) == 1:
                 return (
-                    bool(values[0])
-                    if function_name == "holds"
-                    else not bool(values[0])
+                    bool(values[0]) if function_name == "holds" else not bool(values[0])
                 )
             if function_name == "min" and values:
                 return min(values)
@@ -4335,47 +4261,40 @@ def _branch_boundary_test_witnesses(
                 formula_environment=formula_environment,
                 dependency_environment=dependency_environment,
             )
-            if (
-                execution is not None
-                and any(
-                    numeric_value_is_grounded(value, (boundary,))
-                    and _formula_execution_references_names(
-                        execution,
-                        input_names,
-                    )
-                    and _formula_execution_binds_boundary(
-                        execution,
-                        boundary,
-                        input_names=input_names,
-                        formula_environment=execution.constant_environment,
-                        source_interval=source_interval,
-                        source_boolean_polarity=source_boolean_polarity,
-                        extract_numeric_occurrences=(
-                            extract_numeric_occurrences
-                        ),
-                        numeric_value_is_grounded=(
-                            numeric_value_is_grounded
-                        ),
-                    )
-                    and _boundary_case_changes_formula_effect(
-                        rule,
+            if execution is not None and any(
+                numeric_value_is_grounded(value, (boundary,))
+                and _formula_execution_references_names(
+                    execution,
+                    input_names,
+                )
+                and _formula_execution_binds_boundary(
+                    execution,
+                    boundary,
+                    input_names=input_names,
+                    formula_environment=execution.constant_environment,
+                    source_interval=source_interval,
+                    source_boolean_polarity=source_boolean_polarity,
+                    extract_numeric_occurrences=(extract_numeric_occurrences),
+                    numeric_value_is_grounded=(numeric_value_is_grounded),
+                )
+                and _boundary_case_changes_formula_effect(
+                    rule,
+                    case,
+                    input_key=input_key,
+                    selector_names=input_names,
+                    boundary_value=value,
+                    execution=execution,
+                    principal_rules=principal_rules,
+                    dependency_names=set(dependency_environment),
+                    formula_environment=formula_environment or {},
+                    source_interval=source_interval,
+                    source_boolean_polarity=source_boolean_polarity,
+                )
+                for input_key, input_names, value in (
+                    _case_numeric_selector_evidence(
                         case,
-                        input_key=input_key,
-                        selector_names=input_names,
-                        boundary_value=value,
-                        execution=execution,
-                        principal_rules=principal_rules,
-                        dependency_names=set(dependency_environment),
-                        formula_environment=formula_environment or {},
-                        source_interval=source_interval,
-                        source_boolean_polarity=source_boolean_polarity,
-                    )
-                    for input_key, input_names, value in (
-                        _case_numeric_selector_evidence(
-                            case,
-                            selector_names,
-                            dependency_environment=dependency_environment,
-                        )
+                        selector_names,
+                        dependency_environment=dependency_environment,
                     )
                 )
             ):
@@ -4437,10 +4356,7 @@ def _formula_execution_binds_boundary(
     for step in execution.trace:
         if step.kind not in {"if", "match"}:
             continue
-        checks.extend(
-            (selector, True)
-            for selector in step.selectors
-        )
+        checks.extend((selector, True) for selector in step.selectors)
     checks.append((execution.leaf, source_boolean_polarity < 0))
     return any(
         _formula_text_has_boundary_comparison(
@@ -4487,9 +4403,7 @@ def _formula_text_has_boundary_comparison(
                     right,
                     input_names,
                 )
-                boundary_node = (
-                    right if left_is_input and not right_is_input else left
-                )
+                boundary_node = right if left_is_input and not right_is_input else left
                 if not (
                     (left_is_input and not right_is_input)
                     or (right_is_input and not left_is_input)
@@ -4583,10 +4497,14 @@ def _formula_node_boundary_value(
         value = formula_environment.get(node.id)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
-    if isinstance(node, ast.Constant) and isinstance(
-        node.value,
-        (int, float),
-    ) and not isinstance(node.value, bool):
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(
+            node.value,
+            (int, float),
+        )
+        and not isinstance(node.value, bool)
+    ):
         value = float(node.value)
         if numeric_value_is_grounded(
             value,
@@ -4854,14 +4772,10 @@ def _boundary_case_changes_formula_effect(
     ):
         return False
     for raw_key, raw_value in inputs.items():
-        if (
-            isinstance(raw_value, bool)
-            or not isinstance(raw_value, (int, float))
-        ):
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             continue
-        directly_controls_selector = (
-            raw_key == input_key
-            and bool(_input_key_names(raw_key) & selector_names)
+        directly_controls_selector = raw_key == input_key and bool(
+            _input_key_names(raw_key) & selector_names
         )
         raw_step = (
             boundary_step
@@ -4984,9 +4898,7 @@ def _rules_covering_branch(
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
 ) -> tuple[str, ...]:
     return tuple(
-        name
-        for name, paths in principal_rule_paths.items()
-        if branch.path in paths
+        name for name, paths in principal_rule_paths.items() if branch.path in paths
     )
 
 
@@ -4996,9 +4908,7 @@ def _formula_branch_interval(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> _NumericInterval | None:
     first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
-    range_text = authoritative_numeric_recall_text(
-        first_line.split(":", 1)[0]
-    )
+    range_text = authoritative_numeric_recall_text(first_line.split(":", 1)[0])
     return _formula_interval_from_text(
         range_text,
         extract_numeric_occurrences=extract_numeric_occurrences,
@@ -5107,13 +5017,11 @@ def _interval_contains(
     lower = interval.lower.value if interval.lower is not None else None
     upper = interval.upper.value if interval.upper is not None else None
     if lower is not None and (
-        value < lower
-        or (not interval.lower_inclusive and math.isclose(value, lower))
+        value < lower or (not interval.lower_inclusive and math.isclose(value, lower))
     ):
         return False
     if upper is not None and (
-        value > upper
-        or (not interval.upper_inclusive and math.isclose(value, upper))
+        value > upper or (not interval.upper_inclusive and math.isclose(value, upper))
     ):
         return False
     return True
@@ -5190,9 +5098,13 @@ def _case_numeric_selector_evidence(
             (key, matched_names, numeric_value)
             for numeric_value in _numeric_test_input_values(value)
         )
-    directly_matched_names = set().union(
-        *(names for _key, names, _value in evidence),
-    ) if evidence else set()
+    directly_matched_names = (
+        set().union(
+            *(names for _key, names, _value in evidence),
+        )
+        if evidence
+        else set()
+    )
     for name, value in (dependency_environment or {}).items():
         if name not in selector_names or name in directly_matched_names:
             continue
@@ -5222,9 +5134,7 @@ def _source_exception_branches(
     deferred_paths: set[tuple[str, ...]],
 ) -> tuple[SourceStructureBranch, ...]:
     obligations: list[SourceStructureBranch] = []
-    source_clauses = tuple(
-        _source_clause_spans(source_text, branches=branches)
-    )
+    source_clauses = tuple(_source_clause_spans(source_text, branches=branches))
     matches_by_clause: dict[
         tuple[int, int, str],
         list[re.Match[str]],
@@ -5247,16 +5157,15 @@ def _source_exception_branches(
         )
         matches_by_clause.setdefault(clause, []).append(match)
 
-    for (clause_start, clause_end, clause_text), clause_matches in (
-        matches_by_clause.items()
-    ):
+    for (
+        clause_start,
+        clause_end,
+        clause_text,
+    ), clause_matches in matches_by_clause.items():
         groups: list[list[re.Match[str]]] = []
         for match in clause_matches:
-            if (
-                groups
-                and _exception_cues_have_distinct_conditions(
-                    source_text[groups[-1][-1].end() : match.start()]
-                )
+            if groups and _exception_cues_have_distinct_conditions(
+                source_text[groups[-1][-1].end() : match.start()]
             ):
                 groups.append([match])
             elif groups:
@@ -5301,8 +5210,7 @@ def _source_exception_branches(
             )
     return tuple(
         {
-            (branch.path, branch.start, branch.end): branch
-            for branch in obligations
+            (branch.path, branch.start, branch.end): branch for branch in obligations
         }.values()
     )
 
@@ -5315,8 +5223,8 @@ def _source_exception_or_applicability_matches(
     matches = tuple(
         match
         for match in (
-        *_EXCEPTION_LANGUAGE.finditer(source_text),
-        *_APPLICABILITY_LANGUAGE.finditer(source_text),
+            *_EXCEPTION_LANGUAGE.finditer(source_text),
+            *_APPLICABILITY_LANGUAGE.finditer(source_text),
         )
         if not _is_concessive_condition_cue(source_text, match)
     )
@@ -5337,19 +5245,25 @@ def _is_concessive_condition_cue(
     if match.group(0).strip().lower() not in {"wenn", "if"}:
         return False
     prefix = source_text[max(0, match.start() - 16) : match.start()]
-    return re.search(
-        r"\b(?:auch|selbst|even)\s+$",
-        prefix,
-        flags=re.IGNORECASE,
-    ) is not None
+    return (
+        re.search(
+            r"\b(?:auch|selbst|even)\s+$",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _exception_cues_have_distinct_conditions(between: str) -> bool:
-    return re.search(
-        r"(?:;|\b(?:und|oder|and|or)\b)\s*$",
-        between,
-        flags=re.IGNORECASE,
-    ) is not None
+    return (
+        re.search(
+            r"(?:;|\b(?:und|oder|and|or)\b)\s*$",
+            between,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _source_rounding_obligations(
@@ -5360,9 +5274,7 @@ def _source_rounding_obligations(
     deferred_paths: set[tuple[str, ...]],
 ) -> tuple[tuple[SourceStructureBranch, str], ...]:
     obligations: list[tuple[SourceStructureBranch, str]] = []
-    source_clauses = tuple(
-        _source_clause_spans(source_text, branches=branches)
-    )
+    source_clauses = tuple(_source_clause_spans(source_text, branches=branches))
     for match in _ROUNDING_LANGUAGE.finditer(source_text):
         if _span_is_deferred(
             match.start(),
@@ -5489,11 +5401,7 @@ def _exception_witnesses_for_branch(
         rule_name
         for rule_name, paths in principal_rule_paths.items()
         if not branch.path
-        or any(
-            path == branch.path[: len(path)]
-            for path in paths
-            if path
-        )
+        or any(path == branch.path[: len(path)] for path in paths if path)
     }
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
@@ -5614,15 +5522,18 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
     if reversal is None:
         return False
     proposition = text[: reversal.start()]
-    return re.search(
-        r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
-        r"\bfindet\s+keine\s+anwendung\b|"
-        r"\b(?:does|shall)\s+not\s+apply\b|"
-        r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
-        r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
-        proposition,
-        flags=re.IGNORECASE,
-    ) is not None
+    return (
+        re.search(
+            r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
+            r"\bfindet\s+keine\s+anwendung\b|"
+            r"\b(?:does|shall)\s+not\s+apply\b|"
+            r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+            r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
+            proposition,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
@@ -5663,9 +5574,7 @@ def _source_exception_selector_active_value(text: str, name: str) -> bool:
     )
     if source_polarity is not None:
         selector_polarity = (
-            -1
-            if _selector_identifier_negation_count(normalized_name) % 2
-            else 1
+            -1 if _selector_identifier_negation_count(normalized_name) % 2 else 1
         )
         return selector_polarity == source_polarity
     return _exception_selector_semantic_active_value(normalized_name)
@@ -5687,9 +5596,8 @@ def _numeric_exception_witness_matches_source(
     if interval is None:
         return False
     ordinary_value, exception_value = transition
-    return (
-        not _interval_contains(interval, ordinary_value)
-        and _interval_contains(interval, exception_value)
+    return not _interval_contains(interval, ordinary_value) and _interval_contains(
+        interval, exception_value
     )
 
 
@@ -5778,7 +5686,8 @@ def _source_selector_concept_polarity(
 
 def _selector_identifier_negation_count(normalized_name: str) -> int:
     count = sum(
-        token in {
+        token
+        in {
             "absent",
             "lacking",
             "missing",
@@ -5826,8 +5735,7 @@ def _toggled_formula_boolean_selectors(
             (
                 case,
                 (
-                    dependency_environment
-                    := _case_asserted_dependency_environment(
+                    dependency_environment := _case_asserted_dependency_environment(
                         principal_rules,
                         case,
                         formula_environment=formula_environment,
@@ -5851,13 +5759,11 @@ def _toggled_formula_boolean_selectors(
                 right_dependencies,
                 right_selectors,
             ) in records[left_index + 1 :]:
-                if (
-                    _normalized_case_period(left_case)
-                    != _normalized_case_period(right_case)
-                    or not _cases_differ_by_one_input(
-                        left_case,
-                        right_case,
-                    )
+                if _normalized_case_period(left_case) != _normalized_case_period(
+                    right_case
+                ) or not _cases_differ_by_one_input(
+                    left_case,
+                    right_case,
                 ):
                     continue
                 if set(left_selectors) != set(right_selectors):
@@ -5906,11 +5812,9 @@ def _toggled_formula_numeric_selectors(
         selector_names = _rule_numeric_selector_names(rule)
         for left_index, left_case in enumerate(asserted_by_rule.get(rule_name, ())):
             for right_case in asserted_by_rule[rule_name][left_index + 1 :]:
-                if (
-                    _normalized_case_period(left_case)
-                    != _normalized_case_period(right_case)
-                    or not _cases_differ_by_one_input(left_case, right_case)
-                ):
+                if _normalized_case_period(left_case) != _normalized_case_period(
+                    right_case
+                ) or not _cases_differ_by_one_input(left_case, right_case):
                     continue
                 left_inputs = left_case.get("input")
                 right_inputs = right_case.get("input")
@@ -5964,15 +5868,13 @@ def _toggled_formula_numeric_selectors(
                 if left_execution is None or right_execution is None:
                     continue
                 if (
-                    (left_execution.trace or right_execution.trace)
-                    and _formula_leaf_semantic_key(
-                        left_execution.leaf,
-                        formula_environment=left_execution.constant_environment,
-                    )
-                    == _formula_leaf_semantic_key(
-                        right_execution.leaf,
-                        formula_environment=right_execution.constant_environment,
-                    )
+                    left_execution.trace or right_execution.trace
+                ) and _formula_leaf_semantic_key(
+                    left_execution.leaf,
+                    formula_environment=left_execution.constant_environment,
+                ) == _formula_leaf_semantic_key(
+                    right_execution.leaf,
+                    formula_environment=right_execution.constant_environment,
                 ):
                     continue
                 left_runtime = _formula_execution_runtime_value(left_execution)
@@ -6044,8 +5946,7 @@ def _toggled_formula_numeric_selectors(
                                 ),
                                 (
                                     _boolean_value(ordinary_runtime) is not None
-                                    and _boolean_value(exception_runtime)
-                                    is not None
+                                    and _boolean_value(exception_runtime) is not None
                                 ),
                                 _exception_effect_is_zero(exception_runtime),
                                 (ordinary_value, exception_value),
@@ -6122,9 +6023,7 @@ def _exception_witness_for_case_pair(
         return None
     ordinary_runtime = _formula_execution_runtime_value(ordinary_execution)
     exception_runtime = _formula_execution_runtime_value(exception_execution)
-    counterfactual_runtime = _formula_execution_runtime_value(
-        counterfactual_execution
-    )
+    counterfactual_runtime = _formula_execution_runtime_value(counterfactual_execution)
     if not (
         all(
             _formula_execution_reaches_selector(execution, selector_name)
@@ -6179,13 +6078,16 @@ def _cases_differ_by_one_input(
         return False
     if set(left_inputs) != set(right_inputs):
         return False
-    return sum(
-        not _formula_runtime_values_equal(
-            left_inputs[key],
-            right_inputs[key],
+    return (
+        sum(
+            not _formula_runtime_values_equal(
+                left_inputs[key],
+                right_inputs[key],
+            )
+            for key in left_inputs
         )
-        for key in left_inputs
-    ) == 1
+        == 1
+    )
 
 
 def _exception_effect_is_zero(value: Any) -> bool:
@@ -6214,9 +6116,7 @@ def _case_formula_execution_with_boolean_selector(
         if not isinstance(inputs, dict):
             return None
         matching_keys = [
-            key
-            for key in inputs
-            if selector_name in _input_key_names(key)
+            key for key in inputs if selector_name in _input_key_names(key)
         ]
         if len(matching_keys) != 1:
             return None
@@ -6362,15 +6262,13 @@ def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
             function_names = {
                 node.func.id
                 for node in ast.walk(expression)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
             }
             for name in {
                 node.id
                 for node in ast.walk(expression)
                 if isinstance(node, ast.Name)
-                and node.id.lower()
-                not in {"true", "false", "holds", "not_holds"}
+                and node.id.lower() not in {"true", "false", "holds", "not_holds"}
                 and node.id not in function_names
             }:
                 record(name)
@@ -6418,13 +6316,10 @@ def _exception_selector_semantic_active_value(name: str) -> bool:
         flags=re.IGNORECASE,
     ):
         return not negated
-    if (
-        _ordinary_semantic_identifier(normalized)
-        or re.search(
-            r"(?:ineligib|disqualif|unqualif)",
-            normalized,
-            flags=re.IGNORECASE,
-        )
+    if _ordinary_semantic_identifier(normalized) or re.search(
+        r"(?:ineligib|disqualif|unqualif)",
+        normalized,
+        flags=re.IGNORECASE,
     ):
         return negated
     return True
@@ -6483,9 +6378,9 @@ def _fractional_rounding_case_witnesses(
 ) -> set[tuple[str, str, str]]:
     evidence: set[tuple[str, str, str]] = set()
     functions = {
-        "nearest" if direction == "nearest" else (
-            "ceil" if direction == "upward" else "floor"
-        )
+        "nearest"
+        if direction == "nearest"
+        else ("ceil" if direction == "upward" else "floor")
     }
     for case in asserted_by_rule.get(rule_name, ()):
         inputs = case.get("input")
@@ -6554,10 +6449,8 @@ def _fractional_rounding_case_witnesses(
                 )
             ):
                 continue
-            if (
-                source_formula_branches
-                and not any(
-                    _rounding_call_binds_source_clause(
+            if source_formula_branches and not any(
+                _rounding_call_binds_source_clause(
                     source_binding_operand,
                     original_operand=effective_operand,
                     operand_value=float(operand_value),
@@ -6570,17 +6463,13 @@ def _fractional_rounding_case_witnesses(
                     require_clause_binding=require_clause_binding,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
-                    )
-                    for source_formula_branch in source_formula_branches
                 )
+                for source_formula_branch in source_formula_branches
             ):
                 continue
-            call_key = (
-                f"{function_name}:"
-                + _formula_leaf_semantic_key(
-                    effective_operand,
-                    formula_environment=execution.constant_environment,
-                )
+            call_key = f"{function_name}:" + _formula_leaf_semantic_key(
+                effective_operand,
+                formula_environment=execution.constant_environment,
             )
             evidence.add(
                 (
@@ -6602,10 +6491,13 @@ def _formula_execution_implements_rounding(
             and re.search(r"\+\s*0?\.5\b", execution.leaf)
         )
     function_name = "ceil" if direction == "upward" else "floor"
-    return re.search(
-        rf"\b{function_name}\s*\(",
-        execution.leaf,
-    ) is not None
+    return (
+        re.search(
+            rf"\b{function_name}\s*\(",
+            execution.leaf,
+        )
+        is not None
+    )
 
 
 def _rounding_call_operands(
@@ -6629,18 +6521,12 @@ def _rounding_call_operands(
                 and not expression.keywords
             ):
                 operand = ast.unparse(expression.args[0])
-                if (
-                    functions != {"nearest"}
-                    or re.search(r"\+\s*0?\.5\b", operand)
-                ):
+                if functions != {"nearest"} or re.search(r"\+\s*0?\.5\b", operand):
                     return ((expression.func.id, operand),)
         return ()
     for function_name in function_names:
         for operand in _balanced_call_operands(formula_text, function_name):
-            if (
-                functions == {"nearest"}
-                and not re.search(r"\+\s*0?\.5\b", operand)
-            ):
+            if functions == {"nearest"} and not re.search(r"\+\s*0?\.5\b", operand):
                 continue
             calls.append((function_name, operand))
     return tuple(calls)
@@ -6689,11 +6575,7 @@ def _expand_reached_formula_dependencies(
         def visit_Name(self, node: ast.Name) -> ast.AST:
             name = node.id
             rule = principal_rules.get(name)
-            if (
-                rule is None
-                or name not in dependency_environment
-                or name in resolving
-            ):
+            if rule is None or name not in dependency_environment or name in resolving:
                 return node
             execution = _case_formula_execution(
                 rule,
@@ -6736,10 +6618,7 @@ def _fractional_input_materially_affects_operand(
     operand_names = set(_FORMULA_IDENTIFIER.findall(operand))
     uses_derived_operand = bool(operand_names & dependency_names)
     for key, value in inputs.items():
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-        ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         aliases = _input_key_names(key) & operand_names
         if not aliases and not uses_derived_operand:
@@ -6840,10 +6719,7 @@ def _rounding_call_binds_source_clause(
     source_operations = _formula_operation_kinds(source_formula_branch.text)
     if (
         direction == "nearest"
-        and (
-            _formula_ast_operation_kinds(original_operand)
-            & {"add", "subtract"}
-        )
+        and (_formula_ast_operation_kinds(original_operand) & {"add", "subtract"})
         - source_operations
     ):
         return False
@@ -7128,9 +7004,7 @@ def _rule_formula_text_for_case(
         return None
     latest = max(effective_from for effective_from, _formula in candidates)
     formulas = {
-        formula
-        for effective_from, formula in candidates
-        if effective_from == latest
+        formula for effective_from, formula in candidates if effective_from == latest
     }
     return next(iter(formulas)) if len(formulas) == 1 else None
 
@@ -7210,13 +7084,10 @@ def _formula_environment_for_case(
             continue
         latest = max(start for start, _candidate in candidates)
         latest_values = [
-            candidate
-            for start, candidate in candidates
-            if start == latest
+            candidate for start, candidate in candidates if start == latest
         ]
         if latest_values and all(
-            type(candidate) is type(latest_values[0])
-            and candidate == latest_values[0]
+            type(candidate) is type(latest_values[0]) and candidate == latest_values[0]
             for candidate in latest_values[1:]
         ):
             resolved[name] = latest_values[0]

@@ -23475,11 +23475,11 @@ class ValidatorPipeline:
             if source_verification is not None
             else ((), "")
         )
-        corpus_citation_path = (
-            self.source_citation_path or (citation_paths[0] if citation_paths else "")
+        corpus_citation_path = self.source_citation_path or (
+            citation_paths[0] if citation_paths else ""
         )
-        imported_symbol_contents = (
-            self._complete_source_unit_import_symbol_contents(rules_file)
+        imported_symbol_contents = self._complete_source_unit_import_symbol_contents(
+            rules_file
         )
         artifact_numeric_bindings = collect_artifact_numeric_bindings(
             content,

@@ -554,8 +554,7 @@ rules:
     issues = _pipeline_issues(content, source, test_cases=[])
 
     assert any(
-        "authoritative corpus numeric value 73" in issue.lower()
-        for issue in issues
+        "authoritative corpus numeric value 73" in issue.lower() for issue in issues
     )
 
 
@@ -590,9 +589,7 @@ def test_explicit_satz_markers_after_absatz_are_recognized():
         "(1) Satz 1 Die Hauptregel gilt; Satz 2 Die Sonderregel gilt."
     )
 
-    assert {
-        branch.path for branch in branches if branch.kind == "sentence"
-    } == {
+    assert {branch.path for branch in branches if branch.kind == "sentence"} == {
         ("1", "satz-1"),
         ("1", "satz-2"),
     }
@@ -602,9 +599,7 @@ def test_colon_satz_markers_are_recognized_and_independently_required():
     source = "(1) Satz 1: Die Hauptregel gilt. Satz 2: Die Sonderregel gilt."
     branches = recognize_source_structure(source)
 
-    assert {
-        branch.path for branch in branches if branch.kind == "sentence"
-    } == {
+    assert {branch.path for branch in branches if branch.kind == "sentence"} == {
         ("1", "satz-1"),
         ("1", "satz-2"),
     }
@@ -662,9 +657,7 @@ rules:
 
     result = _analyze(content, source, test_cases=[])
 
-    assert any(
-        f"Source branch {parent_label} at " in issue for issue in result.issues
-    )
+    assert any(f"Source branch {parent_label} at " in issue for issue in result.issues)
 
 
 def test_child_encoding_covers_marker_only_parent_container():
@@ -1007,12 +1000,8 @@ def test_additional_formula_language_is_computation(source: str):
 
 
 def test_scalar_amount_language_is_not_computation():
-    assert not source_states_explicit_computation(
-        "Der Freibetrag beträgt 259 Euro."
-    )
-    assert not source_states_explicit_computation(
-        "Der Satz beträgt 45 vom Hundert."
-    )
+    assert not source_states_explicit_computation("Der Freibetrag beträgt 259 Euro.")
+    assert not source_states_explicit_computation("Der Satz beträgt 45 vom Hundert.")
 
 
 def test_scalar_year_span_is_not_computation():
@@ -1066,8 +1055,7 @@ rules:
     ]
 
     paths = completeness_module._paths_from_source_reference(
-        "de/statute/estg/32a(1) Satz 1; "
-        "de/statute/estg/32a(1) Satz 2",
+        "de/statute/estg/32a(1) Satz 1; de/statute/estg/32a(1) Satz 2",
         corpus_citation_path=CORPUS_CITATION_PATH,
     )
     result = _analyze(content, source, test_cases=test_cases)
@@ -1274,8 +1262,8 @@ rules:
         ),
     )
 
-    imported_symbol_contents = (
-        pipeline._complete_source_unit_import_symbol_contents(main_file)
+    imported_symbol_contents = pipeline._complete_source_unit_import_symbol_contents(
+        main_file
     )
     values = collect_artifact_numeric_values(
         main_content,
@@ -1351,8 +1339,8 @@ rules:
         }[import_path],
     )
 
-    imported_symbol_contents = (
-        pipeline._complete_source_unit_import_symbol_contents(main_file)
+    imported_symbol_contents = pipeline._complete_source_unit_import_symbol_contents(
+        main_file
     )
     values = collect_artifact_numeric_values(
         main_content,
@@ -1406,8 +1394,7 @@ c) der bisherige Ehegatte und dessen neuer Ehegatte ebenfalls die Voraussetzunge
 
 def test_exact_released_estg_32a_structure_paths():
     paths = {
-        branch.path
-        for branch in recognize_source_structure(RELEASED_ESTG_32A_BODY)
+        branch.path for branch in recognize_source_structure(RELEASED_ESTG_32A_BODY)
     }
 
     assert {("1",), ("5",), ("6",)} <= paths
@@ -1418,12 +1405,10 @@ def test_exact_released_estg_32a_structure_paths():
     assert {("1", f"satz-{number}") for number in range(1, 7)} <= paths
     assert {("6", "satz-1"), ("6", "satz-2")} <= paths
     assert not any(
-        path[:2] == ("1", "5") and path[-1].startswith("satz-")
-        for path in paths
+        path[:2] == ("1", "5") and path[-1].startswith("satz-") for path in paths
     )
     assert not any(
-        path[:3] == ("6", "2", "c") and path[-1].startswith("satz-")
-        for path in paths
+        path[:3] == ("6", "2", "c") and path[-1].startswith("satz-") for path in paths
     )
 
 
@@ -1522,9 +1507,7 @@ def test_released_estg_32a_does_not_invent_boundary_from_omission_line():
 
     assert not any(branch.path == () for branch, _value in obligations)
     assert not any(occurrence.value == 34 for _branch, occurrence in obligations)
-    assert any(
-        occurrence.value == 12348 for _branch, occurrence in obligations
-    )
+    assert any(occurrence.value == 12348 for _branch, occurrence in obligations)
 
 
 def test_released_estg_32a_feminine_rounding_is_computation():
@@ -1583,10 +1566,7 @@ def test_common_german_range_boundaries_are_inventoried():
         narrative_formula_branches=formula_branches,
         extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
-    boundaries = {
-        (branch.path, occurrence.value)
-        for branch, occurrence in obligations
-    }
+    boundaries = {(branch.path, occurrence.value) for branch, occurrence in obligations}
 
     assert (("1", "1"), 100) in boundaries
     assert (("1", "1"), 200) in boundaries
@@ -1686,9 +1666,7 @@ rules:
 
 
 def test_unstructured_formula_requires_principal_output_bound_to_source_unit():
-    source = (
-        "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
-    )
+    source = "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
     content = """\
 format: rulespec/v1
 module:
@@ -1946,8 +1924,7 @@ def test_complete_companion_suite_covers_source_controls():
     ("source", "extra_parameter"),
     [
         (
-            "(1) Der Zuschlag beträgt 259 Euro bis zu einem Einkommen "
-            "von 100 Euro.",
+            "(1) Der Zuschlag beträgt 259 Euro bis zu einem Einkommen von 100 Euro.",
             """\
   - name: income_limit
     kind: parameter
@@ -1970,10 +1947,7 @@ def test_complete_companion_suite_covers_source_controls():
 """,
         ),
         (
-            (
-                "(1) Der Zuschlag beträgt 259 Euro für Einkommen bis "
-                "maximal 100 Euro."
-            ),
+            ("(1) Der Zuschlag beträgt 259 Euro für Einkommen bis maximal 100 Euro."),
             """\
   - name: income_limit
     kind: parameter
@@ -2047,8 +2021,7 @@ rules:
 
 def test_positive_applicability_condition_requires_paired_cases():
     source = (
-        "(1) Der Zuschlag beträgt 259 Euro, wenn die Person "
-        "anspruchsberechtigt ist."
+        "(1) Der Zuschlag beträgt 259 Euro, wenn die Person anspruchsberechtigt ist."
     )
     content = """\
 format: rulespec/v1
@@ -2351,9 +2324,7 @@ def test_unrelated_boolean_toggle_cannot_cover_source_exception():
         "          else:\n            if unrelated_toggle:\n              floor(\n",
     )
     test_cases = [
-        case
-        for case in COMPLETE_COMPANION_TESTS
-        if case["name"] != "exception applies"
+        case for case in COMPLETE_COMPANION_TESTS if case["name"] != "exception applies"
     ]
     for value in (False, True):
         test_cases.append(
@@ -2381,7 +2352,9 @@ def test_exception_toggle_from_another_source_branch_cannot_cover_exception():
         COMPANION_COVERAGE_SOURCE
         + "(2) Der Sonderbetrag wird als Einkommen + Einkommen berechnet.\n"
     )
-    content = COMPANION_COVERAGE_CONTENT + """\
+    content = (
+        COMPANION_COVERAGE_CONTENT
+        + """\
   - name: special_status_amount
     kind: derived
     dtype: Money
@@ -2394,10 +2367,9 @@ def test_exception_toggle_from_another_source_branch_cannot_cover_exception():
           else:
             taxable_income
 """
+    )
     test_cases = [
-        case
-        for case in COMPLETE_COMPANION_TESTS
-        if case["name"] != "exception applies"
+        case for case in COMPLETE_COMPANION_TESTS if case["name"] != "exception applies"
     ]
     for value, expected in ((False, 90), (True, 0)):
         test_cases.append(
@@ -2422,8 +2394,7 @@ def test_exception_toggle_from_another_source_branch_cannot_cover_exception():
 
 def test_unrelated_fractional_input_cannot_cover_rounding_rule():
     source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
-        "auf volle Euro abzurunden."
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abzurunden."
     )
     content = _single_rounding_content(
         "floor(income * multiplier + unrelated_amount * 0)",
@@ -2589,9 +2560,7 @@ rules:
                 "high_income": high_income,
                 "income": income,
             },
-            "output": {
-                "amount": income * (2 if married or high_income else 3)
-            },
+            "output": {"amount": income * (2 if married or high_income else 3)},
         }
 
     repeated_married = _analyze(
@@ -2703,17 +2672,21 @@ def test_inline_if_formula_requires_distinct_runtime_branch_executions():
 (1) Bei Ehegatten ist der Betrag Einkommen * 2.
 (2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
 """
-    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
-        "formula: income * first_multiplier + income * second_multiplier",
-        "formula: >-\n"
-        "          if married or high_income: income * first_multiplier "
-        "else: income * second_multiplier",
-    ).replace(
-        "first_multiplier",
-        "married_multiplier",
-    ).replace(
-        "second_multiplier",
-        "single_multiplier",
+    content = (
+        MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+            "formula: income * first_multiplier + income * second_multiplier",
+            "formula: >-\n"
+            "          if married or high_income: income * first_multiplier "
+            "else: income * second_multiplier",
+        )
+        .replace(
+            "first_multiplier",
+            "married_multiplier",
+        )
+        .replace(
+            "second_multiplier",
+            "single_multiplier",
+        )
     )
 
     def case(name: str, married: bool, high_income: bool) -> dict[str, object]:
@@ -2757,14 +2730,20 @@ def test_judgment_selector_normalizes_holds_and_not_holds():
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"eligible": "holds"}},
-    ) == "if:0"
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"eligible": "not_holds"}},
-    ) == "if:1"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"eligible": "holds"}},
+        )
+        == "if:0"
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"eligible": "not_holds"}},
+        )
+        == "if:1"
+    )
 
 
 def test_inline_elif_formula_reports_each_reachable_branch():
@@ -2776,18 +2755,27 @@ def test_inline_elif_formula_reports_each_reachable_branch():
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"first": True, "second": False}},
-    ) == "if:0"
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"first": False, "second": True}},
-    ) == "if:1"
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"first": False, "second": False}},
-    ) == "if:2"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"first": True, "second": False}},
+        )
+        == "if:0"
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"first": False, "second": True}},
+        )
+        == "if:1"
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"first": False, "second": False}},
+        )
+        == "if:2"
+    )
 
 
 def test_formula_execution_fails_closed_on_non_boolean_guard_and_alias_conflict():
@@ -2827,10 +2815,13 @@ def test_match_uses_last_arm_as_runtime_fallback():
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"filing_status": "unknown"}},
-    ) == "match:1"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"filing_status": "unknown"}},
+        )
+        == "match:1"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2848,22 +2839,25 @@ def test_bare_match_patterns_resolve_as_runtime_names(
         "versions": [
             {
                 "formula": (
-                    f'match status: {pattern} => married_amount; '
+                    f"match status: {pattern} => married_amount; "
                     '"fallback" => fallback_amount'
                 ),
             }
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {
-            "input": {
-                "status": True if pattern == "holds" else "_",
-                **pattern_input,
-            }
-        },
-    ) == "match:1"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {
+                "input": {
+                    "status": True if pattern == "holds" else "_",
+                    **pattern_input,
+                }
+            },
+        )
+        == "match:1"
+    )
 
 
 @pytest.mark.parametrize(
@@ -2881,17 +2875,18 @@ def test_bare_condition_names_are_not_boolean_aliases(
     rule = {
         "versions": [
             {
-                "formula": (
-                    f"if {guard_name}: enabled_amount else: disabled_amount"
-                ),
+                "formula": (f"if {guard_name}: enabled_amount else: disabled_amount"),
             }
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {guard_name: guard_value}},
-    ) == "if:1"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {guard_name: guard_value}},
+        )
+        == "if:1"
+    )
 
 
 def test_quoted_control_text_does_not_confuse_formula_execution():
@@ -2899,17 +2894,19 @@ def test_quoted_control_text_does_not_confuse_formula_execution():
         "versions": [
             {
                 "formula": (
-                    'if code == "if x: y else: z": selected_amount '
-                    "else: other_amount"
+                    'if code == "if x: y else: z": selected_amount else: other_amount'
                 ),
             }
         ]
     }
 
-    assert completeness_module._case_formula_branch_outcome(
-        rule,
-        {"input": {"code": "if x: y else: z"}},
-    ) == "if:0"
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"code": "if x: y else: z"}},
+        )
+        == "if:0"
+    )
 
 
 def test_formula_execution_rejects_ambiguous_versions():
@@ -3164,11 +3161,7 @@ def test_interval_cases_must_reach_the_piecewise_formula():
     )
 
     def case(name: str, income: int, *, disabled: bool) -> dict[str, object]:
-        expected = (
-            0
-            if disabled
-            else int(income * (5 if income <= 100 else 7) / 100)
-        )
+        expected = 0 if disabled else int(income * (5 if income <= 100 else 7) / 100)
         return {
             "name": name,
             "input": {"disabled": disabled, "taxable_income": income},
@@ -3354,13 +3347,9 @@ def test_numbered_prose_formulas_require_distinct_executed_cases():
     ],
 )
 def test_common_german_exceptions_require_paired_cases(exception_text: str):
-    source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet. " + exception_text
-    )
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet. " + exception_text
     one_sided_tests = [
-        case
-        for case in COMPLETE_COMPANION_TESTS
-        if case["name"] != "exception applies"
+        case for case in COMPLETE_COMPANION_TESTS if case["name"] != "exception applies"
     ]
 
     result = _analyze(
@@ -3932,13 +3921,7 @@ rules:
             {
                 "name": "wrong computation",
                 "input": {"income": 12},
-                "output": {
-                    "amount": (
-                        4
-                        if parameter_name == "divisor"
-                        else 24
-                    )
-                },
+                "output": {"amount": (4 if parameter_name == "divisor" else 24)},
             }
         ],
     )
@@ -5134,9 +5117,7 @@ def test_monthly_case_period_resolves_versioned_boundary_constant():
 
 
 def test_equal_asserted_exception_effects_do_not_count_as_toggle():
-    source = (
-        "(1) Ein Anspruch besteht, es sei denn, eine Befreiung liegt vor."
-    )
+    source = "(1) Ein Anspruch besteht, es sei denn, eine Befreiung liegt vor."
     content = """\
 format: rulespec/v1
 module:
@@ -5292,8 +5273,7 @@ rules:
 
 def test_neutralized_fractional_input_cannot_witness_rounding():
     source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
-        "auf volle Euro abzurunden."
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abzurunden."
     )
     content = _single_rounding_content(
         "floor(income * multiplier + fractional_probe * 0)",
@@ -5312,8 +5292,7 @@ def test_neutralized_fractional_input_cannot_witness_rounding():
 
 def test_fractional_input_must_leave_the_rounded_operand_fractional():
     source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
-        "auf volle Euro abzurunden."
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abzurunden."
     )
     content = _single_rounding_content("floor(income * multiplier)")
     case = {
@@ -5616,8 +5595,7 @@ rules:
 
 def test_rounding_accepts_asserted_reached_intermediate_output():
     source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
-        "auf volle Euro abgerundet."
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abgerundet."
     )
     content = """\
 format: rulespec/v1
@@ -5651,8 +5629,7 @@ rules:
 
 def test_mismatched_asserted_intermediate_cannot_witness_rounding():
     source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
-        "auf volle Euro abgerundet."
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abgerundet."
     )
     content = """\
 format: rulespec/v1
@@ -5799,9 +5776,7 @@ rules:
 
 
 def test_boundary_accepts_asserted_reached_derived_selector():
-    source = (
-        "(1) Der Anspruch gilt bis 100 Euro zu versteuerndes Einkommen."
-    )
+    source = "(1) Der Anspruch gilt bis 100 Euro zu versteuerndes Einkommen."
     content = """\
 format: rulespec/v1
 module:
@@ -6068,9 +6043,7 @@ def test_exception_toggle_cases_must_share_period():
 
 def test_boolean_exception_selector_must_block_not_enable():
     source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
-    content = _exception_control_content(
-        "if exemption_applies: true else: false"
-    )
+    content = _exception_control_content("if exemption_applies: true else: false")
     cases = [
         {
             "name": "ordinary",
@@ -6092,8 +6065,7 @@ def test_boolean_exception_selector_must_block_not_enable():
 def test_numeric_exclusion_effect_is_direction_neutral_without_amount_wording():
     source = "(1) Der Abzug gilt nicht, wenn eine Befreiung vorliegt."
     content = _exception_control_content(
-        "if exemption_applies: tax_without_deduction "
-        "else: tax_with_deduction"
+        "if exemption_applies: tax_without_deduction else: tax_with_deduction"
     )
     cases = [
         {
@@ -6173,9 +6145,7 @@ def test_exception_selector_forms_preserve_source_orientation(
         "no_exemption"
         if "no_exemption" in formula
         else (
-            "has_certificate"
-            if "has_certificate" in formula
-            else "exemption_applies"
+            "has_certificate" if "has_certificate" in formula else "exemption_applies"
         )
     )
     source_condition = (
@@ -6204,12 +6174,8 @@ def test_exception_selector_forms_preserve_source_orientation(
 
 
 def test_compound_direct_exception_expression_is_discovered():
-    source = (
-        "(1) Der Anspruch gilt nicht, wenn eine Befreiung oder Sperre vorliegt."
-    )
-    content = _exception_control_content(
-        "not (exemption_applies or barred)"
-    )
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung oder Sperre vorliegt."
+    content = _exception_control_content("not (exemption_applies or barred)")
     cases = [
         {
             "name": "ordinary",
@@ -6273,9 +6239,7 @@ def test_match_exception_selector_preserves_polarity(
 
 def test_exception_semantics_override_ordinary_word_in_selector_name():
     source = "(1) Der Anspruch gilt nicht, wenn eine Ausnahme vorliegt."
-    content = _exception_control_content(
-        "if eligible_for_exception: false else: true"
-    )
+    content = _exception_control_content("if eligible_for_exception: false else: true")
     cases = [
         {
             "name": "ordinary",
@@ -6431,9 +6395,7 @@ def test_exception_condition_does_not_borrow_a_preceding_main_clause_concept():
     source = """\
 (1) Bei einer Bescheinigung besteht der Anspruch, außer wenn kein Kind vorhanden ist.
 """
-    content = _exception_control_content(
-        "if has_certificate: false else: true"
-    )
+    content = _exception_control_content("if has_certificate: false else: true")
     cases = [
         {
             "name": "without certificate",
@@ -6501,12 +6463,8 @@ def test_preposed_exception_condition_preserves_ordinary_selector(source: str):
     ],
 )
 def test_exception_to_negative_rule_must_enable_the_claim(source: str):
-    correct = _exception_control_content(
-        "if has_certificate: true else: false"
-    )
-    wrong = _exception_control_content(
-        "if has_certificate: false else: true"
-    )
+    correct = _exception_control_content("if has_certificate: true else: false")
+    wrong = _exception_control_content("if has_certificate: false else: true")
     correct_cases = [
         {
             "name": "without certificate",
@@ -6577,12 +6535,9 @@ def test_coordinated_exception_cues_require_distinct_witnesses():
 (1) Außer bei einer Befreiung und außer bei einer Sperre besteht der Anspruch.
 """
     complete = _exception_control_content(
-        "if exemption_applies: false "
-        "else: if barred: false else: true"
+        "if exemption_applies: false else: if barred: false else: true"
     )
-    incomplete = _exception_control_content(
-        "if exemption_applies: false else: true"
-    )
+    incomplete = _exception_control_content("if exemption_applies: false else: true")
     complete_cases = [
         {
             "name": "ordinary",
@@ -6666,9 +6621,7 @@ Der Anspruch besteht, außer bei einer Bescheinigung oder einem Status.
 def test_synonymous_exception_cues_in_one_condition_are_one_obligation():
     source = "(1) Außer bei einer Befreiung gilt der Anspruch nicht."
     branches = recognize_source_structure(source)
-    language_matches = tuple(
-        completeness_module._EXCEPTION_LANGUAGE.finditer(source)
-    )
+    language_matches = tuple(completeness_module._EXCEPTION_LANGUAGE.finditer(source))
 
     obligations = completeness_module._source_exception_branches(
         source,
@@ -6731,9 +6684,7 @@ def test_source_negation_controls_neutral_selector_orientation(
 
 
 def test_adjectival_source_negation_rejects_opposite_selector_polarity():
-    source = (
-        "(1) Der Anspruch gilt nicht, wenn das Kind nicht vorhanden ist."
-    )
+    source = "(1) Der Anspruch gilt nicht, wenn das Kind nicht vorhanden ist."
     content = _exception_control_content("not kind_vorhanden")
     cases = [
         {
@@ -6755,9 +6706,7 @@ def test_adjectival_source_negation_rejects_opposite_selector_polarity():
 
 def test_unrelated_excluding_selector_cannot_witness_source_exception():
     source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
-    content = _exception_control_content(
-        "if bonus_applies: false else: true"
-    )
+    content = _exception_control_content("if bonus_applies: false else: true")
     cases = [
         {
             "name": "without bonus",
@@ -6904,8 +6853,7 @@ def test_mixed_exception_clauses_keep_local_effect_requirements():
 Der Anspruch besteht, außer bei einer Befreiung.
 """
     content = _exception_control_content(
-        "if exemption_applies: 0 "
-        "else: if exception_applies: 20 else: 10"
+        "if exemption_applies: 0 else: if exception_applies: 20 else: 10"
     )
     cases = [
         {
@@ -6999,9 +6947,7 @@ def test_numeric_predicate_can_directly_witness_exception(
     exception_output: bool,
     expected_issue: bool,
 ):
-    source = (
-        "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
-    )
+    source = "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
     content = """\
 format: rulespec/v1
 module:
@@ -7038,9 +6984,7 @@ rules:
 
 
 def test_numeric_input_change_cannot_hide_identical_exception_branches():
-    source = (
-        "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
-    )
+    source = "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
     content = """\
 format: rulespec/v1
 module:
@@ -7363,10 +7307,7 @@ rules:
             "besteht, beträgt der Zuschlag 259 Euro."
         ),
         "(1) Bei Anspruchsberechtigung beträgt der Zuschlag 259 Euro.",
-        (
-            "(1) Der Zuschlag beträgt 259 Euro, soweit "
-            "Anspruchsberechtigung besteht."
-        ),
+        ("(1) Der Zuschlag beträgt 259 Euro, soweit Anspruchsberechtigung besteht."),
     ],
 )
 def test_common_positive_conditions_control_scalar_outputs(source: str):
@@ -7422,10 +7363,7 @@ rules:
 def test_generic_german_rounding_requires_nearest_rounding_and_fractional_proof(
     rounding_text: str,
 ):
-    source = (
-        "(1) Der Betrag wird als Einkommen * 2 berechnet und ist "
-        f"{rounding_text}."
-    )
+    source = f"(1) Der Betrag wird als Einkommen * 2 berechnet und ist {rounding_text}."
     unrounded = _single_rounding_content("income * multiplier")
     rounded = _single_rounding_content(
         "floor(income * multiplier + 0.5)",
@@ -7651,9 +7589,7 @@ def test_formula_topology_accepts_associative_regrouping():
 
 
 def test_formula_topology_preserves_distinct_source_variables():
-    source = (
-        "(1) Der Betrag wird als Einkommen * Partnereinkommen + 3 berechnet."
-    )
+    source = "(1) Der Betrag wird als Einkommen * Partnereinkommen + 3 berechnet."
     content = """\
 format: rulespec/v1
 module:
@@ -7697,10 +7633,7 @@ rules:
             "(1) Der nach Maßgabe des Absatzes 2 festgelegte Freibetrag "
             "beträgt 259 Euro."
         ),
-        (
-            "(1) Der nach den Absätzen 2 und 3 festgelegte Freibetrag "
-            "beträgt 259 Euro."
-        ),
+        ("(1) Der nach den Absätzen 2 und 3 festgelegte Freibetrag beträgt 259 Euro."),
     ],
 )
 def test_inflected_absatz_references_are_not_numeric_inventory(source: str):

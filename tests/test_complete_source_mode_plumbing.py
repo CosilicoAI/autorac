@@ -93,11 +93,17 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert explicit_off_prompt == default_prompt
     assert "Complete-source-unit mode is enabled" not in default_prompt
     assert "Complete-source-unit mode is enabled" in complete_prompt
-    assert "parameters without encoding the stated formula is invalid" in complete_prompt
+    assert (
+        "parameters without encoding the stated formula is invalid" in complete_prompt
+    )
     assert "missing dependency or citation" in complete_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
-    assert "Only include `blocked_by` entries when you know the exact" in complete_prompt
-    assert "formula branch, boundary,\n  exception, and rounding rule" in complete_prompt
+    assert (
+        "Only include `blocked_by` entries when you know the exact" in complete_prompt
+    )
+    assert (
+        "formula branch, boundary,\n  exception, and rounding rule" in complete_prompt
+    )
     assert "scalar-only source unit may remain parameter-only" in complete_prompt
 
 
@@ -206,9 +212,13 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert "Complete-source-unit mode is enabled" not in default_prompt
     assert "Complete-source-unit mode is enabled" in complete_prompt
     assert "authoritative `./source.txt` body" in complete_prompt
-    assert "parameters without encoding the stated formula is invalid" in complete_prompt
+    assert (
+        "parameters without encoding the stated formula is invalid" in complete_prompt
+    )
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
-    assert "Only include `blocked_by` entries when you know the exact" in complete_prompt
+    assert (
+        "Only include `blocked_by` entries when you know the exact" in complete_prompt
+    )
 
 
 def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
@@ -217,7 +227,11 @@ def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
     with (
         patch.object(evals, "_validate_eval_oracle_runtime"),
         patch.object(evals, "resolve_corpus_source_unit", return_value=source_unit),
-        patch.object(evals, "_authoritative_rulespec_dependency_scope", return_value=nullcontext()),
+        patch.object(
+            evals,
+            "_authoritative_rulespec_dependency_scope",
+            return_value=nullcontext(),
+        ),
         patch.object(evals, "_run_single_eval", return_value=result) as run_single,
     ):
         actual = evals.run_model_eval(
