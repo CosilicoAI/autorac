@@ -267,6 +267,22 @@ _COMPUTATION_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_STATED_CONVERSION_CUE = re.compile(
+    r"\b(?:umgerechnet|converted)\b",
+    flags=re.IGNORECASE,
+)
+_STATED_CONVERSION_RESULT = re.compile(
+    r"\b(?:"
+    r"ergibt\s+sich|ergeben\s+sich|entspricht|entsprechen|beträgt|betragen|"
+    r"equals?|results?\s+in|is|are"
+    r")\b"
+    r"[^.!?\n]{0,80}?"
+    r"(?P<value>\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)",
+    flags=re.IGNORECASE,
+)
+_STATED_CONVERSION_BASE_VALUE = re.compile(
+    r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?"
+)
 _ROUNDING_LANGUAGE = re.compile(
     r"\b(?:"
     r"abgerundet(?:e|en|er|es)?|abzurunden|aufgerundet(?:e|en|er|es)?|"
@@ -492,11 +508,68 @@ def _is_editorial_omission(text: str) -> bool:
 def source_states_explicit_computation(source_text: str) -> bool:
     """Return whether text states a computation rather than only a scalar."""
 
+    computation_text = _without_stated_conversion_results(source_text)
     return bool(
-        _has_substantive_arithmetic_expression(source_text)
-        or _COMPUTATION_LANGUAGE.search(source_text)
-        or _ROUNDING_LANGUAGE.search(source_text)
+        _has_substantive_arithmetic_expression(computation_text)
+        or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ROUNDING_LANGUAGE.search(computation_text)
     )
+
+
+def source_states_stated_conversion_result(source_text: str) -> bool:
+    """Return whether text states both a base scalar and its converted result."""
+
+    return bool(_stated_conversion_result_spans(source_text))
+
+
+def _stated_conversion_result_spans(source_text: str) -> tuple[tuple[int, int], ...]:
+    """Locate result clauses such as ``Umgerechnet ... ergibt sich 6 150``."""
+
+    spans: list[tuple[int, int]] = []
+    for cue in _STATED_CONVERSION_CUE.finditer(source_text):
+        result = _STATED_CONVERSION_RESULT.search(
+            source_text,
+            cue.end(),
+            min(len(source_text), cue.end() + 180),
+        )
+        if result is None:
+            continue
+        base_window = source_text[max(0, cue.start() - 300) : cue.start()]
+        paragraph_break = base_window.rfind("\n\n")
+        if paragraph_break >= 0:
+            base_window = base_window[paragraph_break + 2 :]
+        base_values = list(_STATED_CONVERSION_BASE_VALUE.finditer(base_window))
+        if not base_values:
+            continue
+        last_base = base_values[-1]
+        if _looks_like_temporal_year(base_window, last_base):
+            continue
+        spans.append((cue.start(), result.end("value")))
+    return tuple(spans)
+
+
+def _looks_like_temporal_year(text: str, match: re.Match[str]) -> bool:
+    """Return whether a prospective base value is only a nearby calendar year."""
+
+    raw = match.group(0).replace(" ", "").replace(".", "").replace(",", ".")
+    with contextlib.suppress(ValueError):
+        value = float(raw)
+        if value.is_integer() and 1900 <= value <= 2100:
+            prefix = text[max(0, match.start() - 24) : match.start()]
+            return bool(re.search(r"\b(?:jahr(?:es)?|year)\s*$", prefix, re.IGNORECASE))
+    return False
+
+
+def _without_stated_conversion_results(source_text: str) -> str:
+    """Blank stated-result clauses without hiding other source computations."""
+
+    spans = _stated_conversion_result_spans(source_text)
+    if not spans:
+        return source_text
+    characters = list(source_text)
+    for start, end in spans:
+        characters[start:end] = " " * (end - start)
+    return "".join(characters)
 
 
 def _has_substantive_arithmetic_expression(source_text: str) -> bool:

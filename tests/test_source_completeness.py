@@ -15,6 +15,7 @@ from axiom_encode.harness.source_completeness import (
     collect_artifact_numeric_values,
     recognize_source_structure,
     source_states_explicit_computation,
+    source_states_stated_conversion_result,
 )
 from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
@@ -1246,6 +1247,33 @@ rules:
     ],
 )
 def test_additional_formula_language_is_computation(source: str):
+    assert source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
+def test_stated_conversion_result_is_not_a_formula_mandate(result_phrase: str):
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro. "
+        f"Umgerechnet auf den Monat {result_phrase} 6 150 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Der Monatsbetrag ergibt sich aus dem Jahresbetrag geteilt durch 12.",
+        "Der Jahresbetrag beträgt das 12-Fache des Monatsbetrags.",
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. "
+            "Umgerechnet auf den Monat ergibt sich 6 150 Euro. "
+            "Der Zuschlag ergibt sich aus dem Monatsbetrag plus 10 Euro."
+        ),
+    ],
+)
+def test_stated_conversion_exemption_preserves_actual_formulas(source: str):
     assert source_states_explicit_computation(source)
 
 
