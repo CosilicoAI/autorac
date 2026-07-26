@@ -169,6 +169,7 @@ from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
     _DEFAULT_SUITE_RETRY_ATTEMPTS,
     _EVAL_RESULT_ARTIFACT_SPECS,
+    EvalCliEnvironment,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
     _build_eval_suite_manifest_identity,
@@ -181,6 +182,7 @@ from .harness.evals import (
     _eval_suite_rulespec_roots,
     _git_checkout_execution_identity,
     _load_eval_suite_resume_state,
+    _preflight_eval_cli_runners,
     _render_eval_result_verdict_evidence,
     _rulespec_root_execution_identity,
     _source_metadata_citation_path,
@@ -19685,6 +19687,12 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             backend=args.backend,
             model=config.escalation_model,
         )
+    preflight_runner_specs = [f"{args.backend}:{config.initial_model}"]
+    if config.enabled and config.escalation_model != config.initial_model:
+        preflight_runner_specs.append(f"{args.backend}:{config.escalation_model}")
+    cli_environments = _preflight_eval_cli_runners(
+        [parse_runner_spec(spec) for spec in preflight_runner_specs]
+    )
     failed_attempts: tuple[_FailedEncodeAttempt, ...] = ()
     current_model = config.initial_model
 
@@ -19696,6 +19704,7 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             defer_logging=config.enabled,
             apply_signing_broker=apply_signing_broker,
             resolved_policy_checkout_path=resolved_policy_checkout_path,
+            cli_environments=cli_environments,
         )
         next_model = None
         if _encode_attempt_was_validator_rejected(
@@ -19804,6 +19813,7 @@ def _run_encode_attempt(
     defer_logging: bool = True,
     apply_signing_broker: SigningBroker | None = None,
     resolved_policy_checkout_path: Path | None = None,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> _EncodeAttemptExecution:
     """Run one generation through the existing standalone and apply gates."""
     if getattr(args, "apply", False) is True and not apply_signing_broker:
@@ -19907,6 +19917,7 @@ def _run_encode_attempt(
             else None
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
+        cli_environments=cli_environments,
     )
 
     result = results[0]
@@ -46988,6 +46999,9 @@ def cmd_eval(args):
     runners = _effective_runner_specs(
         args.runner or ["claude:opus", DEFAULT_GPT_RUNNER], args
     )
+    cli_environments = _preflight_eval_cli_runners(
+        [parse_runner_spec(spec) for spec in runners]
+    )
     rulespec_dependency_roots = _rulespec_dependency_roots_from_args(args)
     corpus_path = _resolve_explicit_existing_directory(
         args.corpus_path,
@@ -47020,6 +47034,7 @@ def cmd_eval(args):
         require_complete_source_unit=(
             getattr(args, "require_complete_source_unit", False) is True
         ),
+        cli_environments=cli_environments,
     )
 
     if args.json:
@@ -47061,6 +47076,9 @@ def cmd_eval_source(args):
     runners = _effective_runner_specs(
         args.runner or ["claude:opus", DEFAULT_GPT_RUNNER], args
     )
+    cli_environments = _preflight_eval_cli_runners(
+        [parse_runner_spec(spec) for spec in runners]
+    )
     rulespec_dependency_roots = _rulespec_dependency_roots_from_args(args)
     corpus_path = _resolve_explicit_existing_directory(
         args.corpus_path,
@@ -47101,6 +47119,7 @@ def cmd_eval_source(args):
         require_complete_source_unit=(
             getattr(args, "require_complete_source_unit", False) is True
         ),
+        cli_environments=cli_environments,
     )
 
     if args.json:

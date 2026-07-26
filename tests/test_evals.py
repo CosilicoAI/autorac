@@ -143,6 +143,15 @@ _TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
+def _test_eval_cli_environment(backend: str) -> evals_module.EvalCliEnvironment:
+    return evals_module.EvalCliEnvironment(
+        backend=backend,
+        executable=f"/verified/bin/{backend}",
+        version=f"{backend} 9.9.9",
+        executable_sha256=("c" * 64 if backend == "codex" else None),
+    )
+
+
 def _test_policyengine_runtime(country: str = "us") -> PolicyEngineRuntime:
     root = Path(f"/tmp/policyengine-{country}")
     identity = {
@@ -738,6 +747,99 @@ def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
     assert environments["claude"].version == "2.1.99 (Claude Code)"
     assert environments["codex"].version == "codex-cli 0.999.0"
     assert "openai" not in environments
+
+
+def test_eval_cli_preflight_canonicalizes_relative_executables_before_use(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    relative_paths = {
+        "claude": "relative-tools/claude",
+        "codex": "relative-tools/codex",
+    }
+    expected_paths = {
+        backend: str((tmp_path / path).resolve())
+        for backend, path in relative_paths.items()
+    }
+    help_text = " ".join(
+        (
+            "--print",
+            "--output-format",
+            "--permission-mode",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--disable-slash-commands",
+            "--no-chrome",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "--tools",
+            "--allowed-tools",
+            "--model",
+            "--effort",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--strict-config",
+            "--output-last-message",
+            "--cd",
+            "--sandbox",
+            "--config",
+        )
+    )
+    observed_commands: list[list[str]] = []
+
+    def probe(command, **_kwargs):
+        observed_commands.append(command)
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{Path(command[0]).name} 9.9.9\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=help_text,
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        evals_module.shutil,
+        "which",
+        lambda name: relative_paths[name],
+    )
+    with (
+        patch("axiom_encode.harness.evals.subprocess.run", side_effect=probe),
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=relative_paths["codex"],
+        ),
+        patch(
+            "axiom_encode.harness.evals._eval_cli_executable_sha256",
+            return_value="a" * 64,
+        ) as executable_sha256,
+    ):
+        environments = evals_module._preflight_eval_cli_runners(
+            [
+                parse_runner_spec("claude:opus@max"),
+                parse_runner_spec("codex:gpt-5.4@high"),
+            ]
+        )
+
+    assert [command[0] for command in observed_commands] == [
+        expected_paths["claude"],
+        expected_paths["claude"],
+        expected_paths["codex"],
+        expected_paths["codex"],
+    ]
+    assert environments["claude"].executable == expected_paths["claude"]
+    assert environments["codex"].executable == expected_paths["codex"]
+    assert [item.args[0] for item in executable_sha256.call_args_list] == [
+        expected_paths["claude"],
+        expected_paths["codex"],
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1719,6 +1821,7 @@ def test_model_eval_reuses_identical_resolved_source_for_all_runners(tmp_path):
             policy_path=tmp_path / "rulespec",
             runtime_axiom_rules_path=tmp_path / "engine",
             corpus_release=corpus_release,
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     assert actual == results
@@ -1727,6 +1830,127 @@ def test_model_eval_reuses_identical_resolved_source_for_all_runners(tmp_path):
     assert all(
         call.kwargs["source_unit"] is source_unit for call in mock_run.call_args_list
     )
+
+
+def test_run_model_eval_preflights_local_runners_when_environments_are_omitted(
+    tmp_path,
+):
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us/statute/26/1",
+    )
+    environment = _test_eval_cli_environment("codex")
+    result = Mock(name="result")
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_corpus_source_unit",
+            return_value=source_unit,
+        ),
+        patch(
+            "axiom_encode.harness.evals._preflight_eval_cli_runners",
+            return_value={"codex": environment},
+        ) as preflight,
+        patch(
+            "axiom_encode.harness.evals._run_single_eval",
+            return_value=result,
+        ) as run_single,
+    ):
+        actual = run_model_eval(
+            citations=["us/statute/26/1"],
+            runner_specs=["codex:model-a", "openai:model-b"],
+            output_root=tmp_path / "out",
+            policy_path=tmp_path / "rulespec",
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+        )
+
+    assert actual == [result, result]
+    preflight.assert_called_once_with(
+        [
+            parse_runner_spec("codex:model-a"),
+            parse_runner_spec("openai:model-b"),
+        ]
+    )
+    assert [item.kwargs["cli_environment"] for item in run_single.call_args_list] == [
+        environment,
+        None,
+    ]
+
+
+def test_run_source_eval_preflights_local_runner_when_environments_are_omitted(
+    tmp_path,
+):
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+    )
+    environment = _test_eval_cli_environment("claude")
+    result = Mock(name="result")
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._preflight_eval_cli_runners",
+            return_value={"claude": environment},
+        ) as preflight,
+        patch(
+            "axiom_encode.harness.evals._run_single_source_eval",
+            return_value=result,
+        ) as run_single,
+    ):
+        actual = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["claude:opus"],
+            output_root=tmp_path / "out",
+            policy_path=_canonical_rulespec_content_root(tmp_path, "us"),
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "engine",
+        )
+
+    assert actual == [result]
+    preflight.assert_called_once_with([parse_runner_spec("claude:opus")])
+    assert run_single.call_args.kwargs["cli_environment"] is environment
+
+
+@pytest.mark.parametrize("entrypoint", ["model", "source"])
+def test_public_eval_rejects_incomplete_explicit_cli_environments(
+    tmp_path,
+    entrypoint,
+):
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us/statute/26/1",
+    )
+    common = {
+        "runner_specs": ["codex:model-a"],
+        "output_root": tmp_path / "out",
+        "policy_path": _canonical_rulespec_content_root(tmp_path, "us"),
+        "runtime_axiom_rules_path": tmp_path / "engine",
+        "cli_environments": {},
+    }
+
+    with (
+        patch("axiom_encode.harness.evals._run_single_eval") as run_model,
+        patch("axiom_encode.harness.evals._run_single_source_eval") as run_source,
+        pytest.raises(ValueError, match="preflight-verified.*codex"),
+    ):
+        if entrypoint == "model":
+            run_model_eval(
+                citations=["us/statute/26/1"],
+                corpus_release=corpus_release,
+                **common,
+            )
+        else:
+            run_source_eval(
+                source_unit=source_unit,
+                local_corpus_release=corpus_release,
+                **common,
+            )
+
+    run_model.assert_not_called()
+    run_source.assert_not_called()
 
 
 def test_model_eval_passes_single_target_output_override(tmp_path):
@@ -3207,6 +3431,7 @@ class TestCorpusSourceResolution:
                 local_corpus_release=corpus_release,
                 runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
                 mode="cold",
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
             )
 
         assert result.success is False
@@ -5526,6 +5751,7 @@ def test_run_source_eval_retries_once_when_first_response_has_no_rulespec(tmp_pa
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     assert result.success is True
@@ -5581,6 +5807,7 @@ def test_run_source_eval_does_not_promote_context_to_source_authority(tmp_path, 
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             extra_context_paths=[continuation],
             mode=mode,
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     manifest = json.loads(Path(result.context_manifest_file).read_text())
@@ -6028,6 +6255,7 @@ def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     assert result.success is True
@@ -6076,6 +6304,7 @@ def test_exhausted_encoder_timeout_classification_survives_result_round_trip(
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
+            cli_environments={"claude": _test_eval_cli_environment("claude")},
         )
 
     restored = _eval_result_from_payload(result.to_dict())
@@ -6153,6 +6382,7 @@ def test_timed_out_truncated_artifact_is_never_scored_as_validation_failure(
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     restored = _eval_result_from_payload(result.to_dict())
@@ -21196,6 +21426,7 @@ class TestSourceEval:
                 include_tests=True,
                 policyengine_rule_hint="source_amount",
                 skip_reviewers=True,
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
             )
 
         assert mock_evaluate_artifact.call_args.kwargs["skip_reviewers"] is True
@@ -21265,6 +21496,7 @@ class TestSourceEval:
                 runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
                 mode="repo-augmented",
                 extra_context_paths=[context_file],
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
             )
 
         assert len(results) == 1
@@ -21352,6 +21584,7 @@ class TestSourceEval:
                 oracle="policyengine",
                 policyengine_runtime=_test_policyengine_runtime("uk"),
                 skip_reviewers=True,
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
             )
 
         assert mock_evaluate_artifact.call_args.kwargs["oracle"] == "policyengine"

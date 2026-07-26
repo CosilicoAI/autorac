@@ -1528,6 +1528,12 @@ _CODEX_EVAL_REQUIRED_FLAGS = (
 _EVAL_CLI_PREFLIGHT_TIMEOUT_SECONDS = 15
 
 
+def _canonical_eval_cli_executable(executable: str) -> str:
+    """Bind a discovered or overridden CLI to one absolute executable path."""
+
+    return str(Path(executable).expanduser().resolve())
+
+
 def _eval_cli_executable_sha256(executable: str) -> str | None:
     """Hash the resolved CLI executable when its bytes are locally readable."""
 
@@ -1602,14 +1608,16 @@ def _preflight_eval_cli_runners(
         if not backend_runners:
             continue
         if backend == "claude":
-            executable = shutil.which("claude") or "claude"
+            executable = _canonical_eval_cli_executable(
+                shutil.which("claude") or "claude"
+            )
             backend_label = "Claude"
             help_command = [executable, "--help"]
             required_flags = list(_CLAUDE_EVAL_REQUIRED_FLAGS)
             if any(runner.effort is not None for runner in backend_runners):
                 required_flags.append("--effort")
         else:
-            executable = resolve_codex_cli()
+            executable = _canonical_eval_cli_executable(resolve_codex_cli())
             backend_label = "Codex"
             help_command = [executable, "exec", "--help"]
             required_flags = list(_CODEX_EVAL_REQUIRED_FLAGS)
@@ -1667,6 +1675,43 @@ def _validate_eval_cli_environment(
         )
     if not environment.version.strip():
         raise ValueError(f"CLI environment for runner '{runner.name}' has no version")
+    if not Path(environment.executable).is_absolute():
+        raise ValueError(
+            f"CLI environment for runner '{runner.name}' has a non-absolute "
+            "executable path"
+        )
+    if runner.backend == "codex" and (
+        not isinstance(environment.executable_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", environment.executable_sha256) is None
+    ):
+        raise ValueError(
+            f"CLI environment for runner '{runner.name}' has no valid executable "
+            "SHA-256"
+        )
+
+
+def _resolve_eval_cli_environments(
+    runners: Sequence[EvalRunnerSpec],
+    cli_environments: Mapping[str, EvalCliEnvironment] | None,
+) -> dict[str, EvalCliEnvironment]:
+    """Preflight omitted CLI evidence and reject incomplete supplied evidence."""
+
+    resolved = (
+        _preflight_eval_cli_runners(runners)
+        if cli_environments is None
+        else dict(cli_environments)
+    )
+    for runner in runners:
+        if runner.backend not in {"claude", "codex"}:
+            continue
+        environment = resolved.get(runner.backend)
+        if environment is None:
+            raise ValueError(
+                f"Runner '{runner.name}' requires a preflight-verified "
+                f"{runner.backend} CLI environment"
+            )
+        _validate_eval_cli_environment(runner, environment)
+    return resolved
 
 
 def _eval_response_optional_string(
@@ -1736,6 +1781,7 @@ def run_model_eval(
     include_tests = include_tests or require_complete_source_unit
     results: list[EvalResult] = []
     runners = [parse_runner_spec(spec) for spec in runner_specs]
+    cli_environments = _resolve_eval_cli_environments(runners, cli_environments)
     resolved_sources = [
         (citation, resolve_corpus_source_unit(citation, corpus_release))
         for citation in citations
@@ -1765,7 +1811,7 @@ def run_model_eval(
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
                         validation_retry_feedback=validation_retry_feedback,
-                        cli_environment=(cli_environments or {}).get(runner.backend),
+                        cli_environment=cli_environments.get(runner.backend),
                     )
                 )
 
@@ -1797,6 +1843,8 @@ def run_source_eval(
         source_unit.requested
     )
     results: list[EvalResult] = []
+    runners = [parse_runner_spec(spec) for spec in runner_specs]
+    cli_environments = _resolve_eval_cli_environments(runners, cli_environments)
     extra_context_paths = [Path(path) for path in extra_context_paths or []]
     source_text = source_unit.body
     source_metadata_payload = _source_metadata_with_attestation(
@@ -1805,7 +1853,7 @@ def run_source_eval(
     )
 
     with _authoritative_rulespec_dependency_scope(rulespec_dependency_roots):
-        for runner in [parse_runner_spec(spec) for spec in runner_specs]:
+        for runner in runners:
             results.append(
                 _run_single_source_eval(
                     source_identifier=source_identifier,
@@ -1827,7 +1875,7 @@ def run_source_eval(
                     rulespec_dependency_roots=rulespec_dependency_roots,
                     review_findings_paths=review_findings_paths or [],
                     require_complete_source_unit=require_complete_source_unit,
-                    cli_environment=(cli_environments or {}).get(runner.backend),
+                    cli_environment=cli_environments.get(runner.backend),
                 )
             )
 

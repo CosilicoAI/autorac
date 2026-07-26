@@ -230,6 +230,8 @@ from axiom_encode.cli import (
     cmd_cloud_queue,
     cmd_compile,
     cmd_encode,
+    cmd_eval,
+    cmd_eval_source,
     cmd_eval_suite,
     cmd_eval_suite_archive,
     cmd_eval_suite_report,
@@ -287,11 +289,13 @@ from axiom_encode.harness.eval_evidence import EVAL_EVIDENCE_PRIVATE_KEY_ENV
 from axiom_encode.harness.evals import (
     CorpusSourceUnit,
     EvalArtifactMetrics,
+    EvalCliEnvironment,
     _bind_eval_result_payload,
     _build_eval_suite_manifest_identity,
     _eval_result_from_payload,
     _signed_eval_result_verdict_evidence_payload,
     load_eval_suite_manifest,
+    parse_runner_spec,
     resolve_corpus_source_unit,
     summarize_readiness,
 )
@@ -2823,6 +2827,123 @@ def test_eval_citations_require_one_canonical_policy_content_root(tmp_path):
             ["us/statute/7/2014", "us-ca/regulation/example"],
             authorized_root,
         )
+
+
+class TestDirectEvalCliPreflight:
+    @staticmethod
+    def _cli_environments() -> dict[str, EvalCliEnvironment]:
+        return {
+            "claude": EvalCliEnvironment(
+                backend="claude",
+                executable="/tools/claude",
+                version="claude 9.9.9",
+                executable_sha256="a" * 64,
+            ),
+            "codex": EvalCliEnvironment(
+                backend="codex",
+                executable="/tools/codex",
+                version="codex 9.9.9",
+                executable_sha256="b" * 64,
+            ),
+        }
+
+    def test_cmd_eval_preflights_effective_runners_and_binds_environments(
+        self, tmp_path
+    ):
+        corpus_path = tmp_path / "axiom-corpus"
+        axiom_rules_path = tmp_path / "axiom-rules-engine"
+        policy_repo_path = tmp_path / "rulespec-us" / "us"
+        for path in (corpus_path, axiom_rules_path, policy_repo_path):
+            path.mkdir(parents=True)
+        runners = ["claude:claude-opus-5@high", "codex:custom-model@low"]
+        environments = self._cli_environments()
+        args = SimpleNamespace(
+            runner=runners,
+            gpt_backend=None,
+            rulespec_dependency_root=[],
+            corpus_path=corpus_path,
+            axiom_rules_path=axiom_rules_path,
+            policy_repo_path=policy_repo_path.parent,
+            citations=["us/statute/1"],
+            output=tmp_path / "out",
+            mode="repo-augmented",
+            allow_context=[],
+            require_complete_source_unit=False,
+            json=True,
+        )
+
+        with (
+            patch(
+                "axiom_encode.cli._preflight_eval_cli_runners",
+                return_value=environments,
+            ) as preflight,
+            patch(
+                "axiom_encode.cli._eval_policy_repo_for_citations",
+                return_value=policy_repo_path,
+            ),
+            patch(
+                "axiom_encode.cli.load_rulespec_local_corpus_release",
+                return_value=object(),
+            ),
+            patch("axiom_encode.cli.run_model_eval", return_value=[]) as run_eval,
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            cmd_eval(args)
+
+        preflight.assert_called_once_with([parse_runner_spec(spec) for spec in runners])
+        assert run_eval.call_args.kwargs["cli_environments"] is environments
+
+    def test_cmd_eval_source_preflights_effective_runners_and_binds_environments(
+        self, tmp_path
+    ):
+        corpus_path = tmp_path / "axiom-corpus"
+        axiom_rules_path = tmp_path / "axiom-rules-engine"
+        policy_repo_path = tmp_path / "rulespec-us" / "us"
+        for path in (corpus_path, axiom_rules_path, policy_repo_path):
+            path.mkdir(parents=True)
+        runners = ["claude:claude-opus-5@max", "codex:custom-model@high"]
+        environments = self._cli_environments()
+        source_unit = object()
+        args = SimpleNamespace(
+            runner=runners,
+            gpt_backend=None,
+            rulespec_dependency_root=[],
+            corpus_path=corpus_path,
+            corpus_citation_path="us/statute/1",
+            axiom_rules_path=axiom_rules_path,
+            policy_repo_path=policy_repo_path.parent,
+            output=tmp_path / "out",
+            mode="repo-augmented",
+            allow_context=[],
+            policyengine_rule_hint=None,
+            require_complete_source_unit=False,
+            json=True,
+        )
+
+        with (
+            patch(
+                "axiom_encode.cli._preflight_eval_cli_runners",
+                return_value=environments,
+            ) as preflight,
+            patch(
+                "axiom_encode.cli._resolve_explicit_policy_repo_for_corpus_source",
+                return_value=policy_repo_path,
+            ),
+            patch(
+                "axiom_encode.cli.load_rulespec_local_corpus_release",
+                return_value=object(),
+            ),
+            patch(
+                "axiom_encode.cli.resolve_corpus_source_unit",
+                return_value=source_unit,
+            ),
+            patch("axiom_encode.cli.run_source_eval", return_value=[]) as run_eval,
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            cmd_eval_source(args)
+
+        preflight.assert_called_once_with([parse_runner_spec(spec) for spec in runners])
+        assert run_eval.call_args.kwargs["cli_environments"] is environments
 
 
 class TestCmdEvalSuite:
@@ -11590,6 +11711,20 @@ class TestCmdEncode:
         )
 
         encoder_root = Path(__file__).resolve().parents[1]
+        self.cli_environments = {
+            "claude": EvalCliEnvironment(
+                backend="claude",
+                executable="/tools/claude",
+                version="claude 9.9.9",
+                executable_sha256="a" * 64,
+            ),
+            "codex": EvalCliEnvironment(
+                backend="codex",
+                executable="/tools/codex",
+                version="codex 9.9.9",
+                executable_sha256="b" * 64,
+            ),
+        }
 
         def test_git_checkout_identity(raw_checkout, *, pathspecs=()):
             checkout = Path(raw_checkout).resolve()
@@ -11651,7 +11786,12 @@ class TestCmdEncode:
                 "axiom_encode.cli._rulespec_companion_test_failures",
                 return_value=[],
             ),
+            patch(
+                "axiom_encode.cli._preflight_eval_cli_runners",
+                return_value=self.cli_environments,
+            ) as cli_preflight,
         ):
+            self.cli_preflight = cli_preflight
             from axiom_encode.toolchain import (
                 load_rulespec_local_corpus_release as load_verified_release,
             )
@@ -11923,6 +12063,10 @@ class TestCmdEncode:
             mock_run.call_args.kwargs["runtime_axiom_rules_path"]
             == args.axiom_rules_path
         )
+        assert mock_run.call_args.kwargs["cli_environments"] is self.cli_environments
+        self.cli_preflight.assert_called_once_with(
+            [parse_runner_spec("codex:test-model")]
+        )
 
     def test_encode_escalates_after_n_validator_failures(self, tmp_path):
         args = self._make_args(
@@ -11952,6 +12096,16 @@ class TestCmdEncode:
             ("validator rejected generated section",),
             ("validator rejected generated section",),
         ]
+        assert all(
+            item.kwargs["cli_environments"] is self.cli_environments
+            for item in mock_run.call_args_list
+        )
+        self.cli_preflight.assert_called_once_with(
+            [
+                parse_runner_spec(f"codex:{DEFAULT_OPENAI_MODEL}"),
+                parse_runner_spec(f"codex:{DEFAULT_OPENAI_ESCALATION_MODEL}"),
+            ]
+        )
         assert mock_validate.call_count == 3
         mock_apply.assert_called_once()
         assert mock_apply.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
