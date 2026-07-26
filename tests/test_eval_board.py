@@ -28,7 +28,10 @@ from axiom_encode.harness.evals import (
 from axiom_encode.harness.evals import (
     _canonical_json_sha256 as evals_canonical_json_sha256,
 )
-from axiom_encode.harness.policyengine_runtime import POLICYENGINE_RUNTIME_SCHEMA
+from axiom_encode.harness.policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_SCHEMA,
+    POLICYENGINE_RUNTIME_SCHEMA,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAPABILITY_MANIFEST = REPO_ROOT / "benchmarks" / "encodebench_uk_v1.yaml"
@@ -75,7 +78,7 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
         "official_tree_file_count": 5000,
         "official_tree_byte_count": 12345678,
         "rulespec_runtime_pin_path": f"{root}/rulespec/.axiom/policyengine.toml",
-        "rulespec_runtime_pin_schema": "axiom-encode/policyengine-runtime-pin/v1",
+        "rulespec_runtime_pin_schema": POLICYENGINE_RUNTIME_PIN_SCHEMA,
         "rulespec_runtime_pin_sha256": "14" * 32,
         "repository_root": root,
         "checkout_execution_tree_sha256": "15" * 32,
