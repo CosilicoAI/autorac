@@ -598,6 +598,30 @@ def test_explicit_satz_markers_after_absatz_are_recognized():
     }
 
 
+def test_colon_satz_markers_are_recognized_and_independently_required():
+    source = "(1) Satz 1: Die Hauptregel gilt. Satz 2: Die Sonderregel gilt."
+    branches = recognize_source_structure(source)
+
+    assert {
+        branch.path for branch in branches if branch.kind == "sentence"
+    } == {
+        ("1", "satz-1"),
+        ("1", "satz-2"),
+    }
+
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules: []
+"""
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "Satz 1", "source branch")
+    assert _has_issue(result, "Satz 2", "source branch")
+
+
 @pytest.mark.parametrize(
     ("source", "source_reference", "parent_label"),
     [
@@ -4752,6 +4776,24 @@ def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
             False,
             "income >= income_limit",
         ),
+        (
+            "mehr als 100 Euro",
+            "income > income_limit",
+            False,
+            "income >= income_limit",
+        ),
+        (
+            "weniger als 100 Euro",
+            "income < income_limit",
+            False,
+            "income <= income_limit",
+        ),
+        (
+            "von weniger als 100 Euro",
+            "income < income_limit",
+            False,
+            "income <= income_limit",
+        ),
     ],
 )
 def test_boundary_comparator_preserves_direction_and_inclusivity(
@@ -7156,3 +7198,177 @@ def test_opposite_bare_boolean_predicate_cannot_witness_boundary():
     result = _analyze(content, source, test_cases=[case])
 
     assert _has_issue(result, "boundary", "100")
+
+
+def _scalar_snapshot_content(
+    *,
+    rule_name: str = "allowance_amount",
+    value: int = 259,
+) -> str:
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: {rule_name}
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: {value}
+"""
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Der Freibetrag Plus beträgt 259 Euro.",
+        "(1) Unter diesem Gesetz beträgt der Freibetrag 259 Euro.",
+        (
+            "(1) Der Freibetrag beträgt 259 Euro, auch wenn die "
+            "Veröffentlichung später erfolgt."
+        ),
+        (
+            "(1) Der Freibetrag beträgt 259 Euro, selbst wenn die "
+            "Veröffentlichung später erfolgt."
+        ),
+    ],
+)
+def test_unconditional_scalar_wording_remains_scalar_only(source: str):
+    content = _scalar_snapshot_content()
+    case = {
+        "name": "scalar snapshot",
+        "period": "2026",
+        "input": {},
+        "output": {"allowance_amount": 259},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_leading_effective_month_does_not_steal_later_scalar_as_boundary():
+    source = "(1) Ab Januar beträgt der Freibetrag 259 Euro."
+    content = _scalar_snapshot_content()
+    case = {
+        "name": "effective scalar snapshot",
+        "period": "2026",
+        "input": {},
+        "output": {"allowance_amount": 259},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Für das Kalenderjahr 2026 beträgt der Zuschlag 259 Euro "
+            "bis zu einem Einkommen von 2000 Euro."
+        ),
+        "(1) Der Anspruch gilt bis 2000 Euro Einkommen pro Jahr.",
+    ],
+)
+def test_monetary_threshold_near_year_language_is_not_temporal(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: tax_year
+    kind: parameter
+    dtype: Integer
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2026}]
+  - name: supplement_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 259}]
+  - name: annual_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2000}]
+"""
+    case = {
+        "name": "parameter snapshot",
+        "input": {},
+        "output": {
+            "tax_year": 2026,
+            "supplement_amount": 259,
+            "annual_limit": 2000,
+        },
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula-output", "control", "parameter-only")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Vorausgesetzt, dass Anspruchsberechtigung besteht, "
+            "beträgt der Zuschlag 259 Euro."
+        ),
+        (
+            "(1) Unter der Voraussetzung, dass Anspruchsberechtigung "
+            "besteht, beträgt der Zuschlag 259 Euro."
+        ),
+        "(1) Bei Anspruchsberechtigung beträgt der Zuschlag 259 Euro.",
+        (
+            "(1) Der Zuschlag beträgt 259 Euro, soweit "
+            "Anspruchsberechtigung besteht."
+        ),
+    ],
+)
+def test_common_positive_conditions_control_scalar_outputs(source: str):
+    content = _scalar_snapshot_content(
+        rule_name="supplement_amount",
+    )
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "control", "parameter-only")
+
+
+def test_unter_anwendung_computation_is_not_a_numeric_upper_boundary():
+    source = (
+        "(1) Der Betrag ist unter Anwendung eines Faktors 2 auf das "
+        "Einkommen zu ermitteln."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: factor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'income * factor'}]
+"""
+    case = {
+        "name": "factor computation",
+        "input": {"income": 10},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
