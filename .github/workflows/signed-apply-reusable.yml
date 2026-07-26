@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: "12"
+      require-complete-source-unit:
+        description: "Require complete source-unit coverage during encoding."
+        required: false
+        type: boolean
+        default: false
     secrets:
       openai-api-key:
         description: "OpenAI model credential, explicitly passed by the caller."
@@ -56,7 +61,7 @@ env:
   # wave pin 185b2457). The validate workflow's encode-ref is bumped to the
   # same sha in this PR so the signed PRs' CI verifies manifests with the
   # same encoder generation that produced them.
-  AXIOM_ENCODE_REF: b9d376684cfb5e86202daa3451b8fc716703ed19
+  AXIOM_ENCODE_REF: 034d1acb39ae9c9cb7208bfb8532433e7eed7ceb
   AXIOM_RULES_ENGINE_REF: 05eac9d2f89dabe5c6673176260762cef3a58f47
 
 jobs:
@@ -309,12 +314,13 @@ jobs:
           CITATION: ${{ matrix.item.citation }}
         run: |
           set -euo pipefail
-          # Builtin read + pure assignment only — no subprocess is forked while
-          # the signing key is in this step's environment; then exec the launcher
-          # (which unsets the key before spawning any child).
+          # Builtin read/conditionals + pure assignment only — no subprocess is
+          # forked while the signing key is in this step's environment; then exec
+          # the launcher (which unsets the key before spawning any child).
           read -r pyseg < "$RUNNER_TEMP/pyseg"
           genroot="$RUNNER_TEMP/genroot/${{ github.event.repository.name }}"
-          exec "$RUNNER_TEMP/axiom-encode-apply-signer" run \
+          require_complete_source_unit=${{ inputs['require-complete-source-unit'] }}
+          set -- "$RUNNER_TEMP/axiom-encode-apply-signer" run \
             --scope apply_ed25519 \
             --key-env AXIOM_ENCODE_APPLY_SIGNING_KEY \
             --supervisor /opt/axiom-verification/axiom-encode-signing-supervisor \
@@ -333,6 +339,10 @@ jobs:
             --policy-repo-path "$genroot" \
             --mode cold --no-sync --skip-reviewers \
             --db "$RUNNER_TEMP/enc.db"
+          if [[ "$require_complete_source_unit" == true ]]; then
+            set -- "$@" --require-complete-source-unit
+          fi
+          exec "$@"
 
       - name: Gate battery on the generated mirror (fail-closed pre-check)
         shell: bash

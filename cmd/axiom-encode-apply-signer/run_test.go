@@ -62,6 +62,20 @@ func stubSupervisor(t *testing.T, dumpPath string) string {
 	return path
 }
 
+// stubSupervisorArgv records each received argument as a NUL-delimited field so
+// launcher tests can compare the supervisor argv without shell-word ambiguity.
+func stubSupervisorArgv(t *testing.T, dumpPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stub-supervisor-argv")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\0' \"$@\" > " + shellQuote(dumpPath) + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
@@ -124,6 +138,102 @@ func TestLauncherKeepsKeyOutOfSupervisorEnvironment(t *testing.T) {
 	// The key must never appear in the launcher's own stdout/stderr either.
 	if strings.Contains(string(output), seedB64) {
 		t.Fatal("launcher output leaked the private key material")
+	}
+}
+
+func TestLauncherForwardsCompleteSourceUnitArgumentToSupervisor(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedB64 := base64.StdEncoding.EncodeToString(private.Seed())
+	baseCommand := []string{
+		"/opt/axiom-signing/axiom-encode",
+		"encode",
+		"uk/statute/toy",
+		"--apply",
+	}
+	tests := []struct {
+		name    string
+		command []string
+		count   int
+	}{
+		{
+			name:    "default off leaves encoder argv unchanged",
+			command: append([]string(nil), baseCommand...),
+			count:   0,
+		},
+		{
+			name: "enabled appends exactly one fixed literal",
+			command: append(
+				append([]string(nil), baseCommand...),
+				"--require-complete-source-unit",
+			),
+			count: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dump := filepath.Join(t.TempDir(), "supervisor-argv.bin")
+			supervisor := stubSupervisorArgv(t, dump)
+			launcherArguments := []string{
+				"run",
+				"--scope", "apply_ed25519",
+				"--key-env", "APPLY_SIGNER_TEST_KEY",
+				"--supervisor", supervisor,
+				"--trusted-signing-roots", "/dev/null",
+				"--expected-github-repository", "TheAxiomFoundation/rulespec-uk",
+				"--allowed-workflow-ref", "TheAxiomFoundation/rulespec-uk/.github/workflows/bulk-encode.yml@refs/heads/main",
+				"--allowed-event-name", "workflow_dispatch",
+				"--",
+			}
+			launcherArguments = append(launcherArguments, test.command...)
+			command := exec.Command(applySignerBinary, launcherArguments...)
+			command.Env = append(
+				ciEnvironmentPairs(),
+				"APPLY_SIGNER_TEST_KEY="+seedB64,
+			)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("launcher failed: %v\n%s", err, output)
+			}
+
+			raw, err := os.ReadFile(dump)
+			if err != nil {
+				t.Fatalf("supervisor stub did not run: %v", err)
+			}
+			raw = bytes.TrimSuffix(raw, []byte{0})
+			fields := bytes.Split(raw, []byte{0})
+			got := make([]string, 0, len(fields))
+			for _, field := range fields {
+				got = append(got, string(field))
+			}
+			want := []string{
+				"--apply-signer-fd", "3",
+				"--trusted-signing-roots", "/dev/null",
+				"--",
+			}
+			want = append(want, test.command...)
+			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("supervisor argv mismatch:\n got: %q\nwant: %q", got, want)
+			}
+
+			count := 0
+			for _, argument := range got {
+				if argument == "--require-complete-source-unit" {
+					count++
+				}
+			}
+			if count != test.count {
+				t.Fatalf(
+					"complete-source-unit literal count = %d, want %d in %q",
+					count,
+					test.count,
+					got,
+				)
+			}
+		})
 	}
 }
 
