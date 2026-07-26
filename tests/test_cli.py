@@ -970,9 +970,7 @@ def test_board_and_cli_reject_result_citation_outside_canonical_case(tmp_path):
 
     with pytest.raises(
         ValueError,
-        match=(
-            "not board-admissible.*citation does not match its canonical case path"
-        ),
+        match=("not board-admissible.*citation does not match its canonical case path"),
     ):
         _validated_eval_suite_report_payload(payload)
 
