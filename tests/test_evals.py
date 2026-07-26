@@ -5370,6 +5370,62 @@ def test_run_codex_prompt_eval_records_idle_timeout_threshold(tmp_path):
     assert response.trace["timeout_seconds"] == 300
 
 
+def test_codex_idle_timeout_precedes_longer_case_budget(tmp_path, monkeypatch):
+    runner = parse_runner_spec("codex:gpt-5.4")
+    workspace = prepare_eval_workspace(
+        citation="uksi/2002/1792/schedule/VI/paragraph/4A/1",
+        runner=runner,
+        output_root=tmp_path / "out",
+        source_text="maximum disregard",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "uk"),
+        mode="cold",
+        extra_context_paths=[],
+    )
+    bundle = "=== FILE: example.yaml ===\nformat: rulespec/v1\nrules: []\n"
+    monkeypatch.setattr(evals_module.time, "monotonic", lambda: 100.0)
+
+    class FakePopen:
+        def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+            self.args = cmd
+            self.returncode = None
+            Path(cwd, ".codex-last-message.txt").write_text(bundle)
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    deadline_token = evals_module._EVAL_CASE_DEADLINE_MONOTONIC.set(600.0)
+    timeout_token = evals_module._EVAL_CASE_TIMEOUT_SECONDS.set(500)
+    try:
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                side_effect=subprocess.TimeoutExpired(
+                    cmd=["codex", "exec"],
+                    timeout=300,
+                ),
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+    finally:
+        evals_module._EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+        evals_module._EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+    assert response.timed_out is True
+    assert response.timeout_stage == "encoder"
+    assert response.timeout_reason == "idle"
+    assert response.timeout_seconds == 300
+    assert response.trace["timeout_stage"] == "encoder"
+    assert response.trace["wall_timeout_seconds"] == 500
+    assert response.trace["idle_timeout_seconds"] == 300
+
+
 def test_equal_codex_wall_and_idle_limits_preserve_triggering_reason(tmp_path):
     class NeverCompletes:
         args = ["codex", "exec"]
