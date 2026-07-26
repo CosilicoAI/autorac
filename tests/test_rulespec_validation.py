@@ -5128,17 +5128,14 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     import axiom_oracles.bridges.registry as runtime_registry_module
 
     root = Path(__file__).parents[1]
-    bundled_path = (
-        root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
-    )
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
         Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
     )
     bundled_document = yaml.safe_load(bundled_path.read_text())
     runtime_document = yaml.safe_load(runtime_path.read_text())
     schedule_prefix = (
-        "us-ct:policies/income_tax/"
-        "2026_resident_ordinary_tax_before_personal_credit#"
+        "us-ct:policies/income_tax/2026_resident_ordinary_tax_before_personal_credit#"
     )
 
     def schedule_records(document):
@@ -5212,8 +5209,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
         country="us",
     )
     final_component = registry.mapping_for_legal_id(
-        f"{schedule_prefix}"
-        "ct_pit_2026_resident_ordinary_tax_before_personal_credit",
+        f"{schedule_prefix}ct_pit_2026_resident_ordinary_tax_before_personal_credit",
         country="us",
     )
     fallback = registry.mapping_for_legal_id(
