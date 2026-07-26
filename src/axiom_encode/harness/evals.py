@@ -7488,15 +7488,24 @@ def _run_prompt_eval_with_empty_artifact_retry(
             raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
         materialized_paths: set[Path] = set()
         response = _run_prompt_eval(runner, workspace, prompt)
-        wrote_artifact = _materialize_eval_artifact(
-            response.text,
-            output_file,
-            source_text=source_text,
-            workspace_root=workspace.root,
-            policyengine_rule_hint=policyengine_rule_hint,
+        timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
+            response,
+            output_file=output_file,
             artifact_root=artifact_root,
+            workspace_root=workspace.root,
             materialized_paths=materialized_paths,
         )
+        wrote_artifact = False
+        if not timed_out_attempt:
+            wrote_artifact = _materialize_eval_artifact(
+                response.text,
+                output_file,
+                source_text=source_text,
+                workspace_root=workspace.root,
+                policyengine_rule_hint=policyengine_rule_hint,
+                artifact_root=artifact_root,
+                materialized_paths=materialized_paths,
+            )
         if _discard_artifacts_after_case_budget(
             response,
             output_file=output_file,
@@ -7517,16 +7526,25 @@ def _run_prompt_eval_with_empty_artifact_retry(
         for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
             retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
             retry_count += 1
-            response = _combine_retry_response(response, retry_response, retry_prompt)
-            wrote_artifact = _materialize_eval_artifact(
-                retry_response.text,
-                output_file,
-                source_text=source_text,
-                workspace_root=workspace.root,
-                policyengine_rule_hint=policyengine_rule_hint,
+            timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
+                retry_response,
+                output_file=output_file,
                 artifact_root=artifact_root,
+                workspace_root=workspace.root,
                 materialized_paths=materialized_paths,
             )
+            response = _combine_retry_response(response, retry_response, retry_prompt)
+            wrote_artifact = False
+            if not timed_out_attempt:
+                wrote_artifact = _materialize_eval_artifact(
+                    retry_response.text,
+                    output_file,
+                    source_text=source_text,
+                    workspace_root=workspace.root,
+                    policyengine_rule_hint=policyengine_rule_hint,
+                    artifact_root=artifact_root,
+                    materialized_paths=materialized_paths,
+                )
             if _discard_artifacts_after_case_budget(
                 response,
                 output_file=output_file,
@@ -7543,6 +7561,29 @@ def _run_prompt_eval_with_empty_artifact_retry(
         return response, wrote_artifact, retry_count, frozenset(materialized_paths)
     finally:
         _pause_eval_case_budget()
+
+
+def _discard_artifacts_after_timed_out_attempt(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    workspace_root: Path,
+    materialized_paths: set[Path],
+) -> bool:
+    """Discard incomplete response and workspace artifacts from a timed-out attempt."""
+
+    if response.timed_out is not True:
+        return False
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
+    )
+    materialized_paths.clear()
+    response.text = ""
+    return True
 
 
 def _discard_artifacts_after_case_budget(
@@ -7815,12 +7856,12 @@ def _eval_result_outcome(
     timeout_attempts, timeout_stage, timeout_reason, timeout_seconds = (
         _prompt_response_timeout_evidence(response)
     )
-    terminal_timeout = not wrote_artifact and response.timed_out
+    terminal_timeout = response.timed_out is True
     failure_kind: EvalFailureKind | None
-    if validation_error is not None:
-        failure_kind = "validation"
-    elif terminal_timeout:
+    if terminal_timeout:
         failure_kind = "timeout"
+    elif validation_error is not None:
+        failure_kind = "validation"
     elif response.error is not None or not wrote_artifact:
         failure_kind = "error"
     else:
