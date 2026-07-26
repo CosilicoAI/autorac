@@ -1192,7 +1192,8 @@ module:
 rules: []
 """
 
-    result = _analyze(content, ABSATZ_6, test_cases=[])
+    released_absatz_6 = "(6) " + RELEASED_ESTG_32A_BODY.split("\n(6) ", 1)[1]
+    result = _analyze(content, released_absatz_6, test_cases=[])
 
     assert _has_issue(result, "(6)", "deferral")
     issue = next(
