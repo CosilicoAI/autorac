@@ -7210,7 +7210,13 @@ def _evaluate_generated_artifact_with_repairs(
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
     protected_review_excerpts: frozenset[str] = frozenset(),
 ) -> EvalArtifactMetrics | None:
+    evaluated_states: set[tuple[bytes | None, bytes | None]] = set()
     while True:
+        test_file = _rulespec_test_path(rulespec_file)
+        artifact_state = tuple(
+            path.read_bytes() if path.exists() else None
+            for path in (rulespec_file, test_file)
+        )
         metrics = evaluate_artifact(
             rulespec_file=rulespec_file,
             policy_repo_root=policy_repo_root,
@@ -7229,6 +7235,9 @@ def _evaluate_generated_artifact_with_repairs(
         )
         if metrics is None:
             return None
+        if artifact_state in evaluated_states:
+            return metrics
+        evaluated_states.add(artifact_state)
         repairs = _apply_generated_eval_repairs(
             rulespec_file=rulespec_file,
             policy_repo_root=policy_repo_root,
