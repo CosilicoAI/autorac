@@ -144,11 +144,16 @@ _TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256 = hashlib.sha256(
 
 
 def _test_eval_cli_environment(backend: str) -> evals_module.EvalCliEnvironment:
+    launcher_sha256 = ("c" if backend == "codex" else "a") * 64
+    native_sha256 = ("d" if backend == "codex" else "b") * 64
     return evals_module.EvalCliEnvironment(
         backend=backend,
         executable=f"/verified/bin/{backend}",
         version=f"{backend} 9.9.9",
-        executable_sha256=("c" * 64 if backend == "codex" else None),
+        executable_sha256=launcher_sha256,
+        launcher_sha256=launcher_sha256,
+        native_executable=f"/verified/lib/{backend}",
+        native_sha256=native_sha256,
     )
 
 
@@ -195,6 +200,7 @@ def _test_eval_suite_execution_identity() -> dict[str, object]:
             Path("/tmp/axiom-rules"),
             (),
             parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
 
@@ -18086,7 +18092,7 @@ cases:
 
         identity = _test_eval_suite_execution_identity()
 
-        assert identity["schema"] == "axiom-encode/eval-execution-identity/v4"
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v5"
         assert identity["runner_efforts"] == [
             {
                 "name": "test",
@@ -18137,6 +18143,10 @@ cases:
                     parse_runner_spec("high=codex:gpt-5.6-sol@high"),
                     parse_runner_spec("adaptive=claude:claude-opus-5@max"),
                 ),
+                cli_environments={
+                    "codex": _test_eval_cli_environment("codex"),
+                    "claude": _test_eval_cli_environment("claude"),
+                },
             )
 
         assert identity["runner_efforts"] == [
@@ -18156,6 +18166,84 @@ cases:
                 "uses_receiver_default": False,
             },
         ]
+
+    def test_execution_identity_records_only_exercised_receiver_environments(self):
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            identity = _build_eval_suite_execution_identity(
+                Path("/tmp/axiom-rules"),
+                (),
+                parsed_runners=(
+                    parse_runner_spec("local=codex:gpt-5.4"),
+                    parse_runner_spec("remote=openai:gpt-5.4"),
+                ),
+                cli_environments={
+                    "codex": _test_eval_cli_environment("codex"),
+                    "claude": _test_eval_cli_environment("claude"),
+                },
+            )
+
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v5"
+        assert identity["receiver_environments"] == {
+            "codex": {
+                "cli_version": "codex 9.9.9",
+                "launcher_sha256": "c" * 64,
+                "native_sha256": "d" * 64,
+            }
+        }
+        rendered = json.dumps(identity["receiver_environments"], sort_keys=True)
+        assert "/verified/" not in rendered
+
+    def test_execution_identity_openai_only_has_no_local_receiver_environment(self):
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            identity = _build_eval_suite_execution_identity(
+                Path("/tmp/axiom-rules"),
+                (),
+                parsed_runners=(parse_runner_spec("openai:gpt-5.4"),),
+                cli_environments={
+                    "codex": _test_eval_cli_environment("codex"),
+                    "claude": _test_eval_cli_environment("claude"),
+                },
+            )
+
+        assert identity["receiver_environments"] == {}
+
+    @pytest.mark.parametrize(
+        ("field_name", "replacement"),
+        [
+            ("cli_version", "codex 10.0.0"),
+            ("launcher_sha256", "e" * 64),
+            ("native_sha256", "f" * 64),
+        ],
+    )
+    def test_resume_identity_rejects_changed_receiver_environment(
+        self,
+        field_name,
+        replacement,
+    ):
+        persisted_identity = _test_eval_suite_execution_identity()
+        payload = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+        }
+        current_identity = copy.deepcopy(persisted_identity)
+        current_identity["receiver_environments"]["codex"][field_name] = replacement
+
+        with pytest.raises(ValueError, match="receiver CLI environment"):
+            _validate_eval_suite_execution_identity(payload, current_identity)
 
     def test_resume_identity_rejects_different_requested_effort(self):
         persisted_identity = _test_eval_suite_execution_identity()

@@ -642,9 +642,9 @@ def _bind_result_to_rulespec_root(payload, row_index, root):
 
 def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
-    assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v7"
+    assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v8"
     assert (
-        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v4"
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v5"
     )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
@@ -687,6 +687,67 @@ def test_real_producer_identity_matches_consumer_contract():
     assert identity["runner_timeouts"] == normalized["runner_timeouts"]
     assert identity["timeout_retry_policy"] == normalized["timeout_retry_policy"]
     assert identity["runner_efforts"] == normalized["runner_efforts"]
+
+
+def test_payload_execution_identity_requires_receiver_environments(tmp_path):
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+    )
+    assert "receiver_environments" not in payload["evidence"]["execution_identity"]
+    path = _write_payload(tmp_path, "missing-receiver-environments.json", payload)
+
+    with pytest.raises(EvalBoardError, match="receiver environments"):
+        fold_eval_board([path])
+
+
+def test_normalized_execution_identity_preserves_receiver_digests():
+    identity = _execution_identity()
+    identity["receiver_environments"] = {
+        "codex": {
+            "cli_version": "codex-cli 0.test",
+            "launcher_sha256": "a" * 64,
+            "native_sha256": "b" * 64,
+        }
+    }
+
+    normalized = normalized_execution_identity(identity)
+
+    assert normalized["receiver_environments"] == identity["receiver_environments"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "missing_field"),
+    [
+        ("claude", "claude-fable-5", "claude_cli_launcher_sha256"),
+        ("claude", "claude-fable-5", "claude_cli_native_sha256"),
+        ("codex", "gpt-5.6-terra", "codex_cli_launcher_sha256"),
+        ("codex", "gpt-5.6-terra", "codex_cli_native_sha256"),
+    ],
+)
+def test_fold_requires_local_receiver_launcher_and_native_digests(
+    tmp_path,
+    backend,
+    model,
+    missing_field,
+):
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    for row in results:
+        prefix = f"{backend}_cli"
+        row[f"{prefix}_launcher_sha256"] = "a" * 64
+        row[f"{prefix}_native_sha256"] = "b" * 64
+    results[0].pop(missing_field)
+    path = _write_payload(
+        tmp_path,
+        f"missing-{missing_field}.json",
+        _payload([("runner", backend, model)], results),
+    )
+
+    with pytest.raises(EvalBoardError, match=missing_field):
+        fold_eval_board([path])
 
 
 def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
