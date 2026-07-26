@@ -6210,9 +6210,7 @@ def _complete_typed_year_occurrences(
             and collector.source[span[1]] in ".,"
             and collector.source[span[1] + 1].isdigit()
         )
-        if _TEMPORAL_YEAR_TOKEN_PATTERN.fullmatch(
-            collector.source[span[0] : span[1]]
-        )
+        if _TEMPORAL_YEAR_TOKEN_PATTERN.fullmatch(collector.source[span[0] : span[1]])
     }
     normalized = [
         occurrence
