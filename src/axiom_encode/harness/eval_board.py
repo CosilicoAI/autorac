@@ -37,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from statistics import mean, median
 from typing import Literal
 
@@ -66,6 +66,13 @@ EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v2"
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
+
+# These exact scopes are part of the v3 producer contract. Admission keeps
+# independent literals so a producer scope change cannot silently widen or
+# narrow what an existing board consumer accepts.
+_ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
+_RULESPEC_TOOLCHAIN_PATHSPEC = ".axiom/toolchain.toml"
+_RULESPEC_WAIVER_PATHSPEC = "known-validation-gaps.yaml"
 
 # Location-only identity fields: where a checkout lives never affects scores,
 # so normalized execution identities drop these before comparison.
@@ -414,6 +421,7 @@ def _valid_checkout_execution_identity(
     value: object,
     *,
     require_version: bool,
+    expected_git_pathspecs: tuple[str, ...] | None,
 ) -> bool:
     """Accept exactly the git/tree identity union emitted by the producer."""
 
@@ -433,13 +441,11 @@ def _valid_checkout_execution_identity(
             "working_tree_sha256",
             *version_keys,
         }
-        if frozenset(value) not in {
-            frozenset(required_keys),
-            frozenset(required_keys | {"pathspecs"}),
-        }:
+        if expected_git_pathspecs is not None:
+            required_keys.add("pathspecs")
+        if set(value) != required_keys:
             return False
         origin_repository = value.get("origin_repository")
-        pathspecs = value.get("pathspecs")
         return (
             _is_nonempty_string(value.get("path"))
             and _is_git_object_hex(value.get("commit"))
@@ -447,12 +453,8 @@ def _valid_checkout_execution_identity(
             and type(value.get("dirty")) is bool
             and _is_sha256_hex(value.get("working_tree_sha256"))
             and (
-                "pathspecs" not in value
-                or (
-                    isinstance(pathspecs, list)
-                    and bool(pathspecs)
-                    and all(_is_nonempty_string(pathspec) for pathspec in pathspecs)
-                )
+                expected_git_pathspecs is None
+                or value.get("pathspecs") == list(expected_git_pathspecs)
             )
         )
     if kind == "tree":
@@ -479,6 +481,24 @@ def _valid_checkout_execution_identity(
     return False
 
 
+def _relative_identity_path(path: str, root: str) -> str | None:
+    """Return a lexical child path for either POSIX or Windows identities."""
+
+    path_classes = (
+        (PureWindowsPath, PurePosixPath)
+        if "\\" in path or "\\" in root
+        else (PurePosixPath, PureWindowsPath)
+    )
+    for path_class in path_classes:
+        candidate = path_class(path)
+        parent = path_class(root)
+        try:
+            return candidate.relative_to(parent).as_posix()
+        except ValueError:
+            continue
+    return None
+
+
 def _valid_rulespec_root_execution_identity(value: object) -> bool:
     """Validate the complete RuleSpec root identity before path normalization."""
 
@@ -494,15 +514,33 @@ def _valid_rulespec_root_execution_identity(value: object) -> bool:
     }:
         return False
     file_count = value.get("file_count")
+    path = value.get("path")
+    toolchain_root = value.get("toolchain_root")
+    if not _is_nonempty_string(path) or not _is_nonempty_string(toolchain_root):
+        return False
+    content_pathspec = _relative_identity_path(path, toolchain_root)
+    if content_pathspec is None:
+        return False
+    expected_pathspecs = tuple(
+        dict.fromkeys(
+            (
+                content_pathspec,
+                _RULESPEC_TOOLCHAIN_PATHSPEC,
+                _RULESPEC_WAIVER_PATHSPEC,
+            )
+        )
+    )
+    checkout_identity = value.get("checkout_identity")
     return (
-        _is_nonempty_string(value.get("path"))
-        and value.get("content_state") == "directory"
+        value.get("content_state") == "directory"
         and _is_sha256_hex(value.get("content_sha256"))
         and _is_nonnegative_int(file_count)
-        and _is_nonempty_string(value.get("toolchain_root"))
+        and isinstance(checkout_identity, dict)
+        and checkout_identity.get("path") == toolchain_root
         and _valid_checkout_execution_identity(
-            value.get("checkout_identity"),
+            checkout_identity,
             require_version=False,
+            expected_git_pathspecs=expected_pathspecs,
         )
         and _is_sha256_hex(value.get("toolchain_contract_sha256"))
         and _is_sha256_hex(value.get("validation_waiver_set_sha256"))
@@ -713,10 +751,12 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         or not _valid_checkout_execution_identity(
             axiom_encode,
             require_version=True,
+            expected_git_pathspecs=_ENCODER_GIT_PATHSPECS,
         )
         or not _valid_checkout_execution_identity(
             axiom_rules_engine,
             require_version=False,
+            expected_git_pathspecs=None,
         )
         or not isinstance(rulespec_roots, list)
         or not rulespec_roots
