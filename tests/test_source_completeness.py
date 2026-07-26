@@ -585,6 +585,19 @@ rules: []
     assert _has_issue(result, marker, "source branch")
 
 
+def test_explicit_satz_markers_after_absatz_are_recognized():
+    branches = recognize_source_structure(
+        "(1) Satz 1 Die Hauptregel gilt; Satz 2 Die Sonderregel gilt."
+    )
+
+    assert {
+        branch.path for branch in branches if branch.kind == "sentence"
+    } == {
+        ("1", "satz-1"),
+        ("1", "satz-2"),
+    }
+
+
 def test_imprecise_absatz_deferral_does_not_cover_branch():
     content = """\
 format: rulespec/v1
