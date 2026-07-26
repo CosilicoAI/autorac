@@ -3546,6 +3546,13 @@ class TestCmdEvalSuiteReport:
                 "model": "gpt-5.4",
                 "mode": manifest.mode,
                 "success": True,
+                "error": None,
+                "failure_kind": None,
+                "timed_out": False,
+                "timeout_stage": None,
+                "timeout_reason": None,
+                "timeout_seconds": None,
+                "timeout_attempts": 0,
                 "duration_ms": 1000,
                 "estimated_cost_usd": 0.1,
                 **_write_test_eval_artifacts(tmp_path, "gpt"),
@@ -3564,6 +3571,13 @@ class TestCmdEvalSuiteReport:
                 "model": "opus",
                 "mode": manifest.mode,
                 "success": True,
+                "error": None,
+                "failure_kind": None,
+                "timed_out": False,
+                "timeout_stage": None,
+                "timeout_reason": None,
+                "timeout_seconds": None,
+                "timeout_attempts": 0,
                 "duration_ms": 2000,
                 "estimated_cost_usd": 0.2,
                 **_write_test_eval_artifacts(tmp_path, "claude"),
@@ -3599,7 +3613,7 @@ class TestCmdEvalSuiteReport:
         payload = _build_eval_suite_payload(
             manifest=manifest,
             effective_runners=effective_runners,
-            results=results,
+            results=verified_results,
             readiness={
                 runner: summarize_readiness(runner_results, manifest.gates)
                 for runner, runner_results in grouped_results.items()
