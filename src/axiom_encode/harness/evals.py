@@ -7137,50 +7137,38 @@ def _evaluate_generated_artifact_with_repairs(
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
+    protected_review_excerpts: frozenset[str] = frozenset(),
 ) -> EvalArtifactMetrics | None:
-    metrics = evaluate_artifact(
-        rulespec_file=rulespec_file,
-        policy_repo_root=policy_repo_root,
-        axiom_rules_path=axiom_rules_path,
-        source_text=source_text,
-        oracle=oracle,
-        policyengine_runtime=policyengine_runtime,
-        policyengine_rule_hint=policyengine_rule_hint,
-        skip_reviewers=skip_reviewers,
-        source_metadata=source_metadata,
-        local_corpus_release=local_corpus_release,
-        source_citation_path=source_citation_path,
-        rulespec_dependency_roots=rulespec_dependency_roots,
-        require_complete_source_unit=require_complete_source_unit,
-        amendment_documents=amendment_documents,
-    )
-    if metrics is None:
-        return None
-    repairs = _apply_generated_eval_repairs(
-        rulespec_file=rulespec_file,
-        policy_repo_root=policy_repo_root,
-        axiom_rules_path=axiom_rules_path,
-        issues=metrics.ci_issues,
-        rulespec_dependency_roots=rulespec_dependency_roots,
-    )
-    if not repairs:
-        return metrics
-    return evaluate_artifact(
-        rulespec_file=rulespec_file,
-        policy_repo_root=policy_repo_root,
-        axiom_rules_path=axiom_rules_path,
-        source_text=source_text,
-        oracle=oracle,
-        policyengine_runtime=policyengine_runtime,
-        policyengine_rule_hint=policyengine_rule_hint,
-        skip_reviewers=skip_reviewers,
-        source_metadata=source_metadata,
-        local_corpus_release=local_corpus_release,
-        source_citation_path=source_citation_path,
-        rulespec_dependency_roots=rulespec_dependency_roots,
-        require_complete_source_unit=require_complete_source_unit,
-        amendment_documents=amendment_documents,
-    )
+    while True:
+        metrics = evaluate_artifact(
+            rulespec_file=rulespec_file,
+            policy_repo_root=policy_repo_root,
+            axiom_rules_path=axiom_rules_path,
+            source_text=source_text,
+            oracle=oracle,
+            policyengine_runtime=policyengine_runtime,
+            policyengine_rule_hint=policyengine_rule_hint,
+            skip_reviewers=skip_reviewers,
+            source_metadata=source_metadata,
+            local_corpus_release=local_corpus_release,
+            source_citation_path=source_citation_path,
+            rulespec_dependency_roots=rulespec_dependency_roots,
+            require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=amendment_documents,
+        )
+        if metrics is None:
+            return None
+        repairs = _apply_generated_eval_repairs(
+            rulespec_file=rulespec_file,
+            policy_repo_root=policy_repo_root,
+            axiom_rules_path=axiom_rules_path,
+            issues=metrics.ci_issues,
+            local_corpus_release=local_corpus_release,
+            protected_review_excerpts=protected_review_excerpts,
+            rulespec_dependency_roots=rulespec_dependency_roots,
+        )
+        if not repairs:
+            return metrics
 
 
 _EVAL_COMPANION_REPAIR_MARKERS = (
@@ -7202,6 +7190,8 @@ def _apply_generated_eval_repairs(
     policy_repo_root: Path,
     axiom_rules_path: Path,
     issues: list[str],
+    local_corpus_release: _corpus_resolver.LocalCorpusRelease,
+    protected_review_excerpts: frozenset[str] = frozenset(),
     rulespec_dependency_roots: Sequence[Path] = (),
 ) -> list[str]:
     """Apply deterministic generated-artifact repairs before final eval scoring."""
@@ -7210,6 +7200,30 @@ def _apply_generated_eval_repairs(
     repairs.extend(f"proof_import:{name}" for name in proof_repairs)
     unused_import_repairs = _prune_unused_imports_from_file(rulespec_file, issues)
     repairs.extend(f"unused_import:{name}" for name in unused_import_repairs)
+
+    cli_helpers = None
+    if any("Proof source evidence not found:" in str(issue) for issue in issues):
+        # Import lazily to avoid the startup cycle: cli imports this module.
+        from axiom_encode import cli as cli_helpers
+
+        attempted_refs = list(cli_helpers._nonexact_proof_excerpt_targets(issues))
+        reanchored_excerpts = cli_helpers._try_repair_generated_nonexact_proof_excerpts(
+            rulespec_file,
+            corpus_release=local_corpus_release,
+            issues=issues,
+            protected_review_excerpts=set(protected_review_excerpts),
+        )
+        repairs.extend(
+            f"proof_excerpt:{reference}" for reference in reanchored_excerpts
+        )
+        if attempted_refs:
+            repair_log = ",".join(reanchored_excerpts)
+            if not repair_log:
+                repair_log = "none;attempted=" + ",".join(
+                    f"{rule_name}[{atom_index}]"
+                    for rule_name, atom_index in attempted_refs
+                )
+            print("  auto_reanchored_proof_excerpts:" + repair_log)
 
     companion_issues = [
         issue
@@ -7226,7 +7240,8 @@ def _apply_generated_eval_repairs(
 
     # Reuse the CLI's deterministic companion-test repair helpers lazily to
     # avoid an import cycle: cli imports this module during startup.
-    from axiom_encode import cli as cli_helpers
+    if cli_helpers is None:
+        from axiom_encode import cli as cli_helpers
 
     scalar_relation_issues = []
     for issue in companion_issues:
@@ -8003,6 +8018,9 @@ def _run_single_eval(
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
             amendment_documents=source_unit.amendment_documents,
+            protected_review_excerpts=_workspace_quoted_review_finding_excerpts(
+                workspace
+            ),
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8228,6 +8246,9 @@ def _run_single_source_eval(
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
             amendment_documents=amendment_documents,
+            protected_review_excerpts=_workspace_quoted_review_finding_excerpts(
+                workspace
+            ),
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8767,6 +8788,24 @@ def _canonical_target_ref_jurisdiction(
 def _rulespec_test_path(path: Path) -> Path:
     """Return the companion RuleSpec test path for a RuleSpec file."""
     return path.with_name(f"{path.stem}.test.yaml")
+
+
+def _workspace_quoted_review_finding_excerpts(
+    workspace: EvalWorkspace,
+) -> frozenset[str]:
+    """Return quoted phrases whose verbatim review wording must not broaden."""
+    excerpts: set[str] = set()
+    for item in workspace.review_findings_files:
+        findings_text = (workspace.root / item.workspace_path).read_text()
+        excerpts.update(
+            match.group("excerpt").strip()
+            for match in re.finditer(
+                r'"(?P<excerpt>[^"]+)"',
+                findings_text,
+            )
+            if match.group("excerpt").strip()
+        )
+    return frozenset(excerpts)
 
 
 def _format_mandatory_review_findings(workspace: EvalWorkspace) -> str:

@@ -20856,6 +20856,10 @@ rules:
             cmd_encode(args)
 
         assert exc_info.value.code == 0
+        assert (
+            "apply=auto_reanchored_proof_excerpts:two_children[0]"
+            in capsys.readouterr().out
+        )
         assert mock_overlay.call_count == 3
         assert mock_excerpt_repair.call_count == 2
         assert all(
@@ -20865,6 +20869,10 @@ rules:
         mock_apply.assert_called_once()
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
         assert run.outcome["auto_repaired_nonexact_proof_excerpts"] == [
+            "two_children[0]",
+            "no_children[0]",
+        ]
+        assert run.outcome["auto_reanchored_proof_excerpts"] == [
             "two_children[0]",
             "no_children[0]",
         ]

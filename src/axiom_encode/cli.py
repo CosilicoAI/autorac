@@ -26722,6 +26722,7 @@ def _run_encode_attempt(
             if not can_apply:
                 repaired_excerpts: list[str] = []
                 while not can_apply:
+                    attempted_refs = list(_nonexact_proof_excerpt_targets(apply_issues))
                     repaired_refs = (
                         _try_repair_generated_nonexact_proof_excerpts_for_apply(
                             result,
@@ -26731,14 +26732,19 @@ def _run_encode_attempt(
                             protected_review_excerpts=protected_review_excerpts,
                         )
                     )
+                    if attempted_refs:
+                        repair_log = ",".join(repaired_refs)
+                        if not repair_log:
+                            repair_log = "none;attempted=" + ",".join(
+                                f"{rule_name}[{atom_index}]"
+                                for rule_name, atom_index in attempted_refs
+                            )
+                        print("  apply=auto_reanchored_proof_excerpts:" + repair_log)
                     if not repaired_refs:
                         break
                     repaired_excerpts.extend(repaired_refs)
                     outcome["auto_repaired_nonexact_proof_excerpts"] = repaired_excerpts
-                    print(
-                        "  apply=auto_repaired_nonexact_proof_excerpts:"
-                        + ",".join(repaired_refs)
-                    )
+                    outcome["auto_reanchored_proof_excerpts"] = repaired_excerpts
                     can_apply, apply_issues, supplemental_files = (
                         _validate_generated_encoding_in_policy_overlay(
                             result,
@@ -26753,6 +26759,7 @@ def _run_encode_attempt(
                     outcome["overlay_validation_success"] = bool(can_apply)
                 if repaired_excerpts:
                     outcome["auto_repaired_nonexact_proof_excerpts"] = repaired_excerpts
+                    outcome["auto_reanchored_proof_excerpts"] = repaired_excerpts
             if not can_apply:
                 repaired_hashes = _try_repair_generated_proof_import_hashes_for_apply(
                     result,
@@ -33441,6 +33448,25 @@ _NONEXACT_PROOF_EXCERPT_ISSUE_PATTERN = re.compile(
     r"Proof source evidence not found: rule `(?P<rule>[^`]+)` proof atom "
     r"(?P<atom>\d+) `source\.excerpt`"
 )
+
+
+def _nonexact_proof_excerpt_targets(
+    issues: Sequence[str],
+) -> dict[tuple[str, int], bool]:
+    """Return proof atoms eligible for exact-source excerpt re-anchoring."""
+    targets: dict[tuple[str, int], bool] = {}
+    for issue in issues:
+        issue_text = str(issue)
+        match = _NONEXACT_PROOF_EXCERPT_ISSUE_PATTERN.search(issue_text)
+        if match is None:
+            continue
+        target = (match.group("rule"), int(match.group("atom")))
+        targets[target] = targets.get(target, False) or (
+            "outside the rule's declared subsection scope" in issue_text
+        )
+    return targets
+
+
 _PROOF_EXCERPT_TOKEN_STOPWORDS = frozenset(
     {
         "a",
@@ -34090,28 +34116,37 @@ def _try_repair_generated_nonexact_proof_excerpts_for_apply(
     protected_review_excerpts: set[str] | None = None,
 ) -> list[str]:
     """Align near-match generated proof excerpts to their exact cited source text."""
-    protected_normalized = {
-        _normalized_proof_excerpt(excerpt)
-        for excerpt in (protected_review_excerpts or set())
-    }
-    targets: dict[tuple[str, int], bool] = {}
-    for issue in issues:
-        issue_text = str(issue)
-        match = _NONEXACT_PROOF_EXCERPT_ISSUE_PATTERN.search(issue_text)
-        if match is None:
-            continue
-        target = (match.group("rule"), int(match.group("atom")))
-        targets[target] = targets.get(target, False) or (
-            "outside the rule's declared subsection scope" in issue_text
-        )
-    if not targets:
-        return []
     try:
         _relative_generated_output_path(result, output_root=output_root)
     except RuntimeError:
         return []
 
     rules_file = Path(str(getattr(result, "output_file", "") or ""))
+    return _try_repair_generated_nonexact_proof_excerpts(
+        rules_file,
+        corpus_release=corpus_release,
+        issues=issues,
+        protected_review_excerpts=protected_review_excerpts,
+    )
+
+
+def _try_repair_generated_nonexact_proof_excerpts(
+    rules_file: Path,
+    *,
+    corpus_release: LocalCorpusRelease | None = None,
+    issues: list[str],
+    protected_review_excerpts: set[str] | None = None,
+) -> list[str]:
+    """Align cited proof excerpts in one generated RuleSpec to exact source text."""
+    protected_normalized = {
+        _normalized_proof_excerpt(excerpt)
+        for excerpt in (protected_review_excerpts or set())
+    }
+    targets = _nonexact_proof_excerpt_targets(issues)
+    if not targets:
+        return []
+
+    rules_file = Path(rules_file)
     if not rules_file.exists():
         return []
     try:

@@ -7046,6 +7046,7 @@ rules:
             ),
         )
         metrics = SimpleNamespace(ci_issues=["repairable"])
+        protected_review_excerpts = frozenset({"Preserve this exact phrase"})
         with (
             patch(
                 "axiom_encode.harness.evals.evaluate_artifact",
@@ -7053,8 +7054,8 @@ rules:
             ) as mock_evaluate,
             patch(
                 "axiom_encode.harness.evals._apply_generated_eval_repairs",
-                return_value=["companion-test-repair"],
-            ),
+                side_effect=[["companion-test-repair"], []],
+            ) as mock_repair,
         ):
             result = _evaluate_generated_artifact_with_repairs(
                 rulespec_file=tmp_path / "artifact.yaml",
@@ -7064,6 +7065,7 @@ rules:
                 local_corpus_release=object(),
                 require_complete_source_unit=True,
                 amendment_documents=(amendment,),
+                protected_review_excerpts=protected_review_excerpts,
             )
 
         assert result is metrics
@@ -7071,6 +7073,216 @@ rules:
         assert all(
             call.kwargs["amendment_documents"] == (amendment,)
             for call in mock_evaluate.call_args_list
+        )
+        assert all(
+            call.kwargs["protected_review_excerpts"] == protected_review_excerpts
+            for call in mock_repair.call_args_list
+        )
+
+    def test_generated_eval_reanchors_same_and_amendment_document_proofs(
+        self, capsys, tmp_path
+    ):
+        current_citation = "de/statute/estg/32a"
+        amendment_citation = (
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        current_source = (
+            "5. von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ "
+            "ist ein Zehntausendstel"
+        )
+        amendment_source = (
+            "Sie beträgt ab dem Veranlagungszeitraum 2025 für zu versteuernde "
+            "Einkommen 1. bis 12 096 Euro (Grundfreibetrag): 0;"
+        )
+        rulespec_file = tmp_path / "generated" / "statutes" / "estg" / "32a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            yaml.safe_dump(
+                {
+                    "format": "rulespec/v1",
+                    "rules": [
+                        {
+                            "name": "fifth_band_rate",
+                            "kind": "parameter",
+                            "metadata": {
+                                "proof": {
+                                    "atoms": [
+                                        {
+                                            "path": "versions[0].formula",
+                                            "kind": "parameter",
+                                            "source": {
+                                                "corpus_citation_path": (
+                                                    current_citation
+                                                ),
+                                                "excerpt": (
+                                                    "5. von 277 826 Euro an: 0,45 "
+                                                    "* x - 19 470,38. 3 Die Grosse "
+                                                    '"y" ist ein Zehntausendstel'
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            },
+                            "versions": [
+                                {
+                                    "effective_from": "2026-01-01",
+                                    "formula": 0.45,
+                                }
+                            ],
+                        },
+                        {
+                            "name": "basic_allowance_upper_income",
+                            "kind": "parameter",
+                            "metadata": {
+                                "proof": {
+                                    "atoms": [
+                                        {
+                                            "path": "versions[0].formula",
+                                            "kind": "parameter",
+                                            "source": {
+                                                "corpus_citation_path": (
+                                                    amendment_citation
+                                                ),
+                                                "excerpt": (
+                                                    "Sie beträgt ab dem "
+                                                    "Veranlagungszeitraum 2025 für "
+                                                    "zu versteuernde Einkommen 1. "
+                                                    "bis 12 096 Euro "
+                                                    "(Grundfreibetrag):0;"
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            },
+                            "versions": [
+                                {
+                                    "effective_from": "2025-01-01",
+                                    "formula": 12096,
+                                }
+                            ],
+                        },
+                    ],
+                },
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        )
+        fifth_band_issue = (
+            "Proof source evidence not found: rule `fifth_band_rate` proof "
+            "atom 0 `source.excerpt` does not appear in "
+            f"`{current_citation}`."
+        )
+        basic_allowance_issue = (
+            "Proof source evidence not found: rule "
+            "`basic_allowance_upper_income` proof atom 0 `source.excerpt` "
+            f"does not appear in `{amendment_citation}`."
+        )
+        before = SimpleNamespace(ci_issues=[fifth_band_issue])
+        after_first_repair = SimpleNamespace(ci_issues=[basic_allowance_issue])
+        after = SimpleNamespace(ci_issues=[], ci_pass=True)
+        release = object()
+        requested_paths = []
+
+        def source_for_citation(citation_path, *, corpus_release):
+            requested_paths.append((citation_path, corpus_release))
+            return {
+                current_citation: current_source,
+                amendment_citation: amendment_source,
+            }[citation_path]
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                side_effect=[before, after_first_repair, after],
+            ) as mock_evaluate,
+            patch(
+                "axiom_encode.cli._local_source_text_for_corpus_path",
+                side_effect=source_for_citation,
+            ),
+        ):
+            result = _evaluate_generated_artifact_with_repairs(
+                rulespec_file=rulespec_file,
+                policy_repo_root=tmp_path / "rulespec-de",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text=current_source,
+                local_corpus_release=release,
+                skip_reviewers=True,
+            )
+
+        repaired = yaml.safe_load(rulespec_file.read_text())
+        repaired_sources = [
+            rule["metadata"]["proof"]["atoms"][0]["source"]
+            for rule in repaired["rules"]
+        ]
+        assert result is after
+        assert mock_evaluate.call_count == 3
+        assert requested_paths == [
+            (current_citation, release),
+            (amendment_citation, release),
+        ]
+        assert repaired_sources[0]["excerpt"] == current_source
+        assert repaired_sources[1]["excerpt"] == amendment_source
+        output = capsys.readouterr().out
+        assert "auto_reanchored_proof_excerpts:fifth_band_rate[0]" in output
+        assert (
+            "auto_reanchored_proof_excerpts:basic_allowance_upper_income[0]" in output
+        )
+
+    def test_generated_eval_logs_failed_closed_reanchor_attempt(self, capsys, tmp_path):
+        citation = "de/statute/estg/32a"
+        rulespec_file = tmp_path / "generated" / "statutes" / "estg" / "32a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        original = """format: rulespec/v1
+rules:
+- name: fifth_band_rate
+  kind: parameter
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: de/statute/estg/32a
+          excerpt: The reduction rate is 5 percent.
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 0.05
+"""
+        rulespec_file.write_text(original)
+        issue = (
+            "Proof source evidence not found: rule `fifth_band_rate` proof "
+            "atom 0 `source.excerpt` does not appear in "
+            f"`{citation}`."
+        )
+        metrics = SimpleNamespace(ci_issues=[issue])
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                return_value=metrics,
+            ) as mock_evaluate,
+            patch(
+                "axiom_encode.cli._local_source_text_for_corpus_path",
+                return_value="The annual amount is 277 826 Euro.",
+            ),
+        ):
+            result = _evaluate_generated_artifact_with_repairs(
+                rulespec_file=rulespec_file,
+                policy_repo_root=tmp_path / "rulespec-de",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text="The annual amount is 277 826 Euro.",
+                local_corpus_release=object(),
+                skip_reviewers=True,
+            )
+
+        assert result is metrics
+        mock_evaluate.assert_called_once()
+        assert rulespec_file.read_text() == original
+        assert (
+            "auto_reanchored_proof_excerpts:"
+            "none;attempted=fifth_band_rate[0]" in capsys.readouterr().out
         )
 
     def test_generated_eval_repairs_unreferenced_proof_imports(self, tmp_path):
