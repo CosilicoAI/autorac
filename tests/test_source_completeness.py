@@ -1957,6 +1957,32 @@ def test_complete_companion_suite_covers_source_controls():
 """,
         ),
         (
+            (
+                "(1) Der Zuschlag beträgt 259 Euro für Einkommen bis "
+                "einschließlich 100 Euro."
+            ),
+            """\
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+""",
+        ),
+        (
+            (
+                "(1) Der Zuschlag beträgt 259 Euro für Einkommen bis "
+                "maximal 100 Euro."
+            ),
+            """\
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+""",
+        ),
+        (
             "(1) Der Zuschlag beträgt 259 Euro, außer bei einer Befreiung.",
             "",
         ),
@@ -4794,6 +4820,18 @@ def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
             False,
             "income <= income_limit",
         ),
+        (
+            "bis einschließlich 100 Euro",
+            "income <= income_limit",
+            True,
+            "income >= income_limit",
+        ),
+        (
+            "bis maximal 100 Euro",
+            "income <= income_limit",
+            True,
+            "income >= income_limit",
+        ),
     ],
 )
 def test_boundary_comparator_preserves_direction_and_inclusivity(
@@ -7484,10 +7522,19 @@ rules:
     assert not result.issues
 
 
-def test_unrelated_source_citation_cannot_authenticate_typed_deferral():
-    source = (
-        "(1) Der Betrag ist Einkommen * 2. Unberührt bleibt § 26."
-    )
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Der Betrag ist Einkommen * 2. Unberührt bleibt § 26.",
+        (
+            "(1) Der Betrag ist Einkommen * 2. "
+            "§ 26 regelt ausschließlich das Inkrafttreten."
+        ),
+    ],
+)
+def test_unrelated_source_citation_cannot_authenticate_typed_deferral(
+    source: str,
+):
     content = """\
 format: rulespec/v1
 module:
