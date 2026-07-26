@@ -741,6 +741,85 @@ def test_fold_refuses_execution_identity_without_core_field(tmp_path, field_name
         fold_eval_board([path])
 
 
+def test_fold_refuses_path_only_engine_identities_that_normalize_equal(tmp_path):
+    left_identity = _execution_identity()
+    left_identity["axiom_rules_engine"] = {"path": "/engine/left"}
+    right_identity = _execution_identity()
+    right_identity["axiom_rules_engine"] = {"path": "/engine/right"}
+    left = _write_payload(
+        tmp_path,
+        "left-path-only-engine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=left_identity,
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right-path-only-engine.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=right_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([left, right])
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "path",
+        "content_state",
+        "content_sha256",
+        "file_count",
+        "toolchain_root",
+        "checkout_identity",
+        "toolchain_contract_sha256",
+        "validation_waiver_set_sha256",
+    ],
+)
+def test_fold_refuses_rulespec_root_without_required_identity_field(
+    tmp_path,
+    field_name,
+):
+    identity = _execution_identity()
+    identity["rulespec_roots"][0].pop(field_name)
+    path = _write_payload(
+        tmp_path,
+        f"missing-rulespec-root-{field_name}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_policyengine_runtime_wrapper_digest_mismatch(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    runtime["sha256"] = "99" * 32
+    identity = _execution_identity(policyengine_runtime=runtime)
+    path = _write_payload(
+        tmp_path,
+        "stale-policyengine-wrapper-digest.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_execution_identity_without_timeout_retry_policy(tmp_path):
     identity = _execution_identity()
     identity.pop("timeout_retry_policy")
