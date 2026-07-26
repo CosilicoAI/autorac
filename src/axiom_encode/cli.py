@@ -39685,13 +39685,35 @@ def _apply_result_metadata(result) -> dict[str, object]:
 
 def _result_codex_cli_provenance(result) -> tuple[str | None, str | None]:
     version = getattr(result, "codex_cli_version", None)
-    digest = getattr(result, "codex_cli_sha256", None)
+    launcher_digest = getattr(result, "codex_cli_launcher_sha256", None)
+    native_digest = getattr(result, "codex_cli_native_sha256", None)
+    legacy_digest = getattr(result, "codex_cli_sha256", None)
     # Test doubles and legacy result objects expose arbitrary/missing attributes;
     # both absent means the unchanged API/non-Codex path.
-    if not isinstance(version, str) and not isinstance(digest, str):
+    if (
+        not isinstance(version, str)
+        and not isinstance(native_digest, str)
+        and not isinstance(legacy_digest, str)
+    ):
         return None, None
     if not isinstance(version, str) or not version.strip():
         raise RuntimeError("Codex CLI provenance has no canonical version")
+
+    if isinstance(native_digest, str):
+        if re.fullmatch(r"[0-9a-f]{64}", native_digest) is None:
+            raise RuntimeError("Codex CLI provenance has no canonical native sha256")
+        if (
+            not isinstance(launcher_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", launcher_digest) is None
+        ):
+            raise RuntimeError("Codex CLI provenance has no canonical launcher sha256")
+        if isinstance(legacy_digest, str) and legacy_digest != native_digest:
+            raise RuntimeError("Codex CLI provenance digests disagree")
+        # The applied-manifest v5 contract retains its historical field name.
+        # Project the receiver digest into that field, never the launcher digest.
+        return version.strip(), native_digest
+
+    digest = legacy_digest
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise RuntimeError("Codex CLI provenance has no canonical sha256")
     return version.strip(), digest
