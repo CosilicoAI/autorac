@@ -3,5 +3,6 @@ paths, subprocess capture paths, and path-bearing capture errors, and
 deterministically orders validation issues, including compile-timeout commands
 and executable-test timeouts.
 Staging roots normalize at quotes, commas, parentheses, and other punctuation
-boundaries without rewriting longer ASCII or Unicode path-prefix tokens, so
-repeated validation of one artifact produces identical metrics.
+boundaries without rewriting longer ASCII, composed Unicode, or decomposed
+Unicode path-prefix tokens, so repeated validation of one artifact produces
+identical metrics.
