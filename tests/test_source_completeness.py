@@ -7372,3 +7372,60 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "rounding_text",
+    [
+        "auf volle Euro gerundet",
+        "auf volle Euro zu runden",
+    ],
+)
+def test_generic_german_rounding_requires_nearest_rounding_and_fractional_proof(
+    rounding_text: str,
+):
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und ist "
+        f"{rounding_text}."
+    )
+    unrounded = _single_rounding_content("income * multiplier")
+    rounded = _single_rounding_content(
+        "floor(income * multiplier + 0.5)",
+    )
+    fractional_case = {
+        "name": "nearest fractional result",
+        "period": "2026",
+        "input": {"income": 10.25},
+        "output": {"amount": 21},
+    }
+    integral_case = {
+        "name": "integral result only",
+        "period": "2026",
+        "input": {"income": 10},
+        "output": {"amount": 20},
+    }
+
+    missing_operator = _analyze(
+        unrounded,
+        source,
+        test_cases=[
+            {
+                **fractional_case,
+                "output": {"amount": 20.5},
+            }
+        ],
+    )
+    missing_fractional_proof = _analyze(
+        rounded,
+        source,
+        test_cases=[integral_case],
+    )
+    complete = _analyze(
+        rounded,
+        source,
+        test_cases=[fractional_case],
+    )
+
+    assert _has_issue(missing_operator, "rounding", "principal formula")
+    assert _has_issue(missing_fractional_proof, "rounding", "fractional")
+    assert not complete.issues
