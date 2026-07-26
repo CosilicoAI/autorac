@@ -7489,6 +7489,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
             response,
             output_file=output_file,
             artifact_root=artifact_root,
+            workspace_root=workspace.root,
             materialized_paths=materialized_paths,
         ):
             return response, False, 0, frozenset()
@@ -7518,6 +7519,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 response,
                 output_file=output_file,
                 artifact_root=artifact_root,
+                workspace_root=workspace.root,
                 materialized_paths=materialized_paths,
             ):
                 wrote_artifact = False
@@ -7536,6 +7538,7 @@ def _discard_artifacts_after_case_budget(
     *,
     output_file: Path,
     artifact_root: Path | None,
+    workspace_root: Path,
     materialized_paths: set[Path],
 ) -> bool:
     """Discard artifacts whose generation/materialization crossed the deadline."""
@@ -7545,6 +7548,11 @@ def _discard_artifacts_after_case_budget(
         return False
 
     _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
+    )
     materialized_paths.clear()
     timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
     if timeout_seconds is None:  # pragma: no cover - active deadline invariant
