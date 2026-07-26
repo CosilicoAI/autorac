@@ -5002,6 +5002,62 @@ def test_policyengine_registry_is_legal_id_keyed():
     )
 
 
+def test_packaged_kentucky_2026_oracle_registry_and_pin_are_synchronized():
+    root = Path(__file__).parents[1]
+    document = yaml.safe_load(
+        (root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml").read_text()
+    )
+    records = {
+        item["legal_id"]: item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith("us-ky:policies/income_tax/2026_")
+    }
+    source_hold_prefix = (
+        "us-ky:policies/income_tax/2026_full_year_resident_source_hold#"
+    )
+    source_holds = {
+        legal_id: item
+        for legal_id, item in records.items()
+        if legal_id.startswith(source_hold_prefix)
+    }
+    schedule_prefix = (
+        "us-ky:policies/income_tax/2026_krs_141_020_schedule_before_credits#"
+    )
+    schedule = {
+        legal_id.removeprefix(schedule_prefix): item
+        for legal_id, item in records.items()
+        if legal_id.startswith(schedule_prefix)
+    }
+
+    assert len(source_holds) == 15
+    assert {item["mapping_type"] for item in source_holds.values()} == {
+        "not_comparable"
+    }
+    assert {item["candidate_priority"] for item in source_holds.values()} == {"P4"}
+    assert set(schedule) == {
+        "ky_pit_2026_krs_141_020_rate",
+        "ky_pit_2026_krs_141_020_net_income_boundary",
+        "ky_pit_2026_krs_141_020_schedule_before_credits",
+    }
+    assert (
+        schedule["ky_pit_2026_krs_141_020_rate"]["policyengine_parameter"]
+        == "gov.states.ky.tax.income.rate"
+    )
+    assert (
+        schedule["ky_pit_2026_krs_141_020_schedule_before_credits"][
+            "policyengine_variable"
+        ]
+        == "ky_income_tax_before_non_refundable_credits_unit"
+    )
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
 def test_policyengine_registry_classifies_medicaid_435_120_helpers_not_comparable():
     registry = load_policyengine_registry()
 
