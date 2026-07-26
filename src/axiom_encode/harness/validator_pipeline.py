@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from calendar import monthrange
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -5764,13 +5765,42 @@ def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
     )
 
 
-def _iter_locale_numeric_envelopes(text: str) -> Iterator[tuple[int, int]]:
+def _de_glued_sentence_marker_end(text: str, dot_index: int) -> int | None:
+    """Return the end of a juris ``.3Die``-style marker prefix, if present."""
+    if dot_index >= len(text) or text[dot_index] != ".":
+        return None
+
+    marker_end = dot_index + 1
+    digit_count = 0
+    while marker_end < len(text) and digit_count < 2 and text[marker_end].isdecimal():
+        marker_end += 1
+        digit_count += 1
+
+    if (
+        digit_count > 0
+        and marker_end < len(text)
+        and unicodedata.category(text[marker_end]) == "Lu"
+    ):
+        return marker_end
+    return None
+
+
+def _iter_locale_numeric_envelopes(
+    text: str,
+    *,
+    profile: str,
+) -> Iterator[tuple[int, int]]:
     """Reserve each complete numeric-looking span before locale validation."""
     occupied_until = 0
     for digit_match in re.finditer(r"\d", text):
         digit_start = digit_match.start()
         if digit_start < occupied_until:
             continue
+        if profile == "de-DE" and digit_start > 0 and text[digit_start - 1] == ".":
+            marker_end = _de_glued_sentence_marker_end(text, digit_start - 1)
+            if marker_end is not None:
+                occupied_until = marker_end
+                continue
 
         start = digit_start
         while start > 0 and text[start - 1] in ".,":
@@ -5791,12 +5821,18 @@ def _iter_locale_numeric_envelopes(text: str) -> Iterator[tuple[int, int]]:
 
         index = digit_start
         exponent_seen = False
+        reserved_until = 0
         while index < len(text):
             char = text[index]
             if char.isdigit():
                 index += 1
                 continue
             if char in ".,":
+                if profile == "de-DE" and char == ".":
+                    marker_end = _de_glued_sentence_marker_end(text, index)
+                    if marker_end is not None:
+                        reserved_until = marker_end
+                        break
                 separator_end = index
                 while separator_end < len(text) and text[separator_end] in ".,":
                     separator_end += 1
@@ -5826,7 +5862,7 @@ def _iter_locale_numeric_envelopes(text: str) -> Iterator[tuple[int, int]]:
                 continue
             break
 
-        occupied_until = index
+        occupied_until = max(index, reserved_until)
         yield start, index
 
 
@@ -5935,7 +5971,7 @@ def _has_malformed_profiled_numeric_envelope(
         _locale_numeric_envelope_has_token_boundaries(cleaned, span)
         and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
         is None
-        for span in _iter_locale_numeric_envelopes(cleaned)
+        for span in _iter_locale_numeric_envelopes(cleaned, profile=profile)
     )
 
 
@@ -5950,7 +5986,7 @@ def _tokenize_profiled_numeric_occurrences(
     collector = _LegacyNumericCollector(text)
     occurrences: list[NumericOccurrence] = []
 
-    for span in _iter_locale_numeric_envelopes(cleaned):
+    for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
         if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
             continue
         value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)

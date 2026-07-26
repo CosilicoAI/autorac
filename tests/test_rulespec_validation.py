@@ -7758,6 +7758,20 @@ _GERMAN_SECTION_32A_FORMULA_TEXT = (
     ":0,42 \u2022 x \u2013 11 135,63;\n"
     ":0,45 \u2022 x \u2013 19 470,38."
 )
+_GERMAN_SECTION_32A_RELEASED_BODY = """(1) 1Die tarifliche Einkommensteuer bemisst sich nach dem auf volle Euro abgerundeten zu versteuernden Einkommen. 2Sie beträgt ab dem Veranlagungszeitraum 2026 vorbehaltlich der §§ 32b, 32d, 34, 34a, 34b und 34c jeweils in Euro für zu versteuernde Einkommen
+1. bis 12 348 Euro (Grundfreibetrag):0;
+2. von 12 349 Euro bis 17 799 Euro:(914,51 • y + 1 400) • y;
+3. von 17 800 Euro bis 69 878 Euro:(173,10 • z + 2 397) • z + 1 034,87;
+4. von 69 879 Euro bis 277 825 Euro:0,42 • x – 11 135,63;
+5. von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ ist ein Zehntausendstel des den Grundfreibetrag übersteigenden Teils des auf einen vollen Euro-Betrag abgerundeten zu versteuernden Einkommens. 4Die Größe „z“ ist ein Zehntausendstel des 17 799 Euro übersteigenden Teils des auf einen vollen Euro-Betrag abgerundeten zu versteuernden Einkommens. 5Die Größe „x“ ist das auf einen vollen Euro-Betrag abgerundete zu versteuernde Einkommen. 6Der sich ergebende Steuerbetrag ist auf den nächsten vollen Euro-Betrag abzurunden.
+(2) bis (4) (weggefallen)
+(5) Bei Ehegatten, die nach den §§ 26, 26b zusammen zur Einkommensteuer veranlagt werden, beträgt die tarifliche Einkommensteuer vorbehaltlich der §§ 32b, 32d, 34, 34a, 34b und 34c das Zweifache des Steuerbetrags, der sich für die Hälfte ihres gemeinsam zu versteuernden Einkommens nach Absatz 1 ergibt (Splitting-Verfahren).
+(6) 1Das Verfahren nach Absatz 5 ist auch anzuwenden zur Berechnung der tariflichen Einkommensteuer für das zu versteuernde Einkommen
+1. bei einem verwitweten Steuerpflichtigen für den Veranlagungszeitraum, der dem Kalenderjahr folgt, in dem der Ehegatte verstorben ist, wenn der Steuerpflichtige und sein verstorbener Ehegatte im Zeitpunkt seines Todes die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllt haben,
+2. bei einem Steuerpflichtigen, dessen Ehe in dem Kalenderjahr, in dem er sein Einkommen bezogen hat, aufgelöst worden ist, wenn in diesem Kalenderjahr
+a) der Steuerpflichtige und sein bisheriger Ehegatte die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllt haben,
+b) der bisherige Ehegatte wieder geheiratet hat und
+c) der bisherige Ehegatte und dessen neuer Ehegatte ebenfalls die Voraussetzungen des § 26 Absatz 1 Satz 1 erfüllen.2Voraussetzung für die Anwendung des Satzes 1 ist, dass der Steuerpflichtige nicht nach den §§ 26, 26a einzeln zur Einkommensteuer veranlagt wird."""
 _GERMAN_SECTION_32A_VALUES = (
     914.51,
     1400.0,
@@ -7796,6 +7810,53 @@ def test_de_numeric_profile_extracts_released_section_32a_coefficients_exactly()
         _GERMAN_SECTION_32A_FORMULA_TEXT,
         profile="de-DE",
     ) == list(_GERMAN_SECTION_32A_VALUES)
+
+
+def test_de_numeric_profile_extracts_full_released_section_32a_body():
+    assert (
+        hashlib.sha256(_GERMAN_SECTION_32A_RELEASED_BODY.encode()).hexdigest()
+        == "1d821a8b21e6fb634be7ec38ea3e380d314843d735703b20baf4609c4f2c2c50"
+    )
+
+    numbers = extract_numbers_from_text(
+        _GERMAN_SECTION_32A_RELEASED_BODY,
+        profile="de-DE",
+    )
+
+    assert set(_GERMAN_SECTION_32A_VALUES) <= numbers
+    assert {34.87, 135.63, 470.38}.isdisjoint(numbers)
+
+
+def test_de_numeric_profile_terminates_at_released_juris_sentence_marker():
+    source_text = (
+        "von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ ist ein "
+        "Zehntausendstel"
+    )
+
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert [(item.value, item.raw) for item in occurrences] == [
+        (277826.0, "277 826"),
+        (0.45, "0,45"),
+        (19470.38, "19 470,38"),
+        (10000.0, "Zehntausendstel"),
+    ]
+    assert {3.0, 38.3, 470.38}.isdisjoint({item.value for item in occurrences})
+
+
+def test_de_numeric_profile_ignores_released_juris_marker_after_word():
+    source_text = "von insgesamt 102 Euro.2Der Pauschbetrag"
+
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {102.0}
+
+
+def test_de_numeric_profile_handles_two_digit_unicode_sentence_marker():
+    source_text = "Der Betrag ist 19 470,38.12Über dem Grenzwert"
+
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {19470.38}
 
 
 def test_de_numeric_profile_preserves_section_32a_raw_spans():
@@ -7889,6 +7950,8 @@ def test_de_numeric_profile_accepts_wogg_group_widths(source_text, expected):
         "4,797E\u2212-4",
         "4,797E\u2013\u20134",
         "1E2.3",
+        "19 470,38.123Die",
+        "19 470,38.3die",
     ),
 )
 def test_de_numeric_profile_reserves_malformed_spans_without_suffixes(source_text):
