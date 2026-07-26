@@ -10,11 +10,11 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, backend timeout policy, timeout retry policy,
-PolicyEngine runtime) — compared after dropping location-only fields, so the
-same toolchain checked out at different paths still folds. The manifest
-content hash may differ (single-runner variants of one suite differ byte-wise
-but share case identities), and runner sets may differ — that is the
+content/toolchain/waivers, overall case budget, backend timeout policy, timeout
+retry policy, PolicyEngine runtime) — compared after dropping location-only
+fields, so the same toolchain checked out at different paths still folds. The
+manifest content hash may differ (single-runner variants of one suite differ
+byte-wise but share case identities), and runner sets may differ — that is the
 add-a-model path. Duplicate runner names across payloads are refused rather
 than merged: two runs of one runner are two boards, not one.
 
@@ -432,6 +432,33 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
         )
+    axiom_encode = identity.get("axiom_encode")
+    axiom_rules_engine = identity.get("axiom_rules_engine")
+    rulespec_roots = identity.get("rulespec_roots")
+    policyengine_runtime = identity.get("policyengine_runtime")
+    valid_policyengine_runtime = policyengine_runtime is None or (
+        isinstance(policyengine_runtime, dict)
+        and set(policyengine_runtime) == {"identity", "sha256"}
+        and isinstance(policyengine_runtime.get("identity"), dict)
+        and bool(policyengine_runtime["identity"])
+        and _is_sha256_hex(policyengine_runtime.get("sha256"))
+    )
+    if (
+        "policyengine_runtime" not in identity
+        or not isinstance(axiom_encode, dict)
+        or not axiom_encode
+        or not isinstance(axiom_encode.get("version"), str)
+        or not axiom_encode["version"]
+        or not isinstance(axiom_rules_engine, dict)
+        or not axiom_rules_engine
+        or not isinstance(rulespec_roots, list)
+        or any(not isinstance(root, dict) or not root for root in rulespec_roots)
+        or not valid_policyengine_runtime
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has missing or malformed core "
+            f"toolchain fields: {source}"
+        )
     case_timeout_seconds = identity.get("case_timeout_seconds")
     if not _is_positive_int(case_timeout_seconds):
         raise EvalBoardError(
@@ -506,6 +533,19 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         raise EvalBoardError(
             "Suite results execution identity has a missing or malformed "
             f"timeout retry policy: {source}"
+        )
+    if set(identity) != {
+        "schema",
+        "case_timeout_seconds",
+        "runner_timeouts",
+        "timeout_retry_policy",
+        "axiom_encode",
+        "axiom_rules_engine",
+        "policyengine_runtime",
+        "rulespec_roots",
+    }:
+        raise EvalBoardError(
+            f"Suite results execution identity has unexpected v3 fields: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
