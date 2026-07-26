@@ -932,9 +932,19 @@ def test_cli_report_validator_rejects_legacy_execution_identity_schema(tmp_path)
 
 
 def test_cli_report_validator_rejects_board_malformed_result_types(tmp_path):
+    from axiom_encode.harness.eval_board import EvalBoardError, fold_eval_board
+
     payload = _test_eval_suite_report_payload(tmp_path, oracle="policyengine")
     payload["results"][0]["metrics"]["generalist_review_pass"] = "yes"
     _rebind_test_eval_suite_report_payload(payload, tmp_path)
+    results_file = tmp_path / "malformed-results.json"
+    results_file.write_text(json.dumps(payload) + "\n")
+
+    with pytest.raises(
+        EvalBoardError,
+        match="generalist_review_pass must be a boolean",
+    ):
+        fold_eval_board([results_file])
 
     with pytest.raises(
         ValueError,
