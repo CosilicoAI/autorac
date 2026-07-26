@@ -12,6 +12,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -651,13 +652,86 @@ def _validate_consumed_eval_results(
         "generalist_review_issues",
         "policyengine_issues",
     )
+    count_fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+        "reasoning_output_tokens",
+        "duration_ms",
+    )
+    pass_fields = (
+        "compile_pass",
+        "ci_pass",
+        "generalist_review_pass",
+        "policyengine_pass",
+    )
+    score_fields = (
+        "generalist_review_score",
+        "policyengine_score",
+    )
     for index, row in enumerate(result_rows, start=1):
         if not isinstance(row, dict):
             raise ValueError(f"{source} result row {index} must be a JSON object")
+        for field in count_fields:
+            value = row.get(field)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{source} result row {index} has malformed {field}")
+        for field in ("estimated_cost_usd", "actual_cost_usd"):
+            value = row.get(field)
+            if value is not None and not _is_nonnegative_finite_number(value):
+                raise ValueError(f"{source} result row {index} has malformed {field}")
+        success = row.get("success")
+        if success is not None and type(success) is not bool:
+            raise ValueError(f"{source} result row {index} has malformed success")
+        error = row.get("error")
+        if error is not None and not isinstance(error, str):
+            raise ValueError(f"{source} result row {index} has malformed error")
+        backend = row.get("backend")
+        if backend is not None and (not isinstance(backend, str) or not backend):
+            raise ValueError(f"{source} result row {index} has malformed backend")
+        generation_prompt_sha256 = row.get("generation_prompt_sha256")
+        if generation_prompt_sha256 is not None and not _is_sha256(
+            generation_prompt_sha256
+        ):
+            raise ValueError(
+                f"{source} result row {index} has malformed generation_prompt_sha256"
+            )
         metrics = row.get("metrics")
         if metrics is not None and not isinstance(metrics, dict):
             raise ValueError(f"{source} result row {index} has malformed metrics")
         if isinstance(metrics, dict):
+            for field in pass_fields:
+                value = metrics.get(field)
+                if value is not None and type(value) is not bool:
+                    raise ValueError(
+                        f"{source} result row {index} has malformed {field}"
+                    )
+            ungrounded_numeric_count = metrics.get("ungrounded_numeric_count")
+            if ungrounded_numeric_count is not None and (
+                type(ungrounded_numeric_count) is not int
+                or ungrounded_numeric_count < 0
+            ):
+                raise ValueError(
+                    f"{source} result row {index} has malformed "
+                    "ungrounded_numeric_count"
+                )
+            for field in score_fields:
+                value = metrics.get(field)
+                if value is not None and not _is_finite_number(value):
+                    raise ValueError(
+                        f"{source} result row {index} has malformed {field}"
+                    )
+            generalist_review_prompt_sha256 = metrics.get(
+                "generalist_review_prompt_sha256"
+            )
+            if generalist_review_prompt_sha256 is not None and not _is_sha256(
+                generalist_review_prompt_sha256
+            ):
+                raise ValueError(
+                    f"{source} result row {index} has malformed "
+                    "generalist_review_prompt_sha256"
+                )
             for field in issue_fields:
                 issues = metrics.get(field)
                 if issues is not None and (
@@ -667,6 +741,24 @@ def _validate_consumed_eval_results(
                     raise ValueError(
                         f"{source} result row {index} has malformed {field}"
                     )
+
+
+def _is_finite_number(value: object) -> bool:
+    """Return whether a JSON scalar is a finite, non-boolean number."""
+
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
+def _is_nonnegative_finite_number(value: object) -> bool:
+    """Return whether a JSON scalar is a nonnegative finite number."""
+
+    return _is_finite_number(value) and value >= 0
+
+
+def _is_sha256(value: object) -> bool:
+    """Return whether a value is one canonical SHA-256 digest."""
+
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def load_eval_artifact(

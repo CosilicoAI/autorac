@@ -782,9 +782,7 @@ def test_load_eval_artifact_rejects_malformed_consumed_result_scalars(
     else:
         row[field] = value
     results_path.write_text(
-        module.json.dumps(
-            eval_artifact_payload(module, "results", results=[row])
-        )
+        module.json.dumps(eval_artifact_payload(module, "results", results=[row]))
     )
 
     with pytest.raises(ValueError, match=field):
