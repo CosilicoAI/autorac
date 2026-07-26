@@ -330,7 +330,7 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _ABSATZ_REFERENCE = re.compile(
-    r"\b(?:Absatz|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
+    r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
 )
 _SATZ_REFERENCE = re.compile(
@@ -362,8 +362,12 @@ _ENGLISH_LEGAL_CITATION = re.compile(
     flags=re.IGNORECASE,
 )
 _STRUCTURAL_REFERENCE = re.compile(
-    r"\b(?:Absatz|Abs\.|Satz(?:es)?|Sätze|Nummer|Nr\.|Buchstabe|Buchst\.)"
-    r"\s*\d*[a-z]?\b",
+    r"\b(?:"
+    r"Absatz(?:es)?|Absätze(?:n)?|Abs\.|"
+    r"Satz(?:es)?|Sätze(?:n)?|"
+    r"Nummer(?:n)?|Nr\.|Buchstabe(?:n)?|Buchst\."
+    r")\s*\d*[a-z]?"
+    r"(?:\s*(?:,|und|bis)\s*\d+[a-z]?)*\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
