@@ -1082,6 +1082,46 @@ def test_sibling_amendments_are_context_with_bounded_bodies(tmp_path):
     )
 
 
+def test_bkgg_amendment_context_is_proof_evidence_never_an_import_target(tmp_path):
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment = CorpusAmendmentDocument(
+        citation_path=amendment_citation,
+        title="Steuerfortentwicklungsgesetz – SteFeG",
+        expression_date="2024-12-23",
+        metadata={},
+        body="Artikel 3 ändert § 6a des Bundeskindergeldgesetzes.",
+    )
+    rulespec_root = _canonical_rulespec_content_root(tmp_path, "de")
+    workspace = prepare_eval_workspace(
+        citation="de/statute/bkgg/6a",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="§ 6a Kinderzuschlag.",
+        axiom_rules_path=rulespec_root,
+        mode="cold",
+        amendment_documents=(amendment,),
+        extra_context_paths=[],
+    )
+
+    prompt = _build_eval_prompt(
+        "de/statute/bkgg/6a",
+        "cold",
+        workspace,
+        workspace.context_files,
+        target_file_name="statutes/bkgg/6a.yaml",
+        include_tests=True,
+        runner_backend="openai",
+    )
+
+    assert amendment_citation in prompt
+    assert f"import target `{amendment_citation}`" not in prompt
+    assert "proof-citation targets only" in prompt
+    assert "NEVER top-level\n`imports:` targets" in prompt
+    assert "effective-dated\n`versions` of rules in this target module" in prompt
+
+
 def test_unrelated_newer_amendment_is_excluded_from_target_context(tmp_path):
     release = _write_test_corpus_release(
         tmp_path,
@@ -6986,6 +7026,126 @@ rules:
         ]
         assert len(amendment_issues) == 1
         assert amendment_citation in amendment_issues[0]
+
+    def test_unresolved_bkgg_amendment_import_gets_exact_retry_steering(
+        self,
+        tmp_path,
+    ):
+        source_citation = "de/statute/bkgg/6a"
+        amendment_citation = (
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        invalid_import = (
+            "de:statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        engine_error = (
+            f"RuleSpec import `{invalid_import}` in `/work/de/statutes/bkgg/6a.yaml` "
+            "could not be resolved"
+        )
+        compile_result = ValidationResult(
+            "compile",
+            passed=False,
+            issues=[engine_error],
+            error=engine_error,
+        )
+        rulespec_file = _generated_rulespec_file_path(
+            tmp_path,
+            "statutes/bkgg/6a.yaml",
+        )
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/bkgg/6a
+rules: []
+""",
+            encoding="utf-8",
+        )
+        amendment = CorpusAmendmentDocument(
+            citation_path=amendment_citation,
+            title="Steuerfortentwicklungsgesetz – SteFeG",
+            expression_date="2024-12-23",
+            metadata={},
+            body="Artikel 3 ändert § 6a des Bundeskindergeldgesetzes.",
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=compile_result,
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", passed=True),
+            ),
+        ):
+            metrics = evaluate_artifact(
+                local_corpus_release=_write_test_corpus_provision(
+                    tmp_path / "bound-release",
+                    citation_path=source_citation,
+                    body="§ 6a Kinderzuschlag.",
+                ),
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text="§ 6a Kinderzuschlag.",
+                source_citation_path=source_citation,
+                amendment_documents=(amendment,),
+                skip_reviewers=True,
+            )
+
+        assert metrics.compile_issues[0] == engine_error
+        retry_issue = metrics.compile_issues[1]
+        assert invalid_import in retry_issue
+        assert amendment_citation in retry_issue
+        assert "Amendment documents are proof-citation targets" in retry_issue
+        assert "effective-dated `versions` in this target module" in retry_issue
+        assert (
+            f"metadata.proof.atoms[].source.corpus_citation_path: {amendment_citation}"
+        ) in retry_issue
+        assert compile_result.error is not None
+        assert retry_issue in compile_result.error
+
+    @pytest.mark.parametrize(
+        "unresolved_import",
+        [
+            "de:statutes/bkgg/6#upstream_rule",
+            ("de:statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-10"),
+        ],
+    )
+    def test_unrelated_unresolved_import_does_not_get_amendment_steering(
+        self,
+        unresolved_import,
+    ):
+        amendment = CorpusAmendmentDocument(
+            citation_path=(
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+            ),
+            title="Steuerfortentwicklungsgesetz – SteFeG",
+            expression_date="2024-12-23",
+            metadata={},
+            body="Amendment body.",
+        )
+        engine_error = (
+            f"RuleSpec import `{unresolved_import}` in `/work/target.yaml` "
+            "could not be resolved"
+        )
+        compile_result = ValidationResult(
+            "compile",
+            passed=False,
+            issues=[engine_error],
+            error=engine_error,
+        )
+
+        evals_module._add_attached_amendment_import_retry_guidance(
+            compile_result,
+            (amendment,),
+        )
+
+        assert compile_result.issues == [engine_error]
+        assert compile_result.error == engine_error
 
     def test_evaluate_artifact_skips_reviewers_when_requested(self, tmp_path):
         rulespec_file = _generated_rulespec_file_path(tmp_path, "statutes/24/a.yaml")
