@@ -658,6 +658,32 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Arbitrary placeholder.",
+        "Requires an external assessment base.",
+    ],
+)
+def test_deferral_blocker_must_be_identified_by_dependency_reason(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: {reason}
+      blocked_by:
+        - de:statutes/estg/9999#fictional_amount
+rules: []
+"""
+
+    result = _analyze(content, ABSATZ_6, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
 def test_root_deferral_does_not_blanket_structured_source_unit():
     content = """\
 format: rulespec/v1

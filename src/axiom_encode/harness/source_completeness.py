@@ -909,26 +909,30 @@ def _deferred_coverage(
         reason = str(record.get("reason") or "").strip()
         blocked_by = record.get("blocked_by")
         normalized_base_target = base_target.lower()
+        blocker_targets = tuple(
+            item.strip()
+            for item in blocked_by
+            if isinstance(item, str)
+        ) if isinstance(blocked_by, list) else ()
         exact_blockers = (
-            isinstance(blocked_by, list)
-            and bool(blocked_by)
+            bool(blocker_targets)
+            and len(blocker_targets) == len(blocked_by)
             and all(
-                isinstance(item, str)
-                and re.fullmatch(
+                re.fullmatch(
                     r"[a-z]{2}(?:-[a-z0-9-]+)?:"
                     r"[A-Za-z0-9_./-]+#[A-Za-z_][A-Za-z0-9_]*",
-                    item.strip(),
+                    item,
                     flags=re.IGNORECASE,
                 )
-                and item.strip().lower() != output.lower()
+                and item.lower() != output.lower()
                 and not (
-                    item.strip().lower().split("#", 1)[0]
+                    item.lower().split("#", 1)[0]
                     == normalized_base_target
-                    or item.strip().lower().split("#", 1)[0].startswith(
+                    or item.lower().split("#", 1)[0].startswith(
                         f"{normalized_base_target}/"
                     )
                 )
-                for item in blocked_by
+                for item in blocker_targets
             )
         )
         reason_identifies_dependency = _reason_names_external_dependency(
@@ -936,7 +940,14 @@ def _deferred_coverage(
             corpus_citation_path=corpus_citation_path,
         )
         precise = (
-            exact_blockers
+            (
+                exact_blockers
+                and bool(_MISSING_DEPENDENCY_LANGUAGE.search(reason))
+                and all(
+                    _reason_identifies_blocker(reason, blocker)
+                    for blocker in blocker_targets
+                )
+            )
             or reason_identifies_dependency
         )
         if precise:
@@ -952,6 +963,30 @@ def _deferred_coverage(
                 "dependency/citation."
             )
     return covered, issues
+
+
+def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
+    """Bind a typed blocker to the legal section or concept named in prose."""
+
+    target_path, _separator, symbol = blocker.partition("#")
+    section = target_path.rstrip("/").rsplit("/", 1)[-1]
+    if section and re.search(
+        rf"(?:§{{1,2}}\s*|\b(?:section|paragraph|paragraf|abschnitt)\s+)"
+        rf"{re.escape(section)}(?![A-Za-z0-9])",
+        reason,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    normalized_reason = re.sub(r"[^a-z0-9äöüß]+", " ", reason.lower()).strip()
+    normalized_symbol = re.sub(r"[^a-z0-9äöüß]+", " ", symbol.lower()).strip()
+    return bool(
+        normalized_symbol
+        and re.search(
+            rf"(?<![a-z0-9äöüß]){re.escape(normalized_symbol)}"
+            r"(?![a-z0-9äöüß])",
+            normalized_reason,
+        )
+    )
 
 
 def _reason_names_external_dependency(
