@@ -21096,7 +21096,7 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         assert response.text == ""
         assert response.failure_kind == "integrity"
         assert "prompt-only" in (response.error or "")
-        assert response.unexpected_accesses == [command]
+        assert response.unexpected_accesses == ["command_execution"]
 
     @pytest.mark.parametrize(
         "item",
@@ -21220,7 +21220,7 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         trace_text = json.dumps(response.trace)
         assert secret not in trace_text
         assert command not in trace_text
-        assert response.unexpected_accesses == [command]
+        assert response.unexpected_accesses == ["command_execution"]
         assert "command_execution" in trace_text
         assert "completed" in trace_text
 
@@ -21280,7 +21280,7 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         )
         assert response.failure_kind == "integrity"
         assert response.timed_out is True
-        assert response.unexpected_accesses == [command]
+        assert response.unexpected_accesses == ["command_execution"]
         assert outcome["failure_kind"] == "integrity"
         assert outcome["timed_out"] is False
         assert outcome["timeout_attempts"] == 1
@@ -21386,7 +21386,7 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
                         "type": "item.started",
                         "item": {
                             "type": "command_execution",
-                            "command": "cat /outside/context",
+                            "command": f"cat /outside/{secret}",
                         },
                     }
                 ),
@@ -21444,12 +21444,162 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
             response = _run_codex_prompt_eval(runner, workspace, "prompt")
 
         assert response.failure_kind == "integrity"
-        assert secret not in json.dumps(response.trace)
-        assert secret not in (response.error or "")
+        verdict_fields = {
+            "text": response.text,
+            "trace": response.trace,
+            "unexpected_accesses": response.unexpected_accesses,
+            "error": response.error,
+            "failure_kind": response.failure_kind,
+        }
+        assert secret not in json.dumps(verdict_fields)
+        assert response.unexpected_accesses == ["command_execution"]
         assert response.trace["events"][-1] == {
             "type": "turn.completed",
             "usage": {"input_tokens": 7, "output_tokens": 11},
         }
+
+    @pytest.mark.parametrize(
+        ("message", "expected_failure_kind"),
+        [
+            ("receiver unavailable", "error"),
+            ("maximum context window exceeded", "output_truncated"),
+            ("max_tokens output limit reached", "output_truncated"),
+        ],
+    )
+    def test_run_codex_prompt_eval_makes_turn_failed_terminal(
+        self,
+        tmp_path,
+        message,
+        expected_failure_kind,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        partial = "=== FILE: partial.yaml ===\nformat: rulespec/v1\nrules: []\n"
+        event_lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": partial},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.failed",
+                        "error": {"message": message},
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+                Path(cmd[cmd.index("-o") + 1]).write_text(partial)
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error is not None
+        assert response.failure_kind == expected_failure_kind
+        assert partial not in json.dumps(response.trace)
+
+    def test_run_codex_prompt_eval_preserves_integrity_over_turn_failed(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "DO-NOT-PERSIST-INTEGRITY-DETAIL"
+        event_lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": f"cat /outside/{secret}",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.failed",
+                        "error": {"message": f"receiver leaked {secret}"},
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.failure_kind == "integrity"
+        assert response.unexpected_accesses == ["command_execution"]
+        assert "prompt-only" in (response.error or "")
+        assert secret not in json.dumps(
+            {
+                "trace": response.trace,
+                "unexpected_accesses": response.unexpected_accesses,
+                "error": response.error,
+            }
+        )
 
 
 class TestUnexpectedAccessDetection:

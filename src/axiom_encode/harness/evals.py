@@ -13824,6 +13824,8 @@ def _run_codex_prompt_eval(
     unexpected_accesses: list[str] = []
     error = None
     failure_kind: EvalFailureKind | None = None
+    policyengine_skill_attempted = False
+    terminal_receiver_failure = False
 
     for line in (stdout_text + stderr_text).splitlines():
         stripped = line.strip()
@@ -13847,10 +13849,10 @@ def _run_codex_prompt_eval(
                 assistant_messages.append(item["text"])
             if item_type == "command_execution":
                 command = str(item.get("command", "") or "")
-                reported_command = command or "<empty command>"
-                if reported_command not in unexpected_accesses:
-                    unexpected_accesses.append(reported_command)
+                if "command_execution" not in unexpected_accesses:
+                    unexpected_accesses.append("command_execution")
                 if _command_uses_policyengine_skill(command):
+                    policyengine_skill_attempted = True
                     if not error:
                         error = (
                             "Codex eval attempted to use PolicyEngine skills, "
@@ -13859,8 +13861,7 @@ def _run_codex_prompt_eval(
                 elif not error:
                     error = (
                         "Codex eval attempted command execution although tools are "
-                        "disabled by the prompt-only contract: "
-                        f"{reported_command}"
+                        "disabled by the prompt-only contract"
                     )
                 failure_kind = "integrity"
             elif item_type not in {"agent_message", "reasoning"}:
@@ -13881,6 +13882,29 @@ def _run_codex_prompt_eval(
         elif payload.get("type") == "turn.completed":
             events.append(payload)
             usage_payload = payload.get("usage") or {}
+        elif payload.get("type") == "turn.failed":
+            raw_error = payload.get("error")
+            failure_message = (
+                str(raw_error.get("message", "") or "")
+                if isinstance(raw_error, dict)
+                else str(raw_error or "")
+            )
+            terminal_receiver_failure = True
+            if failure_kind == "integrity":
+                events.append({"type": "turn.failed"})
+            elif _codex_failure_is_output_truncated(failure_message):
+                failure_kind = "output_truncated"
+                error = "Codex eval output was truncated by receiver limits"
+                events.append(
+                    {
+                        "type": "turn.failed",
+                        "failure_kind": "output_truncated",
+                    }
+                )
+            else:
+                failure_kind = "error"
+                error = "Codex eval turn failed"
+                events.append({"type": "turn.failed", "failure_kind": "error"})
         elif payload.get("type") == "error":
             events.append(payload)
             error = payload.get("message") or "Codex eval error"
@@ -13903,9 +13927,7 @@ def _run_codex_prompt_eval(
 
     if failure_kind == "integrity":
         events = [_redact_codex_integrity_trace_event(event) for event in events]
-        if any(
-            _command_uses_policyengine_skill(access) for access in unexpected_accesses
-        ):
+        if policyengine_skill_attempted:
             error = (
                 "Codex eval attempted to use PolicyEngine skills, which are "
                 "disallowed for Axiom encoding"
@@ -13915,16 +13937,20 @@ def _run_codex_prompt_eval(
                 "Codex eval attempted tool activity although tools are disabled "
                 "by the prompt-only contract"
             )
+    elif terminal_receiver_failure:
+        events = [_redact_codex_integrity_trace_event(event) for event in events]
 
     final_text = "\n".join(assistant_messages).strip()
     if last_message_text.strip():
         final_text = last_message_text.strip()
 
-    if failure_kind == "integrity":
+    if failure_kind == "integrity" or terminal_receiver_failure:
         final_text = ""
     elif timeout_stage == "case_budget":
         final_text = ""
         error = "Eval case budget timed out"
+    elif error:
+        final_text = ""
     elif timed_out and not error and not final_text:
         error = "Codex eval timed out"
 
@@ -13933,7 +13959,8 @@ def _run_codex_prompt_eval(
         and not error
         and not ((terminated_after_output and final_text) or (timed_out and final_text))
     ):
-        error = (stdout_text + stderr_text).strip() or "Codex eval failed"
+        error = f"Codex eval failed with exit code {process.returncode}"
+        final_text = ""
 
     return EvalPromptResponse(
         text=final_text,
@@ -13962,6 +13989,23 @@ def _run_codex_prompt_eval(
         timeout_reason=timeout_reason,
         timeout_seconds=triggering_timeout_seconds if timed_out else None,
         timeout_attempts=1 if timed_out else 0,
+    )
+
+
+def _codex_failure_is_output_truncated(message: str) -> bool:
+    """Recognize receiver limit failures without persisting raw diagnostics."""
+
+    normalized = message.casefold().replace("-", "_").replace(" ", "_")
+    return any(
+        marker in normalized
+        for marker in (
+            "max_tokens",
+            "maximum_context",
+            "context_window",
+            "context_length",
+            "too_many_tokens",
+            "output_token_limit",
+        )
     )
 
 
