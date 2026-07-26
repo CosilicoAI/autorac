@@ -931,6 +931,18 @@ def test_cli_report_validator_rejects_legacy_execution_identity_schema(tmp_path)
         _validated_eval_suite_report_payload(payload)
 
 
+def test_cli_report_validator_rejects_board_malformed_result_types(tmp_path):
+    payload = _test_eval_suite_report_payload(tmp_path, oracle="policyengine")
+    payload["results"][0]["metrics"]["generalist_review_pass"] = "yes"
+    _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="not board-admissible.*generalist_review_pass must be a boolean",
+    ):
+        _validated_eval_suite_report_payload(payload)
+
+
 TEST_CORPUS_RELEASE_NAME = "rulespec-test-release"
 TEST_CORPUS_VERSION = "2026-rulespec-test"
 TEST_VALIDATION_WAIVER_TEXT = "validate_failures: {}\n"
