@@ -193,6 +193,119 @@ def test_validate_dependent_cascade_accepts_only_direct_dependent(
     ) == (dependent.relative_to(repo / "us"),)
 
 
+def test_validate_dependent_cascade_uses_nondefault_replacement_target(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    replacement = _write_module(
+        repo,
+        "policies/income_tax/pilot_liability_pipeline.yaml",
+    )
+    dependent = _write_module(
+        repo,
+        "regulations/42-cfr/435/559.yaml",
+        imports=("us:policies/income_tax/pilot_liability_pipeline#target_rule",),
+    )
+    _write_module(repo, "regulations/42-cfr/435/555.yaml")
+
+    assert validate_dependent_cascade(
+        repo,
+        "us/regulation/42/435/555",
+        "us/regulation/42/435/559",
+        target_rulespec_path=replacement.relative_to(repo).as_posix(),
+    ) == (dependent.relative_to(repo / "us"),)
+
+
+@pytest.mark.parametrize(
+    "replacement_path",
+    [
+        "../outside.yaml",
+        "us-nc/policies/income_tax/pipeline.yaml",
+        "us/policies/income_tax/pipeline.test.yaml",
+    ],
+)
+def test_validate_dependent_cascade_rejects_invalid_replacement_target(
+    tmp_path: Path,
+    replacement_path: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_module(repo, "regulations/42-cfr/435/555.yaml")
+    _write_module(
+        repo,
+        "regulations/42-cfr/435/559.yaml",
+        imports=("us:regulations/42-cfr/435/555",),
+    )
+
+    with pytest.raises(ValueError, match="target RuleSpec path must be"):
+        validate_dependent_cascade(
+            repo,
+            "us/regulation/42/435/555",
+            "us/regulation/42/435/559",
+            target_rulespec_path=replacement_path,
+        )
+
+
+def test_validate_dependent_cascade_rejects_symlinked_replacement_parent(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "target.yaml").write_text(
+        "rules:\n  target_rule:\n    kind: constant\n    value: 1\n",
+        encoding="utf-8",
+    )
+    linked_parent = repo / "us" / "policies" / "linked"
+    linked_parent.parent.mkdir(parents=True)
+    linked_parent.symlink_to(outside, target_is_directory=True)
+    _write_module(
+        repo,
+        "regulations/42-cfr/435/559.yaml",
+        imports=("us:policies/linked/target#target_rule",),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="target citation has no regular baseline RuleSpec module",
+    ):
+        validate_dependent_cascade(
+            repo,
+            "us/regulation/42/435/555",
+            "us/regulation/42/435/559",
+            target_rulespec_path="us/policies/linked/target.yaml",
+        )
+
+
+def test_validate_dependent_cascade_rejects_symlinked_jurisdiction_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    repo.mkdir()
+    outside = tmp_path / "outside-us"
+    _write_module(
+        outside.parent / "rulespec-outside",
+        "policies/income_tax/target.yaml",
+    )
+    outside_source = outside.parent / "rulespec-outside" / "us"
+    (repo / "us").symlink_to(outside_source, target_is_directory=True)
+    _write_module(
+        outside.parent / "rulespec-outside",
+        "regulations/42-cfr/435/559.yaml",
+        imports=("us:policies/income_tax/target#target_rule",),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="target citation has no regular baseline RuleSpec module",
+    ):
+        validate_dependent_cascade(
+            repo,
+            "us/regulation/42/435/555",
+            "us/regulation/42/435/559",
+            target_rulespec_path="us/policies/income_tax/target.yaml",
+        )
+
+
 def test_validate_dependent_cascade_rejects_unrelated_dependent(
     tmp_path: Path,
 ) -> None:

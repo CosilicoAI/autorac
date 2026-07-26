@@ -1360,9 +1360,14 @@ def run_model_eval(
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
+    target_relative_output: Path | None = None,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
+    if target_relative_output is not None and len(citations) != 1:
+        raise ValueError(
+            "A target RuleSpec output override requires exactly one citation"
+        )
     include_tests = include_tests or require_complete_source_unit
     results: list[EvalResult] = []
     runners = [parse_runner_spec(spec) for spec in runner_specs]
@@ -1393,6 +1398,7 @@ def run_model_eval(
                         rulespec_dependency_roots=rulespec_dependency_roots,
                         review_findings_paths=review_findings_paths or [],
                         require_complete_source_unit=require_complete_source_unit,
+                        target_relative_output=target_relative_output,
                     )
                 )
 
@@ -5449,6 +5455,7 @@ def prepare_eval_workspace(
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
     extra_context_paths: list[Path] | None = None,
     review_findings_paths: list[Path] | None = None,
+    target_relative_output: Path | None = None,
 ) -> EvalWorkspace:
     """Create an isolated workspace bundle for a single eval."""
     slug = _slugify(citation)
@@ -5563,7 +5570,11 @@ def prepare_eval_workspace(
             )
         )
     context_corpus_root = _repo_augmented_context_root(axiom_rules_path)
-    target_rel = _target_rel_for_eval_identifier(citation)
+    target_rel = (
+        Path(target_relative_output)
+        if target_relative_output is not None
+        else _target_rel_for_eval_identifier(citation)
+    )
     current_file = axiom_rules_path / target_rel if target_rel is not None else None
     for resolved_term in resolve_defined_terms_from_text(source_text):
         context_files.append(
@@ -7845,6 +7856,7 @@ def _run_single_eval(
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
+    target_relative_output: Path | None = None,
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -7872,6 +7884,7 @@ def _run_single_eval(
         amendment_documents=source_unit.amendment_documents,
         extra_context_paths=extra_context_paths,
         review_findings_paths=review_findings_paths,
+        target_relative_output=target_relative_output,
     )
 
     # Derive the output path from the *requested* identifier rather than the
@@ -7882,9 +7895,13 @@ def _run_single_eval(
     # the requested identifier keeps each subsection in its own file.
     #
     is_corpus_path = _looks_like_corpus_citation_path(citation)
-    relative_output = _resolve_eval_output_path(
-        citation,
-        fallback=citation_to_relative_rulespec_path,
+    relative_output = (
+        Path(target_relative_output)
+        if target_relative_output is not None
+        else _resolve_eval_output_path(
+            citation,
+            fallback=citation_to_relative_rulespec_path,
+        )
     )
     target_ref_source = citation if is_corpus_path else source_unit.citation_path
     prompt = _build_eval_prompt(

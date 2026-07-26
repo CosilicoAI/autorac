@@ -155,6 +155,7 @@ from axiom_encode.cli import (
     _require_axiom_encode_version_provenance,
     _require_clean_axiom_encode_git_provenance,
     _resolve_applied_manifest_placement,
+    _resolve_encode_replacement_target,
     _resolve_explicit_policy_repo_for_corpus_source,
     _rewrite_gpt_runner_backend,
     _rewrite_import_output_test_input_refs,
@@ -11441,6 +11442,7 @@ class TestCmdEncode:
         args.sync = overrides.get("sync", True)
         args.skip_reviewers = overrides.get("skip_reviewers", False)
         args.apply = overrides.get("apply", False)
+        args.replace_rulespec_path = overrides.get("replace_rulespec_path", None)
         args.apply_target_only = overrides.get("apply_target_only", False)
         args.allow_shrink = overrides.get("allow_shrink", False)
         return args
@@ -11847,6 +11849,46 @@ class TestCmdEncode:
 
         assert exit_code == 0
         assert mock_run.call_args.kwargs["review_findings_paths"] == [findings]
+
+    def test_encode_plumbs_existing_replacement_target_to_model_eval(self, tmp_path):
+        args = self._make_args(
+            tmp_path,
+            citation="us-nc/statute/105/105-153.7",
+            replace_rulespec_path=Path(
+                "us-nc/policies/income_tax/pilot_liability_pipeline.yaml"
+            ),
+        )
+        target = (
+            args.policy_repo_path
+            / "us-nc"
+            / "policies"
+            / "income_tax"
+            / "pilot_liability_pipeline.yaml"
+        )
+        companion = target.with_name("pilot_liability_pipeline.test.yaml")
+        replacement = SimpleNamespace(
+            relative_output=Path("policies/income_tax/pilot_liability_pipeline.yaml"),
+            context_paths=(target, companion),
+        )
+
+        with patch(
+            "axiom_encode.cli._resolve_encode_replacement_target",
+            return_value=replacement,
+        ) as mock_resolve:
+            mock_run, exit_code = self._run_encode(
+                args,
+                self._make_eval_result(True),
+            )
+
+        assert exit_code == 0
+        mock_resolve.assert_called_once()
+        assert mock_run.call_args.kwargs["target_relative_output"] == (
+            Path("policies/income_tax/pilot_liability_pipeline.yaml")
+        )
+        assert mock_run.call_args.kwargs["extra_context_paths"] == [
+            target,
+            companion,
+        ]
 
     def test_encode_codex_backend_without_auth_stops_before_running(
         self, capsys, tmp_path
@@ -32304,6 +32346,257 @@ class TestResolverOwnedManifestWriter:
                 applied_files=[rule],
                 axiom_encode_git={"commit": "a" * 40},
                 signing_broker=TEST_APPLY_SIGNING_BROKER,
+            )
+
+
+class TestEncodeReplacementTarget:
+    def _fixture(self, tmp_path: Path):
+        checkout = tmp_path / "rulespec-us"
+        content_root = checkout / "us-nc"
+        target = (
+            content_root / "policies" / "income_tax" / "pilot_liability_pipeline.yaml"
+        )
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-nc/statute/105/105-153.7\n"
+            "rules: []\n"
+        )
+        companion = target.with_name("pilot_liability_pipeline.test.yaml")
+        companion.write_text("[]\n")
+        resolved_source = object()
+        source_unit = SimpleNamespace(
+            requested="us-nc/statute/105/105-153.7",
+            citation_path="us-nc/statute/105/105-153.7",
+            body="official source",
+            resolved_source=resolved_source,
+        )
+        replacement_source = SimpleNamespace(
+            requested=source_unit.requested,
+            citation_path=source_unit.citation_path,
+            body=source_unit.body,
+            resolved_source=resolved_source,
+        )
+        args = SimpleNamespace(
+            replace_rulespec_path=Path(
+                "us-nc/policies/income_tax/pilot_liability_pipeline.yaml"
+            ),
+            apply=True,
+            mode="repo-augmented",
+        )
+        return (
+            args,
+            checkout,
+            content_root,
+            target,
+            companion,
+            source_unit,
+            replacement_source,
+        )
+
+    def test_accepts_exact_existing_source_bound_primary(self, tmp_path):
+        (
+            args,
+            checkout,
+            content_root,
+            target,
+            companion,
+            source_unit,
+            replacement_source,
+        ) = self._fixture(tmp_path)
+
+        with patch(
+            "axiom_encode.cli.resolve_corpus_source_unit",
+            return_value=replacement_source,
+        ):
+            resolved = _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=source_unit,
+                corpus_release=SimpleNamespace(),
+            )
+
+        assert resolved is not None
+        assert resolved.relative_output == Path(
+            "policies/income_tax/pilot_liability_pipeline.yaml"
+        )
+        assert resolved.context_paths == (target, companion)
+
+    def test_accepts_requested_child_with_resolved_parent_fallback(self, tmp_path):
+        (
+            args,
+            checkout,
+            content_root,
+            _target,
+            _companion,
+            source_unit,
+            replacement_source,
+        ) = self._fixture(tmp_path)
+        source_unit.citation_path = "us-nc/statute/105/105-153"
+        replacement_source.citation_path = source_unit.citation_path
+
+        with patch(
+            "axiom_encode.cli.resolve_corpus_source_unit",
+            return_value=replacement_source,
+        ):
+            resolved = _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=source_unit,
+                corpus_release=SimpleNamespace(),
+            )
+
+        assert resolved is not None
+        assert resolved.relative_output == Path(
+            "policies/income_tax/pilot_liability_pipeline.yaml"
+        )
+
+    @pytest.mark.parametrize(
+        ("attribute", "value", "match"),
+        [
+            ("apply", False, "requires --apply"),
+            ("mode", "cold", "requires --mode repo-augmented"),
+            (
+                "replace_rulespec_path",
+                Path("../outside.yaml"),
+                "existing checkout-relative primary RuleSpec",
+            ),
+        ],
+    )
+    def test_rejects_unsafe_invocation(
+        self,
+        tmp_path,
+        attribute,
+        value,
+        match,
+    ):
+        args, checkout, content_root, *_rest = self._fixture(tmp_path)
+        setattr(args, attribute, value)
+
+        with pytest.raises(ValueError, match=match):
+            _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=SimpleNamespace(),
+                corpus_release=SimpleNamespace(),
+            )
+
+    def test_rejects_different_declared_source(self, tmp_path):
+        (
+            args,
+            checkout,
+            content_root,
+            target,
+            _companion,
+            source_unit,
+            _replacement_source,
+        ) = self._fixture(tmp_path)
+        target.write_text(
+            target.read_text().replace(
+                "us-nc/statute/105/105-153.7",
+                "us-nc/statute/105/105-153.5",
+            )
+        )
+
+        with pytest.raises(ValueError, match="does not match the requested source"):
+            _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=source_unit,
+                corpus_release=SimpleNamespace(),
+            )
+
+    @pytest.mark.parametrize("symlink_kind", ["target", "companion"])
+    def test_rejects_symlinked_replacement_context(self, tmp_path, symlink_kind):
+        (
+            args,
+            checkout,
+            content_root,
+            target,
+            companion,
+            source_unit,
+            replacement_source,
+        ) = self._fixture(tmp_path)
+        outside = tmp_path / f"outside-{symlink_kind}.yaml"
+        outside.write_text(target.read_text() if symlink_kind == "target" else "[]\n")
+        symlink = target if symlink_kind == "target" else companion
+        symlink.unlink()
+        symlink.symlink_to(outside)
+
+        with (
+            patch(
+                "axiom_encode.cli.resolve_corpus_source_unit",
+                return_value=replacement_source,
+            ),
+            pytest.raises(UnsafeCorpusPathError, match="safely open"),
+        ):
+            _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=source_unit,
+                corpus_release=SimpleNamespace(),
+            )
+
+    def test_rejects_symlinked_replacement_parent(self, tmp_path):
+        (
+            args,
+            checkout,
+            content_root,
+            target,
+            companion,
+            source_unit,
+            _replacement_source,
+        ) = self._fixture(tmp_path)
+        outside_parent = tmp_path / "outside-income-tax"
+        outside_parent.mkdir()
+        (outside_parent / target.name).write_text(target.read_text())
+        (outside_parent / companion.name).write_text(companion.read_text())
+        target.unlink()
+        companion.unlink()
+        target.parent.rmdir()
+        target.parent.symlink_to(outside_parent)
+
+        with pytest.raises(UnsafeCorpusPathError, match="safely open"):
+            _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=source_unit,
+                corpus_release=SimpleNamespace(),
+            )
+
+    @pytest.mark.parametrize(
+        "replacement_path",
+        [
+            Path("us-or/policies/income_tax/pilot_liability_pipeline.yaml"),
+            Path("us-nc/policies/income_tax/missing.yaml"),
+        ],
+    )
+    def test_rejects_wrong_jurisdiction_or_missing_target(
+        self,
+        tmp_path,
+        replacement_path,
+    ):
+        args, checkout, content_root, *_rest = self._fixture(tmp_path)
+        args.replace_rulespec_path = replacement_path
+
+        with pytest.raises(
+            (ValueError, UnsafeCorpusPathError),
+            match="existing checkout-relative|safely open",
+        ):
+            _resolve_encode_replacement_target(
+                args,
+                policy_checkout_path=checkout,
+                policy_repo_path=content_root,
+                source_unit=SimpleNamespace(),
+                corpus_release=SimpleNamespace(),
             )
 
 

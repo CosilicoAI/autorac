@@ -34,6 +34,10 @@ on:
         description: Validator or independent-review finding to address
         required: false
         type: string
+      replace_rulespec_path:
+        description: Existing checkout-relative RuleSpec path sourced by citation
+        required: false
+        type: string
       dependent_citation:
         description: Direct dependent to re-encode atomically after a breaking target
         required: false
@@ -506,6 +510,7 @@ jobs:
           }}
         env:
           CITATION: ${{ inputs.citation }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
@@ -519,10 +524,17 @@ jobs:
           if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
             dependent_citations+=("$SECOND_DEPENDENT_CITATION")
           fi
-          axiom-encode/.venv/bin/python \
-            axiom-encode/scripts/prepare_signed_backfill.py \
-            validate-dependent-cascade \
-            "$RULESPEC_CHECKOUT" "$CITATION" "${dependent_citations[@]}"
+          cascade_args=(
+            axiom-encode/.venv/bin/python
+            axiom-encode/scripts/prepare_signed_backfill.py
+            validate-dependent-cascade
+            "$RULESPEC_CHECKOUT" "$CITATION"
+          )
+          if [ -n "$REPLACE_RULESPEC_PATH" ]; then
+            cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")
+          fi
+          cascade_args+=("${dependent_citations[@]}")
+          "${cascade_args[@]}"
 
       - name: Encode, review, validate, and apply
         env:
@@ -530,6 +542,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          QUEUE_ID: ${{ inputs.queue_id }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
@@ -537,6 +551,8 @@ jobs:
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
         run: |
           set -euo pipefail
+          : "${QUEUE_ID:=}"
+          : "${REPLACE_RULESPEC_PATH:=}"
           : "${SECOND_DEPENDENT_CITATION:=}"
           : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
 
@@ -545,6 +561,7 @@ jobs:
             local review_finding="$2"
             local target_only="$3"
             local output_lane="$4"
+            local replacement_path="$5"
             local review_finding_path=""
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
@@ -560,6 +577,9 @@ jobs:
             )
             if [ "$target_only" = "true" ]; then
               args+=(--apply-target-only)
+            fi
+            if [ -n "$replacement_path" ]; then
+              args+=(--replace-rulespec-path "$replacement_path")
             fi
             if [ -n "$review_finding" ]; then
               review_finding_dir="$(mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX")"
@@ -585,6 +605,10 @@ jobs:
 
           if [ -n "$DEPENDENT_REVIEW_FINDING" ] && [ -z "$DEPENDENT_CITATION" ]; then
             echo "dependent citation is required with dependent review finding" >&2
+            exit 1
+          fi
+          if [ -n "$QUEUE_ID" ] && [ -n "$REPLACE_RULESPEC_PATH" ]; then
+            echo "queue-authorized re-encodes cannot override the RuleSpec target path" >&2
             exit 1
           fi
           if [ -n "$DEPENDENT_CITATION" ] && [ -z "$DEPENDENT_REVIEW_FINDING" ]; then
@@ -617,16 +641,18 @@ jobs:
           fi
 
           if [ -n "$DEPENDENT_CITATION" ]; then
-            run_signed_encode "$CITATION" "$REVIEW_FINDING" true target
             run_signed_encode \
-              "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent
+              "$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"
+            run_signed_encode \
+              "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent ""
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
               run_signed_encode \
                 "$SECOND_DEPENDENT_CITATION" \
-                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2
+                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""
             fi
           else
-            run_signed_encode "$CITATION" "$REVIEW_FINDING" false target
+            run_signed_encode \
+              "$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"
           fi
 
       - name: Verify generated provenance
@@ -658,6 +684,7 @@ jobs:
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
           artifact="$RUNNER_TEMP/targeted-reencode"
@@ -701,6 +728,19 @@ jobs:
           second_dependent_citation = (
               os.environ.get("SECOND_DEPENDENT_CITATION") or ""
           )
+          replacement_path = os.environ.get("REPLACE_RULESPEC_PATH") or ""
+          normalized_replacement_path = ""
+          if replacement_path:
+              candidate = Path(replacement_path)
+              if (
+                  candidate.is_absolute()
+                  or candidate.as_posix() != replacement_path
+                  or any(part in {"", ".", ".."} for part in candidate.parts)
+              ):
+                  raise SystemExit(
+                      "replacement RuleSpec path is not canonical checkout-relative"
+                  )
+              normalized_replacement_path = candidate.as_posix()
           expected_citations = {os.environ["CITATION"]}
           if dependent_citation:
               expected_citations.add(dependent_citation)
@@ -762,6 +802,25 @@ jobs:
                   )
               relative_path, applied_manifest = citation_matches[0]
               manifest_path = Path(os.environ["RULESPEC_CHECKOUT"]) / relative_path
+              if lane == "target" and normalized_replacement_path:
+                  applied_files = applied_manifest.get("applied_files")
+                  if not isinstance(applied_files, list):
+                      raise SystemExit(
+                          "replacement apply manifest has malformed applied_files"
+                      )
+                  primary_paths = sorted(
+                      item.get("path")
+                      for item in applied_files
+                      if isinstance(item, dict)
+                      and isinstance(item.get("path"), str)
+                      and item["path"].endswith(".yaml")
+                      and not item["path"].endswith(".test.yaml")
+                  )
+                  if primary_paths != [normalized_replacement_path]:
+                      raise SystemExit(
+                          "replacement apply manifest primary path does not "
+                          "match the requested RuleSpec target"
+                      )
               context_path = Path(applied_manifest["context_manifest_file"]).resolve()
               try:
                   context_path.relative_to(generated_root / lane)
@@ -842,6 +901,9 @@ jobs:
               "dependent_citation": os.environ.get("DEPENDENT_CITATION") or None,
               "second_dependent_citation": (
                   os.environ.get("SECOND_DEPENDENT_CITATION") or None
+              ),
+              "replace_rulespec_path": (
+                  os.environ.get("REPLACE_RULESPEC_PATH") or None
               ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
               "queue_id": os.environ.get("QUEUE_ID") or None,
