@@ -5231,6 +5231,70 @@ def test_materialized_artifact_crossing_case_budget_is_discarded(
     assert "case budget" in (result.error or "").lower()
 
 
+def test_workspace_artifact_crossing_case_budget_is_discarded(
+    monkeypatch,
+    tmp_path,
+):
+    clock = [0.0]
+    artifact_root = tmp_path / "out"
+    artifact_root.mkdir()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    output_file = artifact_root / "sample.yaml"
+    workspace_file = workspace_root / "sample.yaml"
+    workspace_test_file = workspace_root / "sample.test.yaml"
+    response = EvalPromptResponse(
+        text="Artifact written directly to the workspace.",
+        duration_ms=4000,
+    )
+    monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+    def finish_generation(*_args, **_kwargs):
+        workspace_file.write_text("format: rulespec/v1\nrules: []\n")
+        workspace_test_file.write_text("[]\n")
+        clock[0] = 4.0
+        return response
+
+    def materialize_after_deadline(*args, **kwargs):
+        wrote_artifact = _materialize_eval_artifact(*args, **kwargs)
+        clock[0] = 6.0
+        return wrote_artifact
+
+    with (
+        evals_module._active_eval_case_budget(5),
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            side_effect=finish_generation,
+        ),
+        patch(
+            "axiom_encode.harness.evals._materialize_eval_artifact",
+            side_effect=materialize_after_deadline,
+        ),
+    ):
+        result, wrote_artifact, retry_count, materialized_paths = (
+            evals_module._run_prompt_eval_with_empty_artifact_retry(
+                parse_runner_spec("codex:gpt-5.4"),
+                SimpleNamespace(root=workspace_root),
+                "prompt",
+                output_file,
+                "source",
+                "sample.yaml",
+                True,
+                artifact_root=artifact_root,
+            )
+        )
+
+    assert wrote_artifact is False
+    assert retry_count == 0
+    assert materialized_paths == frozenset()
+    assert not output_file.exists()
+    assert not output_file.with_suffix(".test.yaml").exists()
+    assert not workspace_file.exists()
+    assert not workspace_test_file.exists()
+    assert result.timed_out is True
+    assert result.timeout_stage == "case_budget"
+
+
 def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
     policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
     corpus_release, source_unit = _write_test_source_unit(
