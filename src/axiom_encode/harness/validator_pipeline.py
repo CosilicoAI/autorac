@@ -22640,6 +22640,15 @@ def _normalize_validation_staging_text(
     placeholder: str = _VALIDATION_STAGING_ROOT_PLACEHOLDER,
 ) -> str:
     """Replace one harness-owned staging prefix while preserving its suffix."""
+
+    def is_path_token_character(character: str) -> bool:
+        return (
+            character == "_"
+            or character.isalnum()
+            or unicodedata.category(character).startswith("M")
+            or character in "./\\-"
+        )
+
     normalized = text
     root = Path(staging_root)
     root_variants = {str(root), root.as_posix()}
@@ -22647,10 +22656,19 @@ def _normalize_validation_staging_text(
         resolved_root = root.resolve()
         root_variants.update({str(resolved_root), resolved_root.as_posix()})
     for root_text in sorted(root_variants, key=len, reverse=True):
+
+        def replace_if_path_boundary(match: re.Match[str]) -> str:
+            left = normalized[match.start() - 1] if match.start() else ""
+            right = normalized[match.end()] if match.end() < len(normalized) else ""
+            left_boundary = not left or not is_path_token_character(left)
+            right_boundary = (
+                not right or right in "/\\" or not is_path_token_character(right)
+            )
+            return placeholder if left_boundary and right_boundary else match.group()
+
         normalized = re.sub(
-            rf"(?<![\w./\\-]){re.escape(root_text)}"
-            rf"(?=$|[\\/]|[^\w./\\-])",
-            placeholder,
+            re.escape(root_text),
+            replace_if_path_boundary,
             normalized,
         )
     return normalized
