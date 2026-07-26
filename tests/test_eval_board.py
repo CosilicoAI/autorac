@@ -1493,6 +1493,63 @@ def test_fold_refuses_malformed_requested_effort_identity(tmp_path):
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("gpt-5.4", "none"),
+        ("gpt-5.4", "xhigh"),
+        ("gpt-5.6", "max"),
+    ],
+)
+def test_fold_accepts_model_supported_openai_effort(tmp_path, model, effort):
+    path = _write_payload(
+        tmp_path,
+        f"{model}-{effort}.json",
+        _payload(
+            [("api", "openai", model)],
+            [
+                _result("api", case, backend="openai", model=model)
+                for case in CASE_IDENTITIES
+            ],
+            requested_efforts={"api": effort},
+        ),
+    )
+
+    [runner] = fold_eval_board([path]).runners
+
+    assert runner.requested_effort == effort
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("gpt-5.4", "max"),
+        ("gpt-5.6", "ultra"),
+        ("future-model", "high"),
+    ],
+)
+def test_fold_refuses_openai_effort_unsupported_by_model(
+    tmp_path,
+    model,
+    effort,
+):
+    path = _write_payload(
+        tmp_path,
+        f"{model}-{effort}.json",
+        _payload(
+            [("api", "openai", model)],
+            [
+                _result("api", case, backend="openai", model=model)
+                for case in CASE_IDENTITIES
+            ],
+            requested_efforts={"api": effort},
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="requested effort"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_execution_identity_without_timeout_policy(tmp_path):
     identity = _execution_identity()
     identity.pop("runner_timeouts")

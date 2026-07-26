@@ -275,8 +275,15 @@ _TERMINAL_INFRA_FAILURE_KINDS = frozenset(
 _RUNNER_EFFORTS_BY_BACKEND = {
     "claude": frozenset({"low", "medium", "high", "max"}),
     "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
-    "openai": frozenset({"low", "medium", "high", "xhigh"}),
+    "openai": frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
 }
+_OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX = (
+    ("gpt-5.6", frozenset({"none", "low", "medium", "high", "xhigh", "max"})),
+    ("gpt-5.5-pro", frozenset({"medium", "high", "xhigh"})),
+    ("gpt-5.5", frozenset({"none", "low", "medium", "high", "xhigh"})),
+    ("gpt-5.4-pro", frozenset({"medium", "high", "xhigh"})),
+    ("gpt-5.4", frozenset({"none", "low", "medium", "high", "xhigh"})),
+)
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v4"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -1463,16 +1470,35 @@ def parse_runner_spec(spec: str) -> EvalRunnerSpec:
 
     if backend not in _RUNNER_EFFORTS_BY_BACKEND:
         raise ValueError(f"Unsupported backend '{backend}' in runner spec '{spec}'")
-    if effort is not None and effort not in _RUNNER_EFFORTS_BY_BACKEND[backend]:
-        accepted = ", ".join(sorted(_RUNNER_EFFORTS_BY_BACKEND[backend]))
+    accepted_efforts = _runner_efforts_for_backend_model(backend, model)
+    if effort is not None and effort not in accepted_efforts:
+        accepted = (
+            ", ".join(sorted(accepted_efforts))
+            if accepted_efforts
+            else "none for this unrecognized model"
+        )
         raise ValueError(
-            f"Unsupported effort '{effort}' for backend '{backend}' in runner "
-            f"spec '{spec}'; accepted values: {accepted}"
+            f"Unsupported effort '{effort}' for backend '{backend}' model "
+            f"'{model}' in runner spec '{spec}'; accepted values: {accepted}"
         )
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is None or name in {".", ".."}:
         raise ValueError(f"Unsafe runner name '{name}' in runner spec '{spec}'")
 
     return EvalRunnerSpec(name=name, backend=backend, model=model, effort=effort)
+
+
+def _runner_efforts_for_backend_model(
+    backend: str,
+    model: str,
+) -> frozenset[str]:
+    """Return receiver-supported explicit effort values for a runner."""
+
+    if backend != "openai":
+        return _RUNNER_EFFORTS_BY_BACKEND.get(backend, frozenset())
+    for prefix, efforts in _OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX:
+        if model == prefix or model.startswith(f"{prefix}-"):
+            return efforts
+    return frozenset()
 
 
 _CLAUDE_EVAL_REQUIRED_FLAGS = (

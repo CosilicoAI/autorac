@@ -20,7 +20,7 @@ identities), and runner sets may differ — that is the add-a-model path.
 Duplicate runner names across payloads are refused rather than merged: two
 runs of one runner are two boards, not one.
 
-The board consumes canonical v6 suite payloads and refuses anything else:
+The board consumes canonical v7 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
 whose case identity does not match the manifest, coverage claims the result
 matrix contradicts, and malformed metric types are all hard errors rather
@@ -80,8 +80,15 @@ EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v3"
 _RUNNER_EFFORTS_BY_BACKEND = {
     "claude": frozenset({"low", "medium", "high", "max"}),
     "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
-    "openai": frozenset({"low", "medium", "high", "xhigh"}),
+    "openai": frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
 }
+_OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX = (
+    ("gpt-5.6", frozenset({"none", "low", "medium", "high", "xhigh", "max"})),
+    ("gpt-5.5-pro", frozenset({"medium", "high", "xhigh"})),
+    ("gpt-5.5", frozenset({"none", "low", "medium", "high", "xhigh"})),
+    ("gpt-5.4-pro", frozenset({"medium", "high", "xhigh"})),
+    ("gpt-5.4", frozenset({"none", "low", "medium", "high", "xhigh"})),
+)
 _INFRA_FAILURE_KINDS = frozenset({"context_overflow", "output_truncated", "integrity"})
 
 # Every persisted result row carries this self-binding digest.
@@ -1264,6 +1271,8 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         strict=True,
     ):
         backend = runner_identity["backend"]
+        model = runner_identity["model"]
+        accepted_efforts = _runner_efforts_for_backend_model(backend, model)
         requested_effort = (
             runner_effort.get("requested_effort")
             if isinstance(runner_effort, dict)
@@ -1283,7 +1292,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
                 requested_effort is not None
                 and (
                     not isinstance(requested_effort, str)
-                    or requested_effort not in _RUNNER_EFFORTS_BY_BACKEND[backend]
+                    or requested_effort not in accepted_efforts
                 )
             )
             or uses_receiver_default is not (requested_effort is None)
@@ -1317,6 +1326,20 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"identity payload: {source}"
         )
     return identity, digest
+
+
+def _runner_efforts_for_backend_model(
+    backend: str,
+    model: str,
+) -> frozenset[str]:
+    """Return receiver-supported explicit effort values for a runner."""
+
+    if backend != "openai":
+        return _RUNNER_EFFORTS_BY_BACKEND.get(backend, frozenset())
+    for prefix, efforts in _OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX:
+        if model == prefix or model.startswith(f"{prefix}-"):
+            return efforts
+    return frozenset()
 
 
 def _payload_completeness(

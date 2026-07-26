@@ -587,7 +587,9 @@ class TestParseRunnerSpec:
         [
             ("sol=codex:gpt-5.6-sol@ultra", "ultra"),
             ("claude:opus@max", "max"),
+            ("openai:gpt-5.4@none", "none"),
             ("openai:gpt-5.4@xhigh", "xhigh"),
+            ("openai:gpt-5.6@max", "max"),
         ],
     )
     def test_parses_backend_specific_requested_effort(
@@ -616,6 +618,8 @@ class TestParseRunnerSpec:
             "openai:gpt-5.4@ultra",
             "openai:gpt-5.4@max",
             "openai:gpt-5.4@default",
+            "openai:gpt-5.6@ultra",
+            "openai:future-model@high",
         ],
     )
     def test_rejects_effort_level_unsupported_by_backend(self, spec):
