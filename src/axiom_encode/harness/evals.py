@@ -8,11 +8,13 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -724,6 +726,9 @@ class EvalCliEnvironment:
     executable: str
     version: str
     executable_sha256: str | None = None
+    launcher_sha256: str | None = None
+    native_executable: str | None = None
+    native_sha256: str | None = None
 
 
 @dataclass
@@ -1566,6 +1571,108 @@ def _eval_cli_executable_sha256(executable: str) -> str | None:
     return digest.hexdigest()
 
 
+def _required_eval_cli_executable_sha256(
+    executable: str,
+    *,
+    backend_label: str,
+    executable_label: str,
+) -> str:
+    """Hash receiver bytes or fail before dispatching an unverifiable suite."""
+
+    digest = _eval_cli_executable_sha256(executable)
+    if digest is None:
+        raise RuntimeError(
+            f"{backend_label} CLI preflight could not hash its {executable_label}: "
+            f"{executable}"
+        )
+    return digest
+
+
+def _codex_vendor_layout() -> tuple[str, str]:
+    """Return the optional npm package and target triple for this host."""
+
+    machine = platform.machine().lower()
+    architecture = {
+        "amd64": "x64",
+        "x86_64": "x64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }.get(machine)
+    if architecture is None:
+        raise RuntimeError(
+            "Codex CLI preflight cannot resolve a native receiver for "
+            f"unsupported architecture {machine!r}"
+        )
+    if sys.platform == "darwin":
+        target = (
+            "aarch64-apple-darwin" if architecture == "arm64" else "x86_64-apple-darwin"
+        )
+        platform_name = "darwin"
+    elif sys.platform.startswith("linux"):
+        target = (
+            "aarch64-unknown-linux-musl"
+            if architecture == "arm64"
+            else "x86_64-unknown-linux-musl"
+        )
+        platform_name = "linux"
+    elif sys.platform == "win32":
+        target = (
+            "aarch64-pc-windows-msvc"
+            if architecture == "arm64"
+            else "x86_64-pc-windows-msvc"
+        )
+        platform_name = "win32"
+    else:
+        raise RuntimeError(
+            "Codex CLI preflight cannot resolve a native receiver for "
+            f"unsupported platform {sys.platform!r}"
+        )
+    return f"codex-{platform_name}-{architecture}", target
+
+
+def _codex_npm_package_root(executable: str) -> Path | None:
+    """Recognize the official JavaScript launcher without guessing at scripts."""
+
+    launcher = Path(executable)
+    if launcher.name != "codex.js" or launcher.parent.name != "bin":
+        return None
+    package_root = launcher.parent.parent
+    package_manifest = package_root / "package.json"
+    try:
+        payload = json.loads(package_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("name") != "@openai/codex":
+        return None
+    return package_root
+
+
+def _resolve_codex_native_executable(executable: str) -> str:
+    """Resolve the native binary dispatched by the official npm launcher."""
+
+    package_root = _codex_npm_package_root(executable)
+    if package_root is None:
+        return executable
+    platform_package, target = _codex_vendor_layout()
+    binary_name = "codex.exe" if sys.platform == "win32" else "codex"
+    candidates = (
+        package_root.parent
+        / platform_package
+        / "vendor"
+        / target
+        / "bin"
+        / binary_name,
+        package_root / "vendor" / target / "bin" / binary_name,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    raise RuntimeError(
+        "Codex CLI preflight recognized the official npm launcher but could "
+        "not resolve its native receiver"
+    )
+
+
 def _run_eval_cli_preflight_probe(
     command: list[str],
     *,
@@ -1663,11 +1770,29 @@ def _preflight_eval_cli_runners(
                 f"{backend_label} CLI {version} does not support required eval "
                 f"flag(s): {', '.join(missing_flags)}"
             )
+        native_executable = (
+            _resolve_codex_native_executable(executable)
+            if backend == "codex"
+            else executable
+        )
+        launcher_sha256 = _required_eval_cli_executable_sha256(
+            executable,
+            backend_label=backend_label,
+            executable_label="launcher",
+        )
+        native_sha256 = _required_eval_cli_executable_sha256(
+            native_executable,
+            backend_label=backend_label,
+            executable_label="native receiver",
+        )
         environments[backend] = EvalCliEnvironment(
             backend=backend,
             executable=executable,
             version=version,
-            executable_sha256=_eval_cli_executable_sha256(executable),
+            executable_sha256=launcher_sha256,
+            launcher_sha256=launcher_sha256,
+            native_executable=native_executable,
+            native_sha256=native_sha256,
         )
     return environments
 

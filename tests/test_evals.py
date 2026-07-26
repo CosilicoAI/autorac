@@ -811,9 +811,7 @@ def test_eval_cli_preflight_hashes_codex_launcher_and_vendor_receiver(
         package_root / "bin" / "codex.js",
         b"#!/usr/bin/env node\n// fake codex launcher\n",
     )
-    (package_root / "package.json").write_text(
-        json.dumps({"name": "@openai/codex"})
-    )
+    (package_root / "package.json").write_text(json.dumps({"name": "@openai/codex"}))
     native = _write_fake_eval_executable(
         package_root.parent
         / "codex-test-platform"
@@ -845,7 +843,9 @@ def test_eval_cli_preflight_hashes_codex_launcher_and_vendor_receiver(
         )["codex"]
 
     assert environment.executable == str(wrapper.resolve())
-    assert environment.launcher_sha256 == hashlib.sha256(wrapper.read_bytes()).hexdigest()
+    assert (
+        environment.launcher_sha256 == hashlib.sha256(wrapper.read_bytes()).hexdigest()
+    )
     assert environment.native_executable == str(native.resolve())
     assert environment.native_sha256 == hashlib.sha256(native.read_bytes()).hexdigest()
 
@@ -859,9 +859,7 @@ def test_eval_cli_preflight_fails_closed_for_codex_wrapper_without_vendor_receiv
         package_root / "bin" / "codex.js",
         b"#!/usr/bin/env node\n// fake codex launcher\n",
     )
-    (package_root / "package.json").write_text(
-        json.dumps({"name": "@openai/codex"})
-    )
+    (package_root / "package.json").write_text(json.dumps({"name": "@openai/codex"}))
     monkeypatch.setattr(
         evals_module,
         "_codex_vendor_layout",
@@ -880,9 +878,7 @@ def test_eval_cli_preflight_fails_closed_for_codex_wrapper_without_vendor_receiv
         ),
         pytest.raises(RuntimeError, match="native receiver"),
     ):
-        evals_module._preflight_eval_cli_runners(
-            [parse_runner_spec("codex:gpt-5.4")]
-        )
+        evals_module._preflight_eval_cli_runners([parse_runner_spec("codex:gpt-5.4")])
 
 
 def test_eval_cli_preflight_accepts_direct_codex_native_binary(monkeypatch, tmp_path):
