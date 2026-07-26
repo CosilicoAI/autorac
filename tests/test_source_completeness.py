@@ -1545,13 +1545,17 @@ def test_stated_conversion_pair_scans_past_trailing_year():
     (
         "Nach § 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
         "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach den §§ 10–12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach Artikel 10 bis 12 umgerechnet ergibt sich 6 150 Euro.",
+        "Nach Art. 10 bis 12 umgerechnet ergibt sich 6 150 Euro.",
+        "Under Articles 10 to 12, converted monthly, it is 6150 dollars.",
         "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Ab 2025-01-01 gilt: Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
         "(1) Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
     ),
 )
 def test_stated_conversion_pair_rejects_structural_number_as_base(source: str):
     assert not source_states_stated_conversion_result(source)
-    assert source_states_explicit_computation(source)
 
 
 @pytest.mark.parametrize(
@@ -1615,11 +1619,43 @@ rules:
     )
 
 
+def test_stated_conversion_pair_stops_formula_guard_at_semicolon():
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat ergibt "
+        "sich 6 150 Euro; der Zuschlag ergibt sich aus dem Monatsbetrag plus "
+        "10 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert source_states_explicit_computation(source)
+
+
+def test_stated_conversion_metadata_filter_retains_real_amounts():
+    source = (
+        "Nach § 12 beträgt der Jahresbetrag 73 800 Euro im Jahr 2025. "
+        "Umgerechnet auf den Monat ergibt sich 6 150 Euro."
+    )
+    year_sized_amount = (
+        "Der Jahresbetrag beträgt 2 025 Euro. Umgerechnet auf den Monat ergibt "
+        "sich 168,75 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+    assert source_states_stated_conversion_result(year_sized_amount)
+    assert not source_states_explicit_computation(year_sized_amount)
+
+
 @pytest.mark.parametrize(
     "source",
     (
         "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Nach den §§ 10–12 umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Nach Artikel 10 bis 12 umgerechnet ergeben sich 6 150 Euro.",
+        "Nach Art. 10 bis 12 umgerechnet ergeben sich 6 150 Euro.",
+        "Under Articles 10 to 12, converted monthly, it is 6150 dollars.",
         "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Ab 2025-01-01 gilt: Umgerechnet auf den Monat ergeben sich 6 150 Euro.",
     ),
 )
 def test_metadata_only_numbers_do_not_activate_stated_conversion_hint(source: str):

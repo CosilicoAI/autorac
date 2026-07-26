@@ -302,7 +302,8 @@ _STATED_CONVERSION_DATE = re.compile(
     rf"(?:st|nd|rd|th)?\s*,?\s*(?:18|19|20)\d{{2}}|"
     rf"(?<!\w)\d{{1,2}}(?:st|nd|rd|th)?\s+"
     rf"{_STATED_CONVERSION_ENGLISH_MONTH}\s+(?:18|19|20)\d{{2}}|"
-    rf"(?<!\w)\d{{1,2}}[./]\d{{1,2}}[./]\d{{2,4}}(?!\w)"
+    rf"(?<!\w)\d{{1,2}}[./]\d{{1,2}}[./]\d{{2,4}}(?!\w)|"
+    rf"(?<!\w)(?:18|19|20)\d{{2}}-\d{{2}}-\d{{2}}(?!\w)"
     rf")",
     flags=re.IGNORECASE,
 )
@@ -389,7 +390,7 @@ _BUCHSTABE_REFERENCE = re.compile(
 _GERMAN_LEGAL_CITATION = re.compile(
     r"§{1,2}\s*\d+[a-z]?"
     r"(?:\s*,\s*\d+[a-z]?)*"
-    r"(?:\s*(?:und|bis)\s*\d+[a-z]?)*",
+    r"(?:\s*(?:und|bis|[-–—])\s*\d+[a-z]?)*",
     flags=re.IGNORECASE,
 )
 _EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
@@ -398,17 +399,18 @@ _EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
     flags=re.IGNORECASE,
 )
 _ENGLISH_LEGAL_CITATION = re.compile(
-    r"\b(?:sections?|secs?\.?|regulations?|paragraphs?)\s+"
-    r"\d+(?:\.\d+)*(?:\s*(?:through|to|-|and|,)\s*\d+(?:\.\d+)*)*",
+    r"\b(?:articles?|sections?|secs?\.?|regulations?|paragraphs?)\s+"
+    r"\d+(?:\.\d+)*(?:\s*(?:through|to|[-–—]|and|,)\s*\d+(?:\.\d+)*)*",
     flags=re.IGNORECASE,
 )
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:"
+    r"Artikel(?:s|n)?|Art\.|"
     r"Absatz(?:es)?|Absätze(?:n)?|Abs\.|"
     r"Satz(?:es)?|Sätze(?:n)?|"
     r"Nummer(?:n)?|Nr\.|Buchstabe(?:n)?|Buchst\."
     r")\s*\d*[a-z]?"
-    r"(?:\s*(?:,|und|bis)\s*\d+[a-z]?)*\b",
+    r"(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -588,7 +590,7 @@ def _stated_conversion_candidate_contains_formula(
     start = cue.start()
     suffix_limit = min(len(source_text), result.end("value") + 160)
     clause_suffix = source_text[result.end("value") : suffix_limit]
-    clause_boundary = re.search(r"[.!?\n]", clause_suffix)
+    clause_boundary = re.search(r"[.;!?\n]", clause_suffix)
     end = (
         result.end("value") + clause_boundary.start()
         if clause_boundary is not None
