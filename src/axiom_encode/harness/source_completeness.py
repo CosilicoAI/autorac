@@ -88,6 +88,8 @@ class _FormulaExecution:
 
     trace: tuple[_FormulaTraceStep, ...]
     leaf: str
+    evaluated_value: tuple[str, str] | None
+    evaluates_to_zero: bool
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,11 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"unterschied|differenz|"
     r"geteilt\s+durch|durch\s+(?:\d+|[a-zäöüß]+)\s+geteilt|"
     r"multipliziert\s+mit|"
+    r"mit\s+(?:(?:dem|einem)\s+faktor\s+)?"
+    r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
+    r"(?:multiplizieren|vervielfachen)|"
+    r"unter\s+anwendung\s+(?:des|eines)\s+faktors?\s+"
+    r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+ermitteln|"
     r"\bmal\s+(?:\d+(?:[.,]\d+)?|"
     r"ein(?:s|e[nsrm]?)?|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)|"
     r"(?:wird|werden)\s+(?:verdoppelt|verdreifacht|vervierfacht)|"
@@ -990,11 +997,19 @@ def _deferred_coverage(
                 exact_blockers
                 and bool(_MISSING_DEPENDENCY_LANGUAGE.search(reason))
                 and all(
-                    _reason_identifies_blocker(reason, blocker)
+                    _reason_identifies_blocker(
+                        reason,
+                        blocker,
+                        corpus_citation_path=corpus_citation_path,
+                    )
                     for blocker in blocker_targets
                 )
                 and all(
-                    _reason_identifies_blocker(source_scope_text, blocker)
+                    _reason_identifies_blocker(
+                        source_scope_text,
+                        blocker,
+                        corpus_citation_path=corpus_citation_path,
+                    )
                     for blocker in blocker_targets
                 )
             )
@@ -1030,11 +1045,37 @@ def _deferred_source_scope_text(
     return max(candidates, key=len, default="")
 
 
-def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
+def _reason_identifies_blocker(
+    reason: str,
+    blocker: str,
+    *,
+    corpus_citation_path: str | None = None,
+) -> bool:
     """Bind a typed blocker to the legal section or concept named in prose."""
 
     target_path, _separator, symbol = blocker.partition("#")
     section = target_path.rstrip("/").rsplit("/", 1)[-1]
+    target_instrument = _citation_instrument_identity(target_path)
+    corpus_instrument = (
+        _citation_instrument_identity(corpus_citation_path)
+        if corpus_citation_path
+        else None
+    )
+    normalized_reason = re.sub(
+        r"[^a-z0-9äöüß]+",
+        " ",
+        reason.lower(),
+    ).strip()
+    if (
+        target_instrument is not None
+        and corpus_instrument is not None
+        and target_instrument != corpus_instrument
+        and not _reason_names_target_instrument(
+            normalized_reason,
+            target_instrument,
+        )
+    ):
+        return False
     explicit_sections = {
         match.group("section").lower()
         for match in _EXPLICIT_LEGAL_SECTION_REFERENCE.finditer(reason)
@@ -1048,12 +1089,42 @@ def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
         flags=re.IGNORECASE,
     ):
         return True
-    normalized_reason = re.sub(r"[^a-z0-9äöüß]+", " ", reason.lower()).strip()
     normalized_symbol = re.sub(r"[^a-z0-9äöüß]+", " ", symbol.lower()).strip()
     return bool(
         normalized_symbol
         and re.search(
             rf"(?<![a-z0-9äöüß]){re.escape(normalized_symbol)}"
+            r"(?![a-z0-9äöüß])",
+            normalized_reason,
+        )
+    )
+
+
+def _citation_instrument_identity(
+    citation: str,
+) -> tuple[str, str, str] | None:
+    normalized = citation.split("#", 1)[0].replace(":", "/", 1).strip("/")
+    parts = [part.lower() for part in normalized.split("/") if part]
+    if len(parts) < 3:
+        return None
+    collection = parts[1].removesuffix("s")
+    return parts[0], collection, parts[2]
+
+
+def _reason_names_target_instrument(
+    normalized_reason: str,
+    target_instrument: tuple[str, str, str],
+) -> bool:
+    _jurisdiction, _collection, instrument = target_instrument
+    normalized_instrument = re.sub(
+        r"[^a-z0-9äöüß]+",
+        " ",
+        instrument,
+    ).strip()
+    return bool(
+        normalized_instrument
+        and re.search(
+            rf"(?<![a-z0-9äöüß]){re.escape(normalized_instrument)}"
             r"(?![a-z0-9äöüß])",
             normalized_reason,
         )
@@ -1295,6 +1366,7 @@ def _companion_test_issues(
         principal_formula_clause_rules=principal_formula_clause_rules,
         asserted_by_rule=asserted_by_rule,
         extract_numeric_occurrences=extract_numeric_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
         formula_environment=formula_environment,
     )
     for branch in missing_formula_branches:
@@ -1334,6 +1406,7 @@ def _companion_test_issues(
             asserted_by_rule=asserted_by_rule,
             numeric_value_is_grounded=numeric_value_is_grounded,
             formula_environment=formula_environment,
+            extract_numeric_occurrences=extract_numeric_occurrences,
         ):
             continue
         missing_boundaries.append((branch, boundary))
@@ -1566,6 +1639,7 @@ def _unwitnessed_formula_branches(
     principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
 ) -> tuple[SourceStructureBranch, ...]:
     """Consume each executed rule/case witness for at most one source formula."""
@@ -1577,6 +1651,7 @@ def _unwitnessed_formula_branches(
             rule_names=principal_formula_clause_rules[branch],
             asserted_by_rule=asserted_by_rule,
             extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
             formula_environment=formula_environment,
         )
         for branch in branches
@@ -1619,6 +1694,7 @@ def _formula_branch_test_witnesses(
     rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
 ) -> set[tuple[str, str]]:
     interval = _formula_branch_interval(
@@ -1645,15 +1721,35 @@ def _formula_branch_test_witnesses(
                     if (
                         execution is not None
                         and _formula_execution_leaf_is_computational(execution)
+                        and _formula_execution_matches_source_branch(
+                            execution,
+                            branch,
+                            interval=interval,
+                            formula_environment=formula_environment,
+                            extract_numeric_occurrences=(
+                                extract_numeric_occurrences
+                            ),
+                            numeric_value_is_grounded=(
+                                numeric_value_is_grounded
+                            ),
+                        )
                     ):
-                        outcome = _formula_execution_outcome(execution)
-                        witnesses.add((rule_name, f"branch:{outcome}"))
+                        leaf = _collapse_text(execution.leaf).lower()
+                        witnesses.add((rule_name, f"leaf:{leaf}"))
                 else:
                     witnesses.add((rule_name, f"case:{id(case)}"))
                 continue
             if (
                 execution is not None
                 and _formula_execution_leaf_is_computational(execution)
+                and _formula_execution_matches_source_branch(
+                    execution,
+                    branch,
+                    interval=interval,
+                    formula_environment=formula_environment,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
+                )
                 and _formula_execution_references_names(
                     execution,
                     selector_names,
@@ -1669,6 +1765,75 @@ def _formula_branch_test_witnesses(
             ):
                 witnesses.add((rule_name, f"case:{id(case)}"))
     return witnesses
+
+
+def _formula_execution_matches_source_branch(
+    execution: _FormulaExecution,
+    branch: SourceStructureBranch,
+    *,
+    interval: _NumericInterval | None,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    """Bind a reached leaf to numeric evidence in its exact source formula."""
+
+    source_occurrences = tuple(
+        extract_numeric_occurrences(
+            authoritative_numeric_recall_text(branch.text)
+        )
+    )
+    boundaries = (
+        ()
+        if interval is None
+        else tuple(
+            occurrence
+            for occurrence in (interval.lower, interval.upper)
+            if occurrence is not None
+        )
+    )
+    computation_occurrences = tuple(
+        occurrence
+        for occurrence in source_occurrences
+        if not any(
+            _numeric_occurrences_are_equivalent(occurrence, boundary)
+            for boundary in boundaries
+        )
+    )
+    if not computation_occurrences:
+        return True
+
+    leaf_names = set(_FORMULA_IDENTIFIER.findall(execution.leaf))
+    candidate_values = [
+        float(value)
+        for name, value in formula_environment.items()
+        if name in leaf_names
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ]
+    candidate_values.extend(
+        float(occurrence.value)
+        for occurrence in extract_numeric_occurrences(execution.leaf)
+    )
+    return bool(candidate_values) and all(
+        any(
+            numeric_value_is_grounded(value, (source_occurrence,))
+            for value in candidate_values
+        )
+        for source_occurrence in computation_occurrences
+    )
+
+
+def _numeric_occurrences_are_equivalent(
+    left: NumericOccurrenceLike,
+    right: NumericOccurrenceLike,
+) -> bool:
+    return (
+        math.isclose(float(left.value), float(right.value))
+        and left.has_rate_context == right.has_rate_context
+        and left.source_value == right.source_value
+        and left.requires_rate_context == right.requires_rate_context
+    )
 
 
 def _rule_has_branching_formula(rule: dict[str, Any]) -> bool:
@@ -1727,7 +1892,28 @@ def _execute_formula_text(
         if node is None:
             if _rule_text_has_branching_formula(selected_text):
                 return None
-            return _FormulaExecution(tuple(trace), selected_text.strip())
+            leaf = selected_text.strip()
+            evaluated = _evaluate_formula_selector(leaf, environment)
+            value_signature = (
+                None
+                if evaluated is _UNRESOLVED_CONDITION_VALUE
+                else (type(evaluated).__name__, repr(evaluated))
+            )
+            evaluates_to_zero = (
+                evaluated is None
+                or evaluated is False
+                or (
+                    isinstance(evaluated, (int, float))
+                    and not isinstance(evaluated, bool)
+                    and evaluated == 0
+                )
+            )
+            return _FormulaExecution(
+                tuple(trace),
+                leaf,
+                value_signature,
+                evaluates_to_zero,
+            )
         selected = _select_formula_branch(node, environment=environment)
         if selected is None:
             return None
@@ -2247,6 +2433,8 @@ def _formula_execution_outcome(execution: _FormulaExecution) -> str:
 def _formula_execution_leaf_is_computational(
     execution: _FormulaExecution,
 ) -> bool:
+    if execution.evaluates_to_zero:
+        return False
     leaf = execution.leaf.strip()
     with contextlib.suppress(SyntaxError, ValueError):
         literal = ast.literal_eval(leaf)
@@ -2442,14 +2630,35 @@ def _evaluate_condition_expression(
     if (
         isinstance(expression, ast.Call)
         and isinstance(expression.func, ast.Name)
-        and expression.func.id in {"holds", "not_holds"}
-        and len(expression.args) == 1
         and not expression.keywords
     ):
-        value = _evaluate_condition_expression(expression.args[0], environment)
-        if value is _UNRESOLVED_CONDITION_VALUE:
-            return value
-        return bool(value) if expression.func.id == "holds" else not bool(value)
+        function_name = expression.func.id
+        values = [
+            _evaluate_condition_expression(argument, environment)
+            for argument in expression.args
+        ]
+        if any(
+            value is _UNRESOLVED_CONDITION_VALUE
+            for value in values
+        ):
+            return _UNRESOLVED_CONDITION_VALUE
+        with contextlib.suppress(ArithmeticError, TypeError, ValueError):
+            if function_name in {"holds", "not_holds"} and len(values) == 1:
+                return (
+                    bool(values[0])
+                    if function_name == "holds"
+                    else not bool(values[0])
+                )
+            if function_name == "min" and values:
+                return min(values)
+            if function_name == "max" and values:
+                return max(values)
+            if function_name == "floor" and len(values) == 1:
+                return math.floor(values[0])
+            if function_name == "ceil" and len(values) == 1:
+                return math.ceil(values[0])
+            if function_name == "abs" and len(values) == 1:
+                return abs(values[0])
     return _UNRESOLVED_CONDITION_VALUE
 
 
@@ -2462,6 +2671,7 @@ def _branch_boundary_has_test_evidence(
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any] | None = None,
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
 ) -> bool:
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         rule = principal_rules[rule_name]
@@ -2476,17 +2686,77 @@ def _branch_boundary_has_test_evidence(
             )
             if (
                 execution is not None
-                and _formula_execution_references_names(
-                    execution,
-                    selector_names,
-                )
                 and any(
-                numeric_value_is_grounded(value, (boundary,))
-                for value in _case_numeric_selector_values(case, selector_names)
+                    numeric_value_is_grounded(value, (boundary,))
+                    and _formula_execution_references_names(
+                        execution,
+                        input_names,
+                    )
+                    and _formula_execution_binds_boundary(
+                        execution,
+                        boundary,
+                        formula_environment=formula_environment or {},
+                        extract_numeric_occurrences=(
+                            extract_numeric_occurrences
+                        ),
+                        numeric_value_is_grounded=(
+                            numeric_value_is_grounded
+                        ),
+                    )
+                    for input_names, value in (
+                        _case_numeric_selector_evidence(
+                            case,
+                            selector_names,
+                        )
+                    )
                 )
             ):
                 return True
     return False
+
+
+def _formula_execution_binds_boundary(
+    execution: _FormulaExecution,
+    boundary: NumericOccurrenceLike,
+    *,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    boundary_names = {
+        name
+        for name, value in formula_environment.items()
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (
+            numeric_value_is_grounded(float(value), (boundary,))
+            or _is_adjacent_integral_boundary(float(value), boundary)
+        )
+    }
+    if boundary_names and _formula_execution_references_names(
+        execution,
+        boundary_names,
+    ):
+        return True
+    if extract_numeric_occurrences is not None and any(
+        numeric_value_is_grounded(float(occurrence.value), (boundary,))
+        for occurrence in extract_numeric_occurrences(execution.leaf)
+    ):
+        return True
+    return not boundary_names
+
+
+def _is_adjacent_integral_boundary(
+    value: float,
+    boundary: NumericOccurrenceLike,
+) -> bool:
+    boundary_value = float(boundary.value)
+    return (
+        not boundary.has_rate_context
+        and value.is_integer()
+        and boundary_value.is_integer()
+        and math.isclose(abs(value - boundary_value), 1.0)
+    )
 
 
 def _rules_covering_branch(
@@ -2630,15 +2900,32 @@ def _case_numeric_selector_values(
     case: dict[str, Any],
     selector_names: set[str],
 ) -> tuple[float, ...]:
+    return tuple(
+        value
+        for _names, value in _case_numeric_selector_evidence(
+            case,
+            selector_names,
+        )
+    )
+
+
+def _case_numeric_selector_evidence(
+    case: dict[str, Any],
+    selector_names: set[str],
+) -> tuple[tuple[set[str], float], ...]:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
         return ()
-    values: list[float] = []
+    evidence: list[tuple[set[str], float]] = []
     for key, value in inputs.items():
-        if not (_input_key_names(key) & selector_names):
+        matched_names = _input_key_names(key) & selector_names
+        if not matched_names:
             continue
-        values.extend(_numeric_test_input_values(value))
-    return tuple(values)
+        evidence.extend(
+            (matched_names, numeric_value)
+            for numeric_value in _numeric_test_input_values(value)
+        )
+    return tuple(evidence)
 
 
 def _input_key_names(key: object) -> set[str]:
@@ -2797,30 +3084,56 @@ def _toggled_formula_boolean_selectors(
         if not selector_names:
             continue
         cases = asserted_by_rule.get(rule_name, ())
-        for selector_name in selector_names:
-            reachable_cases = [
-                case
-                for case in cases
-                if (
-                    (
-                        execution := _case_formula_execution(
-                            rule,
-                            case,
-                            formula_environment=formula_environment,
-                        )
-                    )
-                    is not None
-                    and _formula_execution_references_names(
+        for key, left_case, right_case in _paired_boolean_toggle_case_pairs(cases):
+            matched_names = _input_key_names(key) & selector_names
+            if not matched_names:
+                continue
+            left_execution = _case_formula_execution(
+                rule,
+                left_case,
+                formula_environment=formula_environment,
+            )
+            right_execution = _case_formula_execution(
+                rule,
+                right_case,
+                formula_environment=formula_environment,
+            )
+            if left_execution is None or right_execution is None:
+                continue
+            if _formula_execution_effect_signature(
+                left_execution
+            ) == _formula_execution_effect_signature(right_execution):
+                continue
+            for selector_name in matched_names:
+                if all(
+                    _formula_execution_reaches_selector(
                         execution,
-                        {selector_name},
-                        selectors_only=True,
+                        selector_name,
                     )
-                )
-            ]
-            for key in _paired_boolean_toggle_keys(reachable_cases):
-                if selector_name in _input_key_names(key):
+                    for execution in (left_execution, right_execution)
+                ):
                     toggled.add((rule_name, selector_name))
     return toggled
+
+
+def _formula_execution_effect_signature(
+    execution: _FormulaExecution,
+) -> tuple[str, tuple[str, str] | None]:
+    return (
+        _collapse_text(execution.leaf).lower(),
+        execution.evaluated_value,
+    )
+
+
+def _formula_execution_reaches_selector(
+    execution: _FormulaExecution,
+    selector_name: str,
+) -> bool:
+    return _formula_execution_references_names(
+        execution,
+        {selector_name},
+        selectors_only=bool(execution.trace),
+    )
 
 
 def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
@@ -2844,6 +3157,11 @@ def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
             or any(_exception_semantic_identifier(name) for name in condition_names)
         ):
             names.update(condition_names)
+    names.update(
+        identifier
+        for identifier in _FORMULA_IDENTIFIER.findall(formula_text)
+        if _exception_semantic_identifier(identifier)
+    )
     return names
 
 
@@ -2926,7 +3244,7 @@ def _exception_semantic_identifier(identifier: str) -> bool:
     return bool(
         re.search(
             r"(?:exception|exempt|exclud|disqual|inelig|eligib|remarri|"
-            r"barred|blocking|waiver)",
+            r"barred|blocking|waiver|befrei|ausnahme)",
             identifier,
             flags=re.IGNORECASE,
         )
@@ -2958,10 +3276,6 @@ def _fractional_rounding_case_witnesses(
             "ceil" if direction == "upward" else "floor"
         )
     }
-    rounded_operand_identifiers = _rounding_operand_identifier_names(
-        rule,
-        functions=functions,
-    )
     for case in asserted_by_rule.get(rule_name, ()):
         inputs = case.get("input")
         if not isinstance(inputs, dict):
@@ -2976,6 +3290,10 @@ def _fractional_rounding_case_witnesses(
             direction,
         ):
             continue
+        rounded_operand_identifiers = _rounding_operand_identifier_names(
+            execution.leaf,
+            functions=functions,
+        )
         if any(
             _input_key_names(key) & rounded_operand_identifiers
             and any(
@@ -3005,12 +3323,11 @@ def _formula_execution_implements_rounding(
 
 
 def _rounding_operand_identifier_names(
-    rule: dict[str, Any],
+    formula_text: str,
     *,
     functions: set[str],
 ) -> set[str]:
     names: set[str] = set()
-    formula_text = _rule_formula_text(rule)
     function_names = {"floor", "ceil"} & functions
     if "nearest" in functions:
         function_names.add("floor")
@@ -3076,28 +3393,31 @@ def _source_boundary_obligations(
             "source-unit",
         }:
             continue
-        first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
-        prefix = first_line.split(":", 1)[0]
-        if not re.search(
-            r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|through|"
-            r"less\s+than|more\s+than|at\s+least|up\s+to|above|below|"
-            r"nicht\s+mehr\s+als)\b",
-            prefix,
-            flags=re.IGNORECASE,
+        direct_text = authoritative_numeric_recall_text(branch.text)
+        for fragment in re.split(
+            r"(?:[;\n]+|(?<=[.!?])\s+)",
+            direct_text,
         ):
-            continue
-        prefix = authoritative_numeric_recall_text(prefix)
-        interval = _formula_interval_from_text(
-            prefix,
-            extract_numeric_occurrences=extract_numeric_occurrences,
-        )
-        if interval is None:
-            continue
-        obligations.extend(
-            (branch, boundary)
-            for boundary in (interval.lower, interval.upper)
-            if boundary is not None
-        )
+            range_fragment = fragment.split(":", 1)[0]
+            if not re.search(
+                r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|"
+                r"through|less\s+than|more\s+than|at\s+least|up\s+to|"
+                r"above|below|nicht\s+mehr\s+als)\b",
+                range_fragment,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            interval = _formula_interval_from_text(
+                range_fragment,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+            )
+            if interval is None:
+                continue
+            obligations.extend(
+                (branch, boundary)
+                for boundary in (interval.lower, interval.upper)
+                if boundary is not None
+            )
     for branch in narrative_formula_branches:
         interval = _formula_branch_interval(
             branch,
@@ -3139,7 +3459,9 @@ def _numeric_test_input_values(value: Any) -> tuple[float, ...]:
     return tuple(values)
 
 
-def _paired_boolean_toggle_keys(cases: Iterable[dict[str, Any]]) -> set[str]:
+def _paired_boolean_toggle_case_pairs(
+    cases: Iterable[dict[str, Any]],
+) -> Iterable[tuple[str, dict[str, Any], dict[str, Any]]]:
     flattened = [
         (
             case,
@@ -3152,7 +3474,6 @@ def _paired_boolean_toggle_keys(cases: Iterable[dict[str, Any]]) -> set[str]:
         for case in cases
         if isinstance(case.get("input"), dict)
     ]
-    toggled: set[str] = set()
     for left_index, (left_case, left_values) in enumerate(flattened):
         for right_case, right_values in flattened[left_index + 1 :]:
             if set(left_values) != set(right_values):
@@ -3164,8 +3485,7 @@ def _paired_boolean_toggle_keys(cases: Iterable[dict[str, Any]]) -> set[str]:
                 continue
             if _non_boolean_inputs(left_case) != _non_boolean_inputs(right_case):
                 continue
-            toggled.add(changed[0])
-    return toggled
+            yield changed[0], left_case, right_case
 
 
 def _boolean_value(value: Any) -> bool | None:

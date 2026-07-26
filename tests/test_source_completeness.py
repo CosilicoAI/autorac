@@ -705,8 +705,16 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
-def test_deferral_symbol_cannot_mask_a_conflicting_source_section():
-    content = """\
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        "de:statutes/estg/9999#bemessungsgrundlage",
+        "de:statutes/fake/26#bemessungsgrundlage",
+        "xx:statutes/anything/26#bemessungsgrundlage",
+    ],
+)
+def test_deferral_symbol_cannot_mask_a_conflicting_citation(blocker: str):
+    content = f"""\
 format: rulespec/v1
 module:
   source_verification:
@@ -716,7 +724,7 @@ module:
       reason: >-
         Absatz 1 cannot be computed because the Bemessungsgrundlage is missing.
       blocked_by:
-        - de:statutes/estg/9999#bemessungsgrundlage
+        - {blocker}
 rules: []
 """
     source = "(1) Maßgeblich ist die Bemessungsgrundlage nach § 26."
@@ -3049,3 +3057,308 @@ rules:
     result = _analyze(content, source, test_cases=tests)
 
     assert _has_issue(result, "rounding", "fractional")
+
+
+def test_same_computation_leaf_cannot_witness_two_source_formulas():
+    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+        "formula: income * first_multiplier + income * second_multiplier",
+        """\
+formula: |-
+          if disabled:
+            income * first_multiplier
+          else:
+            if married:
+              income * first_multiplier
+            else:
+              income * second_multiplier""",
+    )
+    cases = [
+        {
+            "name": "outer first computation",
+            "input": {"disabled": True, "married": True, "income": 10},
+            "output": {"combined_amount": 20},
+        },
+        {
+            "name": "nested first computation",
+            "input": {"disabled": False, "married": True, "income": 10},
+            "output": {"combined_amount": 20},
+        },
+    ]
+
+    result = _analyze(
+        content,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=cases,
+    )
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+@pytest.mark.parametrize(
+    ("bypass_formula", "extra_input"),
+    [
+        ("0 + 0", {}),
+        ("min(0, 0)", {}),
+        ("disabled_amount", {"disabled_amount": 0}),
+    ],
+)
+def test_zero_valued_bypass_expression_is_not_computation_evidence(
+    bypass_formula: str,
+    extra_input: dict[str, object],
+):
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled:
+            {bypass_formula}
+          else:
+            income * multiplier
+"""
+    case = {
+        "name": "bypass",
+        "input": {"disabled": True, "income": 10, **extra_input},
+        "output": {"amount": 0},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_boundary_evidence_is_bound_to_reached_comparator_and_input():
+    source = """\
+(1) Der Anspruch besteht für berechtigte Personen.
+Er gilt bis 100 Euro Einkommen.
+"""
+    base_content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income <= income_limit
+"""
+    continuation_missing = _analyze(
+        base_content,
+        source,
+        test_cases=[
+            {
+                "name": "below only",
+                "input": {"income": 50},
+                "output": {"eligible": True},
+            }
+        ],
+    )
+    bypass_content = base_content.replace(
+        "formula: income <= income_limit",
+        (
+            "formula: >-\n"
+            "          if disabled: income == income "
+            "else: income <= income_limit"
+        ),
+    )
+    bypassed_comparator = _analyze(
+        bypass_content,
+        source,
+        test_cases=[
+            {
+                "name": "exact but bypassed",
+                "input": {"disabled": True, "income": 100},
+                "output": {"eligible": True},
+            }
+        ],
+    )
+    other_input_content = base_content.replace(
+        "formula: income <= income_limit",
+        (
+            "formula: >-\n"
+            "          if use_age: age <= external_age_limit "
+            "else: income <= income_limit"
+        ),
+    )
+    unused_boundary_input = _analyze(
+        other_input_content,
+        source,
+        test_cases=[
+            {
+                "name": "unused exact income",
+                "input": {
+                    "use_age": True,
+                    "age": 18,
+                    "external_age_limit": 21,
+                    "income": 100,
+                },
+                "output": {"eligible": True},
+            }
+        ],
+    )
+
+    assert _has_issue(continuation_missing, "boundary", "test")
+    assert _has_issue(bypassed_comparator, "boundary", "test")
+    assert _has_issue(unused_boundary_input, "boundary", "test")
+
+
+def test_exception_toggle_must_change_the_reached_formula_effect():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    short_circuited_content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled or exemption_applies:
+            false
+          else:
+            true
+"""
+    short_circuited_cases = [
+        {
+            "name": f"disabled exemption={value}",
+            "input": {"disabled": True, "exemption_applies": value},
+            "output": {"eligible": False},
+        }
+        for value in (False, True)
+    ]
+    short_circuited = _analyze(
+        short_circuited_content,
+        source,
+        test_cases=short_circuited_cases,
+    )
+
+    direct_relation_content = short_circuited_content.replace(
+        """\
+formula: |-
+          if disabled or exemption_applies:
+            false
+          else:
+            true""",
+        "formula: not exemption_applies",
+    )
+    direct_relation_cases = [
+        {
+            "name": f"direct exemption={value}",
+            "input": {"exemption_applies": value},
+            "output": {"eligible": not value},
+        }
+        for value in (False, True)
+    ]
+    direct_relation = _analyze(
+        direct_relation_content,
+        source,
+        test_cases=direct_relation_cases,
+    )
+
+    assert _has_issue(short_circuited, "exception", "test")
+    assert not direct_relation.issues
+
+
+def test_rounding_fraction_must_belong_to_reached_operand():
+    source = """\
+(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abzurunden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if use_other:
+            floor(other_amount)
+          else:
+            floor(income * multiplier)
+"""
+    case = {
+        "name": "unused fractional operand",
+        "input": {
+            "use_other": False,
+            "other_amount": 10.5,
+            "income": 10,
+        },
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Das Einkommen ist mit 2 zu multiplizieren.",
+        "(1) Das Einkommen ist mit dem Faktor 2 zu vervielfachen.",
+        "(1) Der Betrag ist unter Anwendung des Faktors 2 zu ermitteln.",
+    ],
+)
+def test_german_infinitive_formula_wording_rejects_parameter_only(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert source_states_explicit_computation(source)
+    assert _has_issue(result, "formula-output", "parameter-only")
