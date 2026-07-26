@@ -709,6 +709,10 @@ rules: []
         "Der Betrag mindert sich um 25 Euro.",
         "Der Betrag entspricht dem 1,5fachen des Einkommens.",
         "Der Betrag beträgt 45 vom Hundert des Einkommens.",
+        "Der Betrag ist das Doppelte des Einkommens.",
+        "Der Betrag ist das Produkt aus Einkommen und Faktor.",
+        "Der Betrag entspricht Einkommen mal zwei.",
+        "Der Betrag wird verdoppelt.",
     ],
 )
 def test_common_german_formula_language_is_computation(source: str):
@@ -722,6 +726,10 @@ def test_common_german_formula_language_is_computation(source: str):
         ("(1) Der Betrag mindert sich um 25 Euro.", 25),
         ("(1) Der Betrag entspricht dem 1,5fachen des Einkommens.", 1.5),
         ("(1) Der Betrag beträgt 45 vom Hundert des Einkommens.", 0.45),
+        ("(1) Der Betrag ist das Doppelte des Einkommens.", 2),
+        ("(1) Der Betrag ist das Produkt aus Einkommen und Faktor.", 2),
+        ("(1) Der Betrag entspricht Einkommen mal zwei.", 2),
+        ("(1) Der Betrag wird verdoppelt.", 2),
     ],
 )
 def test_common_german_formula_language_rejects_parameter_only(
@@ -778,6 +786,55 @@ def test_indented_absatz_markers_are_recognized():
     branches = recognize_source_structure("  (1) Regel eins.\n\t(2) Regel zwei.")
 
     assert {branch.path for branch in branches} >= {("1",), ("2",)}
+
+
+def test_nested_satz_source_references_bind_to_paragraph_paths():
+    source = """\
+(1) 1Die erste Berechnung ergibt sich aus Einkommen * 2.2Die zweite Berechnung ergibt sich aus Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: first_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1) Satz 1
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * 2
+  - name: second_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1) Satz 2
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * 3
+"""
+    test_cases = [
+        {
+            "name": "first sentence",
+            "input": {"income": 10},
+            "output": {"first_amount": 20},
+        },
+        {
+            "name": "second sentence",
+            "input": {"income": 10},
+            "output": {"second_amount": 30},
+        },
+    ]
+
+    paths = completeness_module._paths_from_source_reference(
+        "de/statute/estg/32a(1) Satz 1; "
+        "de/statute/estg/32a(1) Satz 2",
+        corpus_citation_path=CORPUS_CITATION_PATH,
+    )
+    result = _analyze(content, source, test_cases=test_cases)
+
+    assert {("1", "satz-1"), ("1", "satz-2")} <= paths
+    assert not _has_issue(result, "source branch", "neither encoded")
 
 
 def test_numeric_recall_does_not_credit_rule_or_formula_identifier_digits():

@@ -109,12 +109,18 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"\b(?:"
     r"bemisst\s+sich\s+nach|berechn(?:et|en|ung)|ergibt\s+sich|"
     r"(?:zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)fache|"
+    r"(?:das\s+)?(?:doppelte|dreifache|vierfache|fünffache|sechsfache|"
+    r"siebenfache|achtfache|neunfache|zehnfache)\s+(?:des|der|von)|"
     r"hälfte|zehntausendstel|übersteigenden\s+teils|"
     r"(?:ein(?:e[nsrm]?)?\s+)?(?:drittel|viertel|fünftel|sechstel|"
     r"siebtel|achtel|neuntel|zehntel)\s+(?:des|der|von)|"
-    r"summe\s+(?:aus|der|von)|unterschied|differenz|"
+    r"summe\s+(?:aus|der|von)|produkt\s+(?:aus|der|von)|"
+    r"unterschied|differenz|"
     r"geteilt\s+durch|durch\s+(?:\d+|[a-zäöüß]+)\s+geteilt|"
     r"multipliziert\s+mit|"
+    r"\bmal\s+(?:\d+(?:[.,]\d+)?|"
+    r"ein(?:s|e[nsrm]?)?|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)|"
+    r"(?:wird|werden)\s+(?:verdoppelt|verdreifacht|vervierfacht)|"
     r"\d+(?:[.,]\d+)?\s*-?fach(?:e[nsrm]?)?|"
     r"(?:vermindert|erhöht|gekürzt|vermehrt)\s+um|"
     r"(?:erhöht|mindert|vermindert|kürzt|vermehrt)\s+sich\s+um|"
@@ -767,17 +773,17 @@ def _paths_from_source_reference(
             else re.findall(r"\(([A-Za-z0-9-]+)\)", suffix)
         )
         if components:
-            paths.add(tuple(component.lower() for component in components))
+            base_components = tuple(component.lower() for component in components)
+            trailing = _reference_qualifier_tail(
+                value,
+                start=match.end(),
+                next_reference=corpus_citation_path,
+            )
+            paths.add(
+                (*base_components, *_keyword_path_components(trailing, base_components))
+            )
 
-    keyword_components: list[str] = []
-    if match := _ABSATZ_REFERENCE.search(value):
-        keyword_components.append(match.group("label").lower())
-    if match := _NUMMER_REFERENCE.search(value):
-        keyword_components.append(match.group("label").lower())
-    if match := _BUCHSTABE_REFERENCE.search(value):
-        keyword_components.append(match.group("label").lower())
-    if match := _SATZ_REFERENCE.search(value):
-        keyword_components.append(f"satz-{match.group('label')}")
+    keyword_components = _keyword_path_components(value)
     if keyword_components:
         paths.add(tuple(keyword_components))
 
@@ -790,10 +796,54 @@ def _paths_from_source_reference(
     ):
         components = re.findall(r"\(([A-Za-z0-9-]+)\)", match.group("suffix"))
         if components:
-            paths.add(tuple(component.lower() for component in components))
+            base_components = tuple(component.lower() for component in components)
+            trailing = _reference_qualifier_tail(
+                value,
+                start=match.end(),
+                next_reference=f"§{current_section}",
+            )
+            paths.add(
+                (*base_components, *_keyword_path_components(trailing, base_components))
+            )
     if not paths:
         paths.add(())
     return paths
+
+
+def _reference_qualifier_tail(
+    source: str,
+    *,
+    start: int,
+    next_reference: str,
+) -> str:
+    """Limit nested Absatz/Nummer/Satz qualifiers to one source reference."""
+
+    trailing = source[start:]
+    for separator in (";", "\n", next_reference):
+        trailing = trailing.split(separator, 1)[0]
+    return trailing
+
+
+def _keyword_path_components(
+    source: str,
+    existing: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Return hierarchical German structure qualifiers not already explicit."""
+
+    components: list[str] = []
+    existing_set = {item.lower() for item in existing}
+    for pattern, prefix in (
+        (_ABSATZ_REFERENCE, ""),
+        (_NUMMER_REFERENCE, ""),
+        (_BUCHSTABE_REFERENCE, ""),
+        (_SATZ_REFERENCE, "satz-"),
+    ):
+        if match := pattern.search(source):
+            component = f"{prefix}{match.group('label').lower()}"
+            if component not in existing_set:
+                components.append(component)
+                existing_set.add(component)
+    return tuple(components)
 
 
 def _source_reference_targets_authoritative_unit(
