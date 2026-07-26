@@ -15182,6 +15182,27 @@ def test_validation_staging_normalization_requires_a_left_path_boundary(tmp_path
     )
 
 
+def test_validation_staging_normalization_accepts_right_delimiters_without_matching_prefix_tokens(
+    tmp_path,
+):
+    staging_root = tmp_path / "stage"
+    text = (
+        f"quoted='{staging_root}' comma={staging_root}, "
+        f"paren=({staging_root}) child={staging_root}/compiled.json "
+        f"prefix={staging_root}-extra extension={staging_root}.bak "
+        f"embedded=token{staging_root}"
+    )
+
+    assert _normalize_validation_staging_text(text, staging_root) == (
+        "quoted='<rulespec-validation-root>' "
+        "comma=<rulespec-validation-root>, "
+        "paren=(<rulespec-validation-root>) "
+        "child=<rulespec-validation-root>/compiled.json "
+        f"prefix={staging_root}-extra extension={staging_root}.bak "
+        f"embedded=token{staging_root}"
+    )
+
+
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):
     repo = tmp_path / "rulespec-us"
     rules_file = repo / "statutes" / "7" / "2015" / "b" / "1.yaml"
