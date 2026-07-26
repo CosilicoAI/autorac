@@ -5208,6 +5208,48 @@ def test_timeout_then_plain_error_keeps_terminal_error_classification():
     }
 
 
+def test_retry_timeout_history_before_http_error_is_not_terminal_timeout():
+    initial = EvalPromptResponse(
+        text="",
+        duration_ms=10,
+        trace={"response": "empty"},
+    )
+    retry = EvalPromptResponse(
+        text="",
+        duration_ms=20,
+        trace={
+            "error": "OpenAI eval HTTP 503",
+            "timeout_attempts": 5,
+            "timeout_stage": "encoder",
+            "timeout_reason": "read",
+            "timeout_seconds": 180,
+        },
+        error="OpenAI eval HTTP 503",
+        timed_out=False,
+        timeout_stage="encoder",
+        timeout_reason="read",
+        timeout_seconds=180,
+        timeout_attempts=5,
+    )
+
+    combined = evals_module._combine_retry_response(initial, retry, "retry")
+    outcome = evals_module._eval_result_outcome(
+        combined,
+        wrote_artifact=False,
+        validation_error=None,
+    )
+
+    assert combined.timed_out is False
+    assert outcome == {
+        "failure_kind": "error",
+        "timed_out": False,
+        "timeout_stage": "encoder",
+        "timeout_reason": "read",
+        "timeout_seconds": 180,
+        "timeout_attempts": 5,
+    }
+
+
 def test_result_binding_rejects_failed_row_without_failure_kind():
     payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
     payload["success"] = False
