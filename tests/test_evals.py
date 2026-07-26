@@ -12339,6 +12339,7 @@ cases:
         def fake_execution_identity(_engine_path, roots):
             return {
                 "schema": "test",
+                "case_timeout_seconds": 3600,
                 "rulespec_roots": [
                     {
                         "path": root,
