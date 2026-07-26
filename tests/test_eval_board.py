@@ -2201,6 +2201,19 @@ def test_fold_refuses_producer_impossible_policyengine_evidence(
         fold_eval_board([path])
 
 
+def test_successful_policyengine_case_requires_oracle_evidence():
+    runtime = _policyengine_runtime_identity()
+    case_identity = {**CASE_IDENTITIES[0], "oracle": "policyengine"}
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        eval_board_module._validate_result_policyengine_runtime_evidence(
+            _result("terra", CASE_IDENTITIES[0]),
+            case_identity=case_identity,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+            context="successful PolicyEngine case",
+        )
+
+
 def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
     expected_runtime = _policyengine_runtime_identity()
     foreign_runtime = _policyengine_runtime_identity(pe_version="1.10.0")
