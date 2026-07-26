@@ -33,6 +33,19 @@ class NumericOccurrenceLike(Protocol):
     requires_rate_context: bool
 
 
+@dataclass(frozen=True)
+class _NumericOccurrenceView:
+    """One typed occurrence rebased into a containing source fragment."""
+
+    value: float
+    start: int
+    end: int
+    raw: str
+    has_rate_context: bool
+    source_value: float | None
+    requires_rate_context: bool
+
+
 NumericOccurrenceExtractor = Callable[[str], Sequence[NumericOccurrenceLike]]
 NamedScalarExtractor = Callable[[str], Sequence[Any]]
 NumericGroundingPredicate = Callable[
@@ -111,6 +124,19 @@ class _FormulaBranchNode:
     selectors: tuple[str, ...]
     patterns: tuple[str, ...]
     choices: tuple[str, ...]
+
+
+@dataclass(frozen=True, order=True)
+class _ExceptionWitness:
+    """One isolated exception selector effect demonstrated by paired cases."""
+
+    rule_name: str
+    selector_name: str
+    active_value: bool
+    blocks: bool
+    boolean_effect: bool
+    zeroes: bool
+    numeric_transition: tuple[float, float] | None
 
 
 _PARAGRAPH_MARKER = re.compile(
@@ -1569,7 +1595,7 @@ def _companion_test_issues(
         tuple[SourceStructureBranch, NumericOccurrenceLike]
     ] = []
     for branch, boundary in boundary_obligations:
-        if _branch_boundary_has_test_evidence(
+        if _branch_boundary_test_witnesses(
             branch,
             boundary,
             principal_rules=principal_rules,
@@ -1607,6 +1633,7 @@ def _companion_test_issues(
             exception_branches,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
+            extract_numeric_occurrences=extract_numeric_occurrences,
         )
         if missing_exception_branches:
             missing_citations = ", ".join(
@@ -3594,7 +3621,7 @@ def _evaluate_condition_expression(
     return _UNRESOLVED_CONDITION_VALUE
 
 
-def _branch_boundary_has_test_evidence(
+def _branch_boundary_test_witnesses(
     branch: SourceStructureBranch,
     boundary: NumericOccurrenceLike,
     *,
@@ -3604,15 +3631,16 @@ def _branch_boundary_has_test_evidence(
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any] | None = None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
-) -> bool:
-    source_interval = (
-        _source_interval_for_boundary(
+) -> set[tuple[str, str]]:
+    witnesses: set[tuple[str, str]] = set()
+    source_interval, source_boolean_polarity = (
+        _source_interval_and_polarity_for_boundary(
             branch,
             boundary,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
         if extract_numeric_occurrences is not None
-        else None
+        else (None, 0)
     )
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         rule = principal_rules[rule_name]
@@ -3645,9 +3673,7 @@ def _branch_boundary_has_test_evidence(
                         input_names=input_names,
                         formula_environment=execution.constant_environment,
                         source_interval=source_interval,
-                        source_boolean_polarity=(
-                            _source_boundary_boolean_polarity(branch.text)
-                        ),
+                        source_boolean_polarity=source_boolean_polarity,
                         extract_numeric_occurrences=(
                             extract_numeric_occurrences
                         ),
@@ -3666,9 +3692,7 @@ def _branch_boundary_has_test_evidence(
                         dependency_names=set(dependency_environment),
                         formula_environment=formula_environment or {},
                         source_interval=source_interval,
-                        source_boolean_polarity=(
-                            _source_boundary_boolean_polarity(branch.text)
-                        ),
+                        source_boolean_polarity=source_boolean_polarity,
                     )
                     for input_key, input_names, value in (
                         _case_numeric_selector_evidence(
@@ -3679,8 +3703,35 @@ def _branch_boundary_has_test_evidence(
                     )
                 )
             ):
-                return True
-    return False
+                witnesses.add((rule_name, f"case:{id(case)}"))
+    return witnesses
+
+
+def _branch_boundary_has_test_evidence(
+    branch: SourceStructureBranch,
+    boundary: NumericOccurrenceLike,
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    numeric_value_is_grounded: NumericGroundingPredicate,
+    formula_environment: dict[str, Any] | None = None,
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
+) -> bool:
+    """Compatibility predicate for callers that do not allocate witnesses."""
+
+    return bool(
+        _branch_boundary_test_witnesses(
+            branch,
+            boundary,
+            principal_rules=principal_rules,
+            principal_rule_paths=principal_rule_paths,
+            asserted_by_rule=asserted_by_rule,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+            formula_environment=formula_environment,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+    )
 
 
 def _formula_execution_binds_boundary(
@@ -3708,7 +3759,7 @@ def _formula_execution_binds_boundary(
         return False
     checks: list[tuple[str, bool]] = []
     for step in execution.trace:
-        if step.kind != "if":
+        if step.kind not in {"if", "match"}:
             continue
         checks.extend(
             (selector, True)
@@ -3884,29 +3935,84 @@ def _formula_node_boundary_value(
     )
 
 
-def _source_interval_for_boundary(
+def _source_interval_and_polarity_for_boundary(
     branch: SourceStructureBranch,
     boundary: NumericOccurrenceLike,
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> _NumericInterval | None:
-    for fragment in re.split(
-        r"(?:[;\n]+|(?<=[.!?])\s+)",
-        branch.text,
-    ):
-        interval = _formula_interval_from_text(
-            fragment.split(":", 1)[0],
-            extract_numeric_occurrences=extract_numeric_occurrences,
+) -> tuple[_NumericInterval | None, int]:
+    direct_text = authoritative_numeric_recall_text(branch.text)
+    for fragment_start, fragment in _source_boundary_fragments(direct_text):
+        interval = _shift_numeric_interval(
+            _formula_interval_from_text(
+                fragment.split(":", 1)[0],
+                extract_numeric_occurrences=extract_numeric_occurrences,
+            ),
+            fragment_start,
         )
         if interval is None:
             continue
         if any(
             occurrence is not None
+            and occurrence.start == boundary.start
+            and occurrence.end == boundary.end
             and _numeric_occurrences_are_equivalent(occurrence, boundary)
             for occurrence in (interval.lower, interval.upper)
         ):
-            return interval
-    return None
+            return interval, _source_boundary_boolean_polarity(fragment)
+    return None, 0
+
+
+def _source_boundary_fragments(text: str) -> Iterable[tuple[int, str]]:
+    """Yield nonempty boundary fragments with exact offsets in ``text``."""
+
+    cursor = 0
+    for separator in re.finditer(
+        r"(?:[;\n]+|(?<=[.!?])\s+)",
+        text,
+    ):
+        raw_fragment = text[cursor : separator.start()]
+        left_trim = len(raw_fragment) - len(raw_fragment.lstrip())
+        right_end = len(raw_fragment.rstrip())
+        if left_trim < right_end:
+            yield cursor + left_trim, raw_fragment[left_trim:right_end]
+        cursor = separator.end()
+    raw_fragment = text[cursor:]
+    left_trim = len(raw_fragment) - len(raw_fragment.lstrip())
+    right_end = len(raw_fragment.rstrip())
+    if left_trim < right_end:
+        yield cursor + left_trim, raw_fragment[left_trim:right_end]
+
+
+def _shift_numeric_occurrence(
+    occurrence: NumericOccurrenceLike | None,
+    offset: int,
+) -> NumericOccurrenceLike | None:
+    if occurrence is None:
+        return None
+    return _NumericOccurrenceView(
+        value=float(occurrence.value),
+        start=occurrence.start + offset,
+        end=occurrence.end + offset,
+        raw=occurrence.raw,
+        has_rate_context=occurrence.has_rate_context,
+        source_value=occurrence.source_value,
+        requires_rate_context=occurrence.requires_rate_context,
+    )
+
+
+def _shift_numeric_interval(
+    interval: _NumericInterval | None,
+    offset: int,
+) -> _NumericInterval | None:
+    if interval is None:
+        return None
+    return _NumericInterval(
+        lower=_shift_numeric_occurrence(interval.lower, offset),
+        lower_inclusive=interval.lower_inclusive,
+        upper=_shift_numeric_occurrence(interval.upper, offset),
+        upper_inclusive=interval.upper_inclusive,
+    )
 
 
 def _comparison_matches_source_interval(
@@ -4160,12 +4266,9 @@ def _boundary_case_changes_formula_effect(
 def _formula_execution_boolean_value(
     execution: _FormulaExecution | None,
 ) -> bool | None:
-    if execution is None or execution.evaluated_value is None:
+    if execution is None:
         return None
-    value_type, raw_value = execution.evaluated_value
-    if value_type != "bool":
-        return None
-    return raw_value == "True"
+    return _boolean_value(_formula_execution_runtime_value(execution))
 
 
 def _source_boundary_boolean_polarity(text: str) -> int:
@@ -4217,8 +4320,9 @@ def _formula_branch_interval(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> _NumericInterval | None:
     first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
-    range_text = first_line.split(":", 1)[0]
-    range_text = _NUMBER_MARKER.sub("", range_text).strip()
+    range_text = authoritative_numeric_recall_text(
+        first_line.split(":", 1)[0]
+    )
     return _formula_interval_from_text(
         range_text,
         extract_numeric_occurrences=extract_numeric_occurrences,
@@ -4247,7 +4351,11 @@ def _formula_interval_from_text(
         flags=re.IGNORECASE,
     ):
         return None
-    occurrences = tuple(extract_numeric_occurrences(range_text))
+    occurrences = tuple(
+        occurrence
+        for occurrence in extract_numeric_occurrences(text)
+        if occurrence.start >= keyword.start()
+    )
     if not occurrences:
         return None
     lowered_range = range_text.lower()
@@ -4404,6 +4512,9 @@ def _source_exception_branches(
     deferred_paths: set[tuple[str, ...]],
 ) -> tuple[SourceStructureBranch, ...]:
     obligations: list[SourceStructureBranch] = []
+    source_clauses = tuple(
+        _source_clause_spans(source_text, branches=branches)
+    )
     for match in _EXCEPTION_LANGUAGE.finditer(source_text):
         if _span_is_deferred(
             match.start(),
@@ -4416,19 +4527,38 @@ def _source_exception_branches(
             match.start(),
             match.end(),
             branches=active_branches,
+        ) or SourceStructureBranch(
+            (),
+            "source-unit",
+            "source unit",
+            source_text,
+            0,
+            len(source_text),
+        )
+        clause_start, clause_end, clause_text = next(
+            (
+                (start, end, text)
+                for start, end, text in source_clauses
+                if start <= match.start() and match.end() <= end
+            ),
+            (match.start(), match.end(), match.group(0)),
         )
         obligations.append(
-            owner
-            or SourceStructureBranch(
-                (),
-                "source-unit",
-                "source unit",
-                source_text,
-                0,
-                len(source_text),
+            SourceStructureBranch(
+                owner.path,
+                "exception-clause",
+                owner.label,
+                clause_text,
+                clause_start,
+                clause_end,
             )
         )
-    return tuple(obligations)
+    return tuple(
+        {
+            (branch.path, branch.start, branch.end): branch
+            for branch in obligations
+        }.values()
+    )
 
 
 def _source_rounding_obligations(
@@ -4542,7 +4672,8 @@ def _unwitnessed_exception_branches(
     exception_branches: Sequence[SourceStructureBranch],
     *,
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
-    toggled_exception_selectors: set[tuple[str, str]],
+    toggled_exception_selectors: set[_ExceptionWitness],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[SourceStructureBranch, ...]:
     available_witnesses = set(toggled_exception_selectors)
     missing: list[SourceStructureBranch] = []
@@ -4552,12 +4683,14 @@ def _unwitnessed_exception_branches(
             item,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=available_witnesses,
+            extract_numeric_occurrences=extract_numeric_occurrences,
         )),
     ):
         candidates = _exception_witnesses_for_branch(
             branch,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=available_witnesses,
+            extract_numeric_occurrences=extract_numeric_occurrences,
         )
         if not candidates:
             missing.append(branch)
@@ -4570,8 +4703,9 @@ def _exception_witnesses_for_branch(
     branch: SourceStructureBranch,
     *,
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
-    toggled_exception_selectors: set[tuple[str, str]],
-) -> set[tuple[str, str]]:
+    toggled_exception_selectors: set[_ExceptionWitness],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> set[_ExceptionWitness]:
     affecting_rules = {
         rule_name
         for rule_name, paths in principal_rule_paths.items()
@@ -4582,11 +4716,261 @@ def _exception_witnesses_for_branch(
             if path
         )
     }
+    requirement = _source_exception_effect_requirement(branch.text)
     return {
         witness
         for witness in toggled_exception_selectors
-        if witness[0] in affecting_rules
+        if witness.rule_name in affecting_rules
+        and (
+            _numeric_exception_witness_matches_source(
+                branch,
+                witness,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+            )
+            if witness.numeric_transition is not None
+            else (
+                witness.active_value
+                == _source_exception_selector_active_value(
+                    branch.text,
+                    witness.selector_name,
+                )
+            )
+        )
+        and _source_exception_selector_is_relevant(
+            branch.text,
+            witness.selector_name,
+        )
+        and _exception_witness_satisfies_requirement(witness, requirement)
     }
+
+
+def _source_exception_effect_requirement(text: str) -> str:
+    """Classify the minimum isolated effect expressly required by one clause."""
+
+    collapsed = _collapse_text(text)
+    if re.search(
+        r"\b(?:"
+        r"(?:beträgt|ist|wird)[^.;]{0,120}\b(?:null|0(?:[,.]0+)?)|"
+        r"auf\s+(?:null|0(?:[,.]0+)?)|"
+        r"(?:equals?|is|becomes?|set\s+to)[^.;]{0,120}"
+        r"\b(?:zero|0(?:[,.]0+)?)"
+        r")\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    ):
+        return "zero"
+    if re.search(
+        r"\b(?:"
+        r"gilt\s+nicht|"
+        r"findet\s+keine\s+anwendung|"
+        r"keine?\s+berechtigung|"
+        r"keinen?\s+anspruch|"
+        r"nicht\s+berechtigt|"
+        r"ausgeschlossen|"
+        r"ausgenommen|"
+        r"außer|"
+        r"ausser|"
+        r"es\s+sei\s+denn|"
+        r"soweit\s+nicht|"
+        r"jedoch\s+nicht|"
+        r"shall\s+not\s+apply|"
+        r"does\s+not\s+apply|"
+        r"not\s+eligible|"
+        r"ineligible|"
+        r"excluded|"
+        r"unless|"
+        r"except"
+        r")\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    ):
+        return "exclude"
+    return "change"
+
+
+def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
+    """Reject formula toggles with no semantic link to the source exception."""
+
+    normalized_name = _normalized_selector_name(name)
+    if (
+        _exception_semantic_identifier(normalized_name)
+        or _ordinary_semantic_identifier(normalized_name)
+    ):
+        return True
+    collapsed = _collapse_text(text).lower()
+    if _source_selector_concept_matches(collapsed, normalized_name):
+        return True
+    ignored = {
+        "applies",
+        "apply",
+        "case",
+        "condition",
+        "flag",
+        "has",
+        "is",
+        "status",
+        "the",
+    }
+    return any(
+        len(token) >= 4
+        and token not in ignored
+        and re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
+        for token in normalized_name.split("_")
+    )
+
+
+def _source_exception_selector_active_value(text: str, name: str) -> bool:
+    """Resolve exception orientation from source wording, not formula output."""
+
+    normalized_name = _normalized_selector_name(name)
+    source_polarity = _source_selector_concept_polarity(
+        _collapse_text(text).lower(),
+        normalized_name,
+    )
+    if source_polarity is not None:
+        selector_polarity = (
+            -1
+            if _selector_identifier_negation_count(normalized_name) % 2
+            else 1
+        )
+        return selector_polarity == source_polarity
+    return _exception_selector_semantic_active_value(normalized_name)
+
+
+def _numeric_exception_witness_matches_source(
+    branch: SourceStructureBranch,
+    witness: _ExceptionWitness,
+    *,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> bool:
+    transition = witness.numeric_transition
+    if transition is None:
+        return False
+    interval = _formula_interval_from_text(
+        authoritative_numeric_recall_text(branch.text),
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
+    if interval is None:
+        return False
+    ordinary_value, exception_value = transition
+    return (
+        not _interval_contains(interval, ordinary_value)
+        and _interval_contains(interval, exception_value)
+    )
+
+
+def _normalized_selector_name(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+
+
+def _source_selector_concept_matches(
+    text: str,
+    normalized_name: str,
+) -> tuple[re.Match[str], ...]:
+    patterns: list[str] = []
+    concept_patterns = {
+        "certificate": r"\b(?:certificate|bescheinigung|nachweis|zertifikat)\w*",
+        "child": r"\b(?:child|kind(?:er)?)\w*",
+        "kind": r"\bkind(?:er)?\w*",
+        "condition": r"\b(?:condition|voraussetzung)\w*",
+        "eligible": r"\b(?:eligible|berechtig|anspruch)\w*",
+        "income": r"\b(?:income|einkommen)\w*",
+        "qualified": r"\b(?:qualified|berechtig|anspruch)\w*",
+        "exempt": r"\b(?:exempt|befrei)\w*",
+        "exception": r"\b(?:exception|ausnahme)\w*",
+        "surcharge": r"\b(?:surcharge|zuschlag)\w*",
+        "status": r"\bstatus\w*",
+    }
+    for concept, pattern in concept_patterns.items():
+        if concept in normalized_name:
+            patterns.append(pattern)
+    ignored = {
+        "applies",
+        "apply",
+        "case",
+        "condition",
+        "flag",
+        "for",
+        "has",
+        "is",
+        "no",
+        "non",
+        "not",
+        "status",
+        "the",
+        "without",
+    }
+    patterns.extend(
+        rf"\b{re.escape(token)}\w*"
+        for token in normalized_name.split("_")
+        if len(token) >= 4 and token not in ignored
+    )
+    matches = {
+        (match.start(), match.end(), match.group(0)): match
+        for pattern in patterns
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE)
+    }
+    return tuple(matches[key] for key in sorted(matches))
+
+
+def _source_selector_concept_polarity(
+    text: str,
+    normalized_name: str,
+) -> int | None:
+    polarities: set[int] = set()
+    for match in _source_selector_concept_matches(text, normalized_name):
+        before = text[max(0, match.start() - 48) : match.start()]
+        after = text[match.end() : min(len(text), match.end() + 48)]
+        negative = bool(
+            re.search(
+                r"\b(?:kein(?:e|en|em|er|es)?|ohne|mangels|"
+                r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
+                r"\b[^.;]{0,40}$|"
+                r"\b(?:nicht|not)\s+(?:\w+\s+){0,1}$",
+                before,
+                flags=re.IGNORECASE,
+            )
+            or re.match(
+                r"[^.;]{0,40}\b(?:fehlt|fehlen|nicht\s+(?:vorhanden|"
+                r"gegeben)|liegt\s+nicht\s+vor|is\s+not\s+present|"
+                r"is\s+absent)\b",
+                after,
+                flags=re.IGNORECASE,
+            )
+        )
+        polarities.add(-1 if negative else 1)
+    return next(iter(polarities)) if len(polarities) == 1 else None
+
+
+def _selector_identifier_negation_count(normalized_name: str) -> int:
+    count = sum(
+        token in {
+            "absent",
+            "lacking",
+            "missing",
+            "no",
+            "non",
+            "not",
+            "without",
+        }
+        for token in normalized_name.split("_")
+    )
+    count += sum(
+        marker in normalized_name.split("_")
+        for marker in {"disqualified", "ineligible", "unqualified"}
+    )
+    return count
+
+
+def _exception_witness_satisfies_requirement(
+    witness: _ExceptionWitness,
+    requirement: str,
+) -> bool:
+    if requirement == "zero":
+        return witness.zeroes
+    if requirement == "exclude":
+        return witness.blocks or not witness.boolean_effect
+    return True
 
 
 def _toggled_formula_boolean_selectors(
@@ -4594,8 +4978,8 @@ def _toggled_formula_boolean_selectors(
     *,
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     formula_environment: dict[str, Any],
-) -> set[tuple[str, str]]:
-    toggled: set[tuple[str, str]] = set()
+) -> set[_ExceptionWitness]:
+    toggled: set[_ExceptionWitness] = set()
     for rule_name, rule in principal_rules.items():
         selector_names = _rule_exception_selector_names(rule)
         if not selector_names:
@@ -4632,7 +5016,7 @@ def _toggled_formula_boolean_selectors(
                 if (
                     _normalized_case_period(left_case)
                     != _normalized_case_period(right_case)
-                    or not _cases_differ_by_one_boolean_input(
+                    or not _cases_differ_by_one_input(
                         left_case,
                         right_case,
                     )
@@ -4648,80 +5032,306 @@ def _toggled_formula_boolean_selectors(
                 if len(changed_names) != 1:
                     continue
                 selector_name = next(iter(changed_names))
-                if left_selectors[selector_name]:
-                    blocking_case = left_case
-                    blocking_dependencies = left_dependencies
-                    ordinary_case = right_case
-                    ordinary_dependencies = right_dependencies
-                else:
-                    ordinary_case = left_case
-                    ordinary_dependencies = left_dependencies
-                    blocking_case = right_case
-                    blocking_dependencies = right_dependencies
-                ordinary_execution = _case_formula_execution(
-                    rule,
-                    ordinary_case,
-                    formula_environment=formula_environment,
-                    dependency_environment=ordinary_dependencies,
-                )
-                blocking_execution = _case_formula_execution(
-                    rule,
-                    blocking_case,
-                    formula_environment=formula_environment,
-                    dependency_environment=blocking_dependencies,
-                )
-                counterfactual_execution = (
-                    _case_formula_execution_with_boolean_selector(
+                for active_value in (False, True):
+                    witness = _exception_witness_for_case_pair(
+                        rule_name,
                         rule,
-                        ordinary_case,
                         selector_name=selector_name,
-                        selector_value=True,
+                        active_value=active_value,
+                        left_case=left_case,
+                        left_dependencies=left_dependencies,
+                        left_selector_value=left_selectors[selector_name],
+                        right_case=right_case,
+                        right_dependencies=right_dependencies,
                         formula_environment=formula_environment,
-                        dependency_environment=ordinary_dependencies,
                     )
-                )
-                if (
-                    ordinary_execution is None
-                    or blocking_execution is None
-                    or counterfactual_execution is None
-                ):
-                    continue
-                ordinary_asserted = _test_case_asserted_output_value(
-                    ordinary_case,
-                    rule_name,
-                )
-                blocking_asserted = _test_case_asserted_output_value(
-                    blocking_case,
-                    rule_name,
-                )
-                if (
-                    ordinary_asserted is _UNRESOLVED_CONDITION_VALUE
-                    or blocking_asserted is _UNRESOLVED_CONDITION_VALUE
-                    or not _exception_effect_is_blocking(
-                        ordinary_asserted,
-                        blocking_asserted,
-                    )
-                ):
-                    continue
-                if all(
-                    _formula_execution_reaches_selector(
-                        execution,
-                        selector_name,
-                    )
-                    for execution in (
-                        ordinary_execution,
-                        blocking_execution,
-                        counterfactual_execution,
-                    )
-                ) and _exception_effect_is_blocking(
-                    _formula_execution_runtime_value(ordinary_execution),
-                    _formula_execution_runtime_value(counterfactual_execution),
-                ):
-                    toggled.add((rule_name, selector_name))
+                    if witness is not None:
+                        toggled.add(witness)
+    toggled.update(
+        _toggled_formula_numeric_selectors(
+            principal_rules,
+            asserted_by_rule=asserted_by_rule,
+            formula_environment=formula_environment,
+        )
+    )
     return toggled
 
 
-def _cases_differ_by_one_boolean_input(
+def _toggled_formula_numeric_selectors(
+    principal_rules: dict[str, dict[str, Any]],
+    *,
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    formula_environment: dict[str, Any],
+) -> set[_ExceptionWitness]:
+    witnesses: set[_ExceptionWitness] = set()
+    for rule_name, rule in principal_rules.items():
+        selector_names = _rule_numeric_selector_names(rule)
+        for left_index, left_case in enumerate(asserted_by_rule.get(rule_name, ())):
+            for right_case in asserted_by_rule[rule_name][left_index + 1 :]:
+                if (
+                    _normalized_case_period(left_case)
+                    != _normalized_case_period(right_case)
+                    or not _cases_differ_by_one_input(left_case, right_case)
+                ):
+                    continue
+                left_inputs = left_case.get("input")
+                right_inputs = right_case.get("input")
+                if not isinstance(left_inputs, dict) or not isinstance(
+                    right_inputs,
+                    dict,
+                ):
+                    continue
+                changed_key = next(
+                    key
+                    for key in left_inputs
+                    if not _formula_runtime_values_equal(
+                        left_inputs[key],
+                        right_inputs[key],
+                    )
+                )
+                left_value = left_inputs[changed_key]
+                right_value = right_inputs[changed_key]
+                if (
+                    isinstance(left_value, bool)
+                    or not isinstance(left_value, (int, float))
+                    or isinstance(right_value, bool)
+                    or not isinstance(right_value, (int, float))
+                ):
+                    continue
+                changed_names = _input_key_names(changed_key) & selector_names
+                if not changed_names:
+                    continue
+                left_dependencies = _case_asserted_dependency_environment(
+                    principal_rules,
+                    left_case,
+                    formula_environment=formula_environment,
+                )
+                right_dependencies = _case_asserted_dependency_environment(
+                    principal_rules,
+                    right_case,
+                    formula_environment=formula_environment,
+                )
+                left_execution = _case_formula_execution(
+                    rule,
+                    left_case,
+                    formula_environment=formula_environment,
+                    dependency_environment=left_dependencies,
+                )
+                right_execution = _case_formula_execution(
+                    rule,
+                    right_case,
+                    formula_environment=formula_environment,
+                    dependency_environment=right_dependencies,
+                )
+                if left_execution is None or right_execution is None:
+                    continue
+                if (
+                    (left_execution.trace or right_execution.trace)
+                    and _formula_leaf_semantic_key(
+                        left_execution.leaf,
+                        formula_environment=left_execution.constant_environment,
+                    )
+                    == _formula_leaf_semantic_key(
+                        right_execution.leaf,
+                        formula_environment=right_execution.constant_environment,
+                    )
+                ):
+                    continue
+                left_runtime = _formula_execution_runtime_value(left_execution)
+                right_runtime = _formula_execution_runtime_value(right_execution)
+                left_asserted = _test_case_asserted_output_value(
+                    left_case,
+                    rule_name,
+                )
+                right_asserted = _test_case_asserted_output_value(
+                    right_case,
+                    rule_name,
+                )
+                if not (
+                    left_asserted is not _UNRESOLVED_CONDITION_VALUE
+                    and right_asserted is not _UNRESOLVED_CONDITION_VALUE
+                    and _formula_runtime_values_equal(
+                        left_runtime,
+                        left_asserted,
+                    )
+                    and _formula_runtime_values_equal(
+                        right_runtime,
+                        right_asserted,
+                    )
+                    and _exception_effect_changes(
+                        left_runtime,
+                        right_runtime,
+                    )
+                ):
+                    continue
+                for selector_name in changed_names:
+                    if not (
+                        _formula_execution_reaches_selector(
+                            left_execution,
+                            selector_name,
+                        )
+                        and _formula_execution_reaches_selector(
+                            right_execution,
+                            selector_name,
+                        )
+                    ):
+                        continue
+                    for (
+                        ordinary_runtime,
+                        exception_runtime,
+                        ordinary_value,
+                        exception_value,
+                    ) in (
+                        (
+                            left_runtime,
+                            right_runtime,
+                            float(left_value),
+                            float(right_value),
+                        ),
+                        (
+                            right_runtime,
+                            left_runtime,
+                            float(right_value),
+                            float(left_value),
+                        ),
+                    ):
+                        witnesses.add(
+                            _ExceptionWitness(
+                                rule_name,
+                                selector_name,
+                                True,
+                                _exception_effect_is_blocking(
+                                    ordinary_runtime,
+                                    exception_runtime,
+                                ),
+                                (
+                                    _boolean_value(ordinary_runtime) is not None
+                                    and _boolean_value(exception_runtime)
+                                    is not None
+                                ),
+                                _exception_effect_is_zero(exception_runtime),
+                                (ordinary_value, exception_value),
+                            )
+                        )
+    return witnesses
+
+
+def _exception_witness_for_case_pair(
+    rule_name: str,
+    rule: dict[str, Any],
+    *,
+    selector_name: str,
+    active_value: bool,
+    left_case: dict[str, Any],
+    left_dependencies: dict[str, Any],
+    left_selector_value: bool,
+    right_case: dict[str, Any],
+    right_dependencies: dict[str, Any],
+    formula_environment: dict[str, Any],
+) -> _ExceptionWitness | None:
+    if left_selector_value == active_value:
+        exception_case = left_case
+        exception_dependencies = left_dependencies
+        ordinary_case = right_case
+        ordinary_dependencies = right_dependencies
+    else:
+        ordinary_case = left_case
+        ordinary_dependencies = left_dependencies
+        exception_case = right_case
+        exception_dependencies = right_dependencies
+    ordinary_execution = _case_formula_execution(
+        rule,
+        ordinary_case,
+        formula_environment=formula_environment,
+        dependency_environment=ordinary_dependencies,
+    )
+    exception_execution = _case_formula_execution(
+        rule,
+        exception_case,
+        formula_environment=formula_environment,
+        dependency_environment=exception_dependencies,
+    )
+    counterfactual_execution = _case_formula_execution_with_boolean_selector(
+        rule,
+        ordinary_case,
+        selector_name=selector_name,
+        selector_value=active_value,
+        formula_environment=formula_environment,
+        dependency_environment=ordinary_dependencies,
+    )
+    if (
+        ordinary_execution is None
+        or exception_execution is None
+        or counterfactual_execution is None
+    ):
+        return None
+    ordinary_asserted = _test_case_asserted_output_value(
+        ordinary_case,
+        rule_name,
+    )
+    exception_asserted = _test_case_asserted_output_value(
+        exception_case,
+        rule_name,
+    )
+    if (
+        ordinary_asserted is _UNRESOLVED_CONDITION_VALUE
+        or exception_asserted is _UNRESOLVED_CONDITION_VALUE
+        or not _exception_effect_changes(
+            ordinary_asserted,
+            exception_asserted,
+        )
+    ):
+        return None
+    ordinary_runtime = _formula_execution_runtime_value(ordinary_execution)
+    exception_runtime = _formula_execution_runtime_value(exception_execution)
+    counterfactual_runtime = _formula_execution_runtime_value(
+        counterfactual_execution
+    )
+    if not (
+        all(
+            _formula_execution_reaches_selector(execution, selector_name)
+            for execution in (
+                ordinary_execution,
+                exception_execution,
+                counterfactual_execution,
+            )
+        )
+        and _formula_runtime_values_equal(
+            ordinary_runtime,
+            ordinary_asserted,
+        )
+        and _formula_runtime_values_equal(
+            exception_runtime,
+            exception_asserted,
+        )
+        and _formula_runtime_values_equal(
+            counterfactual_runtime,
+            exception_runtime,
+        )
+        and _exception_effect_changes(
+            ordinary_runtime,
+            counterfactual_runtime,
+        )
+    ):
+        return None
+    return _ExceptionWitness(
+        rule_name,
+        selector_name,
+        active_value,
+        _exception_effect_is_blocking(
+            ordinary_runtime,
+            counterfactual_runtime,
+        ),
+        (
+            _boolean_value(ordinary_runtime) is not None
+            and _boolean_value(counterfactual_runtime) is not None
+        ),
+        _exception_effect_is_zero(counterfactual_runtime),
+        None,
+    )
+
+
+def _cases_differ_by_one_input(
     left_case: dict[str, Any],
     right_case: dict[str, Any],
 ) -> bool:
@@ -4731,23 +5341,20 @@ def _cases_differ_by_one_boolean_input(
         return False
     if set(left_inputs) != set(right_inputs):
         return False
-    changed = [
-        key
-        for key in left_inputs
-        if not _formula_runtime_values_equal(
+    return sum(
+        not _formula_runtime_values_equal(
             left_inputs[key],
             right_inputs[key],
         )
-    ]
-    if len(changed) != 1:
-        return False
-    key = changed[0]
-    left_boolean = _boolean_value(left_inputs[key])
-    right_boolean = _boolean_value(right_inputs[key])
+        for key in left_inputs
+    ) == 1
+
+
+def _exception_effect_is_zero(value: Any) -> bool:
     return (
-        left_boolean is not None
-        and right_boolean is not None
-        and left_boolean != right_boolean
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isclose(float(value), 0.0, abs_tol=1e-12)
     )
 
 
@@ -4788,12 +5395,23 @@ def _case_formula_execution_with_boolean_selector(
 
 
 def _formula_execution_runtime_value(execution: _FormulaExecution) -> Any:
-    if execution.evaluated_value is None:
-        return _UNRESOLVED_CONDITION_VALUE
-    _value_type, raw_value = execution.evaluated_value
-    with contextlib.suppress(SyntaxError, ValueError):
-        return ast.literal_eval(raw_value)
+    if execution.evaluated_value is not None:
+        _value_type, raw_value = execution.evaluated_value
+        with contextlib.suppress(SyntaxError, ValueError):
+            return ast.literal_eval(raw_value)
+    leaf_boolean = _boolean_value(execution.leaf.strip())
+    if leaf_boolean is not None:
+        return leaf_boolean
     return _UNRESOLVED_CONDITION_VALUE
+
+
+def _exception_effect_changes(ordinary: Any, exception: Any) -> bool:
+    if (
+        ordinary is _UNRESOLVED_CONDITION_VALUE
+        or exception is _UNRESOLVED_CONDITION_VALUE
+    ):
+        return False
+    return not _formula_runtime_values_equal(ordinary, exception)
 
 
 def _exception_effect_is_blocking(ordinary: Any, blocking: Any) -> bool:
@@ -4887,114 +5505,113 @@ def _formula_execution_reaches_selector(
 
 
 def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
-    """Return selectors attached to an excluding conditional branch."""
+    """Return formula identifiers used as boolean control selectors."""
 
     formula_text = _rule_formula_text(rule)
-    names: set[str] = set()
-    for condition, true_body, false_body in _formula_condition_blocks(formula_text):
-        condition_names = {
-            identifier
-            for identifier in re.findall(
-                r"\b[A-Za-z_][A-Za-z0-9_]*\b",
-                condition,
-            )
-            if identifier.lower()
-            not in {"and", "or", "not", "true", "false", "holds", "not_holds"}
-        }
-        if (
-            _formula_branch_is_excluding(true_body)
-            or _formula_branch_is_excluding(false_body)
-            or any(_exception_semantic_identifier(name) for name in condition_names)
-        ):
-            names.update(condition_names)
-    names.update(
+    selector_names: set[str] = set()
+
+    def record(name: str) -> None:
+        selector_names.add(name)
+
+    def inspect_expression(text: str) -> None:
+        with contextlib.suppress(SyntaxError):
+            expression = ast.parse(text.strip(), mode="eval").body
+            if not isinstance(
+                expression,
+                (ast.BoolOp, ast.Compare, ast.Name, ast.UnaryOp),
+            ):
+                return
+            function_names = {
+                node.func.id
+                for node in ast.walk(expression)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+            }
+            for name in {
+                node.id
+                for node in ast.walk(expression)
+                if isinstance(node, ast.Name)
+                and node.id.lower()
+                not in {"true", "false", "holds", "not_holds"}
+                and node.id not in function_names
+            }:
+                record(name)
+
+    def inspect(text: str, *, depth: int = 0) -> None:
+        if depth > 32:
+            return
+        node = _first_formula_branch_node(text)
+        if node is None:
+            inspect_expression(text)
+            return
+        if node.kind == "if":
+            for condition in node.selectors:
+                for name in _exception_condition_names(condition):
+                    record(name)
+        elif node.kind == "match":
+            for selector in node.selectors:
+                for name in _exception_condition_names(selector):
+                    record(name)
+        for choice in node.choices:
+            inspect(choice, depth=depth + 1)
+        remainder = text[: node.start] + text[node.end :]
+        if remainder.strip():
+            inspect(remainder, depth=depth + 1)
+
+    inspect(formula_text)
+    return selector_names
+
+
+def _exception_condition_names(condition: str) -> set[str]:
+    return {
         identifier
-        for identifier in _FORMULA_IDENTIFIER.findall(formula_text)
-        if _exception_semantic_identifier(identifier)
-    )
-    return names
+        for identifier in _FORMULA_IDENTIFIER.findall(condition)
+        if identifier.lower()
+        not in {"and", "or", "not", "true", "false", "holds", "not_holds"}
+    }
 
 
-def _formula_condition_blocks(
-    formula_text: str,
-) -> Iterable[tuple[str, str, str]]:
-    lines = formula_text.splitlines()
-    for index, line in enumerate(lines):
-        match = re.match(
-            r"^(?P<indent>[ \t]*)if\s+(?P<condition>[^:\n]+):\s*$",
-            line,
+def _exception_selector_semantic_active_value(name: str) -> bool:
+    normalized = _normalized_selector_name(name)
+    negated = bool(_selector_identifier_negation_count(normalized) % 2)
+    if re.search(
+        r"(?:exception|exempt|befrei|ausnahme|barred|blocking|waiver)",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return not negated
+    if (
+        _ordinary_semantic_identifier(normalized)
+        or re.search(
+            r"(?:ineligib|disqualif|unqualif)",
+            normalized,
+            flags=re.IGNORECASE,
         )
-        if match is None:
-            continue
-        indent = _formula_indent_width(match.group("indent"))
-        true_lines: list[str] = []
-        false_lines: list[str] = []
-        cursor = index + 1
-        while cursor < len(lines):
-            candidate = lines[cursor]
-            stripped = candidate.strip()
-            candidate_indent = _formula_indent_width(
-                candidate[: len(candidate) - len(candidate.lstrip())]
-            )
-            if stripped and candidate_indent <= indent:
-                break
-            true_lines.append(candidate)
-            cursor += 1
-        if (
-            cursor < len(lines)
-            and _formula_indent_width(
-                lines[cursor][
-                    : len(lines[cursor]) - len(lines[cursor].lstrip())
-                ]
-            )
-            == indent
-            and re.match(r"^[ \t]*else:\s*$", lines[cursor])
-        ):
-            cursor += 1
-            while cursor < len(lines):
-                candidate = lines[cursor]
-                stripped = candidate.strip()
-                candidate_indent = _formula_indent_width(
-                    candidate[: len(candidate) - len(candidate.lstrip())]
-                )
-                if stripped and candidate_indent <= indent:
-                    break
-                false_lines.append(candidate)
-                cursor += 1
-        yield (
-            match.group("condition"),
-            "\n".join(true_lines),
-            "\n".join(false_lines),
-        )
+    ):
+        return negated
+    return True
 
 
 def _formula_indent_width(value: str) -> int:
     return len(value.expandtabs(4))
 
 
-def _formula_branch_is_excluding(body: str) -> bool:
-    first_statement = next(
-        (
-            line.strip()
-            for line in body.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ),
-        "",
-    )
+def _exception_semantic_identifier(identifier: str) -> bool:
     return bool(
-        re.fullmatch(
-            r"(?:return\s+)?(?:0(?:\.0+)?|false|not_holds)",
-            first_statement,
+        re.search(
+            r"(?:exception|exempt|exclud|disqual|inelig|remarri|"
+            r"barred|blocking|waiver|befrei|ausnahme)",
+            identifier,
             flags=re.IGNORECASE,
         )
     )
 
 
-def _exception_semantic_identifier(identifier: str) -> bool:
+def _ordinary_semantic_identifier(identifier: str) -> bool:
     return bool(
         re.search(
-            r"(?:exception|exempt|exclud|disqual|inelig|eligib|remarri|"
-            r"barred|blocking|waiver|befrei|ausnahme)",
+            r"(?:^|_)(?:ordinary|regular|default|eligible|qualified)"
+            r"(?:_|$)",
             identifier,
             flags=re.IGNORECASE,
         )
@@ -5486,10 +6103,7 @@ def _source_boundary_obligations(
         }:
             continue
         direct_text = authoritative_numeric_recall_text(branch.text)
-        for fragment in re.split(
-            r"(?:[;\n]+|(?<=[.!?])\s+)",
-            direct_text,
-        ):
+        for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
             if not re.search(
                 r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|"
@@ -5500,9 +6114,12 @@ def _source_boundary_obligations(
                 flags=re.IGNORECASE,
             ):
                 continue
-            interval = _formula_interval_from_text(
-                range_fragment,
-                extract_numeric_occurrences=extract_numeric_occurrences,
+            interval = _shift_numeric_interval(
+                _formula_interval_from_text(
+                    range_fragment,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                ),
+                fragment_start,
             )
             if interval is None:
                 continue
@@ -5531,6 +6148,8 @@ def _source_boundary_obligations(
                 occurrence.has_rate_context,
                 occurrence.source_value,
                 occurrence.requires_rate_context,
+                occurrence.start,
+                occurrence.end,
             ): (branch, occurrence)
             for branch, occurrence in obligations
         }.values()

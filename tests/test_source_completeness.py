@@ -4254,6 +4254,144 @@ def test_negative_boundary_prose_inverts_boolean_applicability():
     assert not result.issues
 
 
+def test_repeated_boundary_value_keeps_fragment_span_and_polarity():
+    source = (
+        "(1) Die Regel gilt für Einkommen bis 100 Euro. "
+        "Einkommen bis 100 Euro begründen keine Berechtigung."
+    )
+    branches = recognize_source_structure(source)
+    obligations = completeness_module._source_boundary_obligations(
+        branches,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    repeated = [
+        (branch, occurrence)
+        for branch, occurrence in obligations
+        if occurrence.value == 100
+    ]
+
+    assert len(repeated) == 2
+    assert len({occurrence.start for _branch, occurrence in repeated}) == 2
+    assert [
+        completeness_module._source_interval_and_polarity_for_boundary(
+            branch,
+            occurrence,
+            extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )[1]
+        for branch, occurrence in repeated
+    ] == [1, -1]
+
+
+def test_repeated_opposite_boundary_requires_both_polarity_witnesses():
+    source = (
+        "(1) Die Regel gilt für Einkommen bis 100 Euro. "
+        "Einkommen bis 100 Euro begründen keine Berechtigung."
+    )
+    content = _boundary_control_content(
+        formula="income <= income_limit",
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+        extra_rules="""\
+  - name: excluded_income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+""",
+    )
+    case = {
+        "name": "positive endpoint only",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": True},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "boundary", "100")
+
+
+@pytest.mark.parametrize(
+    ("formula", "endpoint_output", "expected_issue"),
+    [
+        (
+            "if income <= income_limit: holds else: not_holds",
+            "holds",
+            False,
+        ),
+        (
+            "if income <= income_limit: not_holds else: holds",
+            "not_holds",
+            True,
+        ),
+    ],
+)
+def test_judgment_boundary_polarity_is_checked(
+    formula: str,
+    endpoint_output: str,
+    expected_issue: bool,
+):
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    content = _boundary_control_content(
+        formula=formula,
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    ).replace("dtype: bool", "dtype: Judgment")
+    case = {
+        "name": "Judgment endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": endpoint_output},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "boundary", "100") is expected_issue
+
+
+@pytest.mark.parametrize(
+    ("formula", "endpoint_output", "expected_issue"),
+    [
+        (
+            "match income <= income_limit: true => true; false => false",
+            True,
+            False,
+        ),
+        (
+            "match income <= income_limit: true => false; false => true",
+            False,
+            True,
+        ),
+    ],
+)
+def test_match_boundary_selector_preserves_polarity(
+    formula: str,
+    endpoint_output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    content = _boundary_control_content(
+        formula=formula,
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "match endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": endpoint_output},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "boundary", "100") is expected_issue
+
+
 @pytest.mark.parametrize(
     ("wording", "formula"),
     [
@@ -5250,17 +5388,190 @@ def test_exception_toggle_cases_must_share_period():
     assert _has_issue(result, "exception", "test")
 
 
+def test_boolean_exception_selector_must_block_not_enable():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: true else: false"
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "enabling exception",
+            "input": {"exemption_applies": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_numeric_exclusion_effect_is_direction_neutral_without_amount_wording():
+    source = "(1) Der Abzug gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: tax_without_deduction "
+        "else: tax_with_deduction"
+    )
+    cases = [
+        {
+            "name": "deduction applies",
+            "input": {
+                "exemption_applies": False,
+                "tax_with_deduction": 10,
+                "tax_without_deduction": 20,
+            },
+            "output": {"result": 10},
+        },
+        {
+            "name": "deduction excluded",
+            "input": {
+                "exemption_applies": True,
+                "tax_with_deduction": 10,
+                "tax_without_deduction": 20,
+            },
+            "output": {"result": 20},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
 @pytest.mark.parametrize(
-    ("formula", "ordinary_output", "blocking_output"),
+    ("formula", "ordinary_output", "exception_output", "expected_issue"),
     [
-        ("if exemption_applies: true else: false", False, True),
-        ("if exemption_applies: 20 else: 10", 10, 20),
+        ("if has_certificate: true else: false", False, True, True),
+        ("if has_certificate: false else: true", True, False, False),
     ],
 )
-def test_exception_selector_must_block_not_enable(
+def test_german_ausser_binds_neutral_selector_orientation(
     formula: str,
-    ordinary_output: bool | int,
-    blocking_output: bool | int,
+    ordinary_output: bool,
+    exception_output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Der Anspruch besteht, außer bei einer Bescheinigung."
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "without certificate",
+            "input": {"has_certificate": False},
+            "output": {"result": ordinary_output},
+        },
+        {
+            "name": "with certificate",
+            "input": {"has_certificate": True},
+            "output": {"result": exception_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test") is expected_issue
+
+
+@pytest.mark.parametrize(
+    ("formula", "ordinary_input", "exception_input"),
+    [
+        ("if no_exemption: true else: false", True, False),
+        ("no_exemption", True, False),
+        ("if has_certificate: false else: true", False, True),
+        ("not has_certificate", False, True),
+        ("exemption_applies == false", False, True),
+    ],
+)
+def test_exception_selector_forms_preserve_source_orientation(
+    formula: str,
+    ordinary_input: bool,
+    exception_input: bool,
+):
+    selector_name = (
+        "no_exemption"
+        if "no_exemption" in formula
+        else (
+            "has_certificate"
+            if "has_certificate" in formula
+            else "exemption_applies"
+        )
+    )
+    source_condition = (
+        "eine Bescheinigung vorliegt"
+        if selector_name == "has_certificate"
+        else "eine Befreiung vorliegt"
+    )
+    source = f"(1) Der Anspruch gilt nicht, wenn {source_condition}."
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {selector_name: ordinary_input},
+            "output": {"result": True},
+        },
+        {
+            "name": "exception",
+            "input": {selector_name: exception_input},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_compound_direct_exception_expression_is_discovered():
+    source = (
+        "(1) Der Anspruch gilt nicht, wenn eine Befreiung oder Sperre vorliegt."
+    )
+    content = _exception_control_content(
+        "not (exemption_applies or barred)"
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False, "barred": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "exempt",
+            "input": {"exemption_applies": True, "barred": False},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    ("formula", "ordinary_output", "exception_output", "expected_issue"),
+    [
+        (
+            "match exemption_applies: true => false; false => true",
+            True,
+            False,
+            False,
+        ),
+        (
+            "match exemption_applies: true => true; false => false",
+            False,
+            True,
+            True,
+        ),
+    ],
+)
+def test_match_exception_selector_preserves_polarity(
+    formula: str,
+    ordinary_output: bool,
+    exception_output: bool,
+    expected_issue: bool,
 ):
     source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
     content = _exception_control_content(formula)
@@ -5271,9 +5582,484 @@ def test_exception_selector_must_block_not_enable(
             "output": {"result": ordinary_output},
         },
         {
-            "name": "blocking",
+            "name": "exception",
             "input": {"exemption_applies": True},
-            "output": {"result": blocking_output},
+            "output": {"result": exception_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test") is expected_issue
+
+
+def test_exception_semantics_override_ordinary_word_in_selector_name():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Ausnahme vorliegt."
+    content = _exception_control_content(
+        "if eligible_for_exception: false else: true"
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"eligible_for_exception": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "exception",
+            "input": {"eligible_for_exception": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    ("formula", "eligible_output", "ineligible_output", "expected_issue"),
+    [
+        ("if eligible: true else: false", True, False, False),
+        ("if eligible: false else: true", False, True, True),
+    ],
+)
+def test_positive_ordinary_selector_is_false_active_for_ineligibility(
+    formula: str,
+    eligible_output: bool,
+    ineligible_output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Der Anspruch gilt nicht, wenn keine Berechtigung besteht."
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "eligible",
+            "input": {"eligible": True},
+            "output": {"result": eligible_output},
+        },
+        {
+            "name": "ineligible",
+            "input": {"eligible": False},
+            "output": {"result": ineligible_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test") is expected_issue
+
+
+@pytest.mark.parametrize(
+    ("source", "selector_name", "formula"),
+    [
+        (
+            "(1) Der Anspruch gilt nicht, wenn keine Bescheinigung vorliegt.",
+            "has_certificate",
+            "has_certificate",
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn kein Kind vorhanden ist.",
+            "kind_vorhanden",
+            "kind_vorhanden",
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn das Kind nicht vorhanden ist.",
+            "kind_vorhanden",
+            "kind_vorhanden",
+        ),
+        (
+            "(1) The claim does not apply when the child is not present.",
+            "child_present",
+            "child_present",
+        ),
+    ],
+)
+def test_source_negation_controls_neutral_selector_orientation(
+    source: str,
+    selector_name: str,
+    formula: str,
+):
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "positive fact",
+            "input": {selector_name: True},
+            "output": {"result": True},
+        },
+        {
+            "name": "missing fact",
+            "input": {selector_name: False},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_adjectival_source_negation_rejects_opposite_selector_polarity():
+    source = (
+        "(1) Der Anspruch gilt nicht, wenn das Kind nicht vorhanden ist."
+    )
+    content = _exception_control_content("not kind_vorhanden")
+    cases = [
+        {
+            "name": "child absent",
+            "input": {"kind_vorhanden": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "child present",
+            "input": {"kind_vorhanden": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_unrelated_excluding_selector_cannot_witness_source_exception():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if bonus_applies: false else: true"
+    )
+    cases = [
+        {
+            "name": "without bonus",
+            "input": {"bonus_applies": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "with bonus",
+            "input": {"bonus_applies": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_selector_relevance_uses_tokens_not_substrings():
+    source = "(1) The claim does not apply at a separate status."
+    content = _exception_control_content("if rate: false else: true")
+    cases = [
+        {
+            "name": "rate false",
+            "input": {"rate": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "rate true",
+            "input": {"rate": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    ("exception_value", "expected_issue"),
+    [(5, True), (0, False)],
+)
+def test_explicit_numeric_zero_exception_reaches_zero(
+    exception_value: int,
+    expected_issue: bool,
+):
+    source = "(1) Im Ausnahmefall beträgt der Betrag 0 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: zero_amount
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 0}]
+  - name: result
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 'if exception_applies: EXCEPTION_VALUE else: 10'
+""".replace("EXCEPTION_VALUE", str(exception_value))
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exception_applies": False},
+            "output": {"result": 10},
+        },
+        {
+            "name": "exception",
+            "input": {"exception_applies": True},
+            "output": {"result": exception_value},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test") is expected_issue
+
+
+def test_generic_deviation_may_increase_the_principal_output():
+    source = "(1) Abweichend von der Hauptregel erhöht eine Ausnahme den Betrag."
+    content = _exception_control_content(
+        "if exception_applies: income + bonus else: income"
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exception_applies": False, "income": 10, "bonus": 5},
+            "output": {"result": 10},
+        },
+        {
+            "name": "exception",
+            "input": {"exception_applies": True, "income": 10, "bonus": 5},
+            "output": {"result": 15},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_mixed_exception_clauses_keep_local_effect_requirements():
+    source = """\
+(1) Abweichend von der Hauptregel erhöht eine Ausnahme den Betrag.
+Der Anspruch besteht, außer bei einer Befreiung.
+"""
+    content = _exception_control_content(
+        "if exemption_applies: 0 "
+        "else: if exception_applies: 20 else: 10"
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {
+                "exception_applies": False,
+                "exemption_applies": False,
+            },
+            "output": {"result": 10},
+        },
+        {
+            "name": "increasing exception",
+            "input": {
+                "exception_applies": True,
+                "exemption_applies": False,
+            },
+            "output": {"result": 20},
+        },
+        {
+            "name": "blocking exemption",
+            "input": {
+                "exception_applies": False,
+                "exemption_applies": True,
+            },
+            "output": {"result": 0},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_derived_exception_selector_may_be_driven_by_one_numeric_input():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: exemption_applies
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'exemption_code == 1'}]
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'not exemption_applies'}]
+"""
+    cases = [
+        {
+            "name": "ordinary code",
+            "input": {"exemption_code": 0},
+            "output": {"exemption_applies": False, "eligible": True},
+        },
+        {
+            "name": "exemption code",
+            "input": {"exemption_code": 1},
+            "output": {"exemption_applies": True, "eligible": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    ("formula", "ordinary_output", "exception_output", "expected_issue"),
+    [
+        (
+            "if income > income_limit: false else: true",
+            True,
+            False,
+            False,
+        ),
+        (
+            "if income > income_limit: true else: false",
+            False,
+            True,
+            True,
+        ),
+    ],
+)
+def test_numeric_predicate_can_directly_witness_exception(
+    formula: str,
+    ordinary_output: bool,
+    exception_output: bool,
+    expected_issue: bool,
+):
+    source = (
+        "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 'FORMULA'
+""".replace("FORMULA", formula)
+    cases = [
+        {
+            "name": "ordinary endpoint",
+            "input": {"income": 100},
+            "output": {"eligible": ordinary_output},
+        },
+        {
+            "name": "over-limit exception",
+            "input": {"income": 101},
+            "output": {"eligible": exception_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test") is expected_issue
+
+
+def test_numeric_input_change_cannot_hide_identical_exception_branches():
+    source = (
+        "(1) Der Anspruch gilt nicht, wenn Einkommen über 100 Euro liegt."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: result
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 'if income > income_limit: income else: income'
+"""
+    cases = [
+        {
+            "name": "ordinary endpoint",
+            "input": {"income": 100},
+            "output": {"result": 100},
+        },
+        {
+            "name": "over-limit",
+            "input": {"income": 101},
+            "output": {"result": 101},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_judgment_exception_requires_holds_to_not_holds_effect():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: not_holds else: holds"
+    ).replace("kind: derived", "kind: derived\n    dtype: Judgment")
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False},
+            "output": {"result": "holds"},
+        },
+        {
+            "name": "exempt",
+            "input": {"exemption_applies": True},
+            "output": {"result": "not_holds"},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_derived_exception_selector_wrong_polarity_is_rejected():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: exemption_applies
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'has_certificate'}]
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'if exemption_applies: true else: false'}]
+"""
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"has_certificate": False},
+            "output": {"exemption_applies": False, "eligible": False},
+        },
+        {
+            "name": "exempt",
+            "input": {"has_certificate": True},
+            "output": {"exemption_applies": True, "eligible": True},
         },
     ]
 
