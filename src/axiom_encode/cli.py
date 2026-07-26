@@ -158,10 +158,18 @@ from .harness.eval_board import (
     render_eval_board_markdown,
     render_eval_board_text,
 )
+from .harness.eval_board import (
+    _payload_execution_identity as _eval_board_payload_execution_identity,
+)
+from .harness.eval_board import (
+    _validate_result_execution_admission as _eval_board_validate_result_execution_admission,
+)
+from .harness.eval_board import (
+    _validate_result_policyengine_runtime_evidence as _eval_board_validate_result_policyengine_runtime_evidence,
+)
 from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
     _DEFAULT_SUITE_RETRY_ATTEMPTS,
-    _EVAL_RESULT_ADMISSION_SCHEMA,
     _EVAL_RESULT_ARTIFACT_SPECS,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
@@ -49023,6 +49031,22 @@ def _validated_eval_suite_report_payload(
         != _eval_suite_execution_identity_sha256(execution_identity)
     ):
         raise ValueError("Eval suite execution identity digest is inconsistent")
+    try:
+        board_execution_identity, board_execution_identity_sha256 = (
+            _eval_board_payload_execution_identity(
+                payload,
+                "Eval suite report payload",
+            )
+        )
+    except EvalBoardError as exc:
+        raise ValueError(
+            f"Eval suite execution identity is not board-admissible: {exc}"
+        ) from exc
+    if (
+        board_execution_identity != execution_identity
+        or board_execution_identity_sha256 != execution_identity_sha256
+    ):  # pragma: no cover - helper return invariant
+        raise ValueError("Eval suite board execution identity changed during admission")
 
     run_identity = evidence.get("run")
     if not isinstance(run_identity, dict) or set(run_identity) != {"id", "started_at"}:
@@ -49071,6 +49095,7 @@ def _validated_eval_suite_report_payload(
             or case_identity.get("kind") not in {"citation", "source"}
             or not isinstance(case_identity.get("corpus_citation_path"), str)
             or not case_identity.get("corpus_citation_path")
+            or case_identity.get("oracle") not in {"none", "policyengine"}
             or not isinstance(case_identity.get("sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", case_identity["sha256"])
         ):
@@ -49183,6 +49208,7 @@ def _validated_eval_suite_report_payload(
             "name": canonical_case["name"],
             "kind": canonical_case["kind"],
             "corpus_citation_path": canonical_case["corpus_citation_path"],
+            "oracle": canonical_case["oracle"],
             "sha256": canonical_case["sha256"],
         }:
             raise ValueError("Eval suite result uses a different case identity")
@@ -49204,60 +49230,29 @@ def _validated_eval_suite_report_payload(
             or result.get("model") != runner_identity["model"]
         ):
             raise ValueError("Eval suite result uses a different runner identity")
-        admission = result.get("admission")
-        if not isinstance(admission, dict):
-            raise ValueError("Eval suite result is missing its signed admission")
-        expected_admission_common = {
-            "schema": _EVAL_RESULT_ADMISSION_SCHEMA,
-            "run": run_identity,
-            "suite": {
-                "name": manifest_identity.get("name"),
-                "manifest_path": manifest_identity.get("path"),
-                "manifest_content_sha256": manifest_identity.get("content_sha256"),
-                "manifest_case_identities": canonical_cases,
-                "effective_runner_identities": runner_identities,
-            },
-            "case": canonical_case,
-            "corpus": corpus_identity,
-            "execution": {
-                "identity": execution_identity,
-                "sha256": execution_identity_sha256,
-            },
-        }
-        if {
-            key: admission.get(key) for key in expected_admission_common
-        } != expected_admission_common:
-            raise ValueError(
-                "Eval suite result admission does not match its run, manifest, case, "
-                "corpus, runner, or execution evidence"
+        try:
+            _eval_board_validate_result_execution_admission(
+                result,
+                run_identity=run_identity,
+                suite_name=str(manifest_identity.get("name")),
+                manifest_identity=manifest_identity,
+                case_identity=canonical_case,
+                corpus_identity=corpus_identity,
+                runner_identities=runner_identities,
+                execution_identity=execution_identity,
+                execution_identity_sha256=execution_identity_sha256,
+                context="Eval suite report result",
             )
-        rulespec_admission = admission.get("rulespec")
-        if not isinstance(rulespec_admission, dict):
-            raise ValueError("Eval suite result has malformed RuleSpec admission")
-        admitted_policy_root = rulespec_admission.get("policy_repo_root")
-        matching_roots = [
-            root
-            for root in execution_identity.get("rulespec_roots", [])
-            if isinstance(root, dict) and root.get("path") == admitted_policy_root
-        ]
-        if len(matching_roots) != 1:
-            raise ValueError(
-                "Eval suite result RuleSpec admission is not in its execution identity"
+            _eval_board_validate_result_policyengine_runtime_evidence(
+                result,
+                case_identity=canonical_case,
+                execution_identity=execution_identity,
+                context="Eval suite report result",
             )
-        root_identity = matching_roots[0]
-        expected_rulespec_admission = {
-            "policy_repo_root": root_identity.get("path"),
-            "root_content_sha256": root_identity.get("content_sha256"),
-            "toolchain_contract_sha256": root_identity.get("toolchain_contract_sha256"),
-            "validation_waiver_set_sha256": root_identity.get(
-                "validation_waiver_set_sha256"
-            ),
-        }
-        if rulespec_admission != expected_rulespec_admission:
+        except EvalBoardError as exc:
             raise ValueError(
-                "Eval suite result RuleSpec admission does not match its execution "
-                "identity"
-            )
+                f"Eval suite result is not board-admissible: {exc}"
+            ) from exc
         verified_results_by_runner[runner_name].append(verified_result)
         observed_pairs.append((case_index, runner_name))
     if observed_pairs != expected_pairs:

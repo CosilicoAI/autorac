@@ -326,10 +326,70 @@ TEST_PINNED_ENCODER_IDENTITY = {
 TEST_POLICYENGINE_RUNTIME_IDENTITY = {
     "schema": "axiom-policyengine-runtime/v2",
     "country": "us",
-    "repository_root": "/tmp/policyengine-us",
-    "git_head": "9" * 40,
-    "rulespec_runtime_pin_path": ("/tmp/rulespec-us/.axiom/policyengine-runtime.toml"),
+    "official_repository_url": ("https://github.com/PolicyEngine/policyengine-us.git"),
+    "trusted_git_commit": "9" * 40,
+    "official_tree_sha256": "1" * 64,
+    "official_tree_file_count": 5100,
+    "official_tree_byte_count": 22_345_678,
+    "rulespec_runtime_pin_path": "/tmp/rulespec-us/.axiom/policyengine-runtime.toml",
+    "rulespec_runtime_pin_schema": "axiom-policyengine-runtime-pin/v1",
     "rulespec_runtime_pin_sha256": "d" * 64,
+    "repository_root": "/tmp/policyengine-us",
+    "checkout_execution_tree_sha256": "2" * 64,
+    "checkout_execution_file_count": 5100,
+    "checkout_execution_byte_count": 22_345_678,
+    "venv_root": "/tmp/policyengine-us/.venv",
+    "venv_execution_tree_sha256": "3" * 64,
+    "venv_execution_file_count": 21_000,
+    "venv_execution_byte_count": 923_456_789,
+    "stdlib_root": "/tmp/policyengine-us/.venv/lib/python3.13",
+    "site_packages_root": ("/tmp/policyengine-us/.venv/lib/python3.13/site-packages"),
+    "pyproject_sha256": "4" * 64,
+    "uv_lock_sha256": "5" * 64,
+    "locked_versions": {
+        "policyengine-core": "3.20.0",
+        "policyengine-us": "1.200.0",
+    },
+    "python_version": "3.13.5",
+    "python_implementation": "cpython",
+    "python_executable": "/tmp/policyengine-us/.venv/bin/python",
+    "python_prefix": "/tmp/policyengine-us/.venv",
+    "python_base_prefix": "/tmp/policyengine-us/.venv",
+    "python_exec_prefix": "/tmp/policyengine-us/.venv",
+    "python_base_exec_prefix": "/tmp/policyengine-us/.venv",
+    "initial_sys_path": [
+        "/tmp/policyengine-us/.venv/lib/python3.13",
+        "/tmp/policyengine-us/.venv/lib/python3.13/lib-dynload",
+    ],
+    "effective_sys_path": [
+        "/tmp/policyengine-us",
+        "/tmp/policyengine-us/.venv/lib/python3.13/site-packages",
+        "/tmp/policyengine-us/.venv/lib/python3.13",
+        "/tmp/policyengine-us/.venv/lib/python3.13/lib-dynload",
+    ],
+    "isolated": 1,
+    "no_site": 1,
+    "packages": {
+        "policyengine-us": {
+            "distribution": "policyengine-us",
+            "version": "1.200.0",
+            "module_origin": "/tmp/policyengine-us/policyengine_us/__init__.py",
+            "metadata_root": (
+                "/tmp/policyengine-us/.venv/lib/python3.13/site-packages"
+            ),
+        },
+        "policyengine-core": {
+            "distribution": "policyengine-core",
+            "version": "3.20.0",
+            "module_origin": (
+                "/tmp/policyengine-us/.venv/lib/python3.13/site-packages/"
+                "policyengine_core/__init__.py"
+            ),
+            "metadata_root": (
+                "/tmp/policyengine-us/.venv/lib/python3.13/site-packages"
+            ),
+        },
+    },
 }
 TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256 = hashlib.sha256(
     json.dumps(
@@ -840,10 +900,11 @@ def _rebind_test_eval_suite_report_payload(payload: dict, tmp_path: Path) -> Non
     payload["evidence"]["sha256"] = _eval_suite_json_sha256(unsigned_evidence)
 
 
-def test_cli_eval_suite_payload_is_admitted_by_eval_board(tmp_path):
+@pytest.mark.parametrize("oracle", ["none", "policyengine"])
+def test_cli_eval_suite_payload_is_admitted_by_eval_board(tmp_path, oracle):
     from axiom_encode.harness.eval_board import fold_eval_board
 
-    payload = _test_eval_suite_report_payload(tmp_path)
+    payload = _test_eval_suite_report_payload(tmp_path, oracle=oracle)
     results_file = tmp_path / "results.json"
     results_file.write_text(json.dumps(payload) + "\n")
 
@@ -852,10 +913,22 @@ def test_cli_eval_suite_payload_is_admitted_by_eval_board(tmp_path):
     assert [runner.runner for runner in board.runners] == ["codex-gpt"]
 
 
-def test_cli_report_validator_admits_cli_eval_suite_payload(tmp_path):
-    payload = _test_eval_suite_report_payload(tmp_path)
+@pytest.mark.parametrize("oracle", ["none", "policyengine"])
+def test_cli_report_validator_admits_cli_eval_suite_payload(tmp_path, oracle):
+    payload = _test_eval_suite_report_payload(tmp_path, oracle=oracle)
 
     assert _validated_eval_suite_report_payload(payload) == payload
+
+
+def test_cli_report_validator_rejects_legacy_execution_identity_schema(tmp_path):
+    payload = _test_eval_suite_report_payload(tmp_path)
+    payload["evidence"]["execution_identity"]["schema"] = (
+        "axiom-encode/eval-execution-identity/v2"
+    )
+    _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+    with pytest.raises(ValueError, match="not board-admissible"):
+        _validated_eval_suite_report_payload(payload)
 
 
 TEST_CORPUS_RELEASE_NAME = "rulespec-test-release"
@@ -3296,7 +3369,7 @@ class TestCmdEvalSuiteReport:
             payload["results"][0]["admission"]["rulespec"]["policy_repo_root"] = value
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
-        with pytest.raises(ValueError, match="canonical RuleSpec root topology"):
+        with pytest.raises(ValueError, match="not board-admissible"):
             _validated_eval_suite_report_payload(payload)
 
     @pytest.mark.parametrize(
@@ -3327,7 +3400,7 @@ class TestCmdEvalSuiteReport:
         checkout[field] = value
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
-        with pytest.raises(ValueError, match="canonical RuleSpec root topology"):
+        with pytest.raises(ValueError, match="not board-admissible"):
             _validated_eval_suite_report_payload(payload)
 
     @pytest.mark.parametrize(
@@ -3352,7 +3425,7 @@ class TestCmdEvalSuiteReport:
         checkout["origin_repository"] = origin_repository
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
-        with pytest.raises(ValueError, match="origin_repository"):
+        with pytest.raises(ValueError, match="not board-admissible"):
             _validated_eval_suite_report_payload(payload)
 
     def test_report_row_admission_rejects_a_different_jurisdiction_root(
@@ -3378,7 +3451,7 @@ class TestCmdEvalSuiteReport:
         }
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
-        with pytest.raises(ValueError, match="case jurisdiction"):
+        with pytest.raises(ValueError, match="case citation jurisdiction"):
             _validated_eval_suite_report_payload(payload)
 
     @pytest.mark.parametrize(
@@ -3414,8 +3487,13 @@ class TestCmdEvalSuiteReport:
         metrics["policyengine_runtime_identity_sha256"] = runtime_sha256
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
-        with pytest.raises(ValueError, match="PolicyEngine runtime.*RuleSpec root"):
+        with pytest.raises(ValueError, match="not board-admissible"):
             _validated_eval_suite_report_payload(payload)
+
+    def test_report_admission_accepts_complete_policyengine_runtime(self, tmp_path):
+        payload = _test_eval_suite_report_payload(tmp_path, oracle="policyengine")
+
+        assert _validated_eval_suite_report_payload(payload) is payload
 
     def test_renders_markdown_and_writes_csv(self, tmp_path, capsys):
         manifest_path = tmp_path / "suite.yaml"
