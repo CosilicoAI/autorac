@@ -1862,6 +1862,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["open_pr"]["default"] is False
     assert inputs["pr_base_branch"]["type"] == "string"
     assert inputs["pr_base_branch"]["default"] == "main"
+    assert inputs["replace_rulespec_path"]["required"] is False
     assert inputs["dependent_citation"]["required"] is False
     assert inputs["dependent_review_finding"]["required"] is False
     assert inputs["second_dependent_citation"]["required"] is False
@@ -2013,8 +2014,16 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert (
         '"$RULESPEC_CHECKOUT" "$CITATION" "${dependent_citations[@]}"'
-        in (cascade_step["run"])
+        not in (cascade_step["run"])
     )
+    assert cascade_step["env"]["REPLACE_RULESPEC_PATH"] == (
+        "${{ inputs.replace_rulespec_path }}"
+    )
+    assert 'cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")' in (
+        cascade_step["run"]
+    )
+    assert 'cascade_args+=("${dependent_citations[@]}")' in cascade_step["run"]
+    assert '"${cascade_args[@]}"' in cascade_step["run"]
 
     apply_step = next(
         step
@@ -2042,14 +2051,27 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "printf '%s\\n' \"$review_finding\"" in command
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert "args+=(--apply-target-only)" in command
+    assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
+    assert '[ "$target_only" = "true" ]' in command
+    assert (
+        "queue-authorized re-encodes cannot override the RuleSpec target path"
+        in command
+    )
     assert '--output "$RUNNER_TEMP/generated/$output_lane"' in command
     assert '"$SECOND_DEPENDENT_CITATION"' in command
-    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2' in command
-    assert 'run_signed_encode "$CITATION" "$REVIEW_FINDING" true target' in command
+    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""' in command
     assert (
-        '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent' in command
+        '"$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"'
+        in command
     )
-    assert 'run_signed_encode "$CITATION" "$REVIEW_FINDING" false target' in command
+    assert (
+        '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent ""'
+        in command
+    )
+    assert (
+        '"$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"'
+        in command
+    )
     assert "dependent review finding is required with dependent citation" in command
     assert steps.index(cascade_step) < steps.index(apply_step)
 
@@ -2069,6 +2091,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'citation = payload.get("citation")' in package_command
     assert 'applied_manifest["context_manifest_file"]' in package_command
     assert 'applied_manifest.get("context_manifest_sha256")' in package_command
+    assert "primary_paths != [normalized_replacement_path]" in package_command
+    assert "replacement apply manifest primary path does not " in package_command
+    assert "match the requested RuleSpec target" in package_command
     assert 'finding.get("content")' in package_command
     assert 'finding.get("sha256")' in package_command
     assert '"dependent-context-manifest.json"' in package_command
@@ -2539,6 +2564,97 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             .strip()
             == "Preserve the second dependent source."
         )
+
+
+@pytest.mark.parametrize("with_dependent", [False, True])
+def test_targeted_signed_reencode_runs_replacement_target(
+    tmp_path: Path,
+    with_dependent: bool,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    ).replace(
+        "/opt/axiom-verification/axiom-encode-apply-signer run",
+        '"$SIGNER_STUB"',
+    )
+    calls_path = tmp_path / "calls.jsonl"
+    signer_stub = tmp_path / "signer-stub"
+    signer_stub.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+"""
+    )
+    signer_stub.chmod(0o700)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    replacement_path = "us-nc/policies/income_tax/pilot_liability_pipeline.yaml"
+    dependent_citation = (
+        "us-nc/statute/105/105-153.5" if with_dependent else ""
+    )
+    dependent_finding = (
+        "Preserve the resident pipeline semantics." if with_dependent else ""
+    )
+
+    environment = {
+        **os.environ,
+        "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "CALLS_PATH": str(calls_path),
+        "CITATION": "us-nc/statute/105/105-153.7",
+        "DEPENDENT_CITATION": dependent_citation,
+        "DEPENDENT_REVIEW_FINDING": dependent_finding,
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "REPLACE_RULESPEC_PATH": replacement_path,
+        "REVIEW_FINDING": "Preserve all supported existing semantics.",
+        "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SECOND_DEPENDENT_CITATION": "",
+        "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        "SIGNER_STUB": str(signer_stub),
+    }
+    subprocess.run(
+        ["bash", "-c", command],
+        check=True,
+        env=environment,
+    )
+
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(calls) == (2 if with_dependent else 1)
+    encode_args = [call[call.index("--") + 1 :] for call in calls]
+    assert ("--apply-target-only" in encode_args[0]) is with_dependent
+    assert encode_args[0][encode_args[0].index("--replace-rulespec-path") + 1] == (
+        replacement_path
+    )
+    assert encode_args[0][-1] == "us-nc/statute/105/105-153.7"
+    if with_dependent:
+        assert "--replace-rulespec-path" not in encode_args[1]
+        assert "--apply-target-only" not in encode_args[1]
+        assert encode_args[1][-1] == dependent_citation
+
+    blocked = subprocess.run(
+        ["bash", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**environment, "QUEUE_ID": "us-snap-all-states-2026-07"},
+    )
+    assert blocked.returncode != 0
+    assert (
+        "queue-authorized re-encodes cannot override the RuleSpec target path"
+        in blocked.stderr
+    )
 
 
 @pytest.mark.parametrize(

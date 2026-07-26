@@ -2002,6 +2002,15 @@ def main():
             "re-encoded in the same change set before final repository validation."
         ),
     )
+    encode_parser.add_argument(
+        "--replace-rulespec-path",
+        type=Path,
+        help=(
+            "With --apply in repo-augmented mode, regenerate an existing primary "
+            "RuleSpec at this checkout-relative path when its singular corpus "
+            "citation exactly matches the requested source"
+        ),
+    )
     _add_complete_source_unit_argument(encode_parser)
     _add_rulespec_dependency_root_argument(encode_parser)
 
@@ -19410,6 +19419,112 @@ class _EncodeAttemptExecution(NamedTuple):
     logged_run: EncodingRun | None
 
 
+class _EncodeReplacementTarget(NamedTuple):
+    relative_output: Path
+    context_paths: tuple[Path, ...]
+
+
+def _resolve_encode_replacement_target(
+    args,
+    *,
+    policy_checkout_path: Path,
+    policy_repo_path: Path,
+    source_unit,
+    corpus_release: LocalCorpusRelease,
+) -> _EncodeReplacementTarget | None:
+    raw_path = getattr(args, "replace_rulespec_path", None)
+    if raw_path is None:
+        return None
+    if getattr(args, "apply", False) is not True:
+        raise ValueError("encode --replace-rulespec-path requires --apply")
+    if getattr(args, "mode", None) != "repo-augmented":
+        raise ValueError(
+            "encode --replace-rulespec-path requires --mode repo-augmented"
+        )
+
+    checkout_relative = Path(raw_path)
+    roots = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS))
+    if (
+        checkout_relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in checkout_relative.parts)
+        or len(checkout_relative.parts) < 3
+        or checkout_relative.parts[0] != policy_repo_path.name
+        or not _is_protected_rulespec_yaml_path(checkout_relative, roots=roots)
+        or checkout_relative.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+    ):
+        raise ValueError(
+            "encode --replace-rulespec-path must name an existing checkout-relative "
+            "primary RuleSpec under the requested source jurisdiction"
+        )
+
+    target = policy_checkout_path / checkout_relative
+    target_bytes = read_bounded_regular_file(
+        policy_checkout_path,
+        target,
+        label="replacement RuleSpec",
+        max_bytes=10 * 1024 * 1024,
+    )
+    try:
+        payload = yaml.safe_load(target_bytes.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("replacement RuleSpec is not valid UTF-8 YAML") from exc
+    if not isinstance(payload, dict) or payload.get("format") != "rulespec/v1":
+        raise ValueError("replacement RuleSpec must declare format: rulespec/v1")
+    plural_issues = find_plural_corpus_citation_path_issues(payload)
+    if plural_issues:
+        raise ValueError(
+            "replacement RuleSpec has invalid source verification: "
+            + "; ".join(plural_issues)
+        )
+    module = payload.get("module")
+    verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    citation_paths = (
+        _source_verification_citation_paths(verification)
+        if isinstance(verification, dict)
+        else []
+    )
+    if len(citation_paths) != 1:
+        raise ValueError(
+            "replacement RuleSpec must declare exactly one corpus citation path"
+        )
+    replacement_citation = normalize_corpus_identifier(citation_paths[0])
+    requested_citation = normalize_corpus_identifier(source_unit.requested)
+    if replacement_citation != requested_citation:
+        raise ValueError(
+            "replacement RuleSpec corpus citation does not match the requested source"
+        )
+    replacement_source = resolve_corpus_source_unit(
+        replacement_citation,
+        corpus_release,
+    )
+    if (
+        replacement_source.citation_path != source_unit.citation_path
+        or replacement_source.requested != source_unit.requested
+        or replacement_source.body != source_unit.body
+        or replacement_source.resolved_source != source_unit.resolved_source
+    ):
+        raise ValueError(
+            "replacement RuleSpec does not resolve to the exact requested corpus unit"
+        )
+
+    context_paths = [target]
+    companion = _rulespec_test_path(target)
+    if companion.exists() or companion.is_symlink():
+        read_bounded_regular_file(
+            policy_checkout_path,
+            companion,
+            label="replacement RuleSpec companion test",
+            max_bytes=10 * 1024 * 1024,
+        )
+        context_paths.append(companion)
+    return _EncodeReplacementTarget(
+        relative_output=Path(*checkout_relative.parts[1:]),
+        context_paths=tuple(context_paths),
+    )
+
+
 def _resolve_encode_escalation_config(args) -> _EncodeEscalationConfig:
     """Resolve and validate the per-section validator retry policy."""
     initial_model = getattr(args, "model", None) or DEFAULT_OPENAI_MODEL
@@ -19694,6 +19809,13 @@ def _run_encode_attempt(
         source_unit.citation_path,
         policy_checkout_path,
     )
+    replacement_target = _resolve_encode_replacement_target(
+        args,
+        policy_checkout_path=policy_checkout_path,
+        policy_repo_path=policy_repo_path,
+        source_unit=source_unit,
+        corpus_release=corpus_release,
+    )
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -19721,6 +19843,9 @@ def _run_encode_attempt(
     review_findings_paths = [
         Path(path) for path in getattr(args, "review_findings", [])
     ]
+    extra_context_paths = [Path(path) for path in args.allow_context]
+    if replacement_target is not None:
+        extra_context_paths.extend(replacement_target.context_paths)
     results = run_model_eval(
         citations=[args.citation],
         runner_specs=[runner],
@@ -19729,7 +19854,7 @@ def _run_encode_attempt(
         runtime_axiom_rules_path=axiom_rules_path,
         corpus_release=corpus_release,
         mode=args.mode,
-        extra_context_paths=[Path(path) for path in args.allow_context],
+        extra_context_paths=extra_context_paths,
         review_findings_paths=review_findings_paths,
         include_tests=True,
         skip_reviewers=skip_reviewers,
@@ -19737,6 +19862,11 @@ def _run_encode_attempt(
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=(
             getattr(args, "require_complete_source_unit", False) is True
+        ),
+        target_relative_output=(
+            replacement_target.relative_output
+            if replacement_target is not None
+            else None
         ),
     )
 

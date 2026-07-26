@@ -1525,6 +1525,157 @@ def test_model_eval_reuses_identical_resolved_source_for_all_runners(tmp_path):
     )
 
 
+def test_model_eval_passes_single_target_output_override(tmp_path):
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us-nc/statute/105/105-153.7",
+    )
+    target = Path("policies/income_tax/pilot_liability_pipeline.yaml")
+    result = Mock(name="result")
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_corpus_source_unit",
+            return_value=source_unit,
+        ),
+        patch(
+            "axiom_encode.harness.evals._run_single_eval",
+            return_value=result,
+        ) as mock_run,
+    ):
+        actual = run_model_eval(
+            citations=["us-nc/statute/105/105-153.7"],
+            runner_specs=["openai:model-a"],
+            output_root=tmp_path / "out",
+            policy_path=tmp_path / "rulespec-us" / "us-nc",
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+            target_relative_output=target,
+        )
+
+    assert actual == [result]
+    assert mock_run.call_args.kwargs["target_relative_output"] == target
+
+
+def test_model_eval_rejects_target_override_for_multiple_citations(tmp_path):
+    corpus_release, _source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us/statute/26/1",
+    )
+
+    with pytest.raises(ValueError, match="requires exactly one citation"):
+        run_model_eval(
+            citations=["us/statute/26/1", "us/statute/26/2"],
+            runner_specs=["openai:model-a"],
+            output_root=tmp_path / "out",
+            policy_path=tmp_path / "rulespec-us" / "us",
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+            target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+        )
+
+
+def test_workspace_classifies_output_override_as_existing_target(tmp_path):
+    policy_root = _canonical_rulespec_content_root(tmp_path, "us-nc")
+    target_relative = Path(
+        "policies/income_tax/pilot_liability_pipeline.yaml"
+    )
+    target = policy_root / target_relative
+    target.parent.mkdir(parents=True)
+    target.write_text("format: rulespec/v1\nrules: []\n")
+    companion = target.with_name("pilot_liability_pipeline.test.yaml")
+    companion.write_text("[]\n")
+
+    workspace = prepare_eval_workspace(
+        citation="us-nc/statute/105/105-153.7",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Authoritative source.",
+        axiom_rules_path=policy_root,
+        mode="repo-augmented",
+        extra_context_paths=[target, companion],
+        target_relative_output=target_relative,
+    )
+
+    kinds = {Path(item.source_path): item.kind for item in workspace.context_files}
+    assert kinds[target.resolve()] == "existing_target"
+    assert kinds[companion.resolve()] == "existing_target_test_context"
+
+
+def test_model_eval_uses_output_override_for_prompt_and_artifact_path(tmp_path):
+    corpus_release, _source_unit = _write_test_source_unit(
+        tmp_path,
+        "Authoritative source.",
+        citation_path="us-nc/statute/105/105-153.7",
+    )
+    policy_root = _canonical_rulespec_content_root(tmp_path, "us-nc")
+    target_relative = Path(
+        "policies/income_tax/pilot_liability_pipeline.yaml"
+    )
+    target = policy_root / target_relative
+    target.parent.mkdir(parents=True)
+    target.write_text("format: rulespec/v1\nrules: []\n")
+    companion = target.with_name("pilot_liability_pipeline.test.yaml")
+    companion.write_text("[]\n")
+    output_root = tmp_path / "out"
+
+    def generate_override_artifact(**kwargs):
+        output_file = kwargs["output_file"]
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        return (
+            EvalPromptResponse(text="generated", duration_ms=1),
+            True,
+            0,
+            frozenset({output_file}),
+        )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval_with_empty_artifact_retry",
+            side_effect=generate_override_artifact,
+        ),
+        patch(
+            "axiom_encode.harness.evals._evaluate_generated_artifact_with_repairs",
+            return_value=EvalArtifactMetrics(
+                compile_pass=True,
+                compile_issues=[],
+                ci_pass=True,
+                ci_issues=[],
+                embedded_source_present=False,
+                grounded_numeric_count=0,
+                ungrounded_numeric_count=0,
+                grounding=[],
+            ),
+        ),
+        patch(
+            "axiom_encode.harness.evals._build_eval_prompt",
+            wraps=evals_module._build_eval_prompt,
+        ) as mock_prompt,
+    ):
+        result = run_model_eval(
+            citations=["us-nc/statute/105/105-153.7"],
+            runner_specs=["openai:model-a"],
+            output_root=output_root,
+            policy_path=policy_root,
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+            mode="repo-augmented",
+            extra_context_paths=[target, companion],
+            target_relative_output=target_relative,
+        )[0]
+
+    assert Path(result.output_file) == (
+        output_root / "openai-model-a" / target_relative
+    )
+    assert mock_prompt.call_args.kwargs["target_file_name"] == target.name
+    assert mock_prompt.call_args.kwargs["target_ref_prefix"] == (
+        "us-nc:policies/income_tax/pilot_liability_pipeline"
+    )
+
+
 def test_resolve_corpus_source_unit_concatenates_descendant_text_rows(tmp_path):
     rows = [
         {

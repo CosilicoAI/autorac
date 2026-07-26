@@ -163,16 +163,45 @@ def _citation_rulespec_path(citation: str) -> tuple[str, PurePosixPath]:
     return jurisdiction, relative
 
 
+def _is_regular_file_beneath(root: Path, relative: PurePosixPath) -> bool:
+    """Reject files reached through any symlink beneath the checkout root."""
+
+    cursor = root
+    for part in relative.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            return False
+    return cursor.is_file()
+
+
 def validate_dependent_cascade(
     repo: Path,
     target_citation: str,
     *dependent_citations: str,
+    target_rulespec_path: str | None = None,
 ) -> tuple[PurePosixPath, ...]:
     """Require the supplied modules to be all of the target's direct dependents."""
 
     import yaml
 
     target_jurisdiction, target_relative = _citation_rulespec_path(target_citation)
+    if target_rulespec_path:
+        replacement = PurePosixPath(target_rulespec_path)
+        if (
+            replacement.is_absolute()
+            or replacement.as_posix() != target_rulespec_path
+            or any(part in {"", ".", ".."} for part in replacement.parts)
+            or len(replacement.parts) < 3
+            or replacement.parts[0] != target_jurisdiction
+            or replacement.parts[1] not in RULESPEC_ATOMIC_ROOTS
+            or replacement.suffix != ".yaml"
+            or replacement.name.endswith(".test.yaml")
+        ):
+            raise ValueError(
+                "target RuleSpec path must be a canonical checkout-relative "
+                "primary module in the citation jurisdiction"
+            )
+        target_relative = PurePosixPath(*replacement.parts[1:])
     if not dependent_citations:
         raise ValueError("at least one dependent citation is required")
     dependent_relatives: list[PurePosixPath] = []
@@ -199,11 +228,10 @@ def validate_dependent_cascade(
 
     content_root = repo / target_jurisdiction
     target_path = content_root / target_relative
-    if not target_path.is_file() or target_path.is_symlink():
+    if not _is_regular_file_beneath(content_root, target_relative):
         raise ValueError("target citation has no regular baseline RuleSpec module")
     for dependent_relative in dependent_relatives:
-        dependent_path = content_root / dependent_relative
-        if not dependent_path.is_file() or dependent_path.is_symlink():
+        if not _is_regular_file_beneath(content_root, dependent_relative):
             raise ValueError(
                 "dependent citation has no regular baseline RuleSpec module"
             )
@@ -394,6 +422,7 @@ def main() -> None:
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
     cascade_parser.add_argument("repo", type=Path)
     cascade_parser.add_argument("target_citation")
+    cascade_parser.add_argument("--target-rulespec-path")
     cascade_parser.add_argument("dependent_citations", nargs="+")
     args = parser.parse_args()
     try:
@@ -426,6 +455,7 @@ def main() -> None:
                     args.repo,
                     args.target_citation,
                     *args.dependent_citations,
+                    target_rulespec_path=args.target_rulespec_path,
                 )
             )
         else:
