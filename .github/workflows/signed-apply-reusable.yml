@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: "12"
+      require-complete-source-unit:
+        description: "Require complete source-unit coverage during encoding."
+        required: false
+        type: boolean
+        default: false
     secrets:
       openai-api-key:
         description: "OpenAI model credential, explicitly passed by the caller."
@@ -309,11 +314,16 @@ jobs:
           CITATION: ${{ matrix.item.citation }}
         run: |
           set -euo pipefail
-          # Builtin read + pure assignment only — no subprocess is forked while
-          # the signing key is in this step's environment; then exec the launcher
-          # (which unsets the key before spawning any child).
+          # Builtin read/conditionals + pure assignment only — no subprocess is
+          # forked while the signing key is in this step's environment; then exec
+          # the launcher (which unsets the key before spawning any child).
           read -r pyseg < "$RUNNER_TEMP/pyseg"
           genroot="$RUNNER_TEMP/genroot/${{ github.event.repository.name }}"
+          require_complete_source_unit=${{ inputs['require-complete-source-unit'] }}
+          complete_source_unit_args=()
+          if [[ "$require_complete_source_unit" == true ]]; then
+            complete_source_unit_args=(--require-complete-source-unit)
+          fi
           exec "$RUNNER_TEMP/axiom-encode-apply-signer" run \
             --scope apply_ed25519 \
             --key-env AXIOM_ENCODE_APPLY_SIGNING_KEY \
@@ -332,7 +342,8 @@ jobs:
             --axiom-rules-engine-path "$GITHUB_WORKSPACE/_axiom/axiom-rules-engine" \
             --policy-repo-path "$genroot" \
             --mode cold --no-sync --skip-reviewers \
-            --db "$RUNNER_TEMP/enc.db"
+            --db "$RUNNER_TEMP/enc.db" \
+            "${complete_source_unit_args[@]}"
 
       - name: Gate battery on the generated mirror (fail-closed pre-check)
         shell: bash
