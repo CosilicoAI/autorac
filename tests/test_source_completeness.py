@@ -7641,3 +7641,31 @@ rules:
 
     assert not correct.issues
     assert _has_issue(duplicated, "formula branch")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Der nach Maßgabe des Absatzes 2 festgelegte Freibetrag "
+            "beträgt 259 Euro."
+        ),
+        (
+            "(1) Der nach den Absätzen 2 und 3 festgelegte Freibetrag "
+            "beträgt 259 Euro."
+        ),
+    ],
+)
+def test_inflected_absatz_references_are_not_numeric_inventory(source: str):
+    content = _scalar_snapshot_content()
+    case = {
+        "name": "scalar with structural cross-reference",
+        "period": "2026",
+        "input": {},
+        "output": {"allowance_amount": 259},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+    assert result.source_numeric_occurrence_count == 1
