@@ -3543,10 +3543,10 @@ class TestCmdEvalSuiteRevalidate:
             "error": "old validation failure",
             "failure_kind": "validation",
             "timed_out": False,
-            "timeout_stage": None,
-            "timeout_reason": None,
-            "timeout_seconds": None,
-            "timeout_attempts": 0,
+            "timeout_stage": "encoder",
+            "timeout_reason": "connect",
+            "timeout_seconds": 30,
+            "timeout_attempts": 1,
             "generation_prompt_sha256": "generation-digest",
             "input_tokens": 1,
             "output_tokens": 1,
@@ -3752,6 +3752,11 @@ class TestCmdEvalSuiteRevalidate:
         assert ledger["result"]["metrics"]["policyengine_pass"] is True
         assert ledger["result"]["success"] is fresh_success
         assert ledger["result"]["error"] == expected_error
+        assert ledger["result"]["timed_out"] is False
+        assert ledger["result"]["timeout_stage"] == "encoder"
+        assert ledger["result"]["timeout_reason"] == "connect"
+        assert ledger["result"]["timeout_seconds"] == 30
+        assert ledger["result"]["timeout_attempts"] == 1
         assert ledger["result"]["generation_prompt_sha256"] == "generation-digest"
         assert (
             ledger["result"]["metrics"]["generalist_review_prompt_sha256"]

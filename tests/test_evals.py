@@ -12065,6 +12065,48 @@ class TestOpenAIEvalRequest:
         assert response.trace["timeout_seconds"] == expected_seconds
 
 
+def test_repeated_openai_timeouts_reach_durable_result_attempt_count(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "source states 451.",
+    )
+    request_timeouts = [
+        requests.exceptions.ConnectTimeout("connection timed out")
+        for _attempt in range(12)
+    ]
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.requests.post",
+            side_effect=request_timeouts,
+        ) as mock_post,
+        patch("axiom_encode.harness.evals.time.sleep"),
+    ):
+        [result] = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["openai:gpt-5.4"],
+            output_root=tmp_path / "out",
+            policy_path=policy_repo_root,
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+            mode="cold",
+        )
+
+    restored = _eval_result_from_payload(result.to_dict())
+    assert mock_post.call_count == 12
+    assert restored.failure_kind == "timeout"
+    assert restored.timed_out is True
+    assert restored.timeout_stage == "encoder"
+    assert restored.timeout_reason == "connect"
+    assert restored.timeout_seconds == 30
+    assert restored.timeout_attempts == 12
+
+
 class TestEvalSuiteManifest:
     @pytest.fixture(autouse=True)
     def _stable_persisted_result_revalidation(self):

@@ -579,6 +579,55 @@ def test_board_distinguishes_timeout_validation_failure_and_plain_error(tmp_path
     assert "T timeout" in render_eval_board_text(board)
 
 
+def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
+    timeout_result = _result(
+        "fable",
+        CASE_IDENTITIES[0],
+        backend="claude",
+        model="claude-fable-5",
+        success=False,
+        error="Claude eval timed out",
+        metrics=None,
+        failure_kind="timeout",
+        timed_out=True,
+        timeout_stage="encoder",
+        timeout_reason="wall",
+        timeout_seconds=600,
+        timeout_attempts=1,
+    )
+    timeout_result.update(
+        {
+            "output_file": "/tmp/generated.yaml",
+            "generated_output_sha256": "a" * 64,
+        }
+    )
+    path = _write_payload(
+        tmp_path,
+        "artifact-mislabeled-as-timeout.json",
+        _payload(
+            [("fable", "claude", "claude-fable-5")],
+            [
+                timeout_result,
+                _result(
+                    "fable",
+                    CASE_IDENTITIES[1],
+                    backend="claude",
+                    model="claude-fable-5",
+                ),
+                _result(
+                    "fable",
+                    CASE_IDENTITIES[2],
+                    backend="claude",
+                    model="claude-fable-5",
+                ),
+            ],
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="no generated artifact"):
+        fold_eval_board([path])
+
+
 def test_gate_pass_requires_all_deterministic_checks():
     passing = _result("terra", CASE_IDENTITIES[0])
     assert result_gate_pass(passing)
