@@ -3779,6 +3779,11 @@ def _validate_eval_result_policyengine_binding(
             raise ValueError(
                 f"Eval suite case '{case.name}' succeeded without PolicyEngine evidence"
             )
+        if result.output_file or result.generated_output_sha256 is not None:
+            raise ValueError(
+                f"Eval suite case '{case.name}' has a PolicyEngine artifact "
+                "without oracle evidence"
+            )
         return
     if (
         metrics.policyengine_pass is None
@@ -3788,6 +3793,11 @@ def _validate_eval_result_policyengine_binding(
     ):
         raise ValueError(
             f"Eval suite case '{case.name}' has missing or mismatched PolicyEngine evidence"
+        )
+    if result.success and metrics.policyengine_pass is not True:
+        raise ValueError(
+            f"Eval suite case '{case.name}' succeeded although its PolicyEngine "
+            "oracle did not pass"
         )
 
 

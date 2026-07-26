@@ -1368,7 +1368,18 @@ def _validate_result_artifact_bindings(result: dict, *, context: str) -> None:
             "context_manifest_sha256",
             "context manifest",
         ),
+        (
+            "verdict_file",
+            "verdict_sha256",
+            "validator verdict evidence",
+        ),
     ):
+        if digest_field not in result:
+            if path_field == "verdict_file" and "verdict_file" not in result:
+                continue
+            raise EvalBoardError(
+                f"{context} is missing immutable {label} digest {digest_field!r}"
+            )
         raw_path = result.get(path_field)
         digest = result.get(digest_field)
         if not isinstance(raw_path, str):
@@ -1391,7 +1402,8 @@ def _validate_result_artifact_bindings(result: dict, *, context: str) -> None:
         result.get("success") is True or isinstance(result.get("metrics"), dict)
     ) and "output_file" not in bound_fields:
         raise EvalBoardError(f"{context} has no content-bound generated RuleSpec")
-    if bound_fields and not {
+    generation_bound_fields = bound_fields - {"verdict_file"}
+    if generation_bound_fields and not {
         "trace_file",
         "context_manifest_file",
     }.issubset(bound_fields):
