@@ -5171,6 +5171,66 @@ def test_empty_artifact_runtime_uses_bound_max_attempts(monkeypatch, tmp_path):
     assert materialized_paths == frozenset()
 
 
+def test_materialized_artifact_crossing_case_budget_is_discarded(
+    monkeypatch,
+    tmp_path,
+):
+    clock = [0.0]
+    artifact_root = tmp_path / "out"
+    artifact_root.mkdir()
+    output_file = artifact_root / "sample.yaml"
+    response = EvalPromptResponse(
+        text="format: rulespec/v1\nrules: []\n",
+        duration_ms=4000,
+    )
+    monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+    def finish_generation(*_args, **_kwargs):
+        clock[0] = 4.0
+        return response
+
+    def materialize_after_deadline(*args, **kwargs):
+        wrote_artifact = _materialize_eval_artifact(*args, **kwargs)
+        clock[0] = 6.0
+        return wrote_artifact
+
+    with (
+        evals_module._active_eval_case_budget(5),
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            side_effect=finish_generation,
+        ),
+        patch(
+            "axiom_encode.harness.evals._materialize_eval_artifact",
+            side_effect=materialize_after_deadline,
+        ),
+    ):
+        result, wrote_artifact, retry_count, materialized_paths = (
+            evals_module._run_prompt_eval_with_empty_artifact_retry(
+                parse_runner_spec("codex:gpt-5.4"),
+                SimpleNamespace(root=tmp_path),
+                "prompt",
+                output_file,
+                "source",
+                "sample.yaml",
+                False,
+                artifact_root=artifact_root,
+            )
+        )
+
+    assert wrote_artifact is False
+    assert retry_count == 0
+    assert materialized_paths == frozenset()
+    assert not output_file.exists()
+    assert not output_file.with_suffix(".test.yaml").exists()
+    assert result.timed_out is True
+    assert result.timeout_stage == "case_budget"
+    assert result.timeout_reason == "wall"
+    assert result.timeout_seconds == 5
+    assert result.timeout_attempts == 1
+    assert "case budget" in (result.error or "").lower()
+
+
 def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
     policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
     corpus_release, source_unit = _write_test_source_unit(
@@ -13840,6 +13900,99 @@ cases:
         assert mock_validate.call_count == 2
         assert result.success is True
         assert result.timed_out is False
+
+    def test_suite_retry_setup_consumes_generation_budget(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        policy_repo_checkout = _canonical_rulespec_content_root(tmp_path, "us").parent
+        manifest = EvalSuiteManifest(
+            name="Retry setup case budget",
+            path=tmp_path / "suite.yaml",
+            runners=["codex:gpt-5.4"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        clock = [0.0]
+        observed_generation_budgets: list[float | None] = []
+        artifact = (
+            "=== FILE: sample.yaml ===\n"
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: source states 451.\n"
+            "rules: []\n"
+            "=== FILE: sample.test.yaml ===\n"
+            "[]\n"
+        )
+        real_prepare_workspace = prepare_eval_workspace
+        prepare_calls = 0
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def prepare_with_retry_setup_cost(*args, **kwargs):
+            nonlocal prepare_calls
+            prepare_calls += 1
+            workspace = real_prepare_workspace(*args, **kwargs)
+            if prepare_calls == 2:
+                clock[0] += 9.0
+            return workspace
+
+        def generate_artifact(*_args, **_kwargs):
+            observed_generation_budgets.append(
+                evals_module._remaining_eval_case_budget_seconds()
+            )
+            clock[0] += 1.0
+            return EvalPromptResponse(text=artifact, duration_ms=1000)
+
+        def reject_first_artifact(**_kwargs):
+            clock[0] += 20.0
+            return _revalidation_metrics(
+                compile_pass=False,
+                compile_issues=["deterministic compile failure"],
+            )
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.prepare_eval_workspace",
+                side_effect=prepare_with_retry_setup_cost,
+            ) as mock_prepare,
+            patch(
+                "axiom_encode.harness.evals._run_prompt_eval",
+                side_effect=generate_artifact,
+            ) as mock_prompt,
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                side_effect=reject_first_artifact,
+            ) as mock_validate,
+        ):
+            [result] = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=policy_repo_checkout,
+                corpus_release=_write_test_corpus_provision(tmp_path),
+                suite_retry_attempts=1,
+            )
+
+        assert mock_prepare.call_count == 2
+        assert mock_prompt.call_count == 2
+        assert mock_validate.call_count == 1
+        assert observed_generation_budgets == [10.0, 0.0]
+        assert result.failure_kind == "timeout"
+        assert result.timed_out is True
+        assert result.timeout_stage == "case_budget"
+        assert not result.output_file
+        assert result.metrics is None
 
     def test_case_budget_scope_does_not_relabel_completed_artifact_outcome(self):
         result = _fake_eval_result("openai-gpt", "case-one")
