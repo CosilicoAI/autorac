@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from calendar import monthrange
@@ -245,7 +246,6 @@ from .harness.validator_pipeline import (
     _rulespec_rule_formula_rule_records,
     _rulespec_target_is_descendant_of,
     extract_embedded_source_text,
-    extract_numbers_from_text,
     extract_typed_numeric_occurrences_from_text,
     find_interval_table_reencoding_candidates,
     find_structured_scale_parameter_issue_records,
@@ -19412,6 +19412,36 @@ class _FailedEncodeAttempt(NamedTuple):
     error: str
 
 
+def _encode_validation_retry_feedback(
+    prior_attempts: Sequence[_FailedEncodeAttempt],
+) -> tuple[str, ...]:
+    """Return bounded, deduplicated validator guidance for the next attempt."""
+
+    feedback: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw_item: object) -> None:
+        if len(feedback) >= 12 or not isinstance(raw_item, str):
+            return
+        item = raw_item.strip()[:2000]
+        if not item or item in seen:
+            return
+        seen.add(item)
+        feedback.append(item)
+
+    for failed_attempt in reversed(prior_attempts):
+        add(failed_attempt.error)
+        metrics = getattr(failed_attempt.result, "metrics", None)
+        for attribute in ("compile_issues", "ci_issues"):
+            issues = getattr(metrics, attribute, ())
+            if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
+                for issue in issues:
+                    add(issue)
+        if len(feedback) >= 12:
+            break
+    return tuple(feedback)
+
+
 class _EncodeAttemptExecution(NamedTuple):
     result: Any
     outcome: dict[str, Any]
@@ -19868,6 +19898,7 @@ def _run_encode_attempt(
             if replacement_target is not None
             else None
         ),
+        validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
     )
 
     result = results[0]
@@ -28819,13 +28850,107 @@ def _source_excerpt_preserving_whitespace(
     parts = str(excerpt).split()
     if not parts:
         return None
-    matches: set[str] = set()
+    matches: list[str] = []
     pattern = r"\s+".join(re.escape(part) for part in parts)
     for segment in split_proof_evidence_text(source_text):
-        match = re.search(pattern, segment, flags=re.IGNORECASE)
-        if match is not None:
-            matches.add(segment[match.start() : match.end()].strip())
-    return next(iter(matches)) if len(matches) == 1 else None
+        matches.extend(
+            segment[match.start() : match.end()]
+            for match in re.finditer(pattern, segment, flags=re.IGNORECASE)
+        )
+    return matches[0] if len(matches) == 1 else None
+
+
+_PROOF_EXCERPT_CANONICAL_PUNCTUATION = {
+    "'": "'",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201a": "'",
+    "\u201b": "'",
+    '"': '"',
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u201e": '"',
+    "\u201f": '"',
+    "-": "-",
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2015": "-",
+    "\u2212": "-",
+    "*": "*",
+    "\u00b7": "*",
+    "\u2022": "*",
+    "\u2219": "*",
+    "\u22c5": "*",
+    "\u00d7": "*",
+}
+
+
+def _canonical_proof_excerpt_with_raw_coordinates(
+    value: str,
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Build a matching-only view while retaining exact source coordinates."""
+    canonical: list[str] = []
+    raw_coordinates: list[tuple[int, int]] = []
+    for raw_index, raw_character in enumerate(str(value)):
+        if raw_character.isspace() or unicodedata.category(raw_character) == "Cf":
+            continue
+        character = _PROOF_EXCERPT_CANONICAL_PUNCTUATION.get(
+            raw_character,
+            raw_character,
+        )
+        for normalized_character in unicodedata.normalize(
+            "NFD",
+            character.casefold(),
+        ):
+            if normalized_character.isspace() or unicodedata.category(
+                normalized_character
+            ) in {"Cf", "Mn"}:
+                continue
+            canonical.append(
+                _PROOF_EXCERPT_CANONICAL_PUNCTUATION.get(
+                    normalized_character,
+                    normalized_character,
+                )
+            )
+            raw_coordinates.append((raw_index, raw_index + 1))
+    return "".join(canonical), tuple(raw_coordinates)
+
+
+def _canonical_source_excerpt_matches(
+    *,
+    source_text: str,
+    excerpt: str,
+) -> tuple[str, ...]:
+    """Return every source span equivalent under narrow display normalization."""
+    canonical_query, _ = _canonical_proof_excerpt_with_raw_coordinates(excerpt)
+    if not canonical_query:
+        return ()
+    matches: list[str] = []
+    for segment in split_proof_evidence_text(source_text):
+        canonical_source, coordinates = _canonical_proof_excerpt_with_raw_coordinates(
+            segment
+        )
+        search_from = 0
+        while True:
+            match_start = canonical_source.find(canonical_query, search_from)
+            if match_start < 0:
+                break
+            match_end = match_start + len(canonical_query)
+            raw_start = coordinates[match_start][0]
+            raw_end = coordinates[match_end - 1][1]
+            while raw_end < len(segment) and unicodedata.category(segment[raw_end]) in {
+                "Cf",
+                "Mc",
+                "Me",
+                "Mn",
+            }:
+                raw_end += 1
+            matches.append(segment[raw_start:raw_end])
+            search_from = match_start + 1
+    return tuple(matches)
 
 
 def _try_repair_generated_nonexact_proof_excerpts_for_apply(
@@ -28928,6 +29053,7 @@ def _try_repair_generated_nonexact_proof_excerpts_for_apply(
                     source_text=source_text,
                     excerpt=excerpt,
                     numeric_profile=numeric_profile,
+                    require_all_query_numbers=not targets[target],
                 )
             if exact_excerpt is None or exact_excerpt == excerpt:
                 continue
@@ -29018,14 +29144,29 @@ def _closest_exact_source_excerpt(
     source_text: str,
     excerpt: str,
     numeric_profile: str = "legacy",
+    require_all_query_numbers: bool = True,
 ) -> str | None:
     source = str(source_text)
     query = re.sub(r"\s+", " ", str(excerpt)).strip()
     if not source or not query:
         return None
     segments = split_proof_evidence_text(source)
+    whitespace_pattern = r"\s+".join(re.escape(part) for part in query.split())
+    has_whitespace_match = any(
+        re.search(whitespace_pattern, segment, flags=re.IGNORECASE) is not None
+        for segment in segments
+    )
+    canonical_matches = _canonical_source_excerpt_matches(
+        source_text=source,
+        excerpt=query,
+    )
+    if len(canonical_matches) > 1:
+        return None
+    if not has_whitespace_match:
+        if canonical_matches:
+            return canonical_matches[0]
     if len(segments) > 1:
-        matches = {
+        matches = [
             candidate
             for segment in segments
             if (
@@ -29033,14 +29174,17 @@ def _closest_exact_source_excerpt(
                     source_text=segment,
                     excerpt=excerpt,
                     numeric_profile=numeric_profile,
+                    require_all_query_numbers=require_all_query_numbers,
                 )
             )
-        }
-        return next(iter(matches)) if len(matches) == 1 else None
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     candidates = _exact_source_excerpt_candidate_spans(source)
-    whitespace_pattern = r"\s+".join(re.escape(part) for part in query.split())
-    direct_match = re.search(whitespace_pattern, source, flags=re.IGNORECASE)
+    direct_matches = list(re.finditer(whitespace_pattern, source, flags=re.IGNORECASE))
+    if len(direct_matches) > 1:
+        return None
+    direct_match = direct_matches[0] if direct_matches else None
     if direct_match is not None:
         enclosing = [
             candidate
@@ -29070,7 +29214,10 @@ def _closest_exact_source_excerpt(
         return _safe_wrapped_direct_source_match(source, direct_match)
 
     query_tokens = _proof_excerpt_match_tokens(query)
-    query_numbers = set(extract_numbers_from_text(query, profile=numeric_profile))
+    query_numbers = _proof_excerpt_numeric_occurrence_counter(
+        query,
+        profile=numeric_profile,
+    )
     if _has_malformed_profiled_numeric_envelope(
         query,
         profile=numeric_profile,
@@ -29083,14 +29230,19 @@ def _closest_exact_source_excerpt(
         normalized_candidate = re.sub(r"\s+", " ", candidate.text).strip()
         candidate_tokens = _proof_excerpt_match_tokens(candidate.text)
         shared_tokens = query_tokens & candidate_tokens
-        candidate_numbers = set(
-            extract_numbers_from_text(
-                candidate.text,
-                profile=numeric_profile,
-            )
+        candidate_numbers = _proof_excerpt_numeric_occurrence_counter(
+            candidate.text,
+            profile=numeric_profile,
         )
         shared_numbers = query_numbers & candidate_numbers
-        if query_numbers and not shared_numbers:
+        if query_numbers and (
+            not (query_numbers & candidate_numbers)
+            if not require_all_query_numbers
+            else any(
+                candidate_numbers[value] < count
+                for value, count in query_numbers.items()
+            )
+        ):
             continue
         if len(shared_tokens) < 2 and not (shared_numbers and shared_tokens):
             continue
@@ -29102,18 +29254,27 @@ def _closest_exact_source_excerpt(
         token_coverage = len(shared_tokens) / max(1, len(query_tokens))
         if similarity < 0.55 and token_coverage < 0.6:
             continue
-        score = similarity + (1.25 * token_coverage) + (0.1 * len(shared_numbers))
+        score = (
+            similarity + (1.25 * token_coverage) + (0.1 * sum(shared_numbers.values()))
+        )
         scored.append((score, candidate))
     if not scored:
         return None
-    selected = max(
-        scored,
-        key=lambda item: (
+
+    def selection_key(
+        item: tuple[float, _SourceExcerptCandidate],
+    ) -> tuple[float, bool, int]:
+        return (
             item[0],
             item[1].kind == "paragraph",
             -len(re.sub(r"\s+", " ", item[1].text)),
-        ),
-    )[1]
+        )
+
+    best_key = max(selection_key(item) for item in scored)
+    best_candidates = [item[1] for item in scored if selection_key(item) == best_key]
+    if len({(candidate.start, candidate.end) for candidate in best_candidates}) > 1:
+        return None
+    selected = best_candidates[0]
     if selected.kind == "table_row":
         return selected.text
     return _governing_source_excerpt_candidate(
@@ -29121,6 +29282,28 @@ def _closest_exact_source_excerpt(
         candidates,
         allow_complete_conditional_fallback=True,
     )
+
+
+def _proof_excerpt_numeric_occurrence_counter(
+    text: str,
+    *,
+    profile: str,
+) -> Counter[float]:
+    """Count one source-facing numeric value per exact token coordinate."""
+    values_by_span: dict[tuple[int, int], float] = {}
+    for occurrence in extract_typed_numeric_occurrences_from_text(
+        text,
+        profile=profile,
+    ):
+        values_by_span.setdefault(
+            (occurrence.start, occurrence.end),
+            (
+                occurrence.value
+                if occurrence.source_value is None
+                else occurrence.source_value
+            ),
+        )
+    return Counter(values_by_span.values())
 
 
 def _safe_wrapped_direct_source_match(
@@ -48049,6 +48232,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=manifest.rulespec_dependency_roots,
             require_complete_source_unit=case.require_complete_source_unit,
+            amendment_documents=source_unit.amendment_documents,
         )
         validation_error = _eval_artifact_validation_error(
             result.metrics,

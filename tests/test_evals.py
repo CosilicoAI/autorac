@@ -6875,6 +6875,84 @@ class TestEvaluateArtifact:
             for issue in metrics.ci_issues
         )
 
+    def test_attached_amendment_value_stays_ungrounded_with_citation_hint(
+        self,
+        tmp_path,
+    ):
+        source_citation = "de/statute/solzg-1995/3"
+        source_text = "Die konsolidierte Freigrenze beträgt 40 700 Euro."
+        amendment_citation = (
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        amendment_source = (
+            "aa) In Nummer 1 wird die Angabe „36 260 Euro“ durch die Angabe "
+            "„39 900 Euro“ ersetzt."
+        )
+        rulespec_file = _generated_rulespec_file_path(
+            tmp_path,
+            "statutes/solzg-1995/3.yaml",
+        )
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/solzg-1995/3
+rules:
+  - name: exemption_threshold
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 39900
+""",
+            encoding="utf-8",
+        )
+        amendment = CorpusAmendmentDocument(
+            citation_path=amendment_citation,
+            title="Steuerfortentwicklungsgesetz – SteFeG",
+            expression_date="2024-12-23",
+            metadata={},
+            body=amendment_source,
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", passed=True),
+            ),
+        ):
+            metrics = evaluate_artifact(
+                local_corpus_release=_write_test_corpus_provision(
+                    tmp_path / "bound-release",
+                    citation_path=source_citation,
+                    body=source_text,
+                ),
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text=source_text,
+                source_citation_path=source_citation,
+                amendment_documents=(amendment,),
+                skip_reviewers=True,
+            )
+
+        assert not metrics.ci_pass
+        assert metrics.ungrounded_numeric_count == 1
+        amendment_issues = [
+            issue
+            for issue in metrics.ci_issues
+            if "Attached-amendment grounding hint" in issue
+        ]
+        assert len(amendment_issues) == 1
+        assert amendment_citation in amendment_issues[0]
+
     def test_evaluate_artifact_skips_reviewers_when_requested(self, tmp_path):
         rulespec_file = _generated_rulespec_file_path(tmp_path, "statutes/24/a.yaml")
         rulespec_file.write_text(
@@ -6919,6 +6997,47 @@ class TestEvaluateArtifact:
         assert metrics.generalist_review_pass
         assert metrics.generalist_review_score is None
         assert metrics.generalist_review_issues == []
+
+    def test_generated_eval_revalidation_keeps_attached_amendments(self, tmp_path):
+        amendment = CorpusAmendmentDocument(
+            citation_path=(
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+            ),
+            title="Steuerfortentwicklungsgesetz – SteFeG",
+            expression_date="2024-12-23",
+            metadata={},
+            body=(
+                "In § 3 Absatz 3 Satz 1 wird die Angabe „36 260 Euro“ durch "
+                "die Angabe „39 900 Euro“ ersetzt."
+            ),
+        )
+        metrics = SimpleNamespace(ci_issues=["repairable"])
+        with (
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                return_value=metrics,
+            ) as mock_evaluate,
+            patch(
+                "axiom_encode.harness.evals._apply_generated_eval_repairs",
+                return_value=["companion-test-repair"],
+            ),
+        ):
+            result = _evaluate_generated_artifact_with_repairs(
+                rulespec_file=tmp_path / "artifact.yaml",
+                policy_repo_root=tmp_path / "rulespec-de",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text="Source body",
+                local_corpus_release=object(),
+                require_complete_source_unit=True,
+                amendment_documents=(amendment,),
+            )
+
+        assert result is metrics
+        assert mock_evaluate.call_count == 2
+        assert all(
+            call.kwargs["amendment_documents"] == (amendment,)
+            for call in mock_evaluate.call_args_list
+        )
 
     def test_generated_eval_repairs_unreferenced_proof_imports(self, tmp_path):
         rulespec_file = tmp_path / "regulations" / "example.yaml"
@@ -7539,6 +7658,76 @@ rules:
         assert metrics.covered_source_numeric_occurrence_count == 1
         assert metrics.missing_source_numeric_occurrence_count == 1
         assert any("73" in issue for issue in metrics.numeric_occurrence_issues)
+
+    def test_complete_mode_typed_recall_excludes_stage_labels_but_demands_one_euro(
+        self,
+        tmp_path,
+    ):
+        citation_path = "de/statute/rbeg-2021/8"
+        source_text = (
+            "1. in der Regelbedarfsstufe 1 auf 446 Euro für jede erwachsene "
+            "Person. Ein Eigenanteil von 1 Euro wird verlangt."
+        )
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path=citation_path,
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "statutes/rbeg-2021/8.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/rbeg-2021/8
+rules:
+  - name: regelbedarfsstufe_one_amount
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2021-01-01'
+        formula: 446
+""",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(
+                ValidatorPipeline,
+                "_run_compile_check",
+                return_value=ValidationResult("compile", passed=True),
+            ),
+            patch.object(
+                ValidatorPipeline,
+                "_run_ci",
+                return_value=ValidationResult("ci", passed=True),
+            ),
+            patch(
+                "axiom_encode.harness.evals._numeric_occurrence_source_text",
+                side_effect=AssertionError(
+                    "complete-mode recall must use the typed raw-source path"
+                ),
+            ),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text=source_text,
+                local_corpus_release=corpus_release,
+                source_citation_path=citation_path,
+                require_complete_source_unit=True,
+                skip_reviewers=True,
+            )
+
+        assert metrics.source_numeric_occurrence_count == 2
+        assert metrics.covered_source_numeric_occurrence_count == 1
+        assert metrics.missing_source_numeric_occurrence_count == 1
+        assert metrics.numeric_occurrence_issues == [
+            "Source numeric value 1 appears 1 time(s), but only 0 named scalar "
+            "definition(s) with that value were found."
+        ]
 
     def test_complete_mode_numeric_recall_is_summary_invariant(self, tmp_path):
         source_text = "If the 3rd digit is 5 or more, increase the 2nd digit by 1."
@@ -19353,6 +19542,86 @@ rules: []
     mock_scope.assert_called_once_with(corpus_release)
 
 
+def test_evaluate_artifact_passes_exact_attached_amendment_sources(
+    tmp_path, monkeypatch
+):
+    source_citation_path = "de/statute/estg/66"
+    source_text = "Das Kindergeld beträgt monatlich für jedes Kind 259 Euro."
+    corpus_release = _write_test_corpus_provision(
+        tmp_path,
+        citation_path=source_citation_path,
+        body=source_text,
+    )
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "de")
+    rules_file = policy_repo / "statutes/estg/66.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(
+        """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/66
+rules: []
+""",
+        encoding="utf-8",
+    )
+    amendment_citation_path = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_body = (
+        "4. In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+        "„255 Euro“ ersetzt."
+    )
+    amendment = CorpusAmendmentDocument(
+        citation_path=amendment_citation_path,
+        title="Steuerfortentwicklungsgesetz – SteFeG",
+        expression_date="2024-12-23",
+        metadata={},
+        body=amendment_body,
+    )
+    observed_amendment_sources: list[dict[str, str] | None] = []
+    original_init = ValidatorPipeline.__init__
+
+    def recording_init(
+        pipeline,
+        *args,
+        amendment_source_texts=None,
+        **kwargs,
+    ):
+        observed_amendment_sources.append(amendment_source_texts)
+        original_init(
+            pipeline,
+            *args,
+            amendment_source_texts=amendment_source_texts,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(ValidatorPipeline, "__init__", recording_init)
+    monkeypatch.setattr(
+        ValidatorPipeline,
+        "_run_compile_check",
+        lambda _self, _path: ValidationResult("compile", passed=True),
+    )
+    monkeypatch.setattr(
+        ValidatorPipeline,
+        "_run_ci",
+        lambda _self, _path: ValidationResult("ci", passed=True),
+    )
+
+    evaluate_artifact(
+        rulespec_file=rules_file,
+        policy_repo_root=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        source_text=source_text,
+        skip_reviewers=True,
+        local_corpus_release=corpus_release,
+        source_citation_path=source_citation_path,
+        require_complete_source_unit=True,
+        amendment_documents=(amendment,),
+    )
+
+    assert observed_amendment_sources == [{amendment_citation_path: amendment_body}]
+
+
 class TestSourceEval:
     def test_run_model_eval_passes_validation_options_to_evaluate_artifact(
         self,
@@ -20276,7 +20545,10 @@ def _run_case_revalidation(
         corpus_citation_path="uk/statute/ukpga/1994/23/2",
         require_complete_source_unit=require_complete_source_unit,
     )
-    source_unit = SimpleNamespace(body="The rate of VAT is 20 percent.")
+    source_unit = SimpleNamespace(
+        body="The rate of VAT is 20 percent.",
+        amendment_documents=(),
+    )
     with (
         patch.object(
             evals_module, "resolve_corpus_source_unit", return_value=source_unit

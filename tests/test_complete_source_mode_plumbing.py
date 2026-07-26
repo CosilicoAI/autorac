@@ -96,6 +96,13 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert (
+        "encode both\n  values as separate grounded `kind: parameter` rules"
+        in complete_prompt
+    )
+    assert "calendar constants `12`, `52`, `365`, `4`, or `24`" in complete_prompt
+    assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
+    assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "missing dependency or citation" in complete_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
@@ -215,10 +222,52 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert (
+        "encode both\n  values as separate grounded `kind: parameter` rules"
+        in complete_prompt
+    )
+    assert "calendar constants `12`, `52`, `365`, `4`, or `24`" in complete_prompt
+    assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
+    assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
     )
+
+
+def test_eval_prompt_adds_prior_validation_feedback_only_when_supplied(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("The annual amount is 73 800.")
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+    )
+    kwargs = {
+        "citation": "de/regulation/example/1",
+        "mode": "cold",
+        "workspace": workspace,
+        "context_files": [],
+        "target_file_name": "1.yaml",
+        "include_tests": True,
+        "runner_backend": "openai",
+    }
+    feedback = (
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text. Complete-source "
+        "stated-conversion hint: encode separate grounded parameters.",
+    )
+
+    default_prompt = evals._build_eval_prompt(**kwargs)
+    retry_prompt = evals._build_eval_prompt(
+        **kwargs,
+        validation_retry_feedback=feedback,
+    )
+
+    assert "PRIOR VALIDATION FEEDBACK" not in default_prompt
+    assert "PRIOR VALIDATION FEEDBACK" in retry_prompt
+    assert "repair guidance from the validator, not legal authority" in retry_prompt
+    assert feedback[0] in retry_prompt
 
 
 def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
@@ -243,11 +292,15 @@ def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
             corpus_release=object(),
             include_tests=False,
             require_complete_source_unit=True,
+            validation_retry_feedback=("prior validator issue",),
         )
 
     assert actual == [result]
     assert run_single.call_args.kwargs["include_tests"] is True
     assert run_single.call_args.kwargs["require_complete_source_unit"] is True
+    assert run_single.call_args.kwargs["validation_retry_feedback"] == (
+        "prior validator issue",
+    )
 
 
 def test_repair_revalidation_keeps_complete_mode(tmp_path):

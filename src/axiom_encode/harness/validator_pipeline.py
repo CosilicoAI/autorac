@@ -116,9 +116,19 @@ from .proof_validator import (
 from .source_completeness import (
     analyze_complete_source_unit,
     collect_artifact_numeric_bindings,
+    source_states_stated_conversion_result,
 )
 
 logger = logging.getLogger(__name__)
+
+_STATED_CONVERSION_CALENDAR_CONSTANTS = frozenset({4.0, 12.0, 24.0, 52.0, 365.0})
+_STATED_CONVERSION_UNGROUNDED_HINT = (
+    "Complete-source stated-conversion hint: encode the source-stated base and "
+    "converted result as separate grounded `kind: parameter` rules (for example, "
+    "annual and monthly amounts); do not derive one with an ungrounded calendar "
+    "constant. Assert both parameter outputs and their stated arithmetic relation "
+    "in companion tests."
+)
 
 _SENSITIVE_ENV_NAME_MARKERS = (
     "AUTH",
@@ -1688,6 +1698,7 @@ _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN = re.compile(
     r"\bpercent\b|"
     r"\bper[ \t-]+cent(?:um)?\b|"
     r"\bProzent\b|"
+    r"\b(?:Beitragssatz|Prozent)punkt(?:e|en|es|s)?\b|"
     r"\bvom[ \t]+Hundert\b"
     r")",
     re.IGNORECASE,
@@ -1697,6 +1708,7 @@ _TABLE_RATE_HEADER_PATTERN = re.compile(
     r"\bpercent(?:age)?\b|"
     r"\bper[ \t-]+cent(?:um)?\b|"
     r"\bProzent\b|"
+    r"\b(?:Beitragssatz|Prozent)punkt(?:e|en|es|s)?\b|"
     r"\bvom[ \t]+Hundert\b"
     r")",
     re.IGNORECASE,
@@ -1765,6 +1777,38 @@ _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
     rf"from|since|until|effective\s+from)\s+"
     rf"(?P<year>{_TEMPORAL_YEAR_BODY}){_TEMPORAL_YEAR_END}",
     re.IGNORECASE,
+)
+_GERMAN_STRUCTURAL_LABEL_PATTERN = re.compile(
+    r"\b(?:Regelbedarfsstufe(?:n)?|Stufe(?:n)?|Anlage(?:n)?)\s+"
+    r"\d+[a-z]?(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*",
+    re.IGNORECASE,
+)
+_GERMAN_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    r"(?:§{1,2}\s*|"
+    r"\b(?:Artikel(?:s|n)?|Art\.|Absatz(?:es)?|Absätze(?:n)?|Abs\.|"
+    r"Satz(?:es)?|Sätze(?:n)?|Nummer(?:n)?|Nr\.)\s*)"
+    r"\d+[a-z]?(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*",
+    re.IGNORECASE,
+)
+_ENGLISH_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    r"\b(?:articles?|sections?|secs?\.?|subsections?|paragraphs?|"
+    r"regs?\.?|regulations?)"
+    r"\s+\d+(?:\.\d+)*(?:\s*(?:,|and|through|to|[-–—])\s*"
+    r"\d+(?:\.\d+)*)*",
+    re.IGNORECASE,
+)
+_ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN = re.compile(
+    r"\b(?:2nd|3rd)\s+digit\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?:"
+    r"\(\d+[a-z]?\)(?:[ \t]+bis[ \t]+\(\d+[a-z]?\))?"
+    r"|\d+[a-z]?\.)",
+    re.IGNORECASE,
+)
+_STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN = re.compile(
+    r"(?<![\w])(?:[1-9]\d?)(?=[A-ZÄÖÜ])"
 )
 _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
     r"(?:[$£€¥₹]|(?:euros?|eur|usd|gbp|cad|aud|chf)\b)\s*$",
@@ -1862,8 +1906,11 @@ class NumericOccurrence:
     raw: str
     has_rate_context: bool = False
     has_temporal_context: bool = False
+    has_structural_context: bool = False
     source_value: float | None = None
     requires_rate_context: bool = False
+    is_word_number: bool = False
+    alternative_values: tuple[float, ...] = ()
 
     @property
     def span(self) -> tuple[int, int]:
@@ -5741,11 +5788,15 @@ class _LegacyNumericCollector:
     rate_table_cell_spans: tuple[tuple[int, int], ...] = field(init=False)
     shared_rate_spans: tuple[tuple[int, int], ...] = field(init=False)
     temporal_component_spans: tuple[tuple[int, int], ...] = field(init=False)
+    structural_component_spans: tuple[tuple[int, int], ...] = field(init=False)
     money_spans: tuple[tuple[int, int], ...] = field(init=False)
 
     def __post_init__(self) -> None:
         self.rate_table_cell_spans = _pipe_table_rate_cell_spans(self.source)
         self.temporal_component_spans = _temporal_numeric_component_spans(self.source)
+        self.structural_component_spans = _structural_numeric_component_spans(
+            self.source
+        )
         money_spans = {
             span for span, _value in _iter_raw_european_money_value_matches(self.source)
         }
@@ -5790,6 +5841,8 @@ class _LegacyNumericCollector:
         source_value: float | None = None,
         force_rate_context: bool = False,
         requires_rate_context: bool = False,
+        is_word_number: bool = False,
+        alternative_values: tuple[float, ...] = (),
     ) -> NumericOccurrence:
         source_span = view.source_span(span)
         start, end = source_span
@@ -5830,6 +5883,14 @@ class _LegacyNumericCollector:
                 for temporal_start, temporal_end in self.temporal_component_spans
             )
         )
+        has_structural_context = (
+            not has_rate_context
+            and not has_money_context
+            and any(
+                start >= structural_start and end <= structural_end
+                for structural_start, structural_end in self.structural_component_spans
+            )
+        )
         return NumericOccurrence(
             value=value,
             start=start,
@@ -5837,8 +5898,11 @@ class _LegacyNumericCollector:
             raw=self.source[start:end],
             has_rate_context=has_rate_context,
             has_temporal_context=has_temporal_context,
+            has_structural_context=has_structural_context,
             source_value=value if source_value is None else source_value,
             requires_rate_context=requires_rate_context,
+            is_word_number=is_word_number,
+            alternative_values=alternative_values,
         )
 
     def add_grounding(
@@ -5874,7 +5938,7 @@ _LOCALE_UNARY_PREFIXES = frozenset(
     "\u2264"  # less than or equal
     "\u2265"  # greater than or equal
 )
-_GERMAN_LEXICAL_SCALE_VALUES = {
+_GERMAN_FRACTION_DENOMINATOR_VALUES = {
     "Einhundertzwanzigstel": 120.0,
     "Dreihundertsechzigstel": 360.0,
     "Vierhundertfünfzigstel": 450.0,
@@ -5901,17 +5965,158 @@ _GERMAN_LEXICAL_SCALE_VALUES = {
     "Drittel": 3.0,
     "Zehntel": 10.0,
     "Achtel": 8.0,
+    "Hälfte": 2.0,
 }
-_GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD = {
-    word.casefold(): value for word, value in _GERMAN_LEXICAL_SCALE_VALUES.items()
+_GERMAN_FRACTION_DENOMINATOR_VALUES_CASEFOLD = {
+    word.casefold(): value
+    for word, value in _GERMAN_FRACTION_DENOMINATOR_VALUES.items()
 }
-_GERMAN_LEXICAL_SCALE_PATTERN = re.compile(
-    r"(?<!\w)(?P<denominator>"
+_GERMAN_FRACTION_WORD_PATTERN = re.compile(
+    r"(?<!\w)(?P<fraction>"
     + "|".join(
         re.escape(word)
-        for word in sorted(_GERMAN_LEXICAL_SCALE_VALUES, key=len, reverse=True)
+        for word in sorted(
+            _GERMAN_FRACTION_DENOMINATOR_VALUES,
+            key=len,
+            reverse=True,
+        )
     )
-    + r")(?:n)?(?!\w)",
+    + r")(?:n|s)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_QUANTITATIVE_CARDINAL_VALUES = {
+    "null": 0.0,
+    "zwei": 2.0,
+    "drei": 3.0,
+    "vier": 4.0,
+    "fünf": 5.0,
+    "sechs": 6.0,
+    "sieben": 7.0,
+    "acht": 8.0,
+    "neun": 9.0,
+    "zehn": 10.0,
+    "elf": 11.0,
+    "zwölf": 12.0,
+    "dreißig": 30.0,
+    "dreihundertsechzig": 360.0,
+}
+_GERMAN_QUANTITATIVE_CARDINAL_VALUES_CASEFOLD = {
+    word.casefold(): value
+    for word, value in _GERMAN_QUANTITATIVE_CARDINAL_VALUES.items()
+}
+_GERMAN_QUANTITATIVE_CARDINAL_BODY = "|".join(
+    re.escape(word)
+    for word in sorted(_GERMAN_QUANTITATIVE_CARDINAL_VALUES, key=len, reverse=True)
+)
+_GERMAN_FRACTION_NUMERATOR_CARDINAL_BODY = "|".join(
+    re.escape(word)
+    for word in sorted(
+        (
+            word
+            for word, value in _GERMAN_QUANTITATIVE_CARDINAL_VALUES.items()
+            if value != 1
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+_GERMAN_QUANTITATIVE_UNIT_BODY = (
+    r"(?:[A-Za-zÄÖÜäöüß]+)?"
+    r"(?:stunde|stunden|tag|tage|tagen|woche|wochen|monat|monate|monaten|"
+    r"jahr|jahre|jahren|teil|teile|teilen|kind|kinder|kindern|person|"
+    r"personen|partner|partnern|monatswert|monatswerte|monatswerten|"
+    r"haushaltsmitglied|haushaltsmitglieder|haushaltsmitgliedern|euro|prozent)"
+)
+_GERMAN_CARDINAL_BEFORE_UNIT_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)"
+    rf"(?=[ \t]+{_GERMAN_QUANTITATIVE_UNIT_BODY}\b)",
+    re.IGNORECASE,
+)
+_GERMAN_CARDINAL_BEFORE_MODIFIED_UNIT_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)"
+    rf"(?=[ \t]+zu[ \t]+berücksichtigende[ \t]+"
+    rf"{_GERMAN_QUANTITATIVE_UNIT_BODY}\b)",
+    re.IGNORECASE,
+)
+_GERMAN_CARDINAL_BEFORE_FRACTION_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_FRACTION_NUMERATOR_CARDINAL_BODY})(?!\w)"
+    r"(?=[ \t]+(?:"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(
+            _GERMAN_FRACTION_DENOMINATOR_VALUES,
+            key=len,
+            reverse=True,
+        )
+    )
+    + r")(?:n|s)?(?!\w))",
+    re.IGNORECASE,
+)
+_GERMAN_PRORATION_CARDINAL_PATTERN = re.compile(
+    rf"\b(?:Woche|Monat|Jahr)\s+zu[ \t]+"
+    rf"(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_DIVISOR_CARDINAL_PATTERN = re.compile(
+    rf"\bdurch[ \t]+(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})"
+    r"(?!\w)[ \t]+geteilt\b",
+    re.IGNORECASE,
+)
+_GERMAN_MULTIPLIER_VALUES = {
+    "ein": 1.0,
+    "zwei": 2.0,
+    "drei": 3.0,
+    "vier": 4.0,
+    "fünf": 5.0,
+    "sechs": 6.0,
+    "sieben": 7.0,
+    "acht": 8.0,
+    "neun": 9.0,
+    "zehn": 10.0,
+    "elf": 11.0,
+    "zwölf": 12.0,
+}
+_GERMAN_MULTIPLIER_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_MULTIPLIER_VALUES.items()
+}
+_GERMAN_WORD_MULTIPLIER_PATTERN = re.compile(
+    r"(?<!\w)(?P<multiplier>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_MULTIPLIER_VALUES, key=len, reverse=True)
+    )
+    + r")(?:-)?fache(?:n|r|s|m)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_DOUBLE_MULTIPLIER_PATTERN = re.compile(
+    r"(?<!\w)doppelt(?:e|en|er|es|em)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_ORDINAL_PART_VALUES = {
+    "erste": 1.0,
+    "zweite": 2.0,
+    "dritte": 3.0,
+    "vierte": 4.0,
+    "fünfte": 5.0,
+    "sechste": 6.0,
+    "siebte": 7.0,
+    "achte": 8.0,
+    "neunte": 9.0,
+    "zehnte": 10.0,
+    "elfte": 11.0,
+    "zwölfte": 12.0,
+}
+_GERMAN_ORDINAL_PART_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_ORDINAL_PART_VALUES.items()
+}
+_GERMAN_ORDINAL_PART_PATTERN = re.compile(
+    r"\b(?:der|die|das|den|dem|des|ein(?:e[nsrm]?)?)\s+"
+    r"(?P<ordinal>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_ORDINAL_PART_VALUES, key=len, reverse=True)
+    )
+    + r")(?:n|r|s|m)?\s+Teil(?:s|e|en)?\b",
     re.IGNORECASE,
 )
 
@@ -6169,6 +6374,25 @@ def _temporal_numeric_component_spans(
     return tuple(sorted(spans))
 
 
+def _structural_numeric_component_spans(
+    text: str,
+) -> tuple[tuple[int, int], ...]:
+    """Classify source spans whose numbers are only legal structural labels."""
+    spans = {
+        match.span()
+        for pattern in (
+            _GERMAN_STRUCTURAL_LABEL_PATTERN,
+            _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
+            _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
+            _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
+            _STRUCTURAL_LINE_MARKER_PATTERN,
+            _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
+        )
+        for match in pattern.finditer(text)
+    }
+    return tuple(sorted(spans))
+
+
 def _has_malformed_profiled_numeric_envelope(
     text: str,
     *,
@@ -6187,12 +6411,124 @@ def _has_malformed_profiled_numeric_envelope(
     )
 
 
-def _non_temporal_numeric_inventory(
+def _german_word_number_occurrences(
+    cleaned: str,
+    *,
+    view: _NumericTextView,
+    collector: _LegacyNumericCollector,
+) -> tuple[list[NumericOccurrence], list[NumericOccurrence]]:
+    """Extract German word-number candidates and one recall item per phrase."""
+
+    grounding: list[NumericOccurrence] = []
+    inventory: list[NumericOccurrence] = []
+
+    def add_unambiguous(span: tuple[int, int], value: float) -> None:
+        occurrence = collector.occurrence(
+            view,
+            span,
+            value,
+            is_word_number=True,
+        )
+        grounding.append(occurrence)
+
+    def add_fraction_alternatives(
+        span: tuple[int, int],
+        denominator: float,
+        *,
+        fraction_is_primary: bool = False,
+        include_in_inventory: bool = True,
+    ) -> None:
+        reciprocal = 1.0 / denominator
+        denominator_occurrence = collector.occurrence(
+            view,
+            span,
+            denominator,
+            is_word_number=True,
+            alternative_values=(reciprocal,),
+        )
+        reciprocal_occurrence = collector.occurrence(
+            view,
+            span,
+            reciprocal,
+            is_word_number=True,
+            alternative_values=(denominator,),
+        )
+        alternatives = (
+            (reciprocal_occurrence, denominator_occurrence)
+            if fraction_is_primary
+            else (denominator_occurrence, reciprocal_occurrence)
+        )
+        grounding.extend(alternatives)
+        # Complete-source recall treats the two readings as alternatives for one
+        # lexical occurrence rather than demanding two named scalar definitions.
+        if include_in_inventory:
+            inventory.append(alternatives[0])
+
+    for match in _GERMAN_FRACTION_WORD_PATTERN.finditer(cleaned):
+        normalized_fraction = match.group("fraction").casefold()
+        denominator = _GERMAN_FRACTION_DENOMINATOR_VALUES_CASEFOLD.get(
+            normalized_fraction
+        )
+        if denominator is not None:
+            add_fraction_alternatives(
+                match.span(),
+                denominator,
+                fraction_is_primary=normalized_fraction == "hälfte".casefold(),
+                include_in_inventory=normalized_fraction != "hälfte".casefold(),
+            )
+
+    seen_cardinal_spans: set[tuple[int, int]] = set()
+    for pattern in (
+        _GERMAN_CARDINAL_BEFORE_UNIT_PATTERN,
+        _GERMAN_CARDINAL_BEFORE_MODIFIED_UNIT_PATTERN,
+        _GERMAN_CARDINAL_BEFORE_FRACTION_PATTERN,
+        _GERMAN_PRORATION_CARDINAL_PATTERN,
+        _GERMAN_DIVISOR_CARDINAL_PATTERN,
+    ):
+        for match in pattern.finditer(cleaned):
+            span = match.span("cardinal")
+            if span in seen_cardinal_spans:
+                continue
+            value = _GERMAN_QUANTITATIVE_CARDINAL_VALUES_CASEFOLD.get(
+                match.group("cardinal").casefold()
+            )
+            if value is None:
+                continue
+            add_unambiguous(span, value)
+            seen_cardinal_spans.add(span)
+
+    for match in _GERMAN_WORD_MULTIPLIER_PATTERN.finditer(cleaned):
+        value = _GERMAN_MULTIPLIER_VALUES_CASEFOLD.get(
+            match.group("multiplier").casefold()
+        )
+        if value is not None:
+            add_unambiguous(match.span(), value)
+    for match in _GERMAN_DOUBLE_MULTIPLIER_PATTERN.finditer(cleaned):
+        add_unambiguous(match.span(), 2.0)
+
+    for match in _GERMAN_ORDINAL_PART_PATTERN.finditer(cleaned):
+        denominator = _GERMAN_ORDINAL_PART_VALUES_CASEFOLD.get(
+            match.group("ordinal").casefold()
+        )
+        if denominator is not None:
+            add_fraction_alternatives(
+                match.span("ordinal"),
+                denominator,
+                fraction_is_primary=True,
+                include_in_inventory=False,
+            )
+
+    return grounding, inventory
+
+
+def _scalar_recall_numeric_inventory(
     occurrences: Iterable[NumericOccurrence],
 ) -> tuple[NumericOccurrence, ...]:
     """Project typed grounding evidence into scalar-recall obligations."""
     return tuple(
-        occurrence for occurrence in occurrences if not occurrence.has_temporal_context
+        occurrence
+        for occurrence in occurrences
+        if not occurrence.has_temporal_context and not occurrence.has_structural_context
     )
 
 
@@ -6263,7 +6599,8 @@ def _tokenize_profiled_numeric_occurrences(
     cleaned = _clean_source_text_for_numeric_extraction(text)
     view = _NumericTextView.aligned(text, cleaned)
     collector = _LegacyNumericCollector(text)
-    occurrences: list[NumericOccurrence] = []
+    grounding_occurrences: list[NumericOccurrence] = []
+    inventory_occurrences: list[NumericOccurrence] = []
 
     for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
         if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
@@ -6271,21 +6608,34 @@ def _tokenize_profiled_numeric_occurrences(
         value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
         if value is None:
             continue
-        occurrences.append(collector.occurrence(view, span, value))
+        occurrence = collector.occurrence(view, span, value)
+        grounding_occurrences.append(occurrence)
+        inventory_occurrences.append(occurrence)
 
     if profile == "de-DE":
-        for match in _GERMAN_LEXICAL_SCALE_PATTERN.finditer(cleaned):
-            value = _GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD.get(
-                match.group("denominator").casefold()
-            )
-            if value is not None:
-                occurrences.append(collector.occurrence(view, match.span(), value))
+        word_grounding, word_inventory = _german_word_number_occurrences(
+            cleaned,
+            view=view,
+            collector=collector,
+        )
+        grounding_occurrences.extend(word_grounding)
+        inventory_occurrences.extend(word_inventory)
 
-    occurrences = list(_complete_typed_year_occurrences(collector, occurrences))
-    occurrences.sort(key=lambda occurrence: (occurrence.start, occurrence.end))
+    grounding_occurrences = list(
+        _complete_typed_year_occurrences(collector, grounding_occurrences)
+    )
+    inventory_occurrences = list(
+        _complete_typed_year_occurrences(collector, inventory_occurrences)
+    )
+    grounding_occurrences.sort(
+        key=lambda occurrence: (occurrence.start, occurrence.end)
+    )
+    inventory_occurrences.sort(
+        key=lambda occurrence: (occurrence.start, occurrence.end)
+    )
     return _NumericTokenization(
-        grounding=tuple(occurrences),
-        inventory=_non_temporal_numeric_inventory(occurrences),
+        grounding=tuple(grounding_occurrences),
+        inventory=_scalar_recall_numeric_inventory(inventory_occurrences),
     )
 
 
@@ -6902,7 +7252,7 @@ def _tokenize_numeric_occurrences_from_text(
         _complete_typed_year_occurrences(collector, collector.inventory)
     )
     occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
-    normalized_inventory = _non_temporal_numeric_inventory(
+    normalized_inventory = _scalar_recall_numeric_inventory(
         occurrence
         for occurrence in collector.inventory
         if not (
@@ -7162,6 +7512,51 @@ def _numeric_value_grounded_in_source(
     )
 
 
+def _attached_amendment_citations_for_numeric_value(
+    value: float,
+    amendment_source_texts: Mapping[str, str] | None,
+) -> tuple[str, ...]:
+    """Return exact attached citations containing ``value`` as typed evidence."""
+    if not amendment_source_texts:
+        return ()
+    matches: list[str] = []
+    for raw_citation_path, source_text in sorted(amendment_source_texts.items()):
+        if not isinstance(raw_citation_path, str) or not isinstance(source_text, str):
+            continue
+        with contextlib.suppress(InvalidCorpusCitationError):
+            citation_path = require_canonical_corpus_citation_path(raw_citation_path)
+            if _source_text_contains_numeric_value_equivalent(
+                source_text,
+                value,
+                profile=_numeric_profile_for_citation_path(citation_path),
+            ):
+                matches.append(citation_path)
+    return tuple(matches)
+
+
+def _attached_amendment_ungrounded_literal_hint(
+    value: float,
+    amendment_source_texts: Mapping[str, str] | None,
+) -> str:
+    """Point retries to attached evidence while leaving the value ungrounded."""
+    citations = _attached_amendment_citations_for_numeric_value(
+        value,
+        amendment_source_texts,
+    )
+    if not citations:
+        return ""
+    citation_display = ", ".join(f"`{citation}`" for citation in citations)
+    return (
+        " Attached-amendment grounding hint: this value appears in attached "
+        f"corpus document {citation_display}, but the attachment alone does not "
+        "ground it. Add a source proof atom to the owning scalar/formula with "
+        "the exact owning literal `path` (for a scalar parameter, for example, "
+        "`path: versions[0].formula`), an appropriate `kind`, and nested "
+        f"`source: {{corpus_citation_path: {citations[0]}, excerpt: <exact "
+        "verbatim source span>}}`."
+    )
+
+
 def _ungrounded_from_values(
     grounding_values: Sequence[tuple[int, str, float]],
     source: str,
@@ -7301,6 +7696,8 @@ def find_ungrounded_numeric_issues(
     *,
     authoritative_source_text: str | None = None,
     source_citation_path: str | None = None,
+    require_complete_source_unit: bool = False,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Return issues for generated numeric literals absent from source text."""
     grounding_values = extract_grounding_values(content)
@@ -7328,11 +7725,56 @@ def find_ungrounded_numeric_issues(
         if grounded:
             continue
         display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        hint = _stated_conversion_ungrounded_literal_hint(
+            content,
+            source,
+            value,
+            source_citation_path=source_citation_path,
+            require_complete_source_unit=require_complete_source_unit,
+        )
+        amendment_hint = _attached_amendment_ungrounded_literal_hint(
+            value,
+            amendment_source_texts,
+        )
         issues.append(
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
+            f"{hint}{amendment_hint}"
         )
     return issues
+
+
+def _stated_conversion_ungrounded_literal_hint(
+    content: str,
+    source_text: str,
+    value: float,
+    *,
+    source_citation_path: str | None,
+    require_complete_source_unit: bool,
+) -> str:
+    """Return targeted retry guidance for a complete-mode calendar conversion."""
+
+    if (
+        not require_complete_source_unit
+        or value not in _STATED_CONVERSION_CALENDAR_CONSTANTS
+        or not source_states_stated_conversion_result(source_text)
+    ):
+        return ""
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    citation_path = _module_numeric_citation_path(payload)
+    if not isinstance(citation_path, str) or not citation_path.strip():
+        return ""
+    if (
+        source_citation_path is not None
+        and citation_path.strip() != source_citation_path.strip()
+    ):
+        return ""
+    return f" {_STATED_CONVERSION_UNGROUNDED_HINT}"
 
 
 def evaluate_numeric_grounding_values_scoped(
@@ -7479,6 +7921,8 @@ def find_ungrounded_numeric_issues_scoped(
     module_citation_path: str | None = None,
     proof_source_texts: Mapping[str, str | None] | None = None,
     require_body_bound_proof_evidence: bool = True,
+    require_complete_source_unit: bool = False,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Ground each rule's literals against the provisions that rule actually cites.
 
@@ -7505,6 +7949,8 @@ def find_ungrounded_numeric_issues_scoped(
             content,
             source_text=module_source_text,
             source_citation_path=module_citation_path,
+            require_complete_source_unit=require_complete_source_unit,
+            amendment_source_texts=amendment_source_texts,
         )
 
     if not extract_grounding_values(content):
@@ -7548,9 +7994,21 @@ def find_ungrounded_numeric_issues_scoped(
         if grounded:
             continue
         display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        stated_conversion_hint = _stated_conversion_ungrounded_literal_hint(
+            content,
+            module_source,
+            value,
+            source_citation_path=module_citation_path,
+            require_complete_source_unit=require_complete_source_unit,
+        )
+        amendment_hint = _attached_amendment_ungrounded_literal_hint(
+            value,
+            amendment_source_texts,
+        )
         issue = (
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
+            f"{stated_conversion_hint}{amendment_hint}"
         )
         if issue not in seen:
             seen.add(issue)
@@ -22843,12 +23301,15 @@ def numeric_value_is_grounded(
     evidence; an unrelated integer can never authorize the conversion.
     """
     for occurrence in source_occurrences:
-        source_value = occurrence.value
-        if math.isclose(
-            value,
-            source_value,
-            rel_tol=0,
-            abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+        source_values = (occurrence.value, *occurrence.alternative_values)
+        if any(
+            math.isclose(
+                value,
+                source_value,
+                rel_tol=0,
+                abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+            )
+            for source_value in source_values
         ) and not (
             occurrence.requires_rate_context and not occurrence.has_rate_context
         ):
@@ -22860,7 +23321,7 @@ def numeric_value_is_grounded(
                 value * 100,
                 occurrence.source_value
                 if occurrence.source_value is not None
-                else source_value,
+                else occurrence.value,
                 rel_tol=0,
                 abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
             )
@@ -23403,6 +23864,7 @@ class ValidatorPipeline:
         source_text: str | None = None,
         source_metadata: dict[str, object] | None = None,
         source_citation_path: str | None = None,
+        amendment_source_texts: Mapping[str, str] | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
         validation_staging_root: Path | None = None,
     ):
@@ -23471,6 +23933,18 @@ class ValidatorPipeline:
             if source_citation_path is not None
             else None
         )
+        if amendment_source_texts is None:
+            amendment_source_texts = {}
+        if not isinstance(amendment_source_texts, Mapping):
+            raise TypeError("amendment_source_texts must be a mapping when provided")
+        self.amendment_source_texts: dict[str, str] = {}
+        for raw_citation_path, raw_source_text in amendment_source_texts.items():
+            if not isinstance(raw_citation_path, str):
+                raise TypeError("amendment source citation paths must be strings")
+            if not isinstance(raw_source_text, str):
+                raise TypeError("amendment source bodies must be strings")
+            citation_path = require_canonical_corpus_citation_path(raw_citation_path)
+            self.amendment_source_texts[citation_path] = raw_source_text
         source_attestation = (
             self.source_metadata.get("source_attestation")
             if isinstance(self.source_metadata, dict)
@@ -24665,6 +25139,85 @@ class ValidatorPipeline:
         """Format a scalar value spec with its kind for failure messages."""
         return f"{value.get('kind')} {value.get('value')}"
 
+    def _complete_mode_effective_version_mismatch_hint(
+        self,
+        *,
+        expected_scalar: dict[str, Any],
+        actual_scalar: dict[str, Any],
+        period: Mapping[str, Any] | None,
+    ) -> str:
+        """Steer amendment-backed mismatches toward distinct effective versions."""
+        if (
+            not self.require_complete_source_unit
+            or not self.amendment_source_texts
+            or not self.source_text
+            or period is None
+        ):
+            return ""
+        numeric_kinds = {"integer", "decimal"}
+        if (
+            expected_scalar.get("kind") not in numeric_kinds
+            or actual_scalar.get("kind") not in numeric_kinds
+        ):
+            return ""
+        try:
+            expected_value = float(self._rulespec_decimal(expected_scalar.get("value")))
+            actual_value = float(self._rulespec_decimal(actual_scalar.get("value")))
+        except (ValueError, OverflowError):
+            return ""
+        if not math.isfinite(expected_value) or not math.isfinite(actual_value):
+            return ""
+        source_profile = _numeric_profile_for_citation_path(self.source_citation_path)
+        if _source_text_contains_numeric_value_equivalent(
+            self.source_text,
+            expected_value,
+            profile=source_profile,
+        ) or not _source_text_contains_numeric_value_equivalent(
+            self.source_text,
+            actual_value,
+            profile=source_profile,
+        ):
+            return ""
+        citations = _attached_amendment_citations_for_numeric_value(
+            expected_value,
+            self.amendment_source_texts,
+        )
+        if not citations:
+            return ""
+
+        citation_display = ", ".join(f"`{citation}`" for citation in citations)
+        period_start = str(period.get("start") or "")
+        year_match = re.match(r"(?P<year>\d{4})-", period_start)
+        version_shape = (
+            f"`{expected_value:g}` for the test period beginning {period_start} "
+            f"and `{actual_value:g}` as the later consolidated value"
+        )
+        if year_match is not None:
+            period_year = int(year_match.group("year"))
+            next_year = period_year + 1
+            matching_amendment_text = "\n".join(
+                self.amendment_source_texts[citation] for citation in citations
+            )
+            if re.search(
+                rf"(?<!\d){period_year}(?!\d)",
+                matching_amendment_text,
+            ) and re.search(
+                rf"(?<!\d){next_year}(?!\d)",
+                matching_amendment_text,
+            ):
+                version_shape = (
+                    f"`{expected_value:g}` for {period_year} from the amendment "
+                    f"and `{actual_value:g}` for the {next_year} consolidated version"
+                )
+
+        return (
+            " Complete-source effective-version hint: the expected value appears "
+            f"in attached amendment document {citation_display}, while the actual "
+            "value appears in the authoritative consolidated source. Encode dual "
+            f"effective versions—{version_shape}—and give each version a source "
+            "proof atom citing its own authoritative document."
+        )
+
     def _compare_rulespec_output(
         self,
         *,
@@ -24672,6 +25225,7 @@ class ValidatorPipeline:
         output_name: str,
         expected_value: Any,
         actual_output: Any,
+        period: Mapping[str, Any] | None = None,
     ) -> str | None:
         """Compare a single expected output; return an issue string on mismatch."""
         if isinstance(expected_value, list):
@@ -24700,6 +25254,7 @@ class ValidatorPipeline:
                     output_name=output_name,
                     expected_value=expected_item,
                     actual_output=actual_item,
+                    period=period,
                 )
                 if mismatch:
                     return f"{mismatch} (row #{row_index})"
@@ -24750,10 +25305,15 @@ class ValidatorPipeline:
                 expected_value = Decimal(expected_numeric_text)
         expected_scalar = self._rulespec_expected_scalar_value(expected_value)
         if not self._rulespec_scalar_values_equal(actual_scalar, expected_scalar):
-            return (
+            mismatch = (
                 f"Test case `{case_name}` output `{output_name}` expected "
                 f"{self._format_rulespec_scalar_value(expected_scalar)}, got "
                 f"{self._format_rulespec_actual_value(actual_output)}."
+            )
+            return mismatch + self._complete_mode_effective_version_mismatch_hint(
+                expected_scalar=expected_scalar,
+                actual_scalar=actual_scalar,
+                period=period,
             )
         return None
 
@@ -25162,6 +25722,7 @@ class ValidatorPipeline:
                     output_name=output_key,
                     expected_value=expected_value,
                     actual_output=actual_output,
+                    period=period,
                 )
                 if mismatch:
                     issues.append(mismatch)
@@ -25225,14 +25786,19 @@ class ValidatorPipeline:
         # (module source ∪ its own proof-atom sources), not the single
         # module-level source: a benefit/tax module legitimately draws its
         # rate, thresholds, and conversions from several provisions of one Act.
-        # When an explicit override source is supplied, keep single-source
-        # behavior for that caller.
-        if self.source_text is not None:
+        # When an explicit override source is supplied without amendment
+        # context, keep single-source behavior for that caller. Attached
+        # amendments remain hint-only unless an owning proof atom cites them;
+        # when attachments exist, scoped grounding is required so a valid
+        # citation can resolve and ground that exact literal path.
+        if self.source_text is not None and not self.amendment_source_texts:
             issues.extend(
                 find_ungrounded_numeric_issues(
                     content,
                     source_text=validation_source_text,
                     source_citation_path=self.source_citation_path,
+                    require_complete_source_unit=self.require_complete_source_unit,
+                    amendment_source_texts=self.amendment_source_texts,
                 )
             )
         else:
@@ -25242,6 +25808,8 @@ class ValidatorPipeline:
                     module_source_text=validation_source_text,
                     module_citation_path=self.source_citation_path,
                     proof_source_texts=numeric_source_texts,
+                    require_complete_source_unit=self.require_complete_source_unit,
+                    amendment_source_texts=self.amendment_source_texts,
                 )
             )
         issues.extend(find_deprecated_source_url_issues(content))

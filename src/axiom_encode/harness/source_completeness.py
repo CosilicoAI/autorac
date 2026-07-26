@@ -30,8 +30,11 @@ class NumericOccurrenceLike(Protocol):
     raw: str
     has_rate_context: bool
     has_temporal_context: bool
+    has_structural_context: bool
     source_value: float | None
     requires_rate_context: bool
+    is_word_number: bool
+    alternative_values: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -44,8 +47,11 @@ class _NumericOccurrenceView:
     raw: str
     has_rate_context: bool
     has_temporal_context: bool
+    has_structural_context: bool
     source_value: float | None
     requires_rate_context: bool
+    is_word_number: bool
+    alternative_values: tuple[float, ...]
 
 
 NumericOccurrenceExtractor = Callable[[str], Sequence[NumericOccurrenceLike]]
@@ -262,9 +268,49 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
     r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
+    r"\d+(?:[.,]\d+)?\s+times\b|"
     r"percentage\s+of|in\s+excess\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
+    flags=re.IGNORECASE,
+)
+_STATED_CONVERSION_CUE = re.compile(
+    r"\b(?:umgerechnet|converted)\b",
+    flags=re.IGNORECASE,
+)
+_STATED_CONVERSION_RESULT = re.compile(
+    r"\b(?P<verb>"
+    r"ergibt\s+sich|ergeben\s+sich|entspricht|entsprechen|beträgt|betragen|"
+    r"equals?|results?\s+in|is|are"
+    r")\b"
+    r"[^.!?\n]{0,80}?"
+    r"(?P<value>\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)",
+    flags=re.IGNORECASE,
+)
+_STATED_CONVERSION_BASE_VALUE = re.compile(
+    r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?"
+)
+_STATED_CONVERSION_GERMAN_MONTH = (
+    r"(?:jan(?:uar)?|feb(?:ruar)?|märz|maerz|mrz|apr(?:il)?|mai|"
+    r"jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"okt(?:ober)?|nov(?:ember)?|dez(?:ember)?)\.?"
+)
+_STATED_CONVERSION_ENGLISH_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_STATED_CONVERSION_DATE = re.compile(
+    rf"(?:"
+    rf"(?<!\w)\d{{1,2}}\.\s*{_STATED_CONVERSION_GERMAN_MONTH}\s+"
+    rf"(?:des\s+Jahres\s+)?(?:18|19|20)\d{{2}}|"
+    rf"\b{_STATED_CONVERSION_ENGLISH_MONTH}\s+\d{{1,2}}"
+    rf"(?:st|nd|rd|th)?\s*,?\s*(?:18|19|20)\d{{2}}|"
+    rf"(?<!\w)\d{{1,2}}(?:st|nd|rd|th)?\s+"
+    rf"{_STATED_CONVERSION_ENGLISH_MONTH}\s+(?:18|19|20)\d{{2}}|"
+    rf"(?<!\w)\d{{1,2}}[./]\d{{1,2}}[./]\d{{2,4}}(?!\w)|"
+    rf"(?<!\w)(?:18|19|20)\d{{2}}-\d{{2}}-\d{{2}}(?!\w)"
+    rf")",
     flags=re.IGNORECASE,
 )
 _ROUNDING_LANGUAGE = re.compile(
@@ -331,6 +377,14 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_IMPRECISE_DEFERRAL_RETRY_SHAPE = """\
+Required shape (adapt the output and cited dependency to the omitted branch):
+module:
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
+      reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
+`output` and `reason` are required; `blocked_by` is optional and, when present, \
+must list exact absolute upstream RuleSpec outputs."""
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -350,7 +404,7 @@ _BUCHSTABE_REFERENCE = re.compile(
 _GERMAN_LEGAL_CITATION = re.compile(
     r"§{1,2}\s*\d+[a-z]?"
     r"(?:\s*,\s*\d+[a-z]?)*"
-    r"(?:\s*(?:und|bis)\s*\d+[a-z]?)*",
+    r"(?:\s*(?:und|bis|[-–—])\s*\d+[a-z]?)*",
     flags=re.IGNORECASE,
 )
 _EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
@@ -359,17 +413,18 @@ _EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
     flags=re.IGNORECASE,
 )
 _ENGLISH_LEGAL_CITATION = re.compile(
-    r"\b(?:sections?|secs?\.?|regulations?|paragraphs?)\s+"
-    r"\d+(?:\.\d+)*(?:\s*(?:through|to|-|and|,)\s*\d+(?:\.\d+)*)*",
+    r"\b(?:articles?|sections?|secs?\.?|regulations?|paragraphs?)\s+"
+    r"\d+(?:\.\d+)*(?:\s*(?:through|to|[-–—]|and|,)\s*\d+(?:\.\d+)*)*",
     flags=re.IGNORECASE,
 )
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:"
+    r"Artikel(?:s|n)?|Art\.|"
     r"Absatz(?:es)?|Absätze(?:n)?|Abs\.|"
     r"Satz(?:es)?|Sätze(?:n)?|"
     r"Nummer(?:n)?|Nr\.|Buchstabe(?:n)?|Buchst\."
     r")\s*\d*[a-z]?"
-    r"(?:\s*(?:,|und|bis)\s*\d+[a-z]?)*\b",
+    r"(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -492,11 +547,136 @@ def _is_editorial_omission(text: str) -> bool:
 def source_states_explicit_computation(source_text: str) -> bool:
     """Return whether text states a computation rather than only a scalar."""
 
+    computation_text = _without_stated_conversion_results(source_text)
     return bool(
-        _has_substantive_arithmetic_expression(source_text)
-        or _COMPUTATION_LANGUAGE.search(source_text)
-        or _ROUNDING_LANGUAGE.search(source_text)
+        _has_substantive_arithmetic_expression(computation_text)
+        or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ROUNDING_LANGUAGE.search(computation_text)
     )
+
+
+def source_states_stated_conversion_result(source_text: str) -> bool:
+    """Return whether text states both a base scalar and its converted result."""
+
+    return bool(_stated_conversion_result_spans(source_text))
+
+
+def _stated_conversion_result_spans(source_text: str) -> tuple[tuple[int, int], ...]:
+    """Locate result clauses such as ``Umgerechnet ... ergibt sich 6 150``."""
+
+    spans: list[tuple[int, int]] = []
+    for cue in _STATED_CONVERSION_CUE.finditer(source_text):
+        result = _STATED_CONVERSION_RESULT.search(
+            source_text,
+            cue.end(),
+            min(len(source_text), cue.end() + 180),
+        )
+        if result is None:
+            continue
+        if _stated_conversion_candidate_contains_formula(source_text, cue, result):
+            continue
+        base_window = source_text[max(0, cue.start() - 300) : cue.start()]
+        paragraph_break = base_window.rfind("\n\n")
+        if paragraph_break >= 0:
+            base_window = base_window[paragraph_break + 2 :]
+        base_values = list(_STATED_CONVERSION_BASE_VALUE.finditer(base_window))
+        substantive_base = next(
+            (
+                match
+                for match in reversed(base_values)
+                if not _looks_like_temporal_or_structural_number(base_window, match)
+            ),
+            None,
+        )
+        if substantive_base is None:
+            continue
+        spans.append((cue.start(), result.end("value")))
+    return tuple(spans)
+
+
+def _stated_conversion_candidate_contains_formula(
+    source_text: str,
+    cue: re.Match[str],
+    result: re.Match[str],
+) -> bool:
+    """Keep arithmetic inside a conversion clause out of the scalar exemption."""
+
+    start = cue.start()
+    suffix_limit = min(len(source_text), result.end("value") + 160)
+    clause_suffix = source_text[result.end("value") : suffix_limit]
+    clause_boundary = re.search(r"[.;!?\n]", clause_suffix)
+    end = (
+        result.end("value") + clause_boundary.start()
+        if clause_boundary is not None
+        else suffix_limit
+    )
+    characters = list(source_text[start:end])
+    verb_start = result.start("verb") - start
+    verb_end = result.end("verb") - start
+    characters[verb_start:verb_end] = " " * (verb_end - verb_start)
+    candidate = "".join(characters)
+    return bool(
+        _has_substantive_arithmetic_expression(candidate)
+        or _COMPUTATION_LANGUAGE.search(candidate)
+        or _ROUNDING_LANGUAGE.search(candidate)
+    )
+
+
+def _looks_like_temporal_or_structural_number(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Return whether a prospective base value is only metadata or structure."""
+
+    for pattern in (
+        _STATED_CONVERSION_DATE,
+        _GERMAN_LEGAL_CITATION,
+        _ENGLISH_LEGAL_CITATION,
+        _STRUCTURAL_REFERENCE,
+    ):
+        if any(
+            metadata.start() <= match.start() and match.end() <= metadata.end()
+            for metadata in pattern.finditer(text)
+        ):
+            return True
+
+    raw = match.group(0).replace(" ", "").replace(".", "").replace(",", ".")
+    with contextlib.suppress(ValueError):
+        value = float(raw)
+        if value.is_integer() and 1900 <= value <= 2100:
+            prefix = text[max(0, match.start() - 24) : match.start()]
+            if re.search(
+                r"\b(?:jahr(?:es)?|year|in|for|für(?:\s+das)?)\s*$",
+                prefix,
+                re.IGNORECASE,
+            ):
+                return True
+
+    prefix = text[max(0, match.start() - 32) : match.start()]
+    suffix = text[match.end() : min(len(text), match.end() + 8)]
+    if re.search(
+        r"(?:§+|artikel|art\.?|absatz|abs\.?|satz|nummer|nr\.?|"
+        r"section|sec\.?|subsection|paragraph|clause|item)\s*$",
+        prefix,
+        re.IGNORECASE,
+    ):
+        return True
+    if prefix.endswith("(") and re.match(r"\s*\)", suffix):
+        return True
+    line_prefix = prefix.rsplit("\n", 1)[-1]
+    return bool(not line_prefix.strip() and re.match(r"\s*\.", suffix))
+
+
+def _without_stated_conversion_results(source_text: str) -> str:
+    """Blank stated-result clauses without hiding other source computations."""
+
+    spans = _stated_conversion_result_spans(source_text)
+    if not spans:
+        return source_text
+    characters = list(source_text)
+    for start, end in spans:
+        characters[start:end] = " " * (end - start)
+    return "".join(characters)
 
 
 def _has_substantive_arithmetic_expression(source_text: str) -> bool:
@@ -672,9 +852,7 @@ def _analyze_rulespec_payload(
             "parameter-only representation is invalid."
         )
 
-    source_occurrences = tuple(
-        extract_numeric_occurrences(authoritative_numeric_recall_text(source_text))
-    )
+    source_occurrences = tuple(extract_numeric_occurrences(source_text))
     named_values = (
         tuple(float(value) for value in artifact_numeric_values)
         if artifact_numeric_values is not None
@@ -1185,7 +1363,7 @@ def _deferred_coverage(
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
                 "name an exact missing "
-                "dependency/citation."
+                f"dependency/citation.\n{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
             )
     return covered, issues
 
@@ -3221,8 +3399,11 @@ def _numeric_occurrences_are_equivalent(
         math.isclose(float(left.value), float(right.value))
         and left.has_rate_context == right.has_rate_context
         and left.has_temporal_context == right.has_temporal_context
+        and left.has_structural_context == right.has_structural_context
         and left.source_value == right.source_value
         and left.requires_rate_context == right.requires_rate_context
+        and left.is_word_number == right.is_word_number
+        and left.alternative_values == right.alternative_values
     )
 
 
@@ -4536,8 +4717,11 @@ def _shift_numeric_occurrence(
         raw=occurrence.raw,
         has_rate_context=occurrence.has_rate_context,
         has_temporal_context=occurrence.has_temporal_context,
+        has_structural_context=occurrence.has_structural_context,
         source_value=occurrence.source_value,
         requires_rate_context=occurrence.requires_rate_context,
+        is_word_number=occurrence.is_word_number,
+        alternative_values=occurrence.alternative_values,
     )
 
 
@@ -6826,8 +7010,12 @@ def _source_boundary_obligations(
                 branch.path,
                 float(occurrence.value),
                 occurrence.has_rate_context,
+                occurrence.has_temporal_context,
+                occurrence.has_structural_context,
                 occurrence.source_value,
                 occurrence.requires_rate_context,
+                occurrence.is_word_number,
+                occurrence.alternative_values,
                 occurrence.start,
                 occurrence.end,
             ): (branch, occurrence)

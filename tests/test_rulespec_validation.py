@@ -700,6 +700,158 @@ def test_rulespec_numeric_output_comparison_accepts_quoted_decimal(tmp_path):
     )
 
 
+def test_complete_mode_test_mismatch_steers_estg_dual_effective_versions(tmp_path):
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_source = (
+        "4. In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+        "„255 Euro“ ersetzt. "
+        "4. § 66 wird wie folgt geändert: a) In Absatz 1 wird die Angabe "
+        "„255 Euro“ durch die Angabe „259 Euro“ ersetzt. "
+        "Artikel 10 Inkrafttreten (1) Dieses Gesetz tritt vorbehaltlich des "
+        "Absatzes 2 am 1. Januar 2025 in Kraft. (2) Die Artikel 2, 4 und 6 "
+        "treten am 1. Januar 2026 in Kraft."
+    )
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-de/de",
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+        require_complete_source_unit=True,
+        source_text=(
+            "(1) Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.\n"
+            "(2) Das Kindergeld wird monatlich vom Beginn des Monats an gezahlt."
+        ),
+        source_citation_path="de/statute/estg/66",
+        amendment_source_texts={amendment_citation: amendment_source},
+    )
+
+    output_name = "de:statutes/estg/66#child_benefit_amount"
+    issues = pipeline._run_rulespec_test_cases(
+        rules_file=tmp_path / "rulespec-de/de/statutes/estg/66.yaml",
+        compiled_path=tmp_path / "compiled.json",
+        compiled_payload={
+            "program": {
+                "derived": [],
+                "parameters": [
+                    {
+                        "name": "child_benefit_amount",
+                        "id": output_name,
+                        "versions": [
+                            {
+                                "effective_from": "2025-01-01",
+                                "values": {"0": {"kind": "integer", "value": "259"}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+        cases=[
+            {
+                "name": "kindergeld_2025",
+                "period": {
+                    "period_kind": "tax_year",
+                    "start": "2025-01-01",
+                    "end": "2025-12-31",
+                },
+                "input": {},
+                "output": {output_name: 255},
+            }
+        ],
+    )
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert "expected integer 255, got integer 259" in issue
+    assert "Complete-source effective-version hint" in issue
+    assert amendment_citation in issue
+    assert "dual effective versions" in issue
+    assert "`255` for 2025 from the amendment" in issue
+    assert "`259` for the 2026 consolidated version" in issue
+
+
+@pytest.mark.parametrize(
+    ("require_complete_source_unit", "primary_source", "amendment_sources"),
+    (
+        (
+            False,
+            "Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.",
+            {
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1": (
+                    "Die Angabe „250 Euro“ wird durch „255 Euro“ ersetzt. "
+                    "Das Gesetz gilt 2025 und 2026."
+                )
+            },
+        ),
+        (
+            True,
+            "2025 betrug das Kindergeld 255 Euro; nun beträgt es 259 Euro.",
+            {
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1": (
+                    "Die Angabe „250 Euro“ wird durch „255 Euro“ ersetzt. "
+                    "Das Gesetz gilt 2025 und 2026."
+                )
+            },
+        ),
+        (
+            True,
+            "Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.",
+            {
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1": (
+                    "Die Angabe „250 Euro“ wird durch „254 Euro“ ersetzt. "
+                    "Das Gesetz gilt 2025 und 2026."
+                )
+            },
+        ),
+        (
+            True,
+            "Das Kindergeld beträgt monatlich für jedes Kind 260 Euro.",
+            {
+                "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1": (
+                    "Die Angabe „250 Euro“ wird durch „255 Euro“ ersetzt. "
+                    "Das Gesetz gilt 2025 und 2026."
+                )
+            },
+        ),
+    ),
+)
+def test_effective_version_hint_requires_complete_amendment_primary_split(
+    tmp_path,
+    require_complete_source_unit,
+    primary_source,
+    amendment_sources,
+):
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-de/de",
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+        require_complete_source_unit=require_complete_source_unit,
+        source_text=primary_source,
+        source_citation_path="de/statute/estg/66",
+        amendment_source_texts=amendment_sources,
+    )
+
+    issue = pipeline._compare_rulespec_output(
+        case_name="kindergeld_2025",
+        output_name="de:statutes/estg/66#child_benefit_amount",
+        expected_value=255,
+        actual_output={
+            "kind": "scalar",
+            "value": {"kind": "integer", "value": 259},
+        },
+        period={
+            "period_kind": "tax_year",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+        },
+    )
+
+    assert issue is not None
+    assert "expected integer 255, got integer 259" in issue
+    assert "Complete-source effective-version hint" not in issue
+
+
 def test_rulespec_compile_roots_use_only_explicit_checkouts(monkeypatch, tmp_path):
     repo_parent = tmp_path / "repos"
     policy_repo = _canonical_rulespec_content_root(repo_parent, "us-ny")
@@ -8063,6 +8215,7 @@ def test_de_numeric_profile_terminates_at_released_juris_sentence_marker():
         (0.45, "0,45"),
         (19470.38, "19 470,38"),
         (10000.0, "Zehntausendstel"),
+        (0.0001, "Zehntausendstel"),
     ]
     assert {3.0, 38.3, 470.38}.isdisjoint({item.value for item in occurrences})
 
@@ -8471,11 +8624,354 @@ def test_de_numeric_profile_reads_german_lexical_denominators(
     source_text,
     expected,
 ):
-    assert extract_numbers_from_text(source_text, profile="de-DE") == {expected}
+    reciprocal = 1 / expected
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {
+        expected,
+        reciprocal,
+    }
     assert extract_numeric_occurrences_from_text(
         source_text,
         profile="de-DE",
     ) == [expected]
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    assert len(inventory) == 1
+    assert inventory[0].is_word_number
+    assert inventory[0].alternative_values == (reciprocal,)
+
+
+@pytest.mark.parametrize(
+    (
+        "source_text",
+        "expected_primary",
+        "expected_alternative",
+        "expected_inventory_count",
+    ),
+    (
+        # Exact released wave-2 corpus bytes from the cited bodies.
+        (
+            "für die Hälfte ihres gemeinsam zu versteuernden Einkommens",
+            0.5,
+            2.0,
+            0,
+        ),
+        ("ein Fünftel der monatlichen Bezugsgröße", 5.0, 0.2, 1),
+        ("abzüglich eines Zwölftels des Kinderfreibetrags", 12.0, 1 / 12, 1),
+        (
+            "von einem Dreihundertsechzigstel der Beitragsbemessungsgrenze",
+            360.0,
+            1 / 360,
+            1,
+        ),
+        (
+            "ein Zehntausendstel des den Grundfreibetrag übersteigenden Teils",
+            10000,
+            0.0001,
+            1,
+        ),
+    ),
+)
+def test_de_word_fraction_candidates_do_not_duplicate_recall_obligation(
+    source_text,
+    expected_primary,
+    expected_alternative,
+    expected_inventory_count,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    word_grounding = [item for item in grounding if item.is_word_number]
+
+    assert [item.value for item in word_grounding] == [
+        expected_primary,
+        expected_alternative,
+    ]
+    assert len(inventory) == expected_inventory_count
+    if inventory:
+        assert inventory[0].value == expected_primary
+        assert inventory[0].alternative_values == (expected_alternative,)
+    assert numeric_value_is_grounded(expected_primary, grounding)
+    assert numeric_value_is_grounded(expected_alternative, grounding)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("Haben zwei Partner Anspruch auf Leistungen", 2.0),
+        ("in nicht mehr als zwei Kalendermonaten", 2.0),
+        ("nach Ablauf von drei Sitzungswochen", 3.0),
+        ("durch drei geteilt", 3.0),
+        ("für sechs Monate", 6.0),
+        ("sieben Dreihundertsechzigstel", 7.0),
+        ("bei einer Arbeitszeit von zehn Wochenstunden", 10.0),
+        ("nicht mit mehr als zwölf Monatswerten", 12.0),
+        ("für bis zu zwölf zu berücksichtigende Haushaltsmitglieder", 12.0),
+    ),
+)
+def test_de_quantitative_cardinals_use_exact_released_wave_phrases(
+    source_text,
+    expected,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert any(
+        item.value == expected and item.is_word_number for item in occurrences
+    ), occurrences
+
+
+def test_de_proration_cardinals_use_exact_sgb_3_341_sentence():
+    # Exact sentence from body sha256
+    # cc18498f1bbf534679b14937e8750c38098112cd8c1bfab98a956b6a58b5378f.
+    source_text = (
+        "Für die Berechnung der Beiträge ist die Woche zu sieben, der Monat zu "
+        "dreißig und das Jahr zu dreihundertsechzig Tagen anzusetzen, soweit "
+        "dieses Buch nichts anderes bestimmt."
+    )
+
+    word_values = {
+        item.value
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="de-DE",
+        )
+        if item.is_word_number
+    }
+
+    assert {7.0, 30.0, 360.0} <= word_values
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "das Zweifache des Steuerbetrags",
+        "den doppelten Kinderfreibetrag",
+    ),
+)
+def test_de_multiplier_words_emit_typed_numeric_candidates(source_text):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert [(item.value, item.is_word_number) for item in occurrences] == [(2.0, True)]
+
+
+def test_de_ordinal_part_emits_divisor_and_fraction_candidates():
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        "der siebte Teil des Betrags",
+        profile="de-DE",
+    )
+
+    assert [item.value for item in occurrences] == [1 / 7, 7.0]
+    assert all(item.is_word_number for item in occurrences)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_rate"),
+    (
+        ("um 0,1 Prozentpunkte für je 2 Euro", 0.001),
+        ("nicht höher als 0,5 Beitragssatzpunkte über dem Beitragssatz", 0.005),
+        ("um 0,6 Beitragssatzpunkten", 0.006),
+        ("in Höhe von 0,25 Beitragssatzpunkten", 0.0025),
+    ),
+)
+def test_de_point_units_supply_rate_context_from_exact_wave_phrases(
+    source_text,
+    expected_rate,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    point_occurrence = next(item for item in occurrences if item.raw.startswith("0,"))
+
+    assert point_occurrence.has_rate_context
+    assert numeric_value_is_grounded(expected_rate, occurrences)
+
+
+def test_ungrounded_literal_names_attached_amendment_without_grounding_it():
+    content = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/solzg-1995/3
+rules:
+  - name: exemption_threshold
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 39900
+"""
+    primary_source = "Die Freigrenze beträgt 40 700 Euro."
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_source = (
+        "aa) In Nummer 1 wird die Angabe „36 260 Euro“ durch die Angabe "
+        "„39 900 Euro“ ersetzt."
+    )
+    single_source_issues = find_ungrounded_numeric_issues(
+        content,
+        source_text=primary_source,
+        source_citation_path="de/statute/solzg-1995/3",
+        amendment_source_texts={amendment_citation: amendment_source},
+    )
+    scoped_issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text=primary_source,
+        module_citation_path="de/statute/solzg-1995/3",
+        amendment_source_texts={amendment_citation: amendment_source},
+    )
+
+    for issues in (single_source_issues, scoped_issues):
+        assert len(issues) == 1
+        assert "Ungrounded generated numeric literal" in issues[0]
+        assert amendment_citation in issues[0]
+        assert "attachment alone does not ground it" in issues[0]
+        assert "exact owning literal `path`" in issues[0]
+        assert "`path: versions[0].formula`" in issues[0]
+        assert f"source: {{corpus_citation_path: {amendment_citation}" in issues[0]
+
+    cited_content = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/solzg-1995/3
+rules:
+  - name: exemption_threshold
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: amount
+            source:
+              corpus_citation_path: {amendment_citation}
+              excerpt: {amendment_source}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 39900
+"""
+    cited_issues = find_ungrounded_numeric_issues_scoped(
+        cited_content,
+        module_source_text=primary_source,
+        module_citation_path="de/statute/solzg-1995/3",
+        proof_source_texts={amendment_citation: amendment_source},
+        amendment_source_texts={amendment_citation: amendment_source},
+    )
+
+    assert cited_issues == []
+
+
+def test_ungrounded_literal_omits_amendment_hint_when_value_is_absent():
+    content = """format: rulespec/v1
+rules:
+  - name: exemption_threshold
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 39900
+"""
+    issues = find_ungrounded_numeric_issues(
+        content,
+        source_text="Die konsolidierte Freigrenze beträgt 40 700 Euro.",
+        source_citation_path="de/statute/solzg-1995/3",
+        amendment_source_texts={
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1": (
+                "Die frühere Freigrenze beträgt 39 901 Euro."
+            )
+        },
+    )
+
+    assert len(issues) == 1
+    assert "Attached-amendment grounding hint" not in issues[0]
+
+
+def test_rulespec_ci_uses_scoped_grounding_when_amendments_are_attached(
+    tmp_path,
+):
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_source = (
+        "aa) In Nummer 1 wird die Angabe „36 260 Euro“ durch die Angabe "
+        "„39 900 Euro“ ersetzt."
+    )
+    primary_source = "Die konsolidierte Freigrenze beträgt 40 700 Euro."
+    release = _write_local_corpus_provision(
+        tmp_path / "release",
+        "de/statute/solzg-1995/3",
+        primary_source,
+    )
+    rules_file = tmp_path / "rulespec-de/de/statutes/solzg-1995/3.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(
+        """format: rulespec/v1
+rules:
+  - name: exemption_threshold
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 39900
+""",
+        encoding="utf-8",
+    )
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-de/de",
+        axiom_rules_path=tmp_path / "missing-rules-engine",
+        enable_oracles=False,
+        local_corpus_release=release,
+        source_text=primary_source,
+        source_citation_path="de/statute/solzg-1995/3",
+        amendment_source_texts={amendment_citation: amendment_source},
+    )
+    failed_compile = subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout="",
+        stderr="synthetic compile failure",
+    )
+
+    with (
+        patch.object(
+            pipeline,
+            "_compile_rulespec_to_artifact",
+            return_value=(failed_compile, None),
+        ),
+        patch.object(
+            validator_pipeline,
+            "find_ungrounded_numeric_issues",
+            return_value=[],
+        ) as single_source,
+        patch.object(
+            validator_pipeline,
+            "find_ungrounded_numeric_issues_scoped",
+            return_value=[],
+        ) as scoped,
+    ):
+        pipeline._run_ci(rules_file)
+
+    single_source.assert_not_called()
+    assert scoped.call_args.kwargs["module_source_text"] == pipeline.source_text
+    assert scoped.call_args.kwargs["amendment_source_texts"] == {
+        amendment_citation: amendment_source
+    }
 
 
 def test_numeric_extraction_handles_uganda_shilling_suffix():

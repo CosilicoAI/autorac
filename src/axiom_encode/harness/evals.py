@@ -99,7 +99,6 @@ from .policyengine_runtime import (
 )
 from .pricing import estimate_usage_cost_usd
 from .source_completeness import (
-    authoritative_numeric_recall_text,
     collect_artifact_numeric_values,
 )
 from .validator_pipeline import (
@@ -1361,6 +1360,7 @@ def run_model_eval(
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1399,6 +1399,7 @@ def run_model_eval(
                         review_findings_paths=review_findings_paths or [],
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
+                        validation_retry_feedback=validation_retry_feedback,
                     )
                 )
 
@@ -4095,6 +4096,7 @@ def _revalidate_persisted_eval_suite_case_results(
                 source_citation_path=source_citation_path,
                 rulespec_dependency_roots=rulespec_dependency_roots,
                 require_complete_source_unit=case.require_complete_source_unit,
+                amendment_documents=source_unit.amendment_documents,
             )
         fresh_success = bool(
             fresh_metrics is not None
@@ -6674,6 +6676,7 @@ def evaluate_artifact(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics:
     """Evaluate an artifact inside one exact named corpus release."""
 
@@ -6704,6 +6707,7 @@ def evaluate_artifact(
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=amendment_documents,
         )
 
 
@@ -6759,6 +6763,7 @@ def _evaluate_artifact_in_scope(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics:
     """Evaluate one RuleSpec artifact with deterministic checks plus optional oracles."""
     with _rulespec_validation_target(
@@ -6789,6 +6794,10 @@ def _evaluate_artifact_in_scope(
             rulespec_dependency_roots=validation_dependency_roots,
             validation_staging_root=validation_staging_root,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_source_texts={
+                document.citation_path: document.body
+                for document in amendment_documents
+            },
         )
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
@@ -6878,7 +6887,7 @@ def _evaluate_artifact_in_scope(
     # separately parsed proof evidence below — never in module.summary.
     numeric_validation_source_text = embedded_source or numeric_source_text or ""
     numeric_recall_source_text = (
-        authoritative_numeric_recall_text(evaluation_source_text)
+        evaluation_source_text
         if require_complete_source_unit
         else numeric_validation_source_text
     )
@@ -6913,10 +6922,19 @@ def _evaluate_artifact_in_scope(
             half_up_recall_source_text or "",
         ),
     )
-    counted_numeric_source_text = _numeric_occurrence_source_text(
-        numeric_recall_source_text or "",
-        suppress_source_backed_half_up_increment=bool(half_up_helper_count),
-    )
+    if require_complete_source_unit:
+        counted_numeric_source_text = numeric_recall_source_text or ""
+        if half_up_helper_count:
+            counted_numeric_source_text = (
+                normalize_source_backed_half_up_rounding_occurrence_text(
+                    counted_numeric_source_text
+                )
+            )
+    else:
+        counted_numeric_source_text = _numeric_occurrence_source_text(
+            numeric_recall_source_text or "",
+            suppress_source_backed_half_up_increment=bool(half_up_helper_count),
+        )
     typed_source_numeric_occurrences = (
         extract_typed_numeric_inventory_occurrences_from_text(
             counted_numeric_source_text,
@@ -7027,6 +7045,10 @@ def _evaluate_artifact_in_scope(
         module_citation_path=numeric_source_citation_path,
         proof_source_texts=numeric_proof_source_texts,
         require_body_bound_proof_evidence=False,
+        require_complete_source_unit=require_complete_source_unit,
+        amendment_source_texts={
+            document.citation_path: document.body for document in amendment_documents
+        },
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,
@@ -7112,6 +7134,7 @@ def _evaluate_generated_artifact_with_repairs(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics | None:
     metrics = evaluate_artifact(
         rulespec_file=rulespec_file,
@@ -7127,6 +7150,7 @@ def _evaluate_generated_artifact_with_repairs(
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
+        amendment_documents=amendment_documents,
     )
     if metrics is None:
         return None
@@ -7153,6 +7177,7 @@ def _evaluate_generated_artifact_with_repairs(
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
+        amendment_documents=amendment_documents,
     )
 
 
@@ -7857,6 +7882,7 @@ def _run_single_eval(
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -7919,6 +7945,7 @@ def _run_single_eval(
         runner_backend=runner.backend,
         policyengine_rule_hint=policyengine_rule_hint,
         require_complete_source_unit=require_complete_source_unit,
+        validation_retry_feedback=validation_retry_feedback,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
     output_file = _contained_eval_output_file(output_root, runner.name, relative_output)
@@ -7971,6 +7998,7 @@ def _run_single_eval(
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=source_unit.amendment_documents,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8195,6 +8223,7 @@ def _run_single_source_eval(
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=amendment_documents,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8770,6 +8799,33 @@ Mandatory independent-review corrections:
 """
 
 
+def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
+    """Render bounded prior-attempt validator output as non-authority guidance."""
+
+    rendered_items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in feedback[:12]:
+        item = str(raw_item).strip()[:2000]
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        rendered_items.append(f"- {json.dumps(item, ensure_ascii=False)}")
+    if not rendered_items:
+        return ""
+    return f"""
+Deterministic validation feedback from prior generation attempts:
+- This is repair guidance from the validator, not legal authority. Keep the
+  authoritative source and release-bound corpus evidence as the sole basis for
+  legal facts and values.
+- Correct every listed issue in this attempt. Do not repeat the rejected
+  pattern.
+
+=== BEGIN PRIOR VALIDATION FEEDBACK ===
+{chr(10).join(rendered_items)}
+=== END PRIOR VALIDATION FEEDBACK ===
+"""
+
+
 def _build_rulespec_eval_prompt(
     citation: str,
     mode: EvalMode,
@@ -8782,6 +8838,7 @@ def _build_rulespec_eval_prompt(
     policyengine_rule_hint: str | None,
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
     source_text = workspace.source_text_file.read_text()
@@ -9304,6 +9361,9 @@ Preferred principal output:
 """
 
     mandatory_review_findings_section = _format_mandatory_review_findings(workspace)
+    validation_retry_feedback_section = _format_validation_retry_feedback(
+        validation_retry_feedback
+    )
     complete_source_unit_section = ""
     if require_complete_source_unit:
         complete_source_unit_section = """
@@ -9314,6 +9374,15 @@ Complete-source-unit mode is enabled for this request:
 - Every explicit computation stated in the source unit must have a principal
   `kind: derived` or `kind: derived_relation` output. Naming its constants as
   parameters without encoding the stated formula is invalid.
+- When the source states both a base value and its converted result, encode both
+  values as separate grounded `kind: parameter` rules. Result wording such as
+  "converted to the month, this gives ..." states a scalar result; it does not
+  mandate deriving one parameter from the other.
+- Never introduce calendar constants `12`, `52`, `365`, `4`, or `24` as module
+  literals unless that literal appears in the authoritative source text.
+  Express a stated conversion through companion-test assertions on both
+  parameter outputs; literals used only in companion tests do not require
+  source grounding.
 - Encode every structural paragraph and list branch, including Absatz markers
   such as `(1)` and `(2)`, `Abs. 5`, numbered items such as `1.` and `1a.`, and
   Satz enumerations. If a branch cannot be encoded, use a precise typed
@@ -9346,7 +9415,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -10166,6 +10235,7 @@ def _build_eval_prompt(
     policyengine_rule_hint: str | None = None,
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
     return _build_rulespec_eval_prompt(
@@ -10180,6 +10250,7 @@ def _build_eval_prompt(
         policyengine_rule_hint=policyengine_rule_hint,
         include_corpus_context_injection=include_corpus_context_injection,
         require_complete_source_unit=require_complete_source_unit,
+        validation_retry_feedback=validation_retry_feedback,
     )
 
 

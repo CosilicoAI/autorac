@@ -4160,6 +4160,7 @@ class TestCmdEvalSuiteRevalidate:
                     body="authoritative source text",
                     citation_path="us/statute/7/2014/e/6/A",
                     requested="us/statute/7/2014/e/6/A",
+                    amendment_documents=("attached-amendment",),
                     source_attestation=_complete_source_attestation(
                         "us/statute/7/2014/e/6/A"
                     ),
@@ -4194,6 +4195,9 @@ class TestCmdEvalSuiteRevalidate:
             dependency_root
         ]
         assert mock_eval.call_args.kwargs["require_complete_source_unit"] is True
+        assert mock_eval.call_args.kwargs["amendment_documents"] == (
+            "attached-amendment",
+        )
         ledger = json.loads((source_output / "suite-results.jsonl").read_text())
         assert ledger["result"]["metrics"]["compile_pass"] is compile_pass
         assert ledger["result"]["metrics"]["ci_pass"] is ci_pass
@@ -7800,6 +7804,148 @@ def test_closest_exact_source_excerpt_rejects_malformed_de_span_with_valid_numbe
     assert repaired is None
 
 
+@pytest.mark.parametrize(
+    ("citation_path", "source_text", "generated_excerpt"),
+    [
+        (
+            "de/statute/estg/32a",
+            (
+                "5. von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ "
+                "ist ein Zehntausendstel"
+            ),
+            (
+                '5. von 277 826 Euro an: 0,45 * x - 19 470,38. 3 Die Grosse "y" '
+                "ist ein Zehntausendstel"
+            ),
+        ),
+        (
+            "de/statute/estg/9a",
+            (
+                "3. von den Einnahmen im Sinne des § 22 Nummer 1, 1a und 5:ein "
+                "Pauschbetrag von insgesamt 102 Euro.2Der Pauschbetrag nach Satz 1 "
+                "Nummer 1 Buchstabe b"
+            ),
+            (
+                "3. von den Einnahmen im Sinne des § 22 Nummer 1, 1a und 5: ein "
+                "Pauschbetrag von insgesamt 102 Euro. 2 Der Pauschbetrag nach Satz "
+                "1 Nummer 1 Buchstabe b"
+            ),
+        ),
+        (
+            "de/statute/sgb-2/20",
+            "monatlich ein Betrag in Höhe der Regelbedarfsstufe 1 anerkannt.",
+            "monatlich ein Betrag in Ho\u0308he der Regelbedarfsstufe1 anerkannt.",
+        ),
+    ],
+)
+def test_closest_exact_source_excerpt_reanchors_live_german_glue_variants(
+    citation_path, source_text, generated_excerpt
+):
+    # Exact slices from the 2026-07-16 German wave corpus release.
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt=generated_excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired == source_text, citation_path
+
+
+def test_closest_exact_source_excerpt_rejects_ambiguous_canonical_span():
+    repaired = _closest_exact_source_excerpt(
+        source_text="Der Wert:25 Euro gilt.\n\nDer Wert :25 Euro gilt.",
+        excerpt="Der Wert: 25 Euro gilt.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_mixed_direct_and_canonical_spans():
+    repaired = _closest_exact_source_excerpt(
+        source_text=(
+            "Der Wert beträgt 25 Euro. Eine zweite Zeile sagt: DerWert beträgt 25 Euro."
+        ),
+        excerpt="Der Wert beträgt 25 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_identical_cross_record_matches():
+    excerpt = "Der Wert beträgt 25 Euro."
+    repaired = _closest_exact_source_excerpt(
+        source_text=(excerpt + PROOF_EVIDENCE_SEGMENT_SEPARATOR + excerpt),
+        excerpt=excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_repeated_direct_match():
+    excerpt = "Der Wert beträgt 25 Euro."
+    repaired = _closest_exact_source_excerpt(
+        source_text=f"{excerpt} Eine Ausnahme gilt. {excerpt}",
+        excerpt=excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_changed_number_in_near_match():
+    source_text = (
+        "In § 6a Absatz 2 Satz 4 werden die Wörter „ab 1. Juli 2022“ gestrichen "
+        "und wird die Angabe „20 Euro“ durch die Angabe „25 Euro“ ersetzt."
+    )
+
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt=(
+            'In § 6a Absatz 2 Satz 4 werden die Wörter "ab 1. Juli 2022" '
+            'gestrichen und wird die Angabe "20 Euro" durch die Angabe '
+            '"26 Euro" ersetzt.'
+        ),
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_preserves_numeric_multiplicity():
+    repaired = _closest_exact_source_excerpt(
+        source_text=("Die Angabe „20 Euro“ wird durch die Angabe „25 Euro“ ersetzt."),
+        excerpt=('Die Angabe "20 Euro" wird durch die Angabe "20 Euro" geändert.'),
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_tied_fuzzy_spans():
+    repaired = _closest_exact_source_excerpt(
+        source_text=("Alpha Betrag ist 20 Euro. Alpha Betrag ist 20 Euro."),
+        excerpt="Delta Betrag ist 20 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_preserves_decomposed_grapheme():
+    source_text = "Ho\u0308he"
+
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt="Höhe",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired == source_text
+
+
 def test_repair_generated_undeclared_money_unit(tmp_path):
     output_root = tmp_path / "out"
     rules_file = output_root / "model" / "policies" / "benefit.yaml"
@@ -8192,6 +8338,75 @@ rules:
     )
 
 
+def test_repair_generated_nonexact_proof_excerpt_reanchors_amendment_document(
+    tmp_path, monkeypatch
+):
+    citation_path = "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    source_text = (
+        "In § 6a Absatz 2 Satz 4 werden die Wörter „ab 1. Juli 2022“ gestrichen "
+        "und wird die Angabe „20 Euro“ durch die Angabe „25 Euro“ ersetzt."
+    )
+    generated_excerpt = (
+        'In § 6a Absatz 2 Satz 4 werden die Wörter "ab 1. Juli 2022" gestrichen '
+        'und wird die Angabe "20 Euro" durch die Angabe "25 Euro" ersetzt.'
+    )
+    output_root = tmp_path / "out"
+    rules_file = output_root / "model" / "statutes" / "bkgg" / "6a.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(
+        f"""format: rulespec/v1
+module:
+  summary: Current consolidated BKGG source.
+rules:
+- name: child_supplement_immediate_supplement
+  kind: parameter
+  dtype: Money
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: {citation_path}
+          excerpt: {generated_excerpt!r}
+  versions:
+  - effective_from: '2025-01-01'
+    formula: 25
+"""
+    )
+    requested_paths = []
+
+    def source_for_citation(requested_path, *, corpus_release):
+        requested_paths.append((requested_path, corpus_release))
+        return source_text
+
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_source_text_for_corpus_path",
+        source_for_citation,
+    )
+    corpus_release = SimpleNamespace(name="german-wave-release")
+
+    repaired = _try_repair_generated_nonexact_proof_excerpts_for_apply(
+        SimpleNamespace(output_file=str(rules_file)),
+        output_root=output_root,
+        corpus_release=corpus_release,
+        issues=[
+            "Proof source evidence not found: rule "
+            "`child_supplement_immediate_supplement` proof atom 0 "
+            "`source.excerpt` does not appear in "
+            f"`{citation_path}`."
+        ],
+    )
+
+    payload = yaml.safe_load(rules_file.read_text())
+    repaired_source = payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"]
+    assert repaired == ["child_supplement_immediate_supplement[0]"]
+    assert requested_paths == [(citation_path, corpus_release)]
+    assert repaired_source["corpus_citation_path"] == citation_path
+    assert repaired_source["excerpt"] == source_text
+    assert repaired_source["excerpt"] in source_text
+
+
 def test_closest_exact_source_excerpt_reflows_wrapped_regulatory_paragraph():
     source_text = """    (i) If the monthly income is less than the applicable Federal
 minimum wage requirement under 29 U.S.C. 206(a)(1)(C) multiplied by 80
@@ -8329,7 +8544,7 @@ must use a reasonable allocation method.
 
 def test_closest_exact_source_excerpt_uses_direct_match_source_coordinates():
     source_text = """(a) If household income is below the threshold and all documentation requirements are satisfied, the agency shall pay $500.
-(b) If fraud is found, the agency shall pay $500.
+(b) If fraud is found, the agency shall pay $600.
 """
 
     repaired = _closest_exact_source_excerpt(
@@ -10717,6 +10932,18 @@ def test_declared_subsection_source_keeps_corpus_evidence_segments_separate():
     )
 
 
+def test_protected_source_excerpt_rejects_repeated_coordinates():
+    excerpt = "The amount is 25 Euro."
+
+    assert (
+        _source_excerpt_preserving_whitespace(
+            source_text=f"{excerpt} An exception applies. {excerpt}",
+            excerpt=excerpt,
+        )
+        is None
+    )
+
+
 class TestCmdInventory:
     def test_inventory_counts_rulespec_files_and_kinds(self, capsys, tmp_path):
         statute_file = (
@@ -11670,6 +11897,13 @@ class TestCmdEncode:
         ]
         assert validated == generated
         assert mock_run.call_count == 3
+        assert [
+            call.kwargs["validation_retry_feedback"] for call in mock_run.call_args_list
+        ] == [
+            (),
+            ("validator rejected generated section",),
+            ("validator rejected generated section",),
+        ]
         assert mock_validate.call_count == 3
         mock_apply.assert_called_once()
         assert mock_apply.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
@@ -11687,6 +11921,29 @@ class TestCmdEncode:
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
+
+    def test_encode_retry_feedback_includes_actionable_ci_issue(self):
+        import axiom_encode.cli as cli_module
+
+        hint = (
+            "Ungrounded generated numeric literal: 12 does not appear as a "
+            "substantive numeric value in the source text. Complete-source "
+            "stated-conversion hint: encode separate grounded parameters."
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(
+                    compile_issues=[],
+                    ci_issues=[hint],
+                )
+            ),
+            error="Generated RuleSpec failed CI validation",
+        )
+
+        assert cli_module._encode_validation_retry_feedback([failed_attempt]) == (
+            "Generated RuleSpec failed CI validation",
+            hint,
+        )
 
     def test_encode_rejects_incompatible_escalation_model_before_generation(
         self, tmp_path

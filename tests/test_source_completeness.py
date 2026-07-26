@@ -15,11 +15,15 @@ from axiom_encode.harness.source_completeness import (
     collect_artifact_numeric_values,
     recognize_source_structure,
     source_states_explicit_computation,
+    source_states_stated_conversion_result,
 )
 from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
     extract_named_scalar_occurrences,
     extract_typed_numeric_inventory_occurrences_from_text,
+    extract_typed_numeric_occurrences_from_text,
+    find_ungrounded_numeric_issues,
+    find_ungrounded_numeric_issues_scoped,
     numeric_value_is_grounded,
 )
 
@@ -449,6 +453,41 @@ MINUHV_SECTION_1_BODY = (
 )
 
 
+def _stated_conversion_rulespec_with_divisor(
+    citation_path: str,
+    parameters: tuple[tuple[str, str], ...],
+    *,
+    annual_parameter: str,
+    divisor: str,
+) -> str:
+    parameter_rules = "\n".join(
+        f"""\
+  - name: {name}
+    kind: parameter
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: {value}"""
+        for name, value in parameters
+    )
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+{parameter_rules}
+  - name: derived_monthly_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: {annual_parameter} / {divisor}
+"""
+
+
 def test_exact_svbezgrv_2025_section_1_excludes_temporal_year_from_recall():
     citation_path = "de/regulation/svbezgrv-2025/1"
     assert (
@@ -558,6 +597,213 @@ rules:
         SVBEZGRV_2025_SECTION_2_BODY,
         corpus_citation_path=citation_path,
         test_cases=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "source_body", "parameters", "annual_parameter"),
+    (
+        (
+            "de/regulation/svbezgrv-2025/1",
+            SVBEZGRV_2025_SECTION_1_BODY,
+            (
+                ("annual_reference_amount", "44940"),
+                ("monthly_reference_amount", "3745"),
+            ),
+            "annual_reference_amount",
+        ),
+        (
+            "de/regulation/svbezgrv-2025/2",
+            SVBEZGRV_2025_SECTION_2_BODY,
+            (
+                ("general_annual_income_limit", "73800"),
+                ("general_monthly_income_limit", "6150"),
+                ("special_annual_income_limit", "66150"),
+                ("special_monthly_income_limit", "5512.5"),
+            ),
+            "general_annual_income_limit",
+        ),
+    ),
+)
+def test_exact_svbezgrv_bare_calendar_divisor_gets_complete_mode_hint(
+    citation_path,
+    source_body,
+    parameters,
+    annual_parameter,
+):
+    content = _stated_conversion_rulespec_with_divisor(
+        citation_path,
+        parameters,
+        annual_parameter=annual_parameter,
+        divisor="12",
+    )
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text=source_body,
+        module_citation_path=citation_path,
+        require_complete_source_unit=True,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].startswith(
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    )
+    assert "separate grounded `kind: parameter` rules" in issues[0]
+    assert "annual and monthly amounts" in issues[0]
+    assert "companion tests" in issues[0]
+
+
+def test_stated_conversion_other_ungrounded_literal_keeps_original_error():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="13",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 13 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+def test_stated_conversion_calendar_hint_is_complete_mode_only():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="12",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+    ) == [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+@pytest.mark.parametrize("calendar_constant", ("4", "12", "24", "52", "365"))
+def test_complete_mode_stated_conversion_hint_covers_calendar_constants(
+    calendar_constant,
+):
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor=calendar_constant,
+    )
+
+    issues = find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    )
+
+    assert len(issues) == 1
+    assert "Complete-source stated-conversion hint" in issues[0]
+
+
+def test_stated_conversion_hint_requires_module_source_citation():
+    content = """\
+format: rulespec/v1
+module:
+  summary: Annual and monthly amounts.
+rules:
+  - name: derived_monthly_amount
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2025-01-01'
+        formula: annual_reference_amount / 12
+"""
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+def test_stated_conversion_hint_requires_exact_source_citation_binding():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/wrong/9",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="12",
+    )
+    expected = [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=SVBEZGRV_2025_SECTION_1_BODY,
+            source_citation_path="de/regulation/right/1",
+            require_complete_source_unit=True,
+        )
+        == expected
+    )
+    assert (
+        find_ungrounded_numeric_issues_scoped(
+            content,
+            module_source_text=SVBEZGRV_2025_SECTION_1_BODY,
+            module_citation_path="de/regulation/right/1",
+            require_complete_source_unit=True,
+        )
+        == expected
+    )
+
+
+def test_explicit_calendar_literal_in_source_grounds_normally():
+    citation_path = "de/regulation/example/1"
+    source = "Der Jahresbetrag ist das 12-Fache des Monatsbetrags."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: annual_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: monthly_amount * 12
+"""
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=source,
+            require_complete_source_unit=True,
+        )
+        == []
     )
 
 
@@ -946,9 +1192,21 @@ module:
 rules: []
 """
 
-    result = _analyze(content, ABSATZ_6, test_cases=[])
+    released_absatz_6 = "(6) " + RELEASED_ESTG_32A_BODY.split("\n(6) ", 1)[1]
+    result = _analyze(content, released_absatz_6, test_cases=[])
 
     assert _has_issue(result, "(6)", "deferral")
+    issue = next(
+        issue
+        for issue in result.issues
+        if issue.startswith("[complete-source-unit:deferral]")
+    )
+    assert "Required shape" in issue
+    assert "module:\n  deferred_outputs:" in issue
+    assert "output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax" in issue
+    assert "reason: Cannot be computed until" in issue
+    assert "EStG § 26" in issue
+    assert "`blocked_by` is optional" in issue
 
 
 def test_deferral_cannot_name_its_own_branch_as_missing_dependency():
@@ -1249,6 +1507,190 @@ def test_additional_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
 
 
+@pytest.mark.parametrize("result_phrase", ["ergibt sich", "ergeben sich"])
+def test_stated_conversion_result_is_not_a_formula_mandate(result_phrase: str):
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro. "
+        f"Umgerechnet auf den Monat {result_phrase} 6 150 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Der Monatsbetrag ergibt sich aus dem Jahresbetrag geteilt durch 12.",
+        "Der Jahresbetrag beträgt das 12-Fache des Monatsbetrags.",
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag "
+            "von 6 150 Euro."
+        ),
+        (
+            "The annual amount is 73,800 dollars. Converted to a monthly amount, "
+            "it is the annual amount divided by 12, or 6,150 dollars."
+        ),
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. "
+            "Umgerechnet auf den Monat ergibt sich 6 150 Euro. "
+            "Der Zuschlag ergibt sich aus dem Monatsbetrag plus 10 Euro."
+        ),
+    ],
+)
+def test_stated_conversion_exemption_preserves_actual_formulas(source: str):
+    assert source_states_explicit_computation(source)
+
+
+def test_stated_conversion_pair_scans_past_trailing_year():
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro im Jahr 2025. "
+        "Umgerechnet auf den Monat ergibt sich 6 150 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Nach § 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach den §§ 10–12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach Artikel 10 bis 12 umgerechnet ergibt sich 6 150 Euro.",
+        "Nach Art. 10 bis 12 umgerechnet ergibt sich 6 150 Euro.",
+        "Under Articles 10 to 12, converted monthly, it is 6150 dollars.",
+        "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Ab 2025-01-01 gilt: Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "(1) Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+    ),
+)
+def test_stated_conversion_pair_rejects_structural_number_as_base(source: str):
+    assert not source_states_stated_conversion_result(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag "
+            "von 6 150 Euro."
+        ),
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich 1/12 des Jahresbetrags, nämlich 6 150 Euro."
+        ),
+        (
+            "Der Monatsbetrag beträgt 6 150 Euro. Umgerechnet auf das Jahr "
+            "ergibt sich das 12-Fache des Monatsbetrags, also 73 800 Euro."
+        ),
+        (
+            "The monthly amount is 6,150 dollars. Converted to an annual amount, "
+            "it is 12 times the monthly amount, or 73,800 dollars."
+        ),
+    ),
+)
+def test_same_clause_stated_conversion_formula_requires_derived_output(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: annual_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 73800
+  - name: monthly_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 6150
+  - name: months_per_year
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 12
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "parameter-only")
+    assert any(
+        "formula-output" in issue and "parameter-only" in issue
+        for issue in _pipeline_issues(content, source, test_cases=[])
+    )
+
+
+def test_stated_conversion_pair_stops_formula_guard_at_semicolon():
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat ergibt "
+        "sich 6 150 Euro; der Zuschlag ergibt sich aus dem Monatsbetrag plus "
+        "10 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert source_states_explicit_computation(source)
+
+
+def test_stated_conversion_metadata_filter_retains_real_amounts():
+    source = (
+        "Nach § 12 beträgt der Jahresbetrag 73 800 Euro im Jahr 2025. "
+        "Umgerechnet auf den Monat ergibt sich 6 150 Euro."
+    )
+    year_sized_amount = (
+        "Der Jahresbetrag beträgt 2 025 Euro. Umgerechnet auf den Monat ergibt "
+        "sich 168,75 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+    assert source_states_stated_conversion_result(year_sized_amount)
+    assert not source_states_explicit_computation(year_sized_amount)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Nach den §§ 10–12 umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Nach Artikel 10 bis 12 umgerechnet ergeben sich 6 150 Euro.",
+        "Nach Art. 10 bis 12 umgerechnet ergeben sich 6 150 Euro.",
+        "Under Articles 10 to 12, converted monthly, it is 6150 dollars.",
+        "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Ab 2025-01-01 gilt: Umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+    ),
+)
+def test_metadata_only_numbers_do_not_activate_stated_conversion_hint(source: str):
+    citation_path = "de/regulation/example/1"
+    content = _stated_conversion_rulespec_with_divisor(
+        citation_path,
+        (("monthly_amount", "6150"),),
+        annual_parameter="annual_amount",
+        divisor="52",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=source,
+        source_citation_path=citation_path,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 52 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
 def test_scalar_amount_language_is_not_computation():
     assert not source_states_explicit_computation("Der Freibetrag beträgt 259 Euro.")
     assert not source_states_explicit_computation("Der Satz beträgt 45 vom Hundert.")
@@ -1336,6 +1778,155 @@ rules:
     result = _analyze(content, source, test_cases=[])
 
     assert _has_issue(result, "73", "numeric-recall")
+
+
+RELEASED_RBEG_2021_8_BODY = """\
+Die Regelbedarfsstufen nach der Anlage zu § 28 des Zwölften Buches Sozialgesetzbuch belaufen sich zum 1. Januar 2021
+1. in der Regelbedarfsstufe 1 auf 446 Euro für jede erwachsene Person, die in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch lebt und für die nicht Nummer 2 gilt,
+2. in der Regelbedarfsstufe 2 auf 401 Euro für jede erwachsene Person, die
+a) in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch mit einem Ehegatten oder Lebenspartner oder in eheähnlicher oder lebenspartnerschaftsähnlicher Gemeinschaft mit einem Partner zusammenlebt oder
+b) nicht in einer Wohnung lebt, weil ihr allein oder mit einer weiteren Person ein persönlicher Wohnraum und mit weiteren Personen zusätzliche Räumlichkeiten nach § 42a Absatz 2 Satz 3 des Zwölften Buches Sozialgesetzbuch zur gemeinschaftlichen Nutzung überlassen sind,
+3. in der Regelbedarfsstufe 3 auf 357 Euro für eine erwachsene Person, deren notwendiger Lebensunterhalt sich nach § 27b des Zwölften Buches Sozialgesetzbuch bestimmt (Unterbringung in einer stationären Einrichtung),
+4. in der Regelbedarfsstufe 4 auf 373 Euro für eine Jugendliche oder einen Jugendlichen vom Beginn des 15. bis zur Vollendung des 18. Lebensjahres,
+5. in der Regelbedarfsstufe 5 auf 309 Euro für ein Kind vom Beginn des siebten bis zur Vollendung des 14. Lebensjahres und
+6. in der Regelbedarfsstufe 6 auf 283 Euro für ein Kind bis zur Vollendung des sechsten Lebensjahres."""
+
+
+def test_released_rbeg_stage_and_reference_labels_stay_out_of_numeric_recall():
+    assert (
+        hashlib.sha256(RELEASED_RBEG_2021_8_BODY.encode()).hexdigest()
+        == "0783343f3ce3c3b691ea8bee3047e3a818af42b0da4902c6ff3b28c372e4a964"
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        RELEASED_RBEG_2021_8_BODY,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        RELEASED_RBEG_2021_8_BODY,
+        profile="de-DE",
+    )
+
+    assert any(
+        occurrence.raw == "1" and occurrence.has_structural_context
+        for occurrence in grounding
+    )
+    assert [occurrence.value for occurrence in inventory] == [
+        446.0,
+        401.0,
+        357.0,
+        373.0,
+        15.0,
+        18.0,
+        309.0,
+        14.0,
+        283.0,
+    ]
+
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/rbeg-2021/8
+rules: []
+"""
+    result = _analyze(
+        content,
+        RELEASED_RBEG_2021_8_BODY,
+        corpus_citation_path="de/statute/rbeg-2021/8",
+        artifact_numeric_values=tuple(occurrence.value for occurrence in inventory),
+    )
+
+    assert not _has_issue(result, "numeric-recall")
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Die Leistung richtet sich nach Stufe 1.",
+        "Die Einzelheiten stehen in Anlage 1.",
+        "Die Verweisung lautet §1 Absatz 2 Satz 3 Nummer 4.",
+    ),
+)
+def test_structural_labels_are_typed_grounding_only(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert grounding
+    assert all(occurrence.has_structural_context for occurrence in grounding)
+    assert not inventory
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "The details appear in regs. 123.45.",
+        "Use the 2nd digit and inspect the 3rd digit.",
+    ),
+)
+def test_english_structural_labels_are_typed_grounding_only(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="legacy",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="legacy",
+    )
+
+    assert grounding
+    assert all(occurrence.has_structural_context for occurrence in grounding)
+    assert not inventory
+
+
+def test_structural_range_markers_stay_out_of_numeric_recall():
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        "(1) bis (3) gelten entsprechend.",
+        profile="de-DE",
+    )
+
+    assert not inventory
+
+
+def test_structural_stage_label_does_not_exempt_one_euro_from_numeric_recall():
+    source = "Regelbedarfsstufe 1: Die Leistung beträgt 1 Euro."
+    grounding = extract_typed_numeric_occurrences_from_text(source, profile="de-DE")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="de-DE",
+    )
+
+    assert [
+        (occurrence.value, occurrence.has_structural_context)
+        for occurrence in grounding
+    ] == [
+        (1.0, True),
+        (1.0, False),
+    ]
+    assert [(occurrence.value, occurrence.raw) for occurrence in inventory] == [
+        (1.0, "1")
+    ]
+
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/rbeg-2021/8
+rules: []
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/rbeg-2021/8",
+        artifact_numeric_values=(),
+    )
+
+    assert _has_issue(result, "numeric-recall", "value 1")
 
 
 def test_imported_numeric_recall_only_credits_explicit_imported_scalar():

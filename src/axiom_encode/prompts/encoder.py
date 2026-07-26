@@ -1631,6 +1631,15 @@ Complete-source-unit mode is enabled for this request:
 - Every explicit computation stated in the source unit must have a principal
   `kind: derived` or `kind: derived_relation` output. Naming its constants as
   parameters without encoding the stated formula is invalid.
+- When the source states both a base value and its converted result, encode both
+  values as separate grounded `kind: parameter` rules. Result wording such as
+  "converted to the month, this gives ..." states a scalar result; it does not
+  mandate deriving one parameter from the other.
+- Never introduce calendar constants `12`, `52`, `365`, `4`, or `24` as module
+  literals unless that literal appears in the authoritative source text.
+  Express a stated conversion through companion-test assertions on both
+  parameter outputs; literals used only in companion tests do not require
+  source grounding.
 - Encode every structural paragraph and list branch, including Absatz markers
   such as `(1)` and `(2)`, `Abs. 5`, numbered items such as `1.` and `1a.`, and
   Satz enumerations. If a branch cannot be encoded, use a precise typed
