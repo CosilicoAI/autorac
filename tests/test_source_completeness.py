@@ -743,6 +743,41 @@ rules:
     ]
 
 
+def test_stated_conversion_hint_requires_exact_source_citation_binding():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/wrong/9",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="12",
+    )
+    expected = [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=SVBEZGRV_2025_SECTION_1_BODY,
+            source_citation_path="de/regulation/right/1",
+            require_complete_source_unit=True,
+        )
+        == expected
+    )
+    assert (
+        find_ungrounded_numeric_issues_scoped(
+            content,
+            module_source_text=SVBEZGRV_2025_SECTION_1_BODY,
+            module_citation_path="de/regulation/right/1",
+            require_complete_source_unit=True,
+        )
+        == expected
+    )
+
+
 def test_explicit_calendar_literal_in_source_grounds_normally():
     citation_path = "de/regulation/example/1"
     source = "Der Jahresbetrag ist das 12-Fache des Monatsbetrags."
@@ -1476,6 +1511,15 @@ def test_stated_conversion_result_is_not_a_formula_mandate(result_phrase: str):
         "Der Monatsbetrag ergibt sich aus dem Jahresbetrag geteilt durch 12.",
         "Der Jahresbetrag beträgt das 12-Fache des Monatsbetrags.",
         (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag "
+            "von 6 150 Euro."
+        ),
+        (
+            "The annual amount is 73,800 dollars. Converted to a monthly amount, "
+            "it is the annual amount divided by 12, or 6,150 dollars."
+        ),
+        (
             "Der Jahresbetrag beträgt 73 800 Euro. "
             "Umgerechnet auf den Monat ergibt sich 6 150 Euro. "
             "Der Zuschlag ergibt sich aus dem Monatsbetrag plus 10 Euro."
@@ -1484,6 +1528,72 @@ def test_stated_conversion_result_is_not_a_formula_mandate(result_phrase: str):
 )
 def test_stated_conversion_exemption_preserves_actual_formulas(source: str):
     assert source_states_explicit_computation(source)
+
+
+def test_stated_conversion_pair_scans_past_trailing_year():
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro im Jahr 2025. "
+        "Umgerechnet auf den Monat ergibt sich 6 150 Euro."
+    )
+
+    assert source_states_stated_conversion_result(source)
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Nach § 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "(1) Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+    ),
+)
+def test_stated_conversion_pair_rejects_structural_number_as_base(source: str):
+    assert not source_states_stated_conversion_result(source)
+    assert source_states_explicit_computation(source)
+
+
+def test_same_clause_stated_conversion_formula_requires_derived_output():
+    source = (
+        "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat ergibt "
+        "sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag von "
+        "6 150 Euro."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: annual_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 73800
+  - name: monthly_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 6150
+  - name: months_per_year
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 12
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "formula-output", "parameter-only")
+    assert any(
+        "formula-output" in issue and "parameter-only" in issue
+        for issue in _pipeline_issues(content, source, test_cases=[])
+    )
 
 
 def test_scalar_amount_language_is_not_computation():

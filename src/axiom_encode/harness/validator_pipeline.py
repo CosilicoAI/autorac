@@ -7343,6 +7343,7 @@ def find_ungrounded_numeric_issues(
             content,
             source,
             value,
+            source_citation_path=source_citation_path,
             require_complete_source_unit=require_complete_source_unit,
         )
         issues.append(
@@ -7358,6 +7359,7 @@ def _stated_conversion_ungrounded_literal_hint(
     source_text: str,
     value: float,
     *,
+    source_citation_path: str | None,
     require_complete_source_unit: bool,
 ) -> str:
     """Return targeted retry guidance for a complete-mode calendar conversion."""
@@ -7376,6 +7378,11 @@ def _stated_conversion_ungrounded_literal_hint(
         return ""
     citation_path = _module_numeric_citation_path(payload)
     if not isinstance(citation_path, str) or not citation_path.strip():
+        return ""
+    if (
+        source_citation_path is not None
+        and citation_path.strip() != source_citation_path.strip()
+    ):
         return ""
     return f" {_STATED_CONVERSION_UNGROUNDED_HINT}"
 
@@ -7603,6 +7610,7 @@ def find_ungrounded_numeric_issues_scoped(
                     content,
                     module_source,
                     value,
+                    source_citation_path=module_citation_path,
                     require_complete_source_unit=require_complete_source_unit,
                 )
             }"

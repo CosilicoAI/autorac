@@ -272,7 +272,7 @@ _STATED_CONVERSION_CUE = re.compile(
     flags=re.IGNORECASE,
 )
 _STATED_CONVERSION_RESULT = re.compile(
-    r"\b(?:"
+    r"\b(?P<verb>"
     r"ergibt\s+sich|ergeben\s+sich|entspricht|entsprechen|beträgt|betragen|"
     r"equals?|results?\s+in|is|are"
     r")\b"
@@ -534,30 +534,79 @@ def _stated_conversion_result_spans(source_text: str) -> tuple[tuple[int, int], 
         )
         if result is None:
             continue
+        if _stated_conversion_candidate_contains_formula(source_text, cue, result):
+            continue
         base_window = source_text[max(0, cue.start() - 300) : cue.start()]
         paragraph_break = base_window.rfind("\n\n")
         if paragraph_break >= 0:
             base_window = base_window[paragraph_break + 2 :]
         base_values = list(_STATED_CONVERSION_BASE_VALUE.finditer(base_window))
-        if not base_values:
-            continue
-        last_base = base_values[-1]
-        if _looks_like_temporal_year(base_window, last_base):
+        substantive_base = next(
+            (
+                match
+                for match in reversed(base_values)
+                if not _looks_like_temporal_or_structural_number(base_window, match)
+            ),
+            None,
+        )
+        if substantive_base is None:
             continue
         spans.append((cue.start(), result.end("value")))
     return tuple(spans)
 
 
-def _looks_like_temporal_year(text: str, match: re.Match[str]) -> bool:
-    """Return whether a prospective base value is only a nearby calendar year."""
+def _stated_conversion_candidate_contains_formula(
+    source_text: str,
+    cue: re.Match[str],
+    result: re.Match[str],
+) -> bool:
+    """Keep arithmetic inside a conversion clause out of the scalar exemption."""
+
+    start = cue.start()
+    end = result.start("value")
+    characters = list(source_text[start:end])
+    verb_start = result.start("verb") - start
+    verb_end = result.end("verb") - start
+    characters[verb_start:verb_end] = " " * (verb_end - verb_start)
+    candidate = "".join(characters)
+    return bool(
+        _has_substantive_arithmetic_expression(candidate)
+        or _COMPUTATION_LANGUAGE.search(candidate)
+        or _ROUNDING_LANGUAGE.search(candidate)
+    )
+
+
+def _looks_like_temporal_or_structural_number(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Return whether a prospective base value is only metadata or structure."""
 
     raw = match.group(0).replace(" ", "").replace(".", "").replace(",", ".")
     with contextlib.suppress(ValueError):
         value = float(raw)
         if value.is_integer() and 1900 <= value <= 2100:
             prefix = text[max(0, match.start() - 24) : match.start()]
-            return bool(re.search(r"\b(?:jahr(?:es)?|year)\s*$", prefix, re.IGNORECASE))
-    return False
+            if re.search(
+                r"\b(?:jahr(?:es)?|year|in|for|für(?:\s+das)?)\s*$",
+                prefix,
+                re.IGNORECASE,
+            ):
+                return True
+
+    prefix = text[max(0, match.start() - 32) : match.start()]
+    suffix = text[match.end() : min(len(text), match.end() + 8)]
+    if re.search(
+        r"(?:§+|artikel|art\.?|absatz|abs\.?|satz|nummer|nr\.?|"
+        r"section|sec\.?|subsection|paragraph|clause|item)\s*$",
+        prefix,
+        re.IGNORECASE,
+    ):
+        return True
+    if prefix.endswith("(") and re.match(r"\s*\)", suffix):
+        return True
+    line_prefix = prefix.rsplit("\n", 1)[-1]
+    return bool(not line_prefix.strip() and re.match(r"\s*\.", suffix))
 
 
 def _without_stated_conversion_results(source_text: str) -> str:
