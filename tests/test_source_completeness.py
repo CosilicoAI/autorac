@@ -7669,3 +7669,73 @@ def test_inflected_absatz_references_are_not_numeric_inventory(source: str):
 
     assert not result.issues
     assert result.source_numeric_occurrence_count == 1
+
+
+def test_worded_arithmetic_chain_preserves_formula_topology():
+    source = "(1) Der Betrag ist Einkommen mal 2 plus 3."
+    correct = _analyze(
+        _three_term_topology_content("income * two + three"),
+        source,
+        test_cases=[
+            {
+                "name": "worded source formula",
+                "input": {"income": 10},
+                "output": {"amount": 23},
+            }
+        ],
+    )
+    wrong = _analyze(
+        _three_term_topology_content("income + two * three"),
+        source,
+        test_cases=[
+            {
+                "name": "different worded formula",
+                "input": {"income": 10},
+                "output": {"amount": 16},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+def test_nearest_rounding_offset_cannot_cancel_itself():
+    source = "(1) Das Einkommen ist auf volle Euro gerundet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: rounded_income
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: FORMULA}]
+"""
+    correct = _analyze(
+        content.replace("FORMULA", "floor(income + 0.5)"),
+        source,
+        test_cases=[
+            {
+                "name": "nearest result",
+                "input": {"income": 10.75},
+                "output": {"rounded_income": 11},
+            }
+        ],
+    )
+    cancelled = _analyze(
+        content.replace("FORMULA", "floor(income - 0.5 + 0.5)"),
+        source,
+        test_cases=[
+            {
+                "name": "cancelled offset",
+                "input": {"income": 10.75},
+                "output": {"rounded_income": 10},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(cancelled, "rounding", "fractional")
