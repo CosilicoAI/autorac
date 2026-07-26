@@ -2987,6 +2987,83 @@ class TestCmdEvalSuite:
         assert payload["coverage"]["actual_result_count"] == 0
         assert payload["all_ready"] is False
 
+    def test_verified_loader_rebuilds_nondefault_persisted_retry_policy(
+        self,
+        tmp_path,
+    ):
+        import axiom_encode.cli as cli_module
+        from axiom_encode.harness.evals import (
+            _build_eval_suite_execution_identity,
+            _eval_suite_execution_identity_sha256,
+        )
+
+        output_root = tmp_path / "suite"
+        output_root.mkdir()
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            persisted_identity = _build_eval_suite_execution_identity(
+                tmp_path / "axiom-rules-engine",
+                (),
+                suite_retry_attempts=0,
+            )
+        run_state = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+            "status": "completed",
+            "completed_cases": 0,
+            "result_count": 0,
+        }
+        (output_root / "suite-run.json").write_text(json.dumps(run_state) + "\n")
+        manifest = SimpleNamespace(
+            name="empty",
+            path=tmp_path / "suite.yaml",
+            runners=["codex:gpt-5.4"],
+            cases=[],
+        )
+
+        with (
+            patch(
+                "axiom_encode.cli._build_eval_suite_manifest_identity",
+                return_value={},
+            ),
+            patch(
+                "axiom_encode.cli._eval_suite_rulespec_roots",
+                return_value=(),
+            ),
+            patch(
+                "axiom_encode.cli._build_eval_suite_execution_identity",
+                return_value=persisted_identity,
+            ) as mock_build_identity,
+            patch(
+                "axiom_encode.cli._load_eval_suite_resume_state",
+                return_value=(
+                    "12345678-1234-4234-8234-123456789abc",
+                    "2026-07-25T12:00:00+00:00",
+                    [],
+                    set(),
+                ),
+            ),
+        ):
+            verified = cli_module._load_verified_eval_suite_artifacts(
+                output_root=output_root,
+                manifest=manifest,
+                effective_runners=["codex:gpt-5.4"],
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=SimpleNamespace(),
+                require_complete=True,
+            )
+
+        assert verified["complete"] is True
+        assert mock_build_identity.call_args.kwargs["suite_retry_attempts"] == 0
+
 
 class TestCmdEvalSuiteReport:
     def test_groups_duplicate_paths_by_case_index(self):
