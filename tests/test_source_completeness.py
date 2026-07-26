@@ -5976,6 +5976,360 @@ def test_positive_ordinary_selector_is_false_active_for_ineligibility(
 
 
 @pytest.mark.parametrize(
+    (
+        "source",
+        "selector_name",
+        "formula",
+        "false_output",
+        "true_output",
+    ),
+    [
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "eligible",
+            "if eligible: false else: true",
+            True,
+            False,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "eligible",
+            "not eligible",
+            True,
+            False,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "eligible",
+            "match eligible: true => false; false => true",
+            True,
+            False,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "qualified",
+            "if qualified: false else: true",
+            True,
+            False,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "ordinary_case",
+            "if ordinary_case: true else: false",
+            False,
+            True,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "regular_case",
+            "if regular_case: true else: false",
+            False,
+            True,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
+            "default_case",
+            "if default_case: true else: false",
+            False,
+            True,
+        ),
+        (
+            "(1) The claim does not apply when no certificate is present.",
+            "has_claim",
+            "if has_claim: false else: true",
+            True,
+            False,
+        ),
+        (
+            "(1) Der Anspruch gilt nicht, wenn keine Bescheinigung vorliegt.",
+            "has_anspruch",
+            "if has_anspruch: false else: true",
+            True,
+            False,
+        ),
+    ],
+)
+def test_exception_selector_must_match_the_condition_not_the_claim(
+    source: str,
+    selector_name: str,
+    formula: str,
+    false_output: bool,
+    true_output: bool,
+):
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "selector false",
+            "input": {selector_name: False},
+            "output": {"result": false_output},
+        },
+        {
+            "name": "selector true",
+            "input": {selector_name: True},
+            "output": {"result": true_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_exception_condition_does_not_borrow_a_preceding_main_clause_concept():
+    source = """\
+(1) Bei einer Bescheinigung besteht der Anspruch, außer wenn kein Kind vorhanden ist.
+"""
+    content = _exception_control_content(
+        "if has_certificate: false else: true"
+    )
+    cases = [
+        {
+            "name": "without certificate",
+            "input": {"has_certificate": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "with certificate",
+            "input": {"has_certificate": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Wenn keine Berechtigung besteht, gilt der Anspruch nicht.",
+        "(1) Bei fehlender Berechtigung gilt der Anspruch nicht.",
+        "(1) Ohne Berechtigung gilt der Anspruch nicht.",
+    ],
+)
+def test_preposed_exception_condition_preserves_ordinary_selector(source: str):
+    branches = recognize_source_structure(source)
+    obligations = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    content = _exception_control_content("eligible")
+    cases = [
+        {
+            "name": "eligible",
+            "input": {"eligible": True},
+            "output": {"result": True},
+        },
+        {
+            "name": "ineligible",
+            "input": {"eligible": False},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert len(obligations) == 1
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Der Anspruch besteht nicht, außer bei einer Bescheinigung.",
+        "(1) Der Anspruch gilt nicht, es sei denn, eine Bescheinigung liegt vor.",
+        (
+            "(1) Für diese Person gilt der Anspruch weiterhin nicht, "
+            "außer bei einer Bescheinigung."
+        ),
+        "(1) The claim does not apply unless there is a certificate.",
+    ],
+)
+def test_exception_to_negative_rule_must_enable_the_claim(source: str):
+    correct = _exception_control_content(
+        "if has_certificate: true else: false"
+    )
+    wrong = _exception_control_content(
+        "if has_certificate: false else: true"
+    )
+    correct_cases = [
+        {
+            "name": "without certificate",
+            "input": {"has_certificate": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "with certificate",
+            "input": {"has_certificate": True},
+            "output": {"result": True},
+        },
+    ]
+    wrong_cases = [
+        {
+            "name": "without certificate",
+            "input": {"has_certificate": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "with certificate",
+            "input": {"has_certificate": True},
+            "output": {"result": False},
+        },
+    ]
+
+    correct_result = _analyze(correct, source, test_cases=correct_cases)
+    wrong_result = _analyze(wrong, source, test_cases=wrong_cases)
+
+    assert not correct_result.issues
+    assert _has_issue(wrong_result, "exception", "test")
+
+
+def test_exception_to_negative_rule_accepts_numeric_deduction_effect():
+    source = """\
+(1) Der Abzug gilt nicht, außer bei einer Bescheinigung.
+"""
+    content = _exception_control_content(
+        "if has_certificate: tax_with_deduction else: tax_without_deduction"
+    )
+    cases = [
+        {
+            "name": "without certificate",
+            "input": {
+                "has_certificate": False,
+                "tax_with_deduction": 10,
+                "tax_without_deduction": 20,
+            },
+            "output": {"result": 20},
+        },
+        {
+            "name": "with certificate",
+            "input": {
+                "has_certificate": True,
+                "tax_with_deduction": 10,
+                "tax_without_deduction": 20,
+            },
+            "output": {"result": 10},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_coordinated_exception_cues_require_distinct_witnesses():
+    source = """\
+(1) Außer bei einer Befreiung und außer bei einer Sperre besteht der Anspruch.
+"""
+    complete = _exception_control_content(
+        "if exemption_applies: false "
+        "else: if barred: false else: true"
+    )
+    incomplete = _exception_control_content(
+        "if exemption_applies: false else: true"
+    )
+    complete_cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False, "barred": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "exemption",
+            "input": {"exemption_applies": True, "barred": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "barred",
+            "input": {"exemption_applies": False, "barred": True},
+            "output": {"result": False},
+        },
+    ]
+    incomplete_cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "exemption",
+            "input": {"exemption_applies": True},
+            "output": {"result": False},
+        },
+    ]
+
+    complete_result = _analyze(complete, source, test_cases=complete_cases)
+    incomplete_result = _analyze(
+        incomplete,
+        source,
+        test_cases=incomplete_cases,
+    )
+
+    assert not complete_result.issues
+    assert _has_issue(incomplete_result, "exception", "test")
+
+
+def test_exception_witness_allocation_uses_maximum_matching():
+    source = """\
+(1) Der Anspruch besteht, außer bei einer Bescheinigung oder einem Kind.
+Der Anspruch besteht, außer bei einer Bescheinigung oder einem Status.
+Der Anspruch besteht, außer bei einer Bescheinigung oder einem Status.
+"""
+    content = _exception_control_content(
+        "if has_certificate: false else: "
+        "if has_child: false else: "
+        "if has_status: false else: true"
+    )
+    ordinary = {
+        "has_certificate": False,
+        "has_child": False,
+        "has_status": False,
+    }
+    cases = [
+        {
+            "name": "ordinary",
+            "input": ordinary,
+            "output": {"result": True},
+        }
+    ]
+    for selector in ordinary:
+        inputs = dict(ordinary)
+        inputs[selector] = True
+        cases.append(
+            {
+                "name": selector,
+                "input": inputs,
+                "output": {"result": False},
+            }
+        )
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_synonymous_exception_cues_in_one_condition_are_one_obligation():
+    source = "(1) Außer bei einer Befreiung gilt der Anspruch nicht."
+    branches = recognize_source_structure(source)
+    language_matches = tuple(
+        completeness_module._EXCEPTION_LANGUAGE.finditer(source)
+    )
+
+    obligations = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert len(language_matches) == 2
+    assert len(obligations) == 1
+
+
+@pytest.mark.parametrize(
     ("source", "selector_name", "formula"),
     [
         (

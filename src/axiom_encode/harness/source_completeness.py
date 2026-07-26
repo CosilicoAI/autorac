@@ -271,7 +271,7 @@ _EXCEPTION_LANGUAGE = re.compile(
     r"\b(?:"
     r"except(?:ion)?|unless|subject\s+to|shall\s+not\s+apply|"
     r"does\s+not\s+apply|notwithstanding|vorbehaltlich|ausnahme|"
-    r"es\s+sei\s+denn|gilt\s+nicht(?:\s*,?\s*wenn)?|"
+    r"es\s+sei\s+denn|gilt\b[^.;]{0,80}\bnicht(?:\s*,?\s*wenn)?|"
     r"findet\s+keine\s+anwendung|soweit\s+nicht|"
     r"außer|ausgenommen|abweichend\s+von|jedoch\s+nicht|"
     r"(?:[1-9]\d?)?voraussetzung[^.;]{0,160}\bnicht\b"
@@ -4695,6 +4695,10 @@ def _source_exception_branches(
     source_clauses = tuple(
         _source_clause_spans(source_text, branches=branches)
     )
+    matches_by_clause: dict[
+        tuple[int, int, str],
+        list[re.Match[str]],
+    ] = {}
     for match in _EXCEPTION_LANGUAGE.finditer(source_text):
         if _span_is_deferred(
             match.start(),
@@ -4703,19 +4707,7 @@ def _source_exception_branches(
             deferred_paths=deferred_paths,
         ):
             continue
-        owner = _most_specific_containing_branch(
-            match.start(),
-            match.end(),
-            branches=active_branches,
-        ) or SourceStructureBranch(
-            (),
-            "source-unit",
-            "source unit",
-            source_text,
-            0,
-            len(source_text),
-        )
-        clause_start, clause_end, clause_text = next(
+        clause = next(
             (
                 (start, end, text)
                 for start, end, text in source_clauses
@@ -4723,22 +4715,74 @@ def _source_exception_branches(
             ),
             (match.start(), match.end(), match.group(0)),
         )
-        obligations.append(
-            SourceStructureBranch(
-                owner.path,
-                "exception-clause",
-                owner.label,
-                clause_text,
-                clause_start,
-                clause_end,
+        matches_by_clause.setdefault(clause, []).append(match)
+
+    for (clause_start, clause_end, clause_text), clause_matches in (
+        matches_by_clause.items()
+    ):
+        groups: list[list[re.Match[str]]] = []
+        for match in clause_matches:
+            if (
+                groups
+                and _exception_cues_have_distinct_conditions(
+                    source_text[groups[-1][-1].end() : match.start()]
+                )
+            ):
+                groups.append([match])
+            elif groups:
+                groups[-1].append(match)
+            else:
+                groups.append([match])
+        for group_index, group in enumerate(groups):
+            match = group[0]
+            owner = _most_specific_containing_branch(
+                match.start(),
+                match.end(),
+                branches=active_branches,
+            ) or SourceStructureBranch(
+                (),
+                "source-unit",
+                "source unit",
+                source_text,
+                0,
+                len(source_text),
             )
-        )
+            if len(groups) == 1:
+                branch_start = clause_start
+                branch_end = clause_end
+                branch_text = clause_text
+            else:
+                branch_start = match.start()
+                branch_end = (
+                    groups[group_index + 1][0].start()
+                    if group_index + 1 < len(groups)
+                    else clause_end
+                )
+                branch_text = source_text[branch_start:branch_end]
+            obligations.append(
+                SourceStructureBranch(
+                    owner.path,
+                    "exception-clause",
+                    owner.label,
+                    branch_text,
+                    branch_start,
+                    branch_end,
+                )
+            )
     return tuple(
         {
             (branch.path, branch.start, branch.end): branch
             for branch in obligations
         }.values()
     )
+
+
+def _exception_cues_have_distinct_conditions(between: str) -> bool:
+    return re.search(
+        r"(?:;|\b(?:und|oder|and|or)\b)\s*$",
+        between,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _source_rounding_obligations(
@@ -4855,28 +4899,16 @@ def _unwitnessed_exception_branches(
     toggled_exception_selectors: set[_ExceptionWitness],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[SourceStructureBranch, ...]:
-    available_witnesses = set(toggled_exception_selectors)
-    missing: list[SourceStructureBranch] = []
-    for branch in sorted(
-        exception_branches,
-        key=lambda item: len(_exception_witnesses_for_branch(
-            item,
-            principal_rule_paths=principal_rule_paths,
-            toggled_exception_selectors=available_witnesses,
-            extract_numeric_occurrences=extract_numeric_occurrences,
-        )),
-    ):
-        candidates = _exception_witnesses_for_branch(
+    candidate_witnesses = {
+        branch: _exception_witnesses_for_branch(
             branch,
             principal_rule_paths=principal_rule_paths,
-            toggled_exception_selectors=available_witnesses,
+            toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
-        if not candidates:
-            missing.append(branch)
-            continue
-        available_witnesses.remove(sorted(candidates)[0])
-    return tuple(missing)
+        for branch in exception_branches
+    }
+    return _unmatched_evidence_obligations(candidate_witnesses)
 
 
 def _exception_witnesses_for_branch(
@@ -4897,6 +4929,7 @@ def _exception_witnesses_for_branch(
         )
     }
     requirement = _source_exception_effect_requirement(branch.text)
+    condition_text = _source_exception_condition_text(branch.text)
     return {
         witness
         for witness in toggled_exception_selectors
@@ -4911,17 +4944,47 @@ def _exception_witnesses_for_branch(
             else (
                 witness.active_value
                 == _source_exception_selector_active_value(
-                    branch.text,
+                    condition_text,
                     witness.selector_name,
                 )
             )
         )
         and _source_exception_selector_is_relevant(
-            branch.text,
+            condition_text,
             witness.selector_name,
         )
         and _exception_witness_satisfies_requirement(witness, requirement)
     }
+
+
+def _source_exception_condition_text(text: str) -> str:
+    """Return the condition region without the ordinary claim subject."""
+
+    clause = _strip_source_clause_marker(text)
+    marker = _EXCEPTION_LANGUAGE.search(clause)
+    if marker is None:
+        return clause
+    suffix = clause[marker.start() :]
+    condition_cue = re.search(
+        r"\b(?:wenn|falls|sofern|when|if|bei|ohne|mangels)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if condition_cue is not None:
+        return suffix[condition_cue.start() :]
+    prefix = clause[: marker.start()]
+    preposed = re.match(
+        r"\s*(?P<condition>(?:"
+        r"(?:wenn|falls|sofern|when|if)\b[^,;]*|"
+        r"(?:bei|ohne|mangels)\b[^,;]*|"
+        r"im\s+falle\b[^,;]*"
+        r"))\s*,?\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    if preposed is not None:
+        return preposed.group("condition")
+    return suffix
 
 
 def _source_exception_effect_requirement(text: str) -> str:
@@ -4939,9 +5002,11 @@ def _source_exception_effect_requirement(text: str) -> str:
         flags=re.IGNORECASE,
     ):
         return "zero"
+    if _exception_reverses_negative_proposition(collapsed):
+        return "enable"
     if re.search(
         r"\b(?:"
-        r"gilt\s+nicht|"
+        r"gilt\b[^.;]{0,80}\bnicht|"
         r"findet\s+keine\s+anwendung|"
         r"keine?\s+berechtigung|"
         r"keinen?\s+anspruch|"
@@ -4968,14 +5033,31 @@ def _source_exception_effect_requirement(text: str) -> str:
     return "change"
 
 
+def _exception_reverses_negative_proposition(text: str) -> bool:
+    reversal = re.search(
+        r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if reversal is None:
+        return False
+    proposition = text[: reversal.start()]
+    return re.search(
+        r"\b(?:besteht|gilt)\b[^.;]{0,80}\bnicht\b|"
+        r"\bfindet\s+keine\s+anwendung\b|"
+        r"\b(?:does|shall)\s+not\s+apply\b|"
+        r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+        r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
+        proposition,
+        flags=re.IGNORECASE,
+    ) is not None
+
+
 def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
     """Reject formula toggles with no semantic link to the source exception."""
 
     normalized_name = _normalized_selector_name(name)
-    if (
-        _exception_semantic_identifier(normalized_name)
-        or _ordinary_semantic_identifier(normalized_name)
-    ):
+    if _exception_semantic_identifier(normalized_name):
         return True
     collapsed = _collapse_text(text).lower()
     if _source_selector_concept_matches(collapsed, normalized_name):
@@ -5103,7 +5185,7 @@ def _source_selector_concept_polarity(
         after = text[match.end() : min(len(text), match.end() + 48)]
         negative = bool(
             re.search(
-                r"\b(?:kein(?:e|en|em|er|es)?|ohne|mangels|"
+                r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
                 r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
                 r"\b[^.;]{0,40}$|"
                 r"\b(?:nicht|not)\s+(?:\w+\s+){0,1}$",
@@ -5148,6 +5230,10 @@ def _exception_witness_satisfies_requirement(
 ) -> bool:
     if requirement == "zero":
         return witness.zeroes
+    if requirement == "enable":
+        return (witness.boolean_effect and not witness.blocks) or (
+            not witness.boolean_effect
+        )
     if requirement == "exclude":
         return witness.blocks or not witness.boolean_effect
     return True
