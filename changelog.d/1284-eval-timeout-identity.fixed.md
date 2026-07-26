@@ -28,9 +28,10 @@ engine must remain whole-checkout scoped; real producer-to-board admission locks
 protect both contracts. Every durable row's admission context must bind back to
 the suite's exact run, manifest, case, corpus, RuleSpec root, runner set,
 execution identity, and digest, and PolicyEngine metrics must bind to that same
-sealed runtime. Terminal encoder timeout evidence stops suite-level retries,
-bounding Claude and Codex timeout paths to the two documented
-artifact-generation attempts instead of six.
+sealed runtime as a complete pass/score/runtime evidence set rather than a
+producer-impossible partial combination. Terminal encoder timeout evidence stops
+suite-level retries, bounding Claude and Codex timeout paths to the two
+documented artifact-generation attempts instead of six.
 Runtime retry loops now consume the same bound constants, and completed
 historical runs recover their digest-verified suite retry count before
 rebuilding the live identity, so nondefault policies remain verifiable without
