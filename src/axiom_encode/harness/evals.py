@@ -13511,8 +13511,8 @@ def _run_claude_prompt_eval(
     }
     start = time.time()
     try:
-        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as prompt_input:
-            prompt_input.write(prompt)
+        with tempfile.TemporaryFile(mode="w+b") as prompt_input:
+            prompt_input.write(prompt.encode("utf-8"))
             prompt_input.seek(0)
             result = subprocess.run(
                 cmd,
@@ -13638,7 +13638,7 @@ def _run_codex_prompt_eval(
         ) as receiver_workspace_dir,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stderr_file,
-        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as prompt_input,
+        tempfile.TemporaryFile(mode="w+b") as prompt_input,
     ):
         codex_home = _prepare_codex_eval_home(Path(codex_home_dir))
         receiver_workspace_root = Path(receiver_workspace_dir)
@@ -13670,7 +13670,7 @@ def _run_codex_prompt_eval(
         codex_env["CODEX_HOME"] = str(codex_home)
         stdout_path = Path(stdout_file.name)
         stderr_path = Path(stderr_file.name)
-        prompt_input.write(prompt)
+        prompt_input.write(prompt.encode("utf-8"))
         prompt_input.seek(0)
         process = subprocess.Popen(
             cmd,

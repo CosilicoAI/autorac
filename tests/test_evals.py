@@ -3446,7 +3446,7 @@ class TestClaudePromptEval:
             source_text_file=tmp_path / "source.txt",
             manifest_file=tmp_path / "context-manifest.json",
         )
-        prompt = "full prompt bytes\n" + ("x" * 600_000)
+        prompt = "full prompt bytes\r\nΔ" + ("x" * 199_980)
         observed: dict[str, object] = {}
 
         def fake_run(command, **kwargs):
@@ -3469,7 +3469,7 @@ class TestClaudePromptEval:
         assert isinstance(command, list)
         assert command.count("-p") == 1
         assert prompt not in command
-        assert observed["prompt"] == prompt
+        assert observed["prompt"] == prompt.encode("utf-8")
 
     @pytest.mark.parametrize(
         ("spec", "expected_effort"),
@@ -3756,7 +3756,7 @@ class TestCodexPromptEval:
             source_text_file=tmp_path / "source.txt",
             manifest_file=tmp_path / "context-manifest.json",
         )
-        prompt = "full prompt bytes\n" + ("x" * 600_000)
+        prompt = "full prompt bytes\r\nΔ" + ("x" * 199_980)
         observed: dict[str, object] = {}
 
         class FakePopen:
@@ -3788,7 +3788,7 @@ class TestCodexPromptEval:
         assert isinstance(command, list)
         assert command[-1] == "-"
         assert prompt not in command
-        assert observed["prompt"] == prompt
+        assert observed["prompt"] == prompt.encode("utf-8")
 
     def test_prompt_eval_uses_the_preflight_verified_executable(self, tmp_path):
         runner = parse_runner_spec("codex:gpt-5.4")
