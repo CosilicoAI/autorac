@@ -7511,3 +7511,133 @@ rules:
     result = _analyze(content, source, test_cases=[])
 
     assert _has_issue(result, "deferral", "dependency")
+
+
+def _three_term_topology_content(formula: str) -> str:
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: two
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: 2}}]
+  - name: three
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: 3}}]
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: {formula!r}}}]
+"""
+
+
+@pytest.mark.parametrize(
+    ("source_expression", "correct_formula", "correct_output", "wrong_formula"),
+    [
+        (
+            "(Einkommen * 2 + 3)",
+            "income * two + three",
+            23,
+            "income + two * three",
+        ),
+        (
+            "Einkommen * (2 + 3)",
+            "income * (two + three)",
+            50,
+            "income * two + three",
+        ),
+    ],
+)
+def test_parenthesized_source_formula_preserves_topology(
+    source_expression: str,
+    correct_formula: str,
+    correct_output: int,
+    wrong_formula: str,
+):
+    source = f"(1) Der Betrag wird als {source_expression} berechnet."
+    correct = _analyze(
+        _three_term_topology_content(correct_formula),
+        source,
+        test_cases=[
+            {
+                "name": "parenthesized source computation",
+                "input": {"income": 10},
+                "output": {"amount": correct_output},
+            }
+        ],
+    )
+    wrong = _analyze(
+        _three_term_topology_content(wrong_formula),
+        source,
+        test_cases=[
+            {
+                "name": "different parenthesized computation",
+                "input": {"income": 10},
+                "output": {"amount": 16 if source_expression.startswith("(") else 23},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+def test_formula_topology_accepts_associative_regrouping():
+    source = "(1) Der Betrag wird als Einkommen + 2 + 3 berechnet."
+    content = _three_term_topology_content("income + (two + three)")
+    case = {
+        "name": "associatively regrouped sum",
+        "input": {"income": 10},
+        "output": {"amount": 15},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_formula_topology_preserves_distinct_source_variables():
+    source = (
+        "(1) Der Betrag wird als Einkommen * Partnereinkommen + 3 berechnet."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: supplement
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 3}]
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{formula: FORMULA}]
+"""
+    case = {
+        "name": "two distinct inputs",
+        "input": {"income": 10, "spouse_income": 4},
+    }
+    correct = _analyze(
+        content.replace("FORMULA", "income * spouse_income + supplement"),
+        source,
+        test_cases=[{**case, "output": {"amount": 43}}],
+    )
+    duplicated = _analyze(
+        content.replace("FORMULA", "income * income + supplement"),
+        source,
+        test_cases=[{**case, "output": {"amount": 103}}],
+    )
+
+    assert not correct.issues
+    assert _has_issue(duplicated, "formula branch")
