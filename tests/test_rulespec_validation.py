@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import textwrap
 from decimal import Decimal
@@ -205,6 +206,83 @@ def test_claude_reviewer_disables_tools_and_scrubs_signing_capabilities(
     assert mock_run.call_args.kwargs["cwd"] == tmp_path
     assert output == '{"passed": true}'
     assert returncode == 0
+
+
+def test_validator_subprocess_capture_read_errors_are_reproducible():
+    captured_paths: list[Path] = []
+
+    def fail_capture_read(path: Path, *_args, **_kwargs):
+        captured_paths.append(path)
+        raise OSError(5, "synthetic capture read failure", str(path))
+
+    errors: list[str] = []
+    with patch.object(Path, "read_text", autospec=True, side_effect=fail_capture_read):
+        for _ in range(2):
+            with pytest.raises(RuntimeError) as exc_info:
+                validator_pipeline._run_subprocess_with_idle_timeout(
+                    [sys.executable, "-c", "pass"],
+                    timeout=10,
+                    idle_timeout=10,
+                    poll_interval=0.001,
+                )
+            errors.append(str(exc_info.value))
+
+    assert captured_paths[0].parent != captured_paths[1].parent
+    assert errors[0] == errors[1]
+    assert "<validator-subprocess-capture>/stdout.log" in errors[0]
+    assert all(str(path.parent) not in errors[0] for path in captured_paths)
+
+
+def test_validator_subprocess_capture_output_paths_are_reproducible():
+    captured_paths: list[Path] = []
+
+    def expose_capture_path(path: Path, *_args, **_kwargs):
+        captured_paths.append(path)
+        return f"capture={path}\n"
+
+    outputs: list[str] = []
+    with patch.object(
+        Path,
+        "read_text",
+        autospec=True,
+        side_effect=expose_capture_path,
+    ):
+        for _ in range(2):
+            result = validator_pipeline._run_subprocess_with_idle_timeout(
+                [sys.executable, "-c", "pass"],
+                timeout=10,
+                idle_timeout=10,
+                poll_interval=0.001,
+            )
+            outputs.append(result.output)
+
+    assert captured_paths[0].parent == captured_paths[1].parent
+    assert captured_paths[2].parent == captured_paths[3].parent
+    assert captured_paths[0].parent != captured_paths[2].parent
+    assert outputs == [
+        (
+            "capture=<validator-subprocess-capture>/stdout.log\n"
+            "capture=<validator-subprocess-capture>/stderr.log\n"
+        )
+    ] * 2
+
+
+def test_validator_subprocess_cleanup_error_cannot_mask_timeout():
+    with (
+        patch.object(
+            Path,
+            "unlink",
+            autospec=True,
+            side_effect=OSError("synthetic cleanup failure"),
+        ),
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        validator_pipeline._run_subprocess_with_idle_timeout(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            timeout=0.001,
+            idle_timeout=10,
+            poll_interval=0.001,
+        )
 
 
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:
