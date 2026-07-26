@@ -260,6 +260,10 @@ _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
     default=None,
 )
+_EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC: ContextVar[float | None] = ContextVar(
+    "_EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC",
+    default=None,
+)
 _EVAL_CASE_TIMEOUT_SECONDS: ContextVar[int | None] = ContextVar(
     "_EVAL_CASE_TIMEOUT_SECONDS",
     default=None,
@@ -7457,38 +7461,18 @@ def _run_prompt_eval_with_empty_artifact_retry(
 ) -> tuple[EvalPromptResponse, bool, int, frozenset[Path]]:
     """Run an eval within the execution-identity-bound artifact attempt limit."""
 
-    if (
-        isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, bool)
-        or not isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, int)
-        or _EMPTY_ARTIFACT_MAX_ATTEMPTS <= 0
-    ):
-        raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
-    materialized_paths: set[Path] = set()
-    response = _run_prompt_eval(runner, workspace, prompt)
-    wrote_artifact = _materialize_eval_artifact(
-        response.text,
-        output_file,
-        source_text=source_text,
-        workspace_root=workspace.root,
-        policyengine_rule_hint=policyengine_rule_hint,
-        artifact_root=artifact_root,
-        materialized_paths=materialized_paths,
-    )
-    if wrote_artifact or not _response_allows_empty_artifact_retry(response):
-        return response, wrote_artifact, 0, frozenset(materialized_paths)
-
-    retry_prompt = _build_empty_artifact_retry_prompt(
-        prompt,
-        target_file_name=target_file_name,
-        include_tests=include_tests,
-    )
-    retry_count = 0
-    for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
-        retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
-        retry_count += 1
-        response = _combine_retry_response(response, retry_response, retry_prompt)
+    _resume_eval_case_budget()
+    try:
+        if (
+            isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, bool)
+            or not isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, int)
+            or _EMPTY_ARTIFACT_MAX_ATTEMPTS <= 0
+        ):
+            raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
+        materialized_paths: set[Path] = set()
+        response = _run_prompt_eval(runner, workspace, prompt)
         wrote_artifact = _materialize_eval_artifact(
-            retry_response.text,
+            response.text,
             output_file,
             source_text=source_text,
             workspace_root=workspace.root,
@@ -7496,9 +7480,35 @@ def _run_prompt_eval_with_empty_artifact_retry(
             artifact_root=artifact_root,
             materialized_paths=materialized_paths,
         )
-        if wrote_artifact or not _response_allows_empty_artifact_retry(retry_response):
-            break
-    return response, wrote_artifact, retry_count, frozenset(materialized_paths)
+        if wrote_artifact or not _response_allows_empty_artifact_retry(response):
+            return response, wrote_artifact, 0, frozenset(materialized_paths)
+
+        retry_prompt = _build_empty_artifact_retry_prompt(
+            prompt,
+            target_file_name=target_file_name,
+            include_tests=include_tests,
+        )
+        retry_count = 0
+        for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
+            retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
+            retry_count += 1
+            response = _combine_retry_response(response, retry_response, retry_prompt)
+            wrote_artifact = _materialize_eval_artifact(
+                retry_response.text,
+                output_file,
+                source_text=source_text,
+                workspace_root=workspace.root,
+                policyengine_rule_hint=policyengine_rule_hint,
+                artifact_root=artifact_root,
+                materialized_paths=materialized_paths,
+            )
+            if wrote_artifact or not _response_allows_empty_artifact_retry(
+                retry_response
+            ):
+                break
+        return response, wrote_artifact, retry_count, frozenset(materialized_paths)
+    finally:
+        _pause_eval_case_budget()
 
 
 def _run_single_eval(
@@ -12836,12 +12846,36 @@ def _active_eval_case_budget(timeout_seconds: int) -> Iterator[None]:
     deadline_token = _EVAL_CASE_DEADLINE_MONOTONIC.set(
         time.monotonic() + timeout_seconds
     )
+    paused_token = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(None)
     timeout_token = _EVAL_CASE_TIMEOUT_SECONDS.set(timeout_seconds)
     try:
         yield
     finally:
         _EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+        _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.reset(paused_token)
         _EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+
+def _pause_eval_case_budget() -> None:
+    """Freeze the active generation deadline during deterministic evaluation."""
+
+    if (
+        _EVAL_CASE_DEADLINE_MONOTONIC.get() is not None
+        and _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get() is None
+    ):
+        _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(time.monotonic())
+
+
+def _resume_eval_case_budget() -> None:
+    """Resume a frozen generation deadline without charging paused wall time."""
+
+    deadline = _EVAL_CASE_DEADLINE_MONOTONIC.get()
+    paused_at = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get()
+    if deadline is None or paused_at is None:
+        return
+    paused_seconds = max(time.monotonic() - paused_at, 0.0)
+    _EVAL_CASE_DEADLINE_MONOTONIC.set(deadline + paused_seconds)
+    _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(None)
 
 
 def _remaining_eval_case_budget_seconds() -> float | None:
@@ -12850,7 +12884,9 @@ def _remaining_eval_case_budget_seconds() -> float | None:
     deadline = _EVAL_CASE_DEADLINE_MONOTONIC.get()
     if deadline is None:
         return None
-    return deadline - time.monotonic()
+    paused_at = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get()
+    now = paused_at if paused_at is not None else time.monotonic()
+    return deadline - now
 
 
 def _timeout_bounded_by_eval_case_budget(
