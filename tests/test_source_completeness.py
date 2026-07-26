@@ -6488,6 +6488,41 @@ rules:
     assert _has_issue(result, "exception", "test") is expected_issue
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Im Ausnahmefall beträgt der Betrag 0,5 Euro.",
+        "(1) In the exception case, the amount equals 0.5 euros.",
+    ],
+)
+def test_nonzero_decimal_exception_is_not_classified_as_zero(source: str):
+    content = _exception_control_content(
+        "if exception_applies: exception_amount else: 10",
+        extra_rules="""\
+  - name: exception_amount
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 0.5}]
+""",
+    )
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exception_applies": False},
+            "output": {"result": 10},
+        },
+        {
+            "name": "exception",
+            "input": {"exception_applies": True},
+            "output": {"result": 0.5},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
 def test_generic_deviation_may_increase_the_principal_output():
     source = "(1) Abweichend von der Hauptregel erhöht eine Ausnahme den Betrag."
     content = _exception_control_content(

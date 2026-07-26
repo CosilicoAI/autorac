@@ -4991,13 +4991,14 @@ def _source_exception_effect_requirement(text: str) -> str:
     """Classify the minimum isolated effect expressly required by one clause."""
 
     collapsed = _collapse_text(text)
+    numeric_zero = r"(?<![\d,.])0+(?:[,.]0+)?(?![\d,.])"
     if re.search(
-        r"\b(?:"
-        r"(?:beträgt|ist|wird)[^.;]{0,120}\b(?:null|0(?:[,.]0+)?)|"
-        r"auf\s+(?:null|0(?:[,.]0+)?)|"
-        r"(?:equals?|is|becomes?|set\s+to)[^.;]{0,120}"
-        r"\b(?:zero|0(?:[,.]0+)?)"
-        r")\b",
+        rf"\b(?:"
+        rf"(?:beträgt|ist|wird)[^.;]{{0,120}}\b(?:null|{numeric_zero})|"
+        rf"auf\s+(?:null|{numeric_zero})|"
+        rf"(?:equals?|is|becomes?|set\s+to)[^.;]{{0,120}}"
+        rf"\b(?:zero|{numeric_zero})"
+        rf")\b",
         collapsed,
         flags=re.IGNORECASE,
     ):
