@@ -286,7 +286,7 @@ _OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX = (
     ("gpt-5.4-pro", frozenset({"medium", "high", "xhigh"})),
     ("gpt-5.4", frozenset({"none", "low", "medium", "high", "xhigh"})),
 )
-EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v4"
+EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v5"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
     default=None,
@@ -1014,8 +1014,11 @@ class EvalResult:
     timeout_attempts: int = 0
     generation_prompt_sha256: str | None = None
     claude_cli_version: str | None = None
+    claude_cli_launcher_sha256: str | None = None
+    claude_cli_native_sha256: str | None = None
     codex_cli_version: str | None = None
-    codex_cli_sha256: str | None = None
+    codex_cli_launcher_sha256: str | None = None
+    codex_cli_native_sha256: str | None = None
     openai_endpoint: str | None = None
     openai_response_model_id: str | None = None
     openai_service_tier: str | None = None
@@ -1178,19 +1181,21 @@ def _validate_eval_result_artifact_binding(
                 f"'{field_name}'"
             )
     backend = payload.get("backend")
-    if backend == "claude":
-        claude_cli_version = payload.get("claude_cli_version")
-        if not isinstance(claude_cli_version, str) or not claude_cli_version.strip():
-            raise ValueError(f"{artifact_name} requires claude_cli_version")
-    if backend == "codex":
-        codex_cli_version = payload.get("codex_cli_version")
-        if not isinstance(codex_cli_version, str) or not codex_cli_version.strip():
-            raise ValueError(f"{artifact_name} requires codex_cli_version")
-        if (
-            not isinstance(payload.get("codex_cli_sha256"), str)
-            or _SHA256_HEX_PATTERN.fullmatch(payload["codex_cli_sha256"]) is None
+    if backend in {"claude", "codex"}:
+        for field_name in (
+            f"{backend}_cli_version",
+            f"{backend}_cli_launcher_sha256",
+            f"{backend}_cli_native_sha256",
         ):
-            raise ValueError(f"{artifact_name} requires codex_cli_sha256")
+            value = payload.get(field_name)
+            valid = (
+                isinstance(value, str) and bool(value.strip())
+                if field_name.endswith("_version")
+                else isinstance(value, str)
+                and _SHA256_HEX_PATTERN.fullmatch(value) is not None
+            )
+            if not valid:
+                raise ValueError(f"{artifact_name} requires {field_name}")
     for field_name in (
         "claude_cli_version",
         "codex_cli_version",
@@ -1204,12 +1209,22 @@ def _validate_eval_result_artifact_binding(
                 f"{artifact_name} has invalid effective-environment field "
                 f"'{field_name}'"
             )
-    codex_cli_sha256 = payload.get("codex_cli_sha256")
-    if codex_cli_sha256 is not None and (
-        not isinstance(codex_cli_sha256, str)
-        or _SHA256_HEX_PATTERN.fullmatch(codex_cli_sha256) is None
-    ):
-        raise ValueError(f"{artifact_name} has invalid codex_cli_sha256")
+    local_digest_fields = (
+        "claude_cli_launcher_sha256",
+        "claude_cli_native_sha256",
+        "codex_cli_launcher_sha256",
+        "codex_cli_native_sha256",
+    )
+    for field_name in local_digest_fields:
+        value = payload.get(field_name)
+        if value is not None and (
+            not isinstance(value, str) or _SHA256_HEX_PATTERN.fullmatch(value) is None
+        ):
+            raise ValueError(f"{artifact_name} has invalid {field_name}")
+    if "codex_cli_sha256" in payload:
+        raise ValueError(
+            f"{artifact_name} carries legacy codex_cli_sha256 in a v8 result"
+        )
     openai_max_output_tokens = payload.get("openai_max_output_tokens")
     if openai_max_output_tokens is not None and (
         isinstance(openai_max_output_tokens, bool)
@@ -1217,10 +1232,21 @@ def _validate_eval_result_artifact_binding(
         or openai_max_output_tokens <= 0
     ):
         raise ValueError(f"{artifact_name} has invalid openai_max_output_tokens")
-    claude_fields_present = payload.get("claude_cli_version") is not None
+    claude_fields_present = any(
+        payload.get(field_name) is not None
+        for field_name in (
+            "claude_cli_version",
+            "claude_cli_launcher_sha256",
+            "claude_cli_native_sha256",
+        )
+    )
     codex_fields_present = any(
         payload.get(field_name) is not None
-        for field_name in ("codex_cli_version", "codex_cli_sha256")
+        for field_name in (
+            "codex_cli_version",
+            "codex_cli_launcher_sha256",
+            "codex_cli_native_sha256",
+        )
     )
     openai_fields_present = any(
         payload.get(field_name) is not None
@@ -1818,13 +1844,17 @@ def _validate_eval_cli_environment(
             f"CLI environment for runner '{runner.name}' has a non-absolute "
             "executable path"
         )
-    if runner.backend == "codex" and (
-        not isinstance(environment.executable_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", environment.executable_sha256) is None
+    if (
+        not isinstance(environment.launcher_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", environment.launcher_sha256) is None
+        or not isinstance(environment.native_executable, str)
+        or not Path(environment.native_executable).is_absolute()
+        or not isinstance(environment.native_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", environment.native_sha256) is None
     ):
         raise ValueError(
-            f"CLI environment for runner '{runner.name}' has no valid executable "
-            "SHA-256"
+            f"CLI environment for runner '{runner.name}' has incomplete launcher "
+            "or native receiver identity"
         )
 
 
@@ -2894,6 +2924,7 @@ def run_eval_suite(
     policyengine_runtime: PolicyEngineRuntime | None = None,
     suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
     resume_existing: bool = False,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> list[EvalResult]:
     """Run a suite while keeping its evidence signer out of child environments."""
 
@@ -2907,6 +2938,7 @@ def run_eval_suite(
             policyengine_runtime=policyengine_runtime,
             suite_retry_attempts=suite_retry_attempts,
             resume_existing=resume_existing,
+            cli_environments=cli_environments,
             evidence_signing_key=evidence_signing_key,
         )
 
@@ -2920,6 +2952,7 @@ def _run_eval_suite_with_signer(
     policyengine_runtime: PolicyEngineRuntime | None,
     suite_retry_attempts: int,
     resume_existing: bool,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None,
     evidence_signing_key: SigningBroker,
 ) -> list[EvalResult]:
     """Run every case using a parent-memory-only evidence signer."""
@@ -2948,7 +2981,10 @@ def _run_eval_suite_with_signer(
         raise ValueError("Eval suite manifest must declare at least one runner")
     parsed_runners = [parse_runner_spec(spec) for spec in resolved_runners]
     _expected_eval_suite_runners(parsed_runners)
-    cli_environments = _preflight_eval_cli_runners(parsed_runners)
+    cli_environments = _resolve_eval_cli_environments(
+        parsed_runners,
+        cli_environments,
+    )
     manifest_identity = _build_eval_suite_manifest_identity(manifest)
     rulespec_roots = _eval_suite_rulespec_roots(manifest, policy_repo_path)
     execution_identity = (
@@ -2956,6 +2992,7 @@ def _run_eval_suite_with_signer(
             axiom_rules_path,
             rulespec_roots,
             parsed_runners=parsed_runners,
+            cli_environments=cli_environments,
             policyengine_runtime=policyengine_runtime,
             suite_retry_attempts=suite_retry_attempts,
         )
@@ -2964,6 +3001,7 @@ def _run_eval_suite_with_signer(
             axiom_rules_path,
             rulespec_roots,
             parsed_runners=parsed_runners,
+            cli_environments=cli_environments,
             suite_retry_attempts=suite_retry_attempts,
         )
     )
@@ -3309,7 +3347,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 _EVAL_RESULT_SHA256_FIELD = "result_sha256"
-_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v7"
+_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v8"
 _EVAL_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
 
@@ -3392,8 +3430,15 @@ def _eval_result_verdict_evidence_payload(
             "retrieved_files": result_payload.get("retrieved_files"),
             "unexpected_accesses": result_payload.get("unexpected_accesses"),
             "claude_cli_version": result_payload.get("claude_cli_version"),
+            "claude_cli_launcher_sha256": result_payload.get(
+                "claude_cli_launcher_sha256"
+            ),
+            "claude_cli_native_sha256": result_payload.get("claude_cli_native_sha256"),
             "codex_cli_version": result_payload.get("codex_cli_version"),
-            "codex_cli_sha256": result_payload.get("codex_cli_sha256"),
+            "codex_cli_launcher_sha256": result_payload.get(
+                "codex_cli_launcher_sha256"
+            ),
+            "codex_cli_native_sha256": result_payload.get("codex_cli_native_sha256"),
             "openai_endpoint": result_payload.get("openai_endpoint"),
             "openai_response_model_id": result_payload.get("openai_response_model_id"),
             "openai_service_tier": result_payload.get("openai_service_tier"),
@@ -3866,6 +3911,7 @@ def _build_eval_suite_execution_identity(
     rulespec_roots: tuple[str, ...],
     *,
     parsed_runners: Sequence[EvalRunnerSpec],
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
     policyengine_runtime: PolicyEngineRuntime | None = None,
     suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
 ) -> dict[str, object]:
@@ -3887,6 +3933,10 @@ def _build_eval_suite_execution_identity(
             }
             for runner in parsed_runners
         ],
+        "receiver_environments": _eval_receiver_execution_environments(
+            parsed_runners,
+            cli_environments,
+        ),
         # Each case-runner receives this full deadline for artifact generation
         # and every retry. Deterministic validation and optional reviewers run
         # after generation and deliberately are not presented as preemptible.
@@ -3918,6 +3968,38 @@ def _build_eval_suite_execution_identity(
     }
 
 
+def _eval_receiver_execution_environments(
+    parsed_runners: Sequence[EvalRunnerSpec],
+    cli_environments: Mapping[str, EvalCliEnvironment] | None,
+) -> dict[str, dict[str, str]]:
+    """Return path-free identities for only the local receivers a suite uses."""
+
+    environments = {} if cli_environments is None else cli_environments
+    result: dict[str, dict[str, str]] = {}
+    for backend in ("claude", "codex"):
+        runner = next(
+            (candidate for candidate in parsed_runners if candidate.backend == backend),
+            None,
+        )
+        if runner is None:
+            continue
+        environment = environments.get(backend)
+        if environment is None:
+            raise ValueError(
+                f"Runner '{runner.name}' requires a preflight-verified {backend} "
+                "CLI environment for its execution identity"
+            )
+        _validate_eval_cli_environment(runner, environment)
+        assert environment.launcher_sha256 is not None
+        assert environment.native_sha256 is not None
+        result[backend] = {
+            "cli_version": environment.version,
+            "launcher_sha256": environment.launcher_sha256,
+            "native_sha256": environment.native_sha256,
+        }
+    return result
+
+
 def _eval_timeout_retry_policy(suite_retry_attempts: int) -> dict[str, object]:
     """Return the retry limits that bound one case-runner's execution."""
 
@@ -3939,7 +4021,7 @@ def _suite_retry_attempts_from_execution_identity(
     *,
     artifact_name: str,
 ) -> int:
-    """Recover the suite retry count from a persisted v4 execution identity."""
+    """Recover the suite retry count from a persisted v5 execution identity."""
 
     if not isinstance(identity, dict):
         raise ValueError(f"{artifact_name} is missing its timeout retry policy")
@@ -4006,6 +4088,13 @@ def _validate_eval_suite_execution_identity(
         raise ValueError(
             f"Cannot resume eval suite: {artifact_name} uses a different "
             "timeout retry execution identity"
+        )
+    if persisted.get("receiver_environments") != expected_identity.get(
+        "receiver_environments"
+    ):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "receiver CLI environment"
         )
     if persisted.get("axiom_encode") != expected_identity.get("axiom_encode"):
         raise ValueError(
@@ -4086,18 +4175,24 @@ def _validate_new_eval_suite_case_results(
             )
         if cli_environments is not None and runner.backend == "claude":
             environment = (cli_environments or {}).get("claude")
-            if environment is None or result.claude_cli_version != environment.version:
+            if (
+                environment is None
+                or result.claude_cli_version != environment.version
+                or result.claude_cli_launcher_sha256 != environment.launcher_sha256
+                or result.claude_cli_native_sha256 != environment.native_sha256
+            ):
                 raise ValueError(
                     f"Eval suite case '{case.name}' returned runner "
                     f"'{result.runner}' without its preflight-verified Claude "
-                    "CLI version"
+                    "CLI environment"
                 )
         elif cli_environments is not None and runner.backend == "codex":
             environment = (cli_environments or {}).get("codex")
             if (
                 environment is None
                 or result.codex_cli_version != environment.version
-                or result.codex_cli_sha256 != environment.executable_sha256
+                or result.codex_cli_launcher_sha256 != environment.launcher_sha256
+                or result.codex_cli_native_sha256 != environment.native_sha256
             ):
                 raise ValueError(
                     f"Eval suite case '{case.name}' returned runner "
@@ -5481,8 +5576,11 @@ def _eval_result_from_payload(
         error=payload.get("error"),
         generation_prompt_sha256=payload.get("generation_prompt_sha256"),
         claude_cli_version=payload.get("claude_cli_version"),
+        claude_cli_launcher_sha256=payload.get("claude_cli_launcher_sha256"),
+        claude_cli_native_sha256=payload.get("claude_cli_native_sha256"),
         codex_cli_version=payload.get("codex_cli_version"),
-        codex_cli_sha256=payload.get("codex_cli_sha256"),
+        codex_cli_launcher_sha256=payload.get("codex_cli_launcher_sha256"),
+        codex_cli_native_sha256=payload.get("codex_cli_native_sha256"),
         openai_endpoint=payload.get("openai_endpoint"),
         openai_response_model_id=payload.get("openai_response_model_id"),
         openai_service_tier=payload.get("openai_service_tier"),
@@ -5587,13 +5685,28 @@ def _suite_case_failure_results(
                     if cli_environment is not None and runner.backend == "claude"
                     else None
                 ),
+                claude_cli_launcher_sha256=(
+                    cli_environment.launcher_sha256
+                    if cli_environment is not None and runner.backend == "claude"
+                    else None
+                ),
+                claude_cli_native_sha256=(
+                    cli_environment.native_sha256
+                    if cli_environment is not None and runner.backend == "claude"
+                    else None
+                ),
                 codex_cli_version=(
                     cli_environment.version
                     if cli_environment is not None and runner.backend == "codex"
                     else None
                 ),
-                codex_cli_sha256=(
-                    cli_environment.executable_sha256
+                codex_cli_launcher_sha256=(
+                    cli_environment.launcher_sha256
+                    if cli_environment is not None and runner.backend == "codex"
+                    else None
+                ),
+                codex_cli_native_sha256=(
+                    cli_environment.native_sha256
                     if cli_environment is not None and runner.backend == "codex"
                     else None
                 ),
@@ -8760,15 +8873,30 @@ def _run_single_eval(
             if cli_environment is not None and runner.backend == "claude"
             else None
         ),
+        claude_cli_launcher_sha256=(
+            cli_environment.launcher_sha256
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
+        claude_cli_native_sha256=(
+            cli_environment.native_sha256
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
         codex_cli_version=(
             cli_environment.version
             if cli_environment is not None and runner.backend == "codex"
             else _eval_response_optional_string(response, "codex_cli_version")
         ),
-        codex_cli_sha256=(
-            cli_environment.executable_sha256
+        codex_cli_launcher_sha256=(
+            cli_environment.launcher_sha256
             if cli_environment is not None and runner.backend == "codex"
-            else _eval_response_optional_string(response, "codex_cli_sha256")
+            else None
+        ),
+        codex_cli_native_sha256=(
+            cli_environment.native_sha256
+            if cli_environment is not None and runner.backend == "codex"
+            else None
         ),
         openai_endpoint=_eval_response_optional_string(response, "openai_endpoint"),
         openai_response_model_id=_eval_response_optional_string(
@@ -9023,15 +9151,30 @@ def _run_single_source_eval(
             if cli_environment is not None and runner.backend == "claude"
             else None
         ),
+        claude_cli_launcher_sha256=(
+            cli_environment.launcher_sha256
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
+        claude_cli_native_sha256=(
+            cli_environment.native_sha256
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
         codex_cli_version=(
             cli_environment.version
             if cli_environment is not None and runner.backend == "codex"
             else _eval_response_optional_string(response, "codex_cli_version")
         ),
-        codex_cli_sha256=(
-            cli_environment.executable_sha256
+        codex_cli_launcher_sha256=(
+            cli_environment.launcher_sha256
             if cli_environment is not None and runner.backend == "codex"
-            else _eval_response_optional_string(response, "codex_cli_sha256")
+            else None
+        ),
+        codex_cli_native_sha256=(
+            cli_environment.native_sha256
+            if cli_environment is not None and runner.backend == "codex"
+            else None
         ),
         openai_endpoint=_eval_response_optional_string(response, "openai_endpoint"),
         openai_response_model_id=_eval_response_optional_string(

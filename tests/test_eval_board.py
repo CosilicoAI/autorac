@@ -24,6 +24,7 @@ from axiom_encode.harness.eval_board import (
     result_gate_pass,
 )
 from axiom_encode.harness.evals import (
+    EvalCliEnvironment,
     _build_eval_suite_execution_identity,
     _eval_suite_execution_identity_sha256,
     load_eval_suite_manifest,
@@ -40,6 +41,19 @@ from axiom_encode.harness.policyengine_runtime import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAPABILITY_MANIFEST = REPO_ROOT / "benchmarks" / "encodebench_uk_v1.yaml"
 _UNSET = object()
+
+
+def _cli_environment(backend: str) -> EvalCliEnvironment:
+    return EvalCliEnvironment(
+        backend=backend,
+        executable=f"/verified/bin/{backend}",
+        version=("Claude Code 2.test" if backend == "claude" else "codex-cli 0.test"),
+        executable_sha256=("a" if backend == "claude" else "c") * 64,
+        launcher_sha256=("a" if backend == "claude" else "c") * 64,
+        native_executable=f"/verified/lib/{backend}",
+        native_sha256=("b" if backend == "claude" else "d") * 64,
+    )
+
 
 CASE_IDENTITIES = [
     {
@@ -176,6 +190,7 @@ def _execution_identity(
     codex_timeout_seconds=600,
     suite_max_attempts=3,
     runner_efforts=None,
+    receiver_backends=("codex",),
 ):
     """A payload execution identity mirroring the current producer shape."""
     rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
@@ -202,6 +217,16 @@ def _execution_identity(
             if runner_efforts is None
             else copy.deepcopy(runner_efforts)
         ),
+        "receiver_environments": {
+            backend: {
+                "cli_version": (
+                    "Claude Code 2.test" if backend == "claude" else "codex-cli 0.test"
+                ),
+                "launcher_sha256": ("a" if backend == "claude" else "c") * 64,
+                "native_sha256": ("b" if backend == "claude" else "d") * 64,
+            }
+            for backend in receiver_backends
+        },
         "case_timeout_seconds": case_timeout_seconds,
         "runner_timeouts": {
             "claude": {"wall_seconds": claude_timeout_seconds},
@@ -355,8 +380,11 @@ def _result(
     timeout_seconds=None,
     timeout_attempts=0,
     claude_cli_version=_UNSET,
+    claude_cli_launcher_sha256=_UNSET,
+    claude_cli_native_sha256=_UNSET,
     codex_cli_version=_UNSET,
-    codex_cli_sha256=_UNSET,
+    codex_cli_launcher_sha256=_UNSET,
+    codex_cli_native_sha256=_UNSET,
     openai_endpoint=_UNSET,
     openai_response_model_id=_UNSET,
     openai_service_tier=_UNSET,
@@ -367,10 +395,16 @@ def _result(
         metrics = _metrics()
     if claude_cli_version is _UNSET:
         claude_cli_version = "Claude Code 2.test" if backend == "claude" else None
+    if claude_cli_launcher_sha256 is _UNSET:
+        claude_cli_launcher_sha256 = "a" * 64 if backend == "claude" else None
+    if claude_cli_native_sha256 is _UNSET:
+        claude_cli_native_sha256 = "b" * 64 if backend == "claude" else None
     if codex_cli_version is _UNSET:
         codex_cli_version = "codex-cli 0.test" if backend == "codex" else None
-    if codex_cli_sha256 is _UNSET:
-        codex_cli_sha256 = "d" * 64 if backend == "codex" else None
+    if codex_cli_launcher_sha256 is _UNSET:
+        codex_cli_launcher_sha256 = "c" * 64 if backend == "codex" else None
+    if codex_cli_native_sha256 is _UNSET:
+        codex_cli_native_sha256 = "d" * 64 if backend == "codex" else None
     if openai_endpoint is _UNSET:
         openai_endpoint = (
             "https://api.openai.com/v1/responses" if backend == "openai" else None
@@ -411,8 +445,11 @@ def _result(
         "timeout_seconds": timeout_seconds,
         "timeout_attempts": timeout_attempts,
         "claude_cli_version": claude_cli_version,
+        "claude_cli_launcher_sha256": claude_cli_launcher_sha256,
+        "claude_cli_native_sha256": claude_cli_native_sha256,
         "codex_cli_version": codex_cli_version,
-        "codex_cli_sha256": codex_cli_sha256,
+        "codex_cli_launcher_sha256": codex_cli_launcher_sha256,
+        "codex_cli_native_sha256": codex_cli_native_sha256,
         "openai_endpoint": openai_endpoint,
         "openai_response_model_id": openai_response_model_id,
         "openai_service_tier": openai_service_tier,
@@ -468,7 +505,17 @@ def _payload(
         "case_identities": case_identities,
     }
     if execution_identity is None:
-        execution_identity = _execution_identity()
+        execution_identity = _execution_identity(
+            receiver_backends=tuple(
+                sorted(
+                    {
+                        backend
+                        for _name, backend, _model in runners
+                        if backend in {"claude", "codex"}
+                    }
+                )
+            )
+        )
     execution_identity = copy.deepcopy(execution_identity)
     requested_efforts = {} if requested_efforts is None else requested_efforts
     execution_identity["runner_efforts"] = [
@@ -673,6 +720,7 @@ def test_real_producer_identity_matches_consumer_contract():
         REPO_ROOT,
         (),
         parsed_runners=(parse_runner_spec("terra=codex:gpt-5.6-terra"),),
+        cli_environments={"codex": _cli_environment("codex")},
     )
     assert identity["schema"] == SUPPORTED_EXECUTION_IDENTITY_SCHEMA
     digest = _eval_suite_execution_identity_sha256(identity)
@@ -694,8 +742,27 @@ def test_payload_execution_identity_requires_receiver_environments(tmp_path):
         [("terra", "codex", "gpt-5.6-terra")],
         [_result("terra", case) for case in CASE_IDENTITIES],
     )
+    payload["evidence"]["execution_identity"].pop("receiver_environments")
+    unsigned_evidence = dict(payload["evidence"])
+    unsigned_evidence.pop("sha256")
+    payload["evidence"]["sha256"] = cli._eval_suite_json_sha256(unsigned_evidence)
     assert "receiver_environments" not in payload["evidence"]["execution_identity"]
     path = _write_payload(tmp_path, "missing-receiver-environments.json", payload)
+
+    with pytest.raises(EvalBoardError, match="receiver environments"):
+        fold_eval_board([path])
+
+
+def test_payload_execution_identity_refuses_unexercised_receiver_environment(
+    tmp_path,
+):
+    identity = _execution_identity(receiver_backends=("claude", "codex"))
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+        execution_identity=identity,
+    )
+    path = _write_payload(tmp_path, "extra-receiver-environment.json", payload)
 
     with pytest.raises(EvalBoardError, match="receiver environments"):
         fold_eval_board([path])
@@ -750,6 +817,34 @@ def test_fold_requires_local_receiver_launcher_and_native_digests(
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("codex_cli_version", "codex-cli 99.test"),
+        ("codex_cli_launcher_sha256", "e" * 64),
+        ("codex_cli_native_sha256", "f" * 64),
+    ],
+)
+def test_fold_requires_row_receiver_to_match_execution_identity(
+    tmp_path,
+    field_name,
+    replacement,
+):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0][field_name] = replacement
+    path = _write_payload(
+        tmp_path,
+        f"mismatched-{field_name}.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match=rf"{field_name}.*execution identity",
+    ):
+        fold_eval_board([path])
+
+
 def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
     checkout = tmp_path / "rulespec-us"
     content_root = checkout / "us"
@@ -785,6 +880,7 @@ def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
         REPO_ROOT,
         (str(content_root),),
         parsed_runners=(parse_runner_spec("terra=codex:gpt-5.6-terra"),),
+        cli_environments={"codex": _cli_environment("codex")},
     )
     digest = _eval_suite_execution_identity_sha256(identity)
 
@@ -1131,8 +1227,11 @@ def test_fold_refuses_infra_failure_that_claims_a_generated_artifact(
     ("backend", "model", "required_field"),
     [
         ("claude", "claude-fable-5", "claude_cli_version"),
+        ("claude", "claude-fable-5", "claude_cli_launcher_sha256"),
+        ("claude", "claude-fable-5", "claude_cli_native_sha256"),
         ("codex", "gpt-5.6-terra", "codex_cli_version"),
-        ("codex", "gpt-5.6-terra", "codex_cli_sha256"),
+        ("codex", "gpt-5.6-terra", "codex_cli_launcher_sha256"),
+        ("codex", "gpt-5.6-terra", "codex_cli_native_sha256"),
         ("openai", "gpt-5.4", "openai_endpoint"),
         ("openai", "gpt-5.4", "openai_response_model_id"),
         ("openai", "gpt-5.4", "openai_max_output_tokens"),
@@ -1212,17 +1311,35 @@ def test_fold_refuses_invalid_effective_environment_string(
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "claude_cli_launcher_sha256",
+        "claude_cli_native_sha256",
+        "codex_cli_launcher_sha256",
+        "codex_cli_native_sha256",
+    ],
+)
 @pytest.mark.parametrize("invalid_sha256", ["D" * 64, "d" * 63, 17])
-def test_fold_refuses_invalid_codex_cli_sha256(tmp_path, invalid_sha256):
-    results = [_result("terra", case) for case in CASE_IDENTITIES]
-    results[0]["codex_cli_sha256"] = invalid_sha256
+def test_fold_refuses_invalid_local_cli_sha256(
+    tmp_path,
+    field_name,
+    invalid_sha256,
+):
+    backend = field_name.split("_", 1)[0]
+    model = "claude-fable-5" if backend == "claude" else "gpt-5.6-terra"
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    results[0][field_name] = invalid_sha256
     path = _write_payload(
         tmp_path,
-        "invalid-codex-cli-sha256.json",
-        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+        f"invalid-{field_name}.json",
+        _payload([("runner", backend, model)], results),
     )
 
-    with pytest.raises(EvalBoardError, match="codex_cli_sha256"):
+    with pytest.raises(EvalBoardError, match=field_name):
         fold_eval_board([path])
 
 
@@ -1247,8 +1364,11 @@ def test_fold_refuses_invalid_openai_max_output_tokens(tmp_path, invalid_max_tok
     ("backend", "model", "foreign_field", "foreign_value"),
     [
         ("codex", "gpt-5.6-terra", "claude_cli_version", "Claude Code 2.test"),
+        ("codex", "gpt-5.6-terra", "claude_cli_launcher_sha256", "a" * 64),
+        ("codex", "gpt-5.6-terra", "claude_cli_native_sha256", "b" * 64),
         ("claude", "claude-fable-5", "codex_cli_version", "codex-cli 0.test"),
-        ("claude", "claude-fable-5", "codex_cli_sha256", "d" * 64),
+        ("claude", "claude-fable-5", "codex_cli_launcher_sha256", "c" * 64),
+        ("claude", "claude-fable-5", "codex_cli_native_sha256", "d" * 64),
         (
             "codex",
             "gpt-5.6-terra",
@@ -1278,22 +1398,21 @@ def test_fold_refuses_effective_environment_field_for_another_backend(
         fold_eval_board([path])
 
 
-def test_fold_refuses_nullable_codex_cli_sha256(tmp_path):
-    codex_results = [
-        _result(
-            "terra",
-            case,
-            codex_cli_sha256=None,
-        )
-        for case in CASE_IDENTITIES
-    ]
+@pytest.mark.parametrize(
+    "field_name",
+    ["codex_cli_launcher_sha256", "codex_cli_native_sha256"],
+)
+def test_fold_refuses_nullable_codex_cli_sha256(tmp_path, field_name):
+    codex_results = [_result("terra", case) for case in CASE_IDENTITIES]
+    for row in codex_results:
+        row[field_name] = None
     codex_path = _write_payload(
         tmp_path,
         "codex-unreadable-executable.json",
         _payload([("terra", "codex", "gpt-5.6-terra")], codex_results),
     )
 
-    with pytest.raises(EvalBoardError, match="codex_cli_sha256"):
+    with pytest.raises(EvalBoardError, match=field_name):
         fold_eval_board([codex_path])
 
 

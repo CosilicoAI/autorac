@@ -457,10 +457,15 @@ def _bind_fake_source_results(
         )
         cli_environments = kwargs.get("cli_environments") or {}
         if result.backend == "claude":
-            result.claude_cli_version = cli_environments["claude"].version
+            environment = cli_environments["claude"]
+            result.claude_cli_version = environment.version
+            result.claude_cli_launcher_sha256 = environment.launcher_sha256
+            result.claude_cli_native_sha256 = environment.native_sha256
         elif result.backend == "codex":
-            result.codex_cli_version = cli_environments["codex"].version
-            result.codex_cli_sha256 = cli_environments["codex"].executable_sha256
+            environment = cli_environments["codex"]
+            result.codex_cli_version = environment.version
+            result.codex_cli_launcher_sha256 = environment.launcher_sha256
+            result.codex_cli_native_sha256 = environment.native_sha256
         elif result.backend == "openai":
             result.openai_endpoint = "https://api.openai.com/v1/responses"
             result.openai_response_model_id = result.model
@@ -1034,6 +1039,8 @@ def test_eval_cli_preflight_canonicalizes_relative_executables_before_use(
     assert environments["codex"].executable == expected_paths["codex"]
     assert [item.args[0] for item in executable_sha256.call_args_list] == [
         expected_paths["claude"],
+        expected_paths["claude"],
+        expected_paths["codex"],
         expected_paths["codex"],
     ]
 
@@ -4042,11 +4049,7 @@ class TestClaudePromptEval:
             stdout=_claude_result_stdout(),
             stderr="",
         )
-        environment = evals_module.EvalCliEnvironment(
-            backend="claude",
-            executable="/verified/bin/claude",
-            version="2.1.test (Claude Code)",
-        )
+        environment = _test_eval_cli_environment("claude")
 
         with patch(
             "axiom_encode.harness.evals.subprocess.run",
@@ -4361,12 +4364,7 @@ class TestCodexPromptEval:
             manifest_file=tmp_path / "context-manifest.json",
         )
         observed_commands: list[list[str]] = []
-        environment = evals_module.EvalCliEnvironment(
-            backend="codex",
-            executable="/verified/bin/codex",
-            version="codex-cli 0.test",
-            executable_sha256="d" * 64,
-        )
+        environment = _test_eval_cli_environment("codex")
 
         class FakePopen:
             def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
@@ -7257,10 +7255,13 @@ def test_result_binding_rejects_failed_row_without_failure_kind():
         ("claude", "claude_cli_version", None),
         ("claude", "claude_cli_version", ""),
         ("claude", "claude_cli_version", " \t"),
+        ("claude", "claude_cli_launcher_sha256", None),
+        ("claude", "claude_cli_native_sha256", None),
         ("codex", "codex_cli_version", None),
         ("codex", "codex_cli_version", ""),
         ("codex", "codex_cli_version", " \t"),
-        ("codex", "codex_cli_sha256", None),
+        ("codex", "codex_cli_launcher_sha256", None),
+        ("codex", "codex_cli_native_sha256", None),
     ],
 )
 def test_result_binding_requires_local_cli_evidence(
@@ -7272,8 +7273,11 @@ def test_result_binding_requires_local_cli_evidence(
     payload["claude_cli_version"] = (
         "Claude Code 2.test" if backend == "claude" else None
     )
+    payload["claude_cli_launcher_sha256"] = "a" * 64 if backend == "claude" else None
+    payload["claude_cli_native_sha256"] = "b" * 64 if backend == "claude" else None
     payload["codex_cli_version"] = "codex-cli 0.test" if backend == "codex" else None
-    payload["codex_cli_sha256"] = "d" * 64 if backend == "codex" else None
+    payload["codex_cli_launcher_sha256"] = "c" * 64 if backend == "codex" else None
+    payload["codex_cli_native_sha256"] = "d" * 64 if backend == "codex" else None
     payload[required_field] = invalid_value
 
     with pytest.raises(ValueError, match=rf"requires {required_field}$"):
@@ -7715,20 +7719,14 @@ def test_run_source_eval_does_not_retry_when_first_response_writes_rulespec(tmp_
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
-            cli_environments={
-                "codex": evals_module.EvalCliEnvironment(
-                    backend="codex",
-                    executable="/bin/codex",
-                    version="codex-cli 0.test",
-                    executable_sha256="d" * 64,
-                )
-            },
+            cli_environments={"codex": _test_eval_cli_environment("codex")},
         )
 
     assert result.success is True
     assert result.retry_count == 0
-    assert result.codex_cli_version == "codex-cli 0.test"
-    assert result.codex_cli_sha256 == "d" * 64
+    assert result.codex_cli_version == "codex 9.9.9"
+    assert result.codex_cli_launcher_sha256 == "c" * 64
+    assert result.codex_cli_native_sha256 == "d" * 64
     assert mock_prompt_eval.call_count == 1
 
 
@@ -7781,7 +7779,8 @@ def test_eval_result_payload_round_trips_prompt_digests():
         ),
         generation_prompt_sha256="generation-digest",
         codex_cli_version="codex-cli 0.test",
-        codex_cli_sha256="d" * 64,
+        codex_cli_launcher_sha256="c" * 64,
+        codex_cli_native_sha256="d" * 64,
         source_attestation={
             "requested_corpus_citation_path": "us/statute/7/2014/e/6/A",
             "source_sha256": "a" * 64,
@@ -7796,7 +7795,8 @@ def test_eval_result_payload_round_trips_prompt_digests():
     assert restored.require_complete_source_unit is True
     assert restored.generation_prompt_sha256 == "generation-digest"
     assert restored.codex_cli_version == "codex-cli 0.test"
-    assert restored.codex_cli_sha256 == "d" * 64
+    assert restored.codex_cli_launcher_sha256 == "c" * 64
+    assert restored.codex_cli_native_sha256 == "d" * 64
     assert restored.retry_count == 1
     assert restored.metrics is not None
     assert restored.metrics.generalist_review_prompt_sha256 == "review-digest"
@@ -14559,7 +14559,7 @@ rules:
             runner_backend="openai",
         )
 
-        assert "filesystem or tool access is disabled in this eval" in prompt
+        assert "Receiver filesystem or tool use is prohibited in this eval" in prompt
         assert "=== BEGIN SOURCE.TXT ===" in prompt
         assert "Editorial note: current text valid from 2025-04-07." in prompt
         assert "26.05" in prompt
@@ -14628,7 +14628,7 @@ rules:
         assert stub_content in prompt
         assert "tail-beyond-old-6000-character-prefix" in prompt
         assert "[truncated]" not in prompt
-        assert "filesystem or tool access is disabled" in prompt
+        assert "Receiver filesystem or tool use is prohibited" in prompt
 
     def test_eval_prompt_fails_loudly_when_manifest_context_file_is_missing(
         self,
@@ -15406,18 +15406,9 @@ class TestEvalSuiteManifest:
         def fake_cli_preflight(runners):
             environments = {}
             if any(runner.backend == "claude" for runner in runners):
-                environments["claude"] = evals_module.EvalCliEnvironment(
-                    backend="claude",
-                    executable="/bin/claude",
-                    version="2.1.test (Claude Code)",
-                )
+                environments["claude"] = _test_eval_cli_environment("claude")
             if any(runner.backend == "codex" for runner in runners):
-                environments["codex"] = evals_module.EvalCliEnvironment(
-                    backend="codex",
-                    executable="/bin/codex",
-                    version="codex-cli 0.test",
-                    executable_sha256="d" * 64,
-                )
+                environments["codex"] = _test_eval_cli_environment("codex")
             return environments
 
         with (
@@ -16227,9 +16218,11 @@ cases:
             *,
             parsed_runners,
             suite_retry_attempts,
+            cli_environments,
         ):
             assert suite_retry_attempts == 2
             assert [runner.name for runner in parsed_runners] == ["openai-gpt-5.4"]
+            assert cli_environments == {}
             return {
                 "schema": "test",
                 "case_timeout_seconds": 3600,
@@ -17236,6 +17229,12 @@ cases:
             final_error.claude_cli_version = kwargs["cli_environments"][
                 "claude"
             ].version
+            final_error.claude_cli_launcher_sha256 = kwargs["cli_environments"][
+                "claude"
+            ].launcher_sha256
+            final_error.claude_cli_native_sha256 = kwargs["cli_environments"][
+                "claude"
+            ].native_sha256
             return [final_error]
 
         with patch(
@@ -17994,6 +17993,10 @@ cases:
             axiom_rules_path,
             rulespec_roots,
             parsed_runners=[parse_runner_spec(spec) for spec in manifest.runners],
+            cli_environments={
+                "codex": _test_eval_cli_environment("codex"),
+                "claude": _test_eval_cli_environment("claude"),
+            },
         )
         state_path = output_root / "suite-run.json"
         state = json.loads(state_path.read_text())
@@ -18019,7 +18022,7 @@ cases:
 
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
-                "schema": "axiom-encode/eval-execution-identity/v4",
+                "schema": "axiom-encode/eval-execution-identity/v5",
                 "runner_efforts": [
                     {
                         "name": "test",
@@ -18027,6 +18030,13 @@ cases:
                         "uses_receiver_default": True,
                     }
                 ],
+                "receiver_environments": {
+                    "codex": {
+                        "cli_version": "codex 9.9.9",
+                        "launcher_sha256": "c" * 64,
+                        "native_sha256": "d" * 64,
+                    }
+                },
                 "case_timeout_seconds": 3600,
                 "runner_timeouts": {
                     "claude": {"wall_seconds": 1800},
@@ -18335,6 +18345,7 @@ cases:
                 Path("/tmp/axiom-rules"),
                 (),
                 parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
                 suite_retry_attempts=0,
             )
 
@@ -18354,6 +18365,7 @@ cases:
                 Path("/tmp/axiom-rules"),
                 (),
                 parsed_runners=(parse_runner_spec("test=codex:gpt-5.4"),),
+                cli_environments={"codex": _test_eval_cli_environment("codex")},
                 suite_retry_attempts=0,
             )
 
@@ -18485,6 +18497,10 @@ cases:
             axiom_rules_path,
             rulespec_roots,
             parsed_runners=[parse_runner_spec(spec) for spec in manifest.runners],
+            cli_environments={
+                "codex": _test_eval_cli_environment("codex"),
+                "claude": _test_eval_cli_environment("claude"),
+            },
         )
         self.persisted_result_revalidation.reset_mock()
 

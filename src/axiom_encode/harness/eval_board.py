@@ -20,7 +20,7 @@ identities), and runner sets may differ — that is the add-a-model path.
 Duplicate runner names across payloads are refused rather than merged: two
 runs of one runner are two boards, not one.
 
-The board consumes canonical v7 suite payloads and refuses anything else:
+The board consumes canonical v8 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
 whose case identity does not match the manifest, coverage claims the result
 matrix contradicts, and malformed metric types are all hard errors rather
@@ -67,11 +67,11 @@ _RESULTS_FILE_NAME = "results.json"
 # The one producer schema this consumer understands. A new producer version
 # must be reviewed here before boards fold it; test_eval_board locks this to
 # the producer constant in cli.py.
-SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v7"
+SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
-SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v4"
+SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v5"
 
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
@@ -95,7 +95,7 @@ _INFRA_FAILURE_KINDS = frozenset({"context_overflow", "output_truncated", "integ
 _RESULT_SHA256_FIELD = "result_sha256"
 _RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
-# These exact scopes are part of the v4 producer contract. Admission keeps
+# These exact scopes are part of the v5 producer contract. Admission keeps
 # independent literals so a producer scope change cannot silently widen or
 # narrow what an existing board consumer accepts.
 _ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
@@ -1301,9 +1301,36 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
                 "Suite results execution identity has a malformed requested "
                 f"effort for runner {runner_identity['name']!r}: {source}"
             )
+    receiver_environments = identity.get("receiver_environments")
+    expected_local_backends = {
+        runner_identity["backend"]
+        for runner_identity in runner_identities
+        if runner_identity["backend"] in {"claude", "codex"}
+    }
+    if (
+        not isinstance(receiver_environments, dict)
+        or set(receiver_environments) != expected_local_backends
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has missing, extra, or mismatched "
+            f"receiver environments: {source}"
+        )
+    for backend, environment in receiver_environments.items():
+        if (
+            not isinstance(environment, dict)
+            or set(environment) != {"cli_version", "launcher_sha256", "native_sha256"}
+            or not _is_nonempty_string(environment.get("cli_version"))
+            or not _is_sha256_hex(environment.get("launcher_sha256"))
+            or not _is_sha256_hex(environment.get("native_sha256"))
+        ):
+            raise EvalBoardError(
+                "Suite results execution identity has a malformed receiver "
+                f"environment for {backend!r}: {source}"
+            )
     if set(identity) != {
         "schema",
         "runner_efforts",
+        "receiver_environments",
         "case_timeout_seconds",
         "runner_timeouts",
         "timeout_retry_policy",
@@ -1313,7 +1340,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         "rulespec_roots",
     }:
         raise EvalBoardError(
-            f"Suite results execution identity has unexpected v4 fields: {source}"
+            f"Suite results execution identity has unexpected v5 fields: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -1516,7 +1543,7 @@ def result_gate_pass(result: dict) -> bool:
 
 
 def _validate_result_effective_environment(result: dict, *, context: str) -> None:
-    """Bind receiver metadata to the backend that produced this v7 row."""
+    """Bind receiver metadata to the backend that produced this v8 row."""
 
     string_fields = (
         "claude_cli_version",
@@ -1532,10 +1559,21 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
                 f"{context} {field_name} must be null or a nonempty string"
             )
 
-    codex_cli_sha256 = result.get("codex_cli_sha256")
-    if codex_cli_sha256 is not None and not _is_sha256_hex(codex_cli_sha256):
+    local_digest_fields = (
+        "claude_cli_launcher_sha256",
+        "claude_cli_native_sha256",
+        "codex_cli_launcher_sha256",
+        "codex_cli_native_sha256",
+    )
+    for field_name in local_digest_fields:
+        value = result.get(field_name)
+        if value is not None and not _is_sha256_hex(value):
+            raise EvalBoardError(
+                f"{context} {field_name} must be null or 64 lowercase hex characters"
+            )
+    if "codex_cli_sha256" in result:
         raise EvalBoardError(
-            f"{context} codex_cli_sha256 must be null or 64 lowercase hex characters"
+            f"{context} carries legacy codex_cli_sha256 in a v8 result"
         )
     openai_max_output_tokens = result.get("openai_max_output_tokens")
     if openai_max_output_tokens is not None and not _is_positive_int(
@@ -1546,10 +1584,21 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
         )
 
     backend = result.get("backend")
-    claude_fields_present = result.get("claude_cli_version") is not None
+    claude_fields_present = any(
+        result.get(field_name) is not None
+        for field_name in (
+            "claude_cli_version",
+            "claude_cli_launcher_sha256",
+            "claude_cli_native_sha256",
+        )
+    )
     codex_fields_present = any(
         result.get(field_name) is not None
-        for field_name in ("codex_cli_version", "codex_cli_sha256")
+        for field_name in (
+            "codex_cli_version",
+            "codex_cli_launcher_sha256",
+            "codex_cli_native_sha256",
+        )
     )
     openai_fields_present = any(
         result.get(field_name) is not None
@@ -1569,15 +1618,16 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
             f"{context} effective-environment fields do not match its backend"
         )
 
-    if backend == "claude" and not _is_nonempty_string(
-        result.get("claude_cli_version")
-    ):
-        raise EvalBoardError(f"{context} requires claude_cli_version")
-    if backend == "codex":
-        if not _is_nonempty_string(result.get("codex_cli_version")):
-            raise EvalBoardError(f"{context} requires codex_cli_version")
-        if not _is_sha256_hex(result.get("codex_cli_sha256")):
-            raise EvalBoardError(f"{context} requires codex_cli_sha256")
+    if backend in {"claude", "codex"}:
+        version_field = f"{backend}_cli_version"
+        if not _is_nonempty_string(result.get(version_field)):
+            raise EvalBoardError(f"{context} requires {version_field}")
+        for digest_field in (
+            f"{backend}_cli_launcher_sha256",
+            f"{backend}_cli_native_sha256",
+        ):
+            if not _is_sha256_hex(result.get(digest_field)):
+                raise EvalBoardError(f"{context} requires {digest_field}")
     if backend == "openai":
         if not _is_nonempty_string(result.get("openai_endpoint")):
             raise EvalBoardError(f"{context} requires openai_endpoint")
@@ -1590,6 +1640,43 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
             result.get("openai_response_model_id")
         ):
             raise EvalBoardError(f"{context} requires openai_response_model_id")
+
+
+def _validate_result_receiver_identity_binding(
+    result: dict,
+    *,
+    execution_identity: dict,
+    context: str,
+) -> None:
+    """Require each local row to match its suite-preflighted receiver."""
+
+    backend = result.get("backend")
+    if backend not in {"claude", "codex"}:
+        return
+    receiver_environments = execution_identity.get("receiver_environments")
+    environment = (
+        receiver_environments.get(backend)
+        if isinstance(receiver_environments, dict)
+        else None
+    )
+    expected = {
+        f"{backend}_cli_version": (
+            environment.get("cli_version") if isinstance(environment, dict) else None
+        ),
+        f"{backend}_cli_launcher_sha256": (
+            environment.get("launcher_sha256")
+            if isinstance(environment, dict)
+            else None
+        ),
+        f"{backend}_cli_native_sha256": (
+            environment.get("native_sha256") if isinstance(environment, dict) else None
+        ),
+    }
+    for field_name, expected_value in expected.items():
+        if result.get(field_name) != expected_value:
+            raise EvalBoardError(
+                f"{context} {field_name} does not match its execution identity"
+            )
 
 
 def _validate_result_types(result: dict, *, context: str) -> None:
@@ -1970,6 +2057,11 @@ def _validate_result_row_admission(
         context=context,
     )
     _validate_result_types(result, context=context)
+    _validate_result_receiver_identity_binding(
+        result,
+        execution_identity=execution_identity,
+        context=context,
+    )
     _validate_result_policyengine_runtime_evidence(
         result,
         case_identity=case_identity,
@@ -2086,6 +2178,8 @@ def fold_eval_board(
     runner_sources: dict[str, str] = {}
     runner_identities: dict[str, dict] = {}
     runner_effort_identities: dict[str, dict] = {}
+    receiver_environment_identities: dict[str, dict] = {}
+    receiver_environment_sources: dict[str, str] = {}
     runner_results: dict[str, dict[int, dict]] = {}
     sources: dict[str, str] = {}
     incomplete_sources: list[str] = []
@@ -2107,10 +2201,29 @@ def fold_eval_board(
         )
         common_execution_identity = dict(execution_identity)
         common_execution_identity.pop("runner_efforts")
+        common_execution_identity.pop("receiver_environments")
         normalized_execution = normalized_execution_identity(common_execution_identity)
         payload_runner_efforts = {
             effort["name"]: effort for effort in execution_identity["runner_efforts"]
         }
+        for backend, environment in execution_identity["receiver_environments"].items():
+            prior_environment = receiver_environment_identities.get(backend)
+            if (
+                prior_environment is not None
+                and prior_environment != environment
+                and not allow_mixed_toolchains
+            ):
+                raise EvalBoardError(
+                    "Suite results are not comparable: receiver environment "
+                    f"for {backend!r} in {source} does not match "
+                    f"{receiver_environment_sources[backend]}"
+                )
+            if prior_environment is not None and prior_environment != environment:
+                if source not in mixed_toolchain_sources:
+                    mixed_toolchain_sources.append(source)
+            else:
+                receiver_environment_identities[backend] = environment
+                receiver_environment_sources[backend] = source
         execution_identity_sha256s[source] = execution_digest
 
         if reference_cases is None:
