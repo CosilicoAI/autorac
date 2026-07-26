@@ -56,7 +56,7 @@ env:
   # wave pin 185b2457). The validate workflow's encode-ref is bumped to the
   # same sha in this PR so the signed PRs' CI verifies manifests with the
   # same encoder generation that produced them.
-  AXIOM_ENCODE_REF: b9d376684cfb5e86202daa3451b8fc716703ed19
+  AXIOM_ENCODE_REF: 034d1acb39ae9c9cb7208bfb8532433e7eed7ceb
   AXIOM_RULES_ENGINE_REF: 05eac9d2f89dabe5c6673176260762cef3a58f47
 
 jobs:
