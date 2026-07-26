@@ -7652,6 +7652,9 @@ rules:
         assert metrics.ci_pass
         assert metrics.grounded_numeric_count == 1
         assert metrics.ungrounded_numeric_count == 0
+        if require_complete_source_unit:
+            assert metrics.source_numeric_occurrence_count == 1
+            assert metrics.missing_source_numeric_occurrence_count == 0
 
     def test_generated_numeric_grounding_never_uses_module_summary(self, tmp_path):
         source_text = (
@@ -7705,9 +7708,6 @@ rules:
         assert not metrics.ci_pass
         assert metrics.ungrounded_numeric_count == 1
         assert any("144" in issue for issue in metrics.ci_issues)
-        if require_complete_source_unit:
-            assert metrics.source_numeric_occurrence_count == 1
-            assert metrics.missing_source_numeric_occurrence_count == 0
 
     def test_numeric_grounding_uses_de_profile_from_source_citation(self, tmp_path):
         source_text = "Der Betrag beläuft sich auf 1 034,87 Punkte."

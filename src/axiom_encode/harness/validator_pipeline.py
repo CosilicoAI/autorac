@@ -23483,12 +23483,16 @@ class ValidatorPipeline:
             extract_named_scalars=extract_named_scalar_occurrences,
             imported_contents=self._complete_source_unit_import_contents(rules_file),
         )
+        numeric_occurrence_extractor = functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile=_numeric_profile_for_citation_path(corpus_citation_path),
+        )
         completeness = analyze_complete_source_unit(
             content,
             authoritative_source_text or "",
             corpus_citation_path=corpus_citation_path,
             test_cases=test_cases,
-            extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+            extract_numeric_occurrences=numeric_occurrence_extractor,
             extract_named_scalars=extract_named_scalar_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
             artifact_numeric_values=artifact_numeric_values,

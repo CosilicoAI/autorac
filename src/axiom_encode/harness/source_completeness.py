@@ -13,13 +13,29 @@ import math
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 
-NumericOccurrenceExtractor = Callable[[str], Sequence[float]]
+
+class NumericOccurrenceLike(Protocol):
+    """Typed numeric source evidence consumed from the shared extractor."""
+
+    value: float
+    start: int
+    end: int
+    raw: str
+    has_rate_context: bool
+    source_value: float | None
+    requires_rate_context: bool
+
+
+NumericOccurrenceExtractor = Callable[[str], Sequence[NumericOccurrenceLike]]
 NamedScalarExtractor = Callable[[str], Sequence[Any]]
-NumericGroundingPredicate = Callable[[float, set[float]], bool]
+NumericGroundingPredicate = Callable[
+    [float, Iterable[NumericOccurrenceLike]],
+    bool,
+]
 
 
 @dataclass(frozen=True)
@@ -43,6 +59,16 @@ class CompleteSourceUnitAnalysis:
     source_numeric_occurrence_count: int
     covered_source_numeric_occurrence_count: int
     missing_source_numeric_occurrence_count: int
+
+
+@dataclass(frozen=True)
+class _NumericInterval:
+    """One source-stated range retaining exact endpoint evidence."""
+
+    lower: NumericOccurrenceLike | None
+    lower_inclusive: bool
+    upper: NumericOccurrenceLike | None
+    upper_inclusive: bool
 
 
 _PARAGRAPH_MARKER = re.compile(
@@ -423,7 +449,7 @@ def _analyze_rulespec_payload(
                 "parameter-only representation is invalid."
             )
 
-    source_values = tuple(
+    source_occurrences = tuple(
         extract_numeric_occurrences(authoritative_numeric_recall_text(source_text))
     )
     named_values = (
@@ -437,14 +463,14 @@ def _analyze_rulespec_payload(
     )
     covered_source_values = 0
     missing_source_values: list[float] = []
-    for value in source_values:
+    for occurrence in source_occurrences:
         if any(
-            numeric_value_is_grounded(named_value, {float(value)})
+            numeric_value_is_grounded(named_value, (occurrence,))
             for named_value in named_values
         ):
             covered_source_values += 1
         else:
-            missing_source_values.append(float(value))
+            missing_source_values.append(float(occurrence.value))
     for value in sorted(set(missing_source_values)):
         issues.append(
             "[complete-source-unit:numeric-recall] Authoritative corpus numeric "
@@ -470,7 +496,7 @@ def _analyze_rulespec_payload(
     return CompleteSourceUnitAnalysis(
         tuple(dict.fromkeys(issues)),
         branches,
-        len(source_values),
+        len(source_occurrences),
         covered_source_values,
         len(missing_source_values),
     )
@@ -956,7 +982,9 @@ def _companion_test_issues(
         narrative_formula_branches=formula_branches,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
-    missing_boundaries: list[tuple[SourceStructureBranch, float]] = []
+    missing_boundaries: list[
+        tuple[SourceStructureBranch, NumericOccurrenceLike]
+    ] = []
     for branch, boundary in boundary_obligations:
         if _branch_boundary_has_test_evidence(
             branch,
@@ -970,8 +998,8 @@ def _companion_test_issues(
         missing_boundaries.append((branch, boundary))
     if missing_boundaries:
         rendered = ", ".join(
-            f"{branch.label}={value:g}"
-            for branch, value in missing_boundaries
+            f"{branch.label}={occurrence.value:g}"
+            for branch, occurrence in missing_boundaries
         )
         issues.append(
             "[complete-source-unit:tests] Companion tests do not exercise every "
@@ -1266,7 +1294,7 @@ def _formula_branch_test_witnesses(
 
 def _branch_boundary_has_test_evidence(
     branch: SourceStructureBranch,
-    boundary: float,
+    boundary: NumericOccurrenceLike,
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
@@ -1279,7 +1307,7 @@ def _branch_boundary_has_test_evidence(
             continue
         for case in asserted_by_rule.get(rule_name, ()):
             if any(
-                numeric_value_is_grounded(value, {boundary})
+                numeric_value_is_grounded(value, (boundary,))
                 for value in _case_numeric_selector_values(case, selector_names)
             ):
                 return True
@@ -1301,7 +1329,7 @@ def _formula_branch_interval(
     branch: SourceStructureBranch,
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[float | None, bool, float | None, bool] | None:
+) -> _NumericInterval | None:
     first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
     range_text = first_line.split(":", 1)[0]
     range_text = _NUMBER_MARKER.sub("", range_text).strip()
@@ -1315,7 +1343,7 @@ def _formula_interval_from_text(
     text: str,
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[float | None, bool, float | None, bool] | None:
+) -> _NumericInterval | None:
     lowered = text.lower()
     keyword = re.search(
         r"\b(?:von|from|unter|less\s+than|below|bis|up\s+to|höchstens|"
@@ -1331,44 +1359,45 @@ def _formula_interval_from_text(
         flags=re.IGNORECASE,
     ):
         return None
-    values = tuple(
-        float(value) for value in extract_numeric_occurrences(range_text)
-    )
-    if not values:
+    occurrences = tuple(extract_numeric_occurrences(range_text))
+    if not occurrences:
         return None
     lowered_range = range_text.lower()
     if re.match(r"(?:von|from)\b", lowered_range) and re.search(
         r"\b(?:bis|to|through)\b",
         lowered_range,
     ):
-        if len(values) < 2:
+        if len(occurrences) < 2:
             return None
-        return values[0], True, values[1], True
+        return _NumericInterval(occurrences[0], True, occurrences[1], True)
     if re.match(r"(?:unter|less\s+than|below)\b", lowered_range):
-        return None, False, values[0], False
+        return _NumericInterval(None, False, occurrences[0], False)
     if re.match(r"(?:bis|up\s+to|höchstens|at\s+most)\b", lowered_range):
-        return None, False, values[0], True
+        return _NumericInterval(None, False, occurrences[0], True)
     if re.match(r"(?:über|more\s+than|above)\b", lowered_range):
-        return values[0], False, None, False
+        return _NumericInterval(occurrences[0], False, None, False)
     if re.match(
         r"(?:von|ab|from|at\s+least|mindestens)\b",
         lowered_range,
     ):
-        return values[0], True, None, False
+        return _NumericInterval(occurrences[0], True, None, False)
     return None
 
 
 def _interval_contains(
-    interval: tuple[float | None, bool, float | None, bool],
+    interval: _NumericInterval,
     value: float,
 ) -> bool:
-    lower, lower_inclusive, upper, upper_inclusive = interval
+    lower = interval.lower.value if interval.lower is not None else None
+    upper = interval.upper.value if interval.upper is not None else None
     if lower is not None and (
-        value < lower or (not lower_inclusive and math.isclose(value, lower))
+        value < lower
+        or (not interval.lower_inclusive and math.isclose(value, lower))
     ):
         return False
     if upper is not None and (
-        value > upper or (not upper_inclusive and math.isclose(value, upper))
+        value > upper
+        or (not interval.upper_inclusive and math.isclose(value, upper))
     ):
         return False
     return True
@@ -1801,8 +1830,8 @@ def _source_boundary_obligations(
     *,
     narrative_formula_branches: Sequence[SourceStructureBranch] = (),
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> tuple[tuple[SourceStructureBranch, float], ...]:
-    obligations: list[tuple[SourceStructureBranch, float]] = []
+) -> tuple[tuple[SourceStructureBranch, NumericOccurrenceLike], ...]:
+    obligations: list[tuple[SourceStructureBranch, NumericOccurrenceLike]] = []
     for branch in branches:
         if branch.kind not in {"number", "letter"}:
             continue
@@ -1817,8 +1846,8 @@ def _source_boundary_obligations(
             continue
         prefix = _NUMBER_MARKER.sub("", prefix)
         obligations.extend(
-            (branch, float(value))
-            for value in dict.fromkeys(extract_numeric_occurrences(prefix))
+            (branch, occurrence)
+            for occurrence in extract_numeric_occurrences(prefix)
         )
     for branch in narrative_formula_branches:
         interval = _formula_branch_interval(
@@ -1827,16 +1856,21 @@ def _source_boundary_obligations(
         )
         if interval is None:
             continue
-        lower, _, upper, _ = interval
         obligations.extend(
             (branch, boundary)
-            for boundary in (lower, upper)
+            for boundary in (interval.lower, interval.upper)
             if boundary is not None
         )
     return tuple(
         {
-            (branch.path, float(value)): (branch, float(value))
-            for branch, value in obligations
+            (
+                branch.path,
+                float(occurrence.value),
+                occurrence.has_rate_context,
+                occurrence.source_value,
+                occurrence.requires_rate_context,
+            ): (branch, occurrence)
+            for branch, occurrence in obligations
         }.values()
     )
 

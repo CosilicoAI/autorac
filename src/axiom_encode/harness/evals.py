@@ -6949,7 +6949,7 @@ def _evaluate_artifact_in_scope(
         (
             numeric_recall_source_text
             if require_complete_source_unit
-            else numeric_grounding_validation_source_text
+            else numeric_validation_source_text
         )
         or ""
     )

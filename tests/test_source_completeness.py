@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import pytest
@@ -15,11 +16,15 @@ from axiom_encode.harness.source_completeness import (
 from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
     extract_named_scalar_occurrences,
-    extract_numeric_occurrences_from_text,
+    extract_typed_numeric_inventory_occurrences_from_text,
     numeric_value_is_grounded,
 )
 
 CORPUS_CITATION_PATH = "de/statute/estg/32a"
+DE_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
+    extract_typed_numeric_inventory_occurrences_from_text,
+    profile="de-DE",
+)
 
 
 def _analyze(
@@ -33,7 +38,7 @@ def _analyze(
         authoritative_source_text,
         corpus_citation_path=CORPUS_CITATION_PATH,
         test_cases=test_cases,
-        extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
         extract_named_scalars=extract_named_scalar_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
@@ -87,7 +92,7 @@ def _formula_test(
 def test_constants_without_principal_tariff_output_fail():
     source = """\
 (1) Für Einkommen von 12349 bis 17799 Euro ist die Steuer
-(914.51 * y + 1400) * y; y ist (Einkommen - 12348) / 10000.
+(914,51 * y + 1400) * y; y ist (Einkommen - 12348) / 10000.
 """
     constants_only = """\
 format: rulespec/v1
@@ -378,6 +383,103 @@ rules:
     assert any(
         "authoritative corpus numeric value 73" in issue.lower()
         for issue in _pipeline_issues(content, source, test_cases=[])
+    )
+
+
+def test_de_grouped_decimal_is_one_typed_recall_occurrence():
+    source = "(1) Der Betrag beträgt 19 470,38 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Der Betrag ist festgelegt.
+rules:
+  - name: grouped_decimal_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 19470.38
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert not result.issues
+    assert result.source_numeric_occurrence_count == 1
+    assert result.covered_source_numeric_occurrence_count == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_missing"),
+    [
+        ("(1) Die Frist beträgt 42 Tage.", 1),
+        ("(1) Der Satz beträgt 42 Prozent.", 0),
+    ],
+)
+def test_rate_scaling_requires_occurrence_local_context(source, expected_missing):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Ein Wert ist festgelegt.
+rules:
+  - name: candidate_value
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.42
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert result.source_numeric_occurrence_count == 1
+    assert result.missing_source_numeric_occurrence_count == expected_missing
+
+
+def test_same_valued_boundaries_keep_their_own_rate_context():
+    branch = recognize_source_structure("(1) Die Grenze gilt.")[0]
+    day_occurrence = DE_NUMERIC_OCCURRENCE_EXTRACTOR("42 Tage")[0]
+    rate_occurrence = DE_NUMERIC_OCCURRENCE_EXTRACTOR("42 Prozent")[0]
+    principal_rules = {
+        "candidate": {
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "formula": "selector",
+                }
+            ]
+        }
+    }
+    principal_rule_paths = {"candidate": {branch.path}}
+    asserted_by_rule = {
+        "candidate": [
+            {
+                "input": {"selector": 0.42},
+                "output": {"candidate": 1},
+            }
+        ]
+    }
+
+    assert not completeness_module._branch_boundary_has_test_evidence(
+        branch,
+        day_occurrence,
+        principal_rules=principal_rules,
+        principal_rule_paths=principal_rule_paths,
+        asserted_by_rule=asserted_by_rule,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert completeness_module._branch_boundary_has_test_evidence(
+        branch,
+        rate_occurrence,
+        principal_rules=principal_rules,
+        principal_rule_paths=principal_rule_paths,
+        asserted_by_rule=asserted_by_rule,
+        numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
 
@@ -756,8 +858,11 @@ def test_exact_released_estg_32a_structure_paths():
 
 
 def test_released_estg_32a_constants_without_tariff_output_fail():
-    values = extract_numeric_occurrences_from_text(
-        authoritative_numeric_recall_text(RELEASED_ESTG_32A_BODY)
+    values = (
+        occurrence.value
+        for occurrence in DE_NUMERIC_OCCURRENCE_EXTRACTOR(
+            authoritative_numeric_recall_text(RELEASED_ESTG_32A_BODY)
+        )
     )
     rules = "\n".join(
         f"""\
@@ -819,12 +924,14 @@ def test_released_estg_32a_does_not_invent_boundary_from_omission_line():
     obligations = completeness_module._source_boundary_obligations(
         branches,
         narrative_formula_branches=formula_branches,
-        extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
     assert not any(branch.path == () for branch, _value in obligations)
-    assert not any(value == 34 for _branch, value in obligations)
-    assert any(value == 12348 for _branch, value in obligations)
+    assert not any(occurrence.value == 34 for _branch, occurrence in obligations)
+    assert any(
+        occurrence.value == 12348 for _branch, occurrence in obligations
+    )
 
 
 def test_released_estg_32a_feminine_rounding_is_computation():
@@ -851,11 +958,17 @@ b) Von 74 Euro an: Einkommen * 3.
     obligations = completeness_module._source_boundary_obligations(
         branches,
         narrative_formula_branches=formula_branches,
-        extract_numeric_occurrences=extract_numeric_occurrences_from_text,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
-    assert any(branch.path[-1] == "a" and value == 73 for branch, value in obligations)
-    assert any(branch.path[-1] == "b" and value == 74 for branch, value in obligations)
+    assert any(
+        branch.path[-1] == "a" and occurrence.value == 73
+        for branch, occurrence in obligations
+    )
+    assert any(
+        branch.path[-1] == "b" and occurrence.value == 74
+        for branch, occurrence in obligations
+    )
 
 
 def test_nested_editorial_omission_does_not_drop_operative_paragraph():
