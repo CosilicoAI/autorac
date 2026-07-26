@@ -1027,7 +1027,7 @@ def test_provision_inheritance_preserves_same_document_amendment_exclusion(tmp_p
     assert source_unit.amendment_documents == ()
 
 
-def test_sibling_amendments_are_context_with_bounded_bodies(tmp_path):
+def test_sibling_amendments_preserve_full_context_bodies(tmp_path):
     release = _write_test_corpus_release(
         tmp_path,
         [
@@ -1082,9 +1082,9 @@ def test_sibling_amendments_are_context_with_bounded_bodies(tmp_path):
         "2026 Amendment Act",
     ]
     assert "Change 12 to 24." in prompt
-    assert "body omitted: exceeds 12000-character amendment context cap" in prompt
-    assert "amendment metadata truncated at 6000 characters" in prompt
-    assert "x" * 12_001 not in prompt
+    assert "x" * 12_001 in prompt
+    assert "m" * 7_000 in prompt
+    assert "truncated" not in prompt
     assert "Duplicate descendant body." not in prompt
     assert "Post-consolidation amendment acts in this corpus scope" in prompt
     assert prompt.count("Change 12 to 24.") == 1
@@ -1344,7 +1344,7 @@ def test_workspace_without_manifest_metadata_stays_minimal(tmp_path):
     assert prompt == prompt_without_injection_feature
 
 
-def test_injected_context_enforces_aggregate_character_cap_newest_last(tmp_path):
+def test_injected_context_preserves_full_metadata_and_amendments(tmp_path):
     amendments = tuple(
         CorpusAmendmentDocument(
             citation_path=f"dk/statute/amendment-{year}",
@@ -1376,15 +1376,14 @@ def test_injected_context_enforces_aggregate_character_cap_newest_last(tmp_path)
         map(len, amendment_texts)
     )
 
-    assert injected_length <= 32_000
+    assert injected_length > 32_000
     assert "N" * 11_500 in amendment_texts[0]
-    assert (
-        "amendment body truncated to satisfy aggregate context cap"
-        in amendment_texts[1]
-    )
+    assert "O" * 11_500 in amendment_texts[1]
+    assert "truncated" not in (workspace.provision_metadata_text or "")
+    assert all("truncated" not in text for text in amendment_texts)
 
 
-def test_provision_metadata_rendering_enforces_character_cap(tmp_path):
+def test_provision_metadata_rendering_preserves_full_content(tmp_path):
     workspace = prepare_eval_workspace(
         citation="dk/statute/benefit/section-1",
         runner=parse_runner_spec("openai:gpt-5.4"),
@@ -1397,10 +1396,8 @@ def test_provision_metadata_rendering_enforces_character_cap(tmp_path):
     )
 
     assert workspace.provision_metadata_text is not None
-    assert len(workspace.provision_metadata_text) == 6_000
-    assert workspace.provision_metadata_text.endswith(
-        "[provision metadata truncated at 6000 characters]"
-    )
+    assert "z" * 10_000 in workspace.provision_metadata_text
+    assert "truncated" not in workspace.provision_metadata_text
 
 
 def test_run_source_eval_rejects_forged_resolver_source(tmp_path):
@@ -3363,6 +3360,63 @@ class TestCodexPromptEval:
             assert configs == [expected_config]
         assert not any(config.startswith("reasoning_effort=") for config in configs)
 
+    def test_codex_prompt_eval_runs_in_empty_read_only_scratch_workspace(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path / "populated-workspace",
+            source_text_file=tmp_path / "populated-workspace" / "source.txt",
+            manifest_file=tmp_path / "populated-workspace" / "context-manifest.json",
+        )
+        workspace.root.mkdir()
+        workspace.source_text_file.write_text("must not be receiver-readable")
+        observed: dict[str, object] = {}
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                scratch = Path(cwd)
+                observed["cmd"] = cmd
+                observed["cwd"] = scratch
+                observed["initial_entries"] = list(scratch.iterdir())
+                Path(cmd[cmd.index("-o") + 1]).write_text(
+                    "format: rulespec/v1\nrules: []\n"
+                )
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "inline exam")
+
+        command = observed["cmd"]
+        scratch = observed["cwd"]
+        assert isinstance(command, list)
+        assert isinstance(scratch, Path)
+        assert scratch != workspace.root
+        assert observed["initial_entries"] == []
+        assert command[command.index("-C") + 1] == str(scratch)
+        assert command[command.index("-s") + 1] == "read-only"
+        assert response.text.startswith("format: rulespec/v1")
+
     def test_codex_prompt_eval_rejects_success_returned_after_case_deadline(
         self,
         tmp_path,
@@ -4040,8 +4094,16 @@ rules:
     versions:
       - effective_from: '2026-01-01'
         formula: true
-"""
+        """
     )
+    copied_cyclic_context = workspace.root / "context" / "statutes" / "26" / "7703.yaml"
+    copied_cyclic_context.parent.mkdir(parents=True, exist_ok=True)
+    copied_cyclic_context.write_text(cyclic_context.read_text())
+    copied_section_68_context = (
+        workspace.root / "context" / "statutes" / "26" / "68" / "b.yaml"
+    )
+    copied_section_68_context.parent.mkdir(parents=True, exist_ok=True)
+    copied_section_68_context.write_text(section_68_context.read_text())
     workspace.context_files.append(
         EvalContextFile(
             source_path=str(cyclic_context),
@@ -13130,10 +13192,138 @@ rules:
             runner_backend="openai",
         )
 
-        assert "You do not have filesystem tool access in this eval" in prompt
+        assert "filesystem or tool access is disabled in this eval" in prompt
         assert "=== BEGIN SOURCE.TXT ===" in prompt
         assert "Editorial note: current text valid from 2025-04-07." in prompt
         assert "26.05" in prompt
+
+    def test_eval_prompt_is_backend_invariant_and_inlines_full_context_files(
+        self,
+        tmp_path,
+    ):
+        workspace_root = tmp_path / "workspace"
+        context_root = workspace_root / "context"
+        context_root.mkdir(parents=True)
+        source_text = "The full authoritative source states an amount of 26.05."
+        source_file = workspace_root / "source.txt"
+        source_file.write_text(source_text)
+        long_content = (
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: long context\n"
+            + "  # full-context-filler\n" * 350
+            + "  # tail-beyond-old-6000-character-prefix\n"
+        )
+        stub_content = "format: rulespec/v1\nmodule:\n  status: stub\nrules: []\n"
+        long_file = context_root / "precedent.yaml"
+        stub_file = context_root / "definition.yaml"
+        long_file.write_text(long_content)
+        stub_file.write_text(stub_content)
+        context_files = [
+            EvalContextFile(
+                source_path=str(long_file),
+                workspace_path="context/precedent.yaml",
+                import_path="us:statutes/1/precedent",
+                kind="implementation_precedent",
+            ),
+            EvalContextFile(
+                source_path=str(stub_file),
+                workspace_path="context/definition.yaml",
+                import_path="us:statutes/1/definition",
+                kind="definition_stub",
+                label="resolved definition",
+            ),
+        ]
+        workspace = EvalWorkspace(
+            root=workspace_root,
+            source_text_file=source_file,
+            manifest_file=workspace_root / "context-manifest.json",
+            context_files=context_files,
+            policy_prefix="us",
+        )
+
+        prompts = [
+            _build_eval_prompt(
+                "1 USC 1",
+                "repo-augmented",
+                workspace,
+                context_files,
+                target_file_name="1.yaml",
+                runner_backend=backend,
+            )
+            for backend in ("claude", "codex", "openai")
+        ]
+
+        assert len({prompt.encode("utf-8") for prompt in prompts}) == 1
+        prompt = prompts[0]
+        assert source_text in prompt
+        assert long_content in prompt
+        assert stub_content in prompt
+        assert "tail-beyond-old-6000-character-prefix" in prompt
+        assert "[truncated]" not in prompt
+        assert "filesystem or tool access is disabled" in prompt
+
+    def test_eval_prompt_fails_loudly_when_manifest_context_file_is_missing(
+        self,
+        tmp_path,
+    ):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        source_file = workspace_root / "source.txt"
+        source_file.write_text("Authoritative source.")
+        original_context = tmp_path / "original.yaml"
+        original_context.write_text("format: rulespec/v1\nrules: []\n")
+        context_files = [
+            EvalContextFile(
+                source_path=str(original_context),
+                workspace_path="context/missing.yaml",
+                import_path="us:statutes/1/missing",
+                kind="implementation_precedent",
+            )
+        ]
+        workspace = EvalWorkspace(
+            root=workspace_root,
+            source_text_file=source_file,
+            manifest_file=workspace_root / "context-manifest.json",
+            context_files=context_files,
+            policy_prefix="us",
+        )
+
+        with pytest.raises(ValueError, match="Could not inline context file"):
+            _build_eval_prompt(
+                "1 USC 1",
+                "repo-augmented",
+                workspace,
+                context_files,
+                target_file_name="1.yaml",
+                runner_backend="codex",
+            )
+
+    def test_eval_prompt_fails_with_context_overflow_before_receiver_call(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        workspace = prepare_eval_workspace(
+            citation="1 USC 1",
+            runner=parse_runner_spec("codex:gpt-5.4"),
+            output_root=tmp_path / "out",
+            source_text="Authoritative source.",
+            axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "us"),
+            mode="cold",
+            extra_context_paths=[],
+        )
+        monkeypatch.setattr(evals_module, "_EVAL_PROMPT_MAX_UTF8_BYTES", 100)
+
+        with pytest.raises(ValueError, match="context_overflow"):
+            _build_eval_prompt(
+                "1 USC 1",
+                "cold",
+                workspace,
+                [],
+                target_file_name="1.yaml",
+                runner_backend="codex",
+            )
 
     def test_build_eval_prompt_for_date_silent_source_includes_neutral_scaffold_fallback(
         self, tmp_path
@@ -14381,9 +14571,11 @@ cases:
             _engine_path,
             roots,
             *,
+            parsed_runners,
             suite_retry_attempts,
         ):
             assert suite_retry_attempts == 2
+            assert [runner.name for runner in parsed_runners] == ["openai-gpt-5.4"]
             return {
                 "schema": "test",
                 "case_timeout_seconds": 3600,
@@ -19465,6 +19657,9 @@ rules:
                 kind="existing_target",
             )
         ]
+        copied_target = workspace_root / context_files[0].workspace_path
+        copied_target.parent.mkdir(parents=True)
+        copied_target.write_text(target.read_text())
 
         prompt = _build_eval_prompt(
             "26 USC 63(f)",
