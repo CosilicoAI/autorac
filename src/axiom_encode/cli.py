@@ -47197,6 +47197,7 @@ def _build_eval_suite_payload(
                 "name": case.name,
                 "kind": case.kind,
                 "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+                "oracle": case_identity.get("oracle"),
                 "sha256": case_identity.get("sha256"),
             }
             serialized_results.append(_bind_eval_result_payload(result_payload))
