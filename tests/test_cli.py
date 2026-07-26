@@ -865,6 +865,12 @@ def test_cli_eval_suite_payload_is_admitted_by_eval_board(tmp_path):
     assert [runner.runner for runner in board.runners] == ["codex-gpt"]
 
 
+def test_cli_report_validator_admits_cli_eval_suite_payload(tmp_path):
+    payload = _test_eval_suite_report_payload(tmp_path)
+
+    assert _validated_eval_suite_report_payload(payload) == payload
+
+
 TEST_CORPUS_RELEASE_NAME = "rulespec-test-release"
 TEST_CORPUS_VERSION = "2026-rulespec-test"
 TEST_VALIDATION_WAIVER_TEXT = "validate_failures: {}\n"
