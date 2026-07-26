@@ -15616,6 +15616,11 @@ cases:
         clean_identity = _rulespec_root_execution_identity(checkout / "us")
         checkout_identity = clean_identity["checkout_identity"]
         assert checkout_identity["kind"] == "git"
+        assert checkout_identity["pathspecs"] == [
+            "us",
+            ".axiom/toolchain.toml",
+            "known-validation-gaps.yaml",
+        ]
         assert checkout_identity["dirty"] is False
         assert (
             checkout_identity["commit"]

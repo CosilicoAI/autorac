@@ -1,6 +1,8 @@
 """Tests for the N-runner eval board fold and its capability manifest."""
 
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -451,6 +453,67 @@ def test_real_producer_identity_matches_consumer_contract():
     assert identity["case_timeout_seconds"] == normalized["case_timeout_seconds"]
     assert identity["runner_timeouts"] == normalized["runner_timeouts"]
     assert identity["timeout_retry_policy"] == normalized["timeout_retry_policy"]
+
+
+def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
+    checkout = tmp_path / "rulespec-us"
+    content_root = checkout / "us"
+    content_root.mkdir(parents=True)
+    (content_root / "sample.yaml").write_text("format: rulespec/v1\nrules: []\n")
+    waiver_bytes = b"validate_failures: {}\n"
+    waiver_sha256 = hashlib.sha256(waiver_bytes).hexdigest()
+    (checkout / "known-validation-gaps.yaml").write_bytes(waiver_bytes)
+    toolchain = checkout / ".axiom" / "toolchain.toml"
+    toolchain.parent.mkdir()
+    toolchain.write_text(
+        "[toolchain]\n"
+        'axiom_corpus_release = "producer-consumer-lock"\n'
+        f'axiom_corpus_release_content_sha256 = "{"a" * 64}"\n'
+        f'validation_waiver_set_sha256 = "{waiver_sha256}"\n'
+    )
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "commit", "-qm", "fixture"],
+        check=True,
+    )
+
+    identity = _build_eval_suite_execution_identity(
+        REPO_ROOT,
+        (str(content_root),),
+    )
+    digest = _eval_suite_execution_identity_sha256(identity)
+
+    assert identity["axiom_encode"]["pathspecs"] == [
+        "src/axiom_encode",
+        "pyproject.toml",
+        "uv.lock",
+    ]
+    assert "pathspecs" not in identity["axiom_rules_engine"]
+    assert identity["rulespec_roots"][0]["checkout_identity"]["pathspecs"] == [
+        "us",
+        ".axiom/toolchain.toml",
+        "known-validation-gaps.yaml",
+    ]
+    admitted_identity, admitted_digest = eval_board_module._payload_execution_identity(
+        {
+            "evidence": {
+                "execution_identity": identity,
+                "execution_identity_sha256": digest,
+            }
+        },
+        "real producer identity",
+    )
+    assert admitted_identity == identity
+    assert admitted_digest == digest
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
