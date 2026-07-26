@@ -922,6 +922,9 @@ rules: []
         "Der Betrag ist das Produkt aus Einkommen und Faktor.",
         "Der Betrag entspricht Einkommen mal zwei.",
         "Der Betrag wird verdoppelt.",
+        "Der Betrag beträgt das Einkommen plus 10 Euro.",
+        "Der Betrag beträgt das Einkommen minus 10 Euro.",
+        "Der Betrag beträgt 10 % des Einkommens.",
     ],
 )
 def test_common_german_formula_language_is_computation(source: str):
@@ -939,6 +942,9 @@ def test_common_german_formula_language_is_computation(source: str):
         ("(1) Der Betrag ist das Produkt aus Einkommen und Faktor.", 2),
         ("(1) Der Betrag entspricht Einkommen mal zwei.", 2),
         ("(1) Der Betrag wird verdoppelt.", 2),
+        ("(1) Der Betrag beträgt das Einkommen plus 10 Euro.", 10),
+        ("(1) Der Betrag beträgt das Einkommen minus 10 Euro.", 10),
+        ("(1) Der Betrag beträgt 10 % des Einkommens.", 0.1),
     ],
 )
 def test_common_german_formula_language_rejects_parameter_only(
@@ -4257,6 +4263,59 @@ rules:
     assert not correct.issues
 
 
+def test_formula_witness_preserves_source_operation_topology():
+    source = "(1) Der Betrag wird als Einkommen * 2 + 3 berechnet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: factor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: supplement
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 3}]
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+"""
+
+    correct = _analyze(
+        content.replace("FORMULA", "income * factor + supplement"),
+        source,
+        test_cases=[
+            {
+                "name": "source computation",
+                "input": {"income": 10},
+                "output": {"amount": 23},
+            }
+        ],
+    )
+    wrong = _analyze(
+        content.replace("FORMULA", "income + factor * supplement"),
+        source,
+        test_cases=[
+            {
+                "name": "different computation",
+                "input": {"income": 10},
+                "output": {"amount": 16},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
 def test_indexed_expression_multiplied_by_zero_cannot_witness_formula():
     source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
     content = """\
@@ -4680,6 +4739,12 @@ def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
         ("unter 100 Euro", "income < income_limit", False, "income <= income_limit"),
         ("ab 100 Euro", "income >= income_limit", True, "income <= income_limit"),
         ("über 100 Euro", "income > income_limit", False, "income >= income_limit"),
+        (
+            "von mehr als 100 Euro",
+            "income > income_limit",
+            False,
+            "income >= income_limit",
+        ),
     ],
 )
 def test_boundary_comparator_preserves_direction_and_inclusivity(
