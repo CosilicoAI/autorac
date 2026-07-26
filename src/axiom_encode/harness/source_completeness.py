@@ -213,7 +213,9 @@ _WORDED_ARITHMETIC_EXPRESSION = re.compile(
     flags=re.IGNORECASE,
 )
 _SYMBOLIC_ARITHMETIC_TOKEN = re.compile(
-    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}|[()+*/×·•∗∙−–-]"
+    rf"\b(?:plus|minus|mal)\b|{_SYMBOLIC_ARITHMETIC_OPERAND}|"
+    r"[()+*/×·•∗∙−–-]",
+    flags=re.IGNORECASE,
 )
 _COMPUTATION_LANGUAGE = re.compile(
     r"\b(?:"
@@ -2562,6 +2564,9 @@ def _normalized_source_arithmetic_expression(text: str) -> str:
         ),
         text,
     )
+    normalized = re.sub(r"\bplus\b", "+", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bminus\b", "-", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bmal\b", "*", normalized, flags=re.IGNORECASE)
     return normalized.translate(
         str.maketrans(
             {
@@ -6780,10 +6785,16 @@ def _rounding_call_binds_source_clause(
         extract_numeric_occurrences=extract_numeric_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    source_operations = _formula_operation_kinds(source_formula_branch.text)
+    if (
+        not source_operations
+        and _formula_ast_operation_kinds(original_operand)
+    ):
+        return False
     if rounding_refers_to_result:
         return formula_match
     source_has_distinguishing_computation = bool(
-        _formula_operation_kinds(source_formula_branch.text)
+        source_operations
         or extract_numeric_occurrences(
             authoritative_numeric_recall_text(source_formula_branch.text)
         )

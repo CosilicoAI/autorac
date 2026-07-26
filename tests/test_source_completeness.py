@@ -7700,8 +7700,17 @@ def test_worded_arithmetic_chain_preserves_formula_topology():
     assert _has_issue(wrong, "formula branch")
 
 
-def test_nearest_rounding_offset_cannot_cancel_itself():
-    source = "(1) Das Einkommen ist auf volle Euro gerundet."
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Das Einkommen ist auf volle Euro gerundet.",
+        (
+            "(1) Der Betrag entspricht dem Einkommen. "
+            "Das Ergebnis ist kaufmännisch zu runden."
+        ),
+    ],
+)
+def test_nearest_rounding_offset_cannot_cancel_itself(source: str):
     content = """\
 format: rulespec/v1
 module:
