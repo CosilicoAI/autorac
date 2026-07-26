@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from calendar import monthrange
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,6 +37,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
@@ -1642,6 +1644,26 @@ _PERCENT_MARKER_AFTER_NUMBER_PATTERN = re.compile(
     r"\s*(?:%|\bp\.?\s*c\.?\b)",
     re.IGNORECASE,
 )
+_LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN = re.compile(
+    r"[ \t]*(?:"
+    r"%|"
+    r"\bp\.?[ \t]*c\.?\b|"
+    r"\bpercent\b|"
+    r"\bper[ \t-]+cent(?:um)?\b|"
+    r"\bProzent\b|"
+    r"\bvom[ \t]+Hundert\b"
+    r")",
+    re.IGNORECASE,
+)
+_TABLE_RATE_HEADER_PATTERN = re.compile(
+    r"(?:"
+    r"\bpercent(?:age)?\b|"
+    r"\bper[ \t-]+cent(?:um)?\b|"
+    r"\bProzent\b|"
+    r"\bvom[ \t]+Hundert\b"
+    r")",
+    re.IGNORECASE,
+)
 _VEHICLE_TAX_FISCAL_POWER_TABLE_CELL_PATTERN = re.compile(
     r"\b(?P<cv>[5-9]|1\d|20)\s+"
     r"(?=(?:\d{1,3}[.\u00a0\u202f]\d{3},\d{2}|\d{2,3}[,.]\d{2})"
@@ -1718,6 +1740,24 @@ _DATE_DECOMPOSITION_CUE_TOKENS = {
     "start",
     "end",
 }
+
+
+@dataclass(frozen=True)
+class NumericOccurrence:
+    """One normalized numeric candidate anchored to its exact source token."""
+
+    value: float
+    start: int
+    end: int
+    raw: str
+    has_rate_context: bool = False
+    source_value: float | None = None
+    requires_rate_context: bool = False
+
+    @property
+    def span(self) -> tuple[int, int]:
+        """Return the half-open source span for this occurrence."""
+        return self.start, self.end
 
 
 @dataclass(frozen=True)
@@ -2653,11 +2693,21 @@ def _rule_grounding_values_by_path(
     return out
 
 
-def _rule_atom_evidence_by_path(
+@dataclass(frozen=True)
+class _NumericEvidenceItem:
+    """One source fragment and the citation identity that selects its profile."""
+
+    citation_path: str | None
+    text: str
+
+
+def _rule_atom_numeric_evidence_items_by_path(
     rule: Any,
     proof_source_texts: Mapping[str, str | None] | None = None,
-) -> dict[str, str]:
-    """Map each proof atom's anchor ``path`` to that atom's grounding evidence.
+    *,
+    require_body_bound_evidence: bool = True,
+) -> dict[str, tuple[_NumericEvidenceItem, ...]]:
+    """Map each proof anchor to separately profileable numeric evidence items.
 
     Evidence is excerpt-first: the atom's excerpt/quote/table cells — the
     encoder's chosen, excerpt-verified text for the value at that exact path.
@@ -2666,10 +2716,11 @@ def _rule_atom_evidence_by_path(
     module-source semantics while keeping the boundary per anchored atom: an
     unrelated atom in the same rule can launder nothing, because neither its
     excerpt nor its cited provision is consulted for another path's literal.
+    Fragments retain their own citation and are never joined before tokenization.
     (Follow-up ratchet: require excerpts on numeric-bearing atoms.)
     """
-    by_path: dict[str, list[str]] = {}
-    cited_by_path: dict[str, list[str]] = {}
+    by_path: dict[str, list[_NumericEvidenceItem]] = {}
+    cited_by_path: dict[str, list[tuple[str, str]]] = {}
     explicit_evidence_paths: set[str] = set()
     if not isinstance(rule, dict):
         return {}
@@ -2689,7 +2740,13 @@ def _rule_atom_evidence_by_path(
         source = atom.get("source")
         if not path or not isinstance(source, dict):
             continue
-        citation_path = str(source.get("corpus_citation_path") or "").strip()
+        raw_citation_path = source.get("corpus_citation_path")
+        citation_identity = (
+            raw_citation_path if isinstance(raw_citation_path, str) else None
+        )
+        citation_path = (
+            citation_identity.strip() if citation_identity is not None else ""
+        )
         resolved_text = (
             proof_source_texts.get(citation_path)
             if proof_source_texts is not None and citation_path
@@ -2702,7 +2759,8 @@ def _rule_atom_evidence_by_path(
                 continue
             explicit_evidence_paths.add(path)
             excerpt_is_body_bound = (
-                proof_source_texts is None
+                not require_body_bound_evidence
+                or proof_source_texts is None
                 or not citation_path
                 or (
                     resolved_text is not None
@@ -2710,7 +2768,7 @@ def _rule_atom_evidence_by_path(
                 )
             )
             if excerpt_is_body_bound:
-                fragments.append(text.strip())
+                fragments.append(_NumericEvidenceItem(citation_identity, text.strip()))
         table = source.get("table")
         if isinstance(table, dict):
             for cell in table.values():
@@ -2718,7 +2776,8 @@ def _rule_atom_evidence_by_path(
                     explicit_evidence_paths.add(path)
                     text = str(cell).strip()
                     cell_is_body_bound = (
-                        proof_source_texts is None
+                        not require_body_bound_evidence
+                        or proof_source_texts is None
                         or not citation_path
                         or (
                             resolved_text is not None
@@ -2728,25 +2787,41 @@ def _rule_atom_evidence_by_path(
                         )
                     )
                     if cell_is_body_bound:
-                        fragments.append(text)
+                        fragments.append(_NumericEvidenceItem(citation_identity, text))
         if citation_path:
-            cited_by_path.setdefault(path, []).append(citation_path)
-    evidence: dict[str, str] = {}
+            cited_by_path.setdefault(path, []).append(
+                (citation_path, citation_identity or citation_path)
+            )
+    evidence: dict[str, tuple[_NumericEvidenceItem, ...]] = {}
     for path, fragments in by_path.items():
         if fragments:
-            evidence[path] = "\n".join(fragments)
+            evidence[path] = tuple(fragments)
             continue
         if path in explicit_evidence_paths:
-            evidence[path] = ""
+            evidence[path] = ()
             continue
-        resolved: list[str] = []
+        resolved: list[_NumericEvidenceItem] = []
         if proof_source_texts is not None:
-            for citation_path in cited_by_path.get(path, []):
+            for citation_path, citation_identity in cited_by_path.get(path, []):
                 text = proof_source_texts.get(citation_path)
                 if text:
-                    resolved.append(text)
-        evidence[path] = "\n".join(resolved)
+                    resolved.append(_NumericEvidenceItem(citation_identity, text))
+        evidence[path] = tuple(resolved)
     return evidence
+
+
+def _rule_atom_evidence_by_path(
+    rule: Any,
+    proof_source_texts: Mapping[str, str | None] | None = None,
+) -> dict[str, str]:
+    """Return the legacy joined view used by non-numeric evidence consumers."""
+    return {
+        path: "\n".join(item.text for item in items)
+        for path, items in _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+        ).items()
+    }
 
 
 def _source_evidence_fragment_is_body_bound(
@@ -3730,7 +3805,7 @@ def _call_body_contains_any(
         search_start = call_start + 1
 
 
-def extract_numbers_from_text(text: str) -> set[float]:
+def _extract_legacy_grounding_values(text: str) -> set[float]:
     """Extract numeric values from embedded statute text."""
     implied_cents_matches = _iter_form_implied_cents_matches(text)
     original_text = _FORM_IMPLIED_CENTS_PATTERN.sub(
@@ -4783,11 +4858,11 @@ def _strip_superseded_bracketed_numeric_text(match: re.Match[str]) -> str:
     return " "
 
 
-def _extract_collapsed_schedule_row_occurrences(
+def _iter_collapsed_schedule_row_occurrences(
     text: str,
-) -> tuple[list[float], str]:
-    """Extract schedule row values once per contiguous value block and remove row lines."""
-    occurrences: list[float] = []
+) -> tuple[list[tuple[tuple[int, int], float]], str]:
+    """Return schedule row values with input spans and remove their row lines."""
+    occurrences: list[tuple[tuple[int, int], float]] = []
     retained_lines: list[str] = []
     current_heading: str | None = None
     last_value_by_block: dict[str, float] = {}
@@ -4796,8 +4871,11 @@ def _extract_collapsed_schedule_row_occurrences(
     current_ungrouped_block: str | None = None
     pending_split_block_key: str | None = None
 
-    for line in text.splitlines():
+    line_offset = 0
+    for line_with_ending in text.splitlines(keepends=True):
+        line = line_with_ending.rstrip("\r\n")
         stripped = line.strip()
+        stripped_offset = line_offset + len(line) - len(line.lstrip())
         if pending_split_block_key is not None:
             split_value_match = _SCHEDULE_SPLIT_VALUE_PATTERN.fullmatch(stripped)
             if split_value_match:
@@ -4807,10 +4885,20 @@ def _extract_collapsed_schedule_row_occurrences(
                         last_value_by_block.get(pending_split_block_key) != value
                         and value not in seen_values
                     ):
-                        occurrences.append(value)
+                        span = split_value_match.span(1)
+                        occurrences.append(
+                            (
+                                (
+                                    stripped_offset + span[0],
+                                    stripped_offset + span[1],
+                                ),
+                                value,
+                            )
+                        )
                         last_value_by_block[pending_split_block_key] = value
                         seen_values.add(value)
                 pending_split_block_key = None
+                line_offset += len(line_with_ending)
                 continue
             pending_split_block_key = None
 
@@ -4818,6 +4906,7 @@ def _extract_collapsed_schedule_row_occurrences(
             current_heading = stripped
             current_ungrouped_block = None
             retained_lines.append(line)
+            line_offset += len(line_with_ending)
             continue
 
         split_key_match = _SCHEDULE_SPLIT_ROW_KEY_PATTERN.fullmatch(stripped)
@@ -4825,7 +4914,16 @@ def _extract_collapsed_schedule_row_occurrences(
             with contextlib.suppress(ValueError):
                 key_value = float(split_key_match.group(1).replace(",", ""))
                 if key_value not in seen_values:
-                    occurrences.append(key_value)
+                    span = split_key_match.span(1)
+                    occurrences.append(
+                        (
+                            (
+                                stripped_offset + span[0],
+                                stripped_offset + span[1],
+                            ),
+                            key_value,
+                        )
+                    )
                     seen_values.add(key_value)
             if current_heading is not None:
                 pending_split_block_key = current_heading
@@ -4834,6 +4932,7 @@ def _extract_collapsed_schedule_row_occurrences(
                     ungrouped_block += 1
                     current_ungrouped_block = f"__ungrouped_{ungrouped_block}"
                 pending_split_block_key = current_ungrouped_block
+            line_offset += len(line_with_ending)
             continue
 
         row_match = (
@@ -4856,34 +4955,59 @@ def _extract_collapsed_schedule_row_occurrences(
                     last_value_by_block.get(block_key) != value
                     and value not in seen_values
                 ):
-                    occurrences.append(value)
+                    span = row_match.span(1)
+                    occurrences.append(
+                        (
+                            (
+                                stripped_offset + span[0],
+                                stripped_offset + span[1],
+                            ),
+                            value,
+                        )
+                    )
                     last_value_by_block[block_key] = value
                     seen_values.add(value)
+            line_offset += len(line_with_ending)
             continue
 
         if stripped:
             current_heading = None
             current_ungrouped_block = None
         retained_lines.append(line)
+        line_offset += len(line_with_ending)
 
     return occurrences, "\n".join(retained_lines)
 
 
-def _extract_two_line_table_value_occurrences(text: str) -> list[float]:
-    """Extract values from official tables that alternate row key and value lines."""
-    occurrences: list[float] = []
+def _extract_collapsed_schedule_row_occurrences(
+    text: str,
+) -> tuple[list[float], str]:
+    """Extract schedule row values once per contiguous value block and remove row lines."""
+    occurrences, retained = _iter_collapsed_schedule_row_occurrences(text)
+    return [value for _, value in occurrences], retained
+
+
+def _iter_two_line_table_value_occurrences(
+    text: str,
+) -> list[tuple[tuple[int, int], float]]:
+    """Return values and exact input spans from alternating official table rows."""
+    occurrences: list[tuple[tuple[int, int], float]] = []
     table_context_active = False
     pending_table_key = False
+    line_offset = 0
 
-    for line in text.splitlines():
+    for line_with_ending in text.splitlines(keepends=True):
+        line = line_with_ending.rstrip("\r\n")
         stripped = line.strip().strip(_STRUCTURAL_SOURCE_QUOTE_CHARS).strip()
         if not stripped:
             table_context_active = False
             pending_table_key = False
+            line_offset += len(line_with_ending)
             continue
         if _SOURCE_SUBDIVISION_LINE_PATTERN.match(stripped):
             table_context_active = False
             pending_table_key = False
+            line_offset += len(line_with_ending)
             continue
         if _TWO_LINE_TABLE_CONTEXT_PATTERN.search(stripped):
             table_context_active = True
@@ -4892,21 +5016,40 @@ def _extract_two_line_table_value_occurrences(text: str) -> list[float]:
             value_match = _SCHEDULE_SPLIT_VALUE_PATTERN.fullmatch(stripped)
             if value_match:
                 with contextlib.suppress(ValueError):
-                    occurrences.append(float(value_match.group(1).replace(",", "")))
+                    raw = value_match.group(1)
+                    relative_start = line.rfind(raw)
+                    if relative_start >= 0:
+                        occurrences.append(
+                            (
+                                (
+                                    line_offset + relative_start,
+                                    line_offset + relative_start + len(raw),
+                                ),
+                                float(raw.replace(",", "")),
+                            )
+                        )
                 pending_table_key = False
+                line_offset += len(line_with_ending)
                 continue
             pending_table_key = False
 
         if table_context_active and _TWO_LINE_TABLE_ROW_KEY_PATTERN.fullmatch(stripped):
             pending_table_key = True
+            line_offset += len(line_with_ending)
             continue
 
         pending_table_key = False
+        line_offset += len(line_with_ending)
 
     return occurrences
 
 
-def extract_numeric_occurrences_from_text(text: str) -> list[float]:
+def _extract_two_line_table_value_occurrences(text: str) -> list[float]:
+    """Extract values from official tables that alternate row key and value lines."""
+    return [value for _, value in _iter_two_line_table_value_occurrences(text)]
+
+
+def _extract_legacy_inventory_values(text: str) -> list[float]:
     """Extract substantive numeric occurrences from source text, preserving repeats."""
     implied_cents_matches = _iter_form_implied_cents_matches(text)
     raw_text = _FORM_IMPLIED_CENTS_PATTERN.sub(
@@ -5102,6 +5245,1447 @@ def extract_numeric_occurrences_from_text(text: str) -> list[float]:
     return normalized
 
 
+@dataclass(frozen=True)
+class _NumericTokenization:
+    """Typed emission streams used by both public extraction adapters."""
+
+    grounding: tuple[NumericOccurrence, ...]
+    inventory: tuple[NumericOccurrence, ...]
+
+
+def _numeric_occurrence_has_local_rate_context(
+    text: str,
+    span: tuple[int, int],
+) -> bool:
+    """Return whether adjacent or same-column evidence marks this as a rate."""
+    _, end = span
+    return bool(
+        _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(text, end)
+        or _numeric_occurrence_has_rate_table_header(text, span)
+    )
+
+
+def _numeric_occurrence_has_rate_table_header(
+    text: str,
+    span: tuple[int, int],
+) -> bool:
+    """Recognize a percentage header for the occurrence's pipe-table column."""
+    start, _ = span
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    if "|" not in line:
+        return False
+
+    relative_start = start - line_start
+    column = line[:relative_start].count("|")
+    if line.lstrip().startswith("|"):
+        column -= 1
+    if column < 0:
+        return False
+
+    previous_lines = text[:line_start].splitlines()
+    for previous_line in reversed(previous_lines):
+        if "|" not in previous_line:
+            break
+        cells = previous_line.strip().strip("|").split("|")
+        if column < len(cells) and _TABLE_RATE_HEADER_PATTERN.search(cells[column]):
+            return True
+    return False
+
+
+def _pipe_table_rate_cell_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Index cells whose pipe-table column has an explicit percentage header."""
+    rate_cells: list[tuple[int, int]] = []
+    rate_columns: set[int] = set()
+    line_offset = 0
+    for line_with_ending in text.splitlines(keepends=True):
+        line = line_with_ending.rstrip("\r\n")
+        if "|" not in line:
+            rate_columns.clear()
+            line_offset += len(line_with_ending)
+            continue
+
+        boundaries = [
+            -1,
+            *(match.start() for match in re.finditer(r"\|", line)),
+            len(line),
+        ]
+        cells = [
+            (boundaries[index] + 1, boundaries[index + 1])
+            for index in range(len(boundaries) - 1)
+        ]
+        if line.lstrip().startswith("|") and cells:
+            cells = cells[1:]
+        if line.rstrip().endswith("|") and cells:
+            cells = cells[:-1]
+
+        for column, (start, end) in enumerate(cells):
+            if _TABLE_RATE_HEADER_PATTERN.search(line[start:end]):
+                rate_columns.add(column)
+        for column in rate_columns:
+            if column >= len(cells):
+                continue
+            start, end = cells[column]
+            rate_cells.append((line_offset + start, line_offset + end))
+        line_offset += len(line_with_ending)
+    return tuple(rate_cells)
+
+
+def _source_span_for_parsed_numeric_span(
+    source_text: str,
+    parsed_text: str,
+    span: tuple[int, int],
+) -> tuple[int, int]:
+    """Map a parsed-buffer span back to an exact source substring when possible."""
+    if parsed_text is source_text:
+        return span
+    raw = parsed_text[span[0] : span[1]]
+    if not raw:
+        return 0, len(source_text)
+    starts = [match.start() for match in re.finditer(re.escape(raw), source_text)]
+    if not starts:
+        return 0, len(source_text)
+    expected = (
+        round(span[0] * len(source_text) / len(parsed_text)) if parsed_text else 0
+    )
+    start = min(starts, key=lambda candidate: abs(candidate - expected))
+    return start, start + len(raw)
+
+
+def _numeric_occurrence_from_parsed_span(
+    source_text: str,
+    parsed_text: str,
+    span: tuple[int, int],
+    value: float,
+    *,
+    source_value: float | None = None,
+    force_rate_context: bool = False,
+) -> NumericOccurrence:
+    source_span = _source_span_for_parsed_numeric_span(source_text, parsed_text, span)
+    start, end = source_span
+    return NumericOccurrence(
+        value=value,
+        start=start,
+        end=end,
+        raw=source_text[start:end],
+        has_rate_context=force_rate_context
+        or _numeric_occurrence_has_local_rate_context(source_text, source_span),
+        source_value=value if source_value is None else source_value,
+    )
+
+
+def _fallback_numeric_occurrence(text: str, value: float) -> NumericOccurrence:
+    """Anchor derived semantic candidates to their complete source evidence item."""
+    return NumericOccurrence(
+        value=value,
+        start=0,
+        end=len(text),
+        raw=text,
+        has_rate_context=False,
+        source_value=value,
+    )
+
+
+def _legacy_surface_numeric_occurrences(text: str) -> list[NumericOccurrence]:
+    """Return exact-span surface candidates used to type legacy numeric values."""
+    raw_text = _FORM_IMPLIED_CENTS_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+    cleaned = _clean_source_text_for_numeric_extraction(raw_text)
+    _, cleaned = _extract_collapsed_schedule_row_occurrences(cleaned)
+    occurrences: list[NumericOccurrence] = []
+
+    for span, value in _iter_direct_percentage_rate_matches(raw_text):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(
+                text,
+                raw_text,
+                span,
+                value,
+                source_value=value * 100,
+                force_rate_context=True,
+            )
+        )
+
+    for span, value in _iter_raw_european_money_value_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_belgian_numeric_range_endpoint_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_normalized_special_numeric_matches(cleaned):
+        raw = cleaned[span[0] : span[1]]
+        has_rate_context = bool(
+            re.search(
+                r"(?:%|\bp\.?[ \t]*c\.?\b|\bpercent\b|"
+                r"\bper[ \t-]+cent(?:um)?\b|\bProzent\b|"
+                r"\bvom[ \t]+Hundert\b)",
+                raw,
+                re.IGNORECASE,
+            )
+        )
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(
+                text,
+                cleaned,
+                span,
+                value,
+                source_value=value * 100 if has_rate_context else value,
+                force_rate_context=has_rate_context,
+            )
+        )
+    for span, value in _iter_standalone_fraction_word_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_word_quantity_fraction_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_ordinal_word_number_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_cardinal_word_number_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_french_cardinal_phrase_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value in _iter_dutch_cardinal_phrase_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+    for span, value, raw_value in _iter_digit_scale_number_matches(cleaned):
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, value)
+        )
+        occurrences.append(
+            _numeric_occurrence_from_parsed_span(text, cleaned, span, raw_value)
+        )
+
+    for pattern, normalize in (
+        (
+            SPACED_EUROPEAN_DECIMAL_MONEY_PATTERN,
+            _normalize_european_decimal_number,
+        ),
+        (EUROPEAN_DECIMAL_NUMBER_PATTERN, _normalize_european_decimal_number),
+        (
+            EUROPEAN_LEADING_ZERO_DECIMAL_NUMBER_PATTERN,
+            _normalize_european_decimal_number,
+        ),
+        (EUROPEAN_THOUSANDS_NUMBER_PATTERN, _normalize_grouped_thousands_number),
+        (
+            EUROPEAN_DOT_THOUSANDS_NUMBER_PATTERN,
+            _normalize_grouped_thousands_number,
+        ),
+    ):
+        for match in pattern.finditer(cleaned):
+            span = match.span(1)
+            with contextlib.suppress(ValueError):
+                value = float(normalize(match.group(1)))
+                occurrences.append(
+                    _numeric_occurrence_from_parsed_span(
+                        text,
+                        cleaned,
+                        span,
+                        value,
+                    )
+                )
+                if pattern is EUROPEAN_DOT_THOUSANDS_NUMBER_PATTERN and re.fullmatch(
+                    r"-?[1-9]\d{0,2}\.\d{3}", match.group(1)
+                ):
+                    occurrences.append(
+                        _numeric_occurrence_from_parsed_span(
+                            text,
+                            cleaned,
+                            span,
+                            float(match.group(1)),
+                        )
+                    )
+
+    for match in SOURCE_TEXT_NUMBER_PATTERN.finditer(cleaned):
+        span = match.span(1)
+        with contextlib.suppress(ValueError):
+            value = float(match.group(1).replace(",", ""))
+            occurrences.append(
+                _numeric_occurrence_from_parsed_span(
+                    text,
+                    cleaned,
+                    span,
+                    value,
+                )
+            )
+    for match in _ORDINAL_NUMBER_PATTERN.finditer(cleaned):
+        with contextlib.suppress(ValueError):
+            occurrences.append(
+                _numeric_occurrence_from_parsed_span(
+                    text,
+                    cleaned,
+                    match.span(1),
+                    float(match.group(1)),
+                )
+            )
+    for glyph, value in _UNICODE_FRACTION_VALUES.items():
+        for match in re.finditer(re.escape(glyph), cleaned):
+            occurrences.append(
+                _numeric_occurrence_from_parsed_span(
+                    text,
+                    cleaned,
+                    match.span(),
+                    value,
+                )
+            )
+    return occurrences
+
+
+@dataclass(frozen=True)
+class _NumericTextView:
+    """A parsed text buffer with character provenance in the source item."""
+
+    source: str
+    text: str
+    source_offsets: tuple[int | None, ...]
+
+    @classmethod
+    def identity(cls, source: str) -> "_NumericTextView":
+        return cls(source, source, tuple(range(len(source))))
+
+    @classmethod
+    def aligned(cls, source: str, parsed: str) -> "_NumericTextView":
+        if parsed == source:
+            return cls.identity(source)
+        offsets: list[int | None] = [None] * len(parsed)
+        matcher = SequenceMatcher(a=source, b=parsed)
+        for (
+            operation,
+            source_start,
+            _,
+            parsed_start,
+            parsed_end,
+        ) in matcher.get_opcodes():
+            if operation != "equal":
+                continue
+            for index in range(parsed_start, parsed_end):
+                offsets[index] = source_start + index - parsed_start
+        return cls(source, parsed, tuple(offsets))
+
+    def source_span(self, span: tuple[int, int]) -> tuple[int, int]:
+        """Map a parsed span to the exact source interval that supplied it."""
+        start, end = span
+        mapped = [
+            offset for offset in self.source_offsets[start:end] if offset is not None
+        ]
+        if mapped:
+            return min(mapped), max(mapped) + 1
+
+        raw = self.text[start:end]
+        candidates = [
+            match.span() for match in re.finditer(re.escape(raw), self.source)
+        ]
+        if not candidates:
+            raise ValueError(f"Numeric token has no source span: {raw!r}")
+
+        left_anchor = next(
+            (
+                offset
+                for offset in reversed(self.source_offsets[:start])
+                if offset is not None
+            ),
+            None,
+        )
+        right_anchor = next(
+            (offset for offset in self.source_offsets[end:] if offset is not None),
+            None,
+        )
+        bounded = [
+            candidate
+            for candidate in candidates
+            if (left_anchor is None or candidate[0] > left_anchor)
+            and (right_anchor is None or candidate[1] <= right_anchor)
+        ]
+        if len(bounded) == 1:
+            return bounded[0]
+        if bounded:
+            candidates = bounded
+        expected = left_anchor + 1 if left_anchor is not None else 0
+        return min(candidates, key=lambda candidate: abs(candidate[0] - expected))
+
+
+@dataclass
+class _LegacyNumericCollector:
+    """Collect exact typed emissions for both legacy public projections."""
+
+    source: str
+    grounding: list[NumericOccurrence] = field(default_factory=list)
+    inventory: list[NumericOccurrence] = field(default_factory=list)
+    rate_table_cell_spans: tuple[tuple[int, int], ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.rate_table_cell_spans = _pipe_table_rate_cell_spans(self.source)
+
+    def occurrence(
+        self,
+        view: _NumericTextView,
+        span: tuple[int, int],
+        value: float,
+        *,
+        source_value: float | None = None,
+        force_rate_context: bool = False,
+        requires_rate_context: bool = False,
+    ) -> NumericOccurrence:
+        source_span = view.source_span(span)
+        start, end = source_span
+        has_table_rate_context = any(
+            start >= cell_start and end <= cell_end
+            for cell_start, cell_end in self.rate_table_cell_spans
+        )
+        return NumericOccurrence(
+            value=value,
+            start=start,
+            end=end,
+            raw=self.source[start:end],
+            has_rate_context=force_rate_context
+            or bool(_LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(self.source, end))
+            or has_table_rate_context,
+            source_value=value if source_value is None else source_value,
+            requires_rate_context=requires_rate_context,
+        )
+
+    def add_grounding(
+        self,
+        view: _NumericTextView,
+        span: tuple[int, int],
+        value: float,
+        **kwargs: Any,
+    ) -> None:
+        self.grounding.append(self.occurrence(view, span, value, **kwargs))
+
+    def add_inventory(
+        self,
+        view: _NumericTextView,
+        span: tuple[int, int],
+        value: float,
+        **kwargs: Any,
+    ) -> None:
+        self.inventory.append(self.occurrence(view, span, value, **kwargs))
+
+
+_NUMERIC_EXTRACTION_PROFILES = frozenset({"legacy", "en-US", "en-GB", "de-DE"})
+_LOCALE_NUMERIC_GROUPING_SPACES = " \u00a0\u202f"
+_LOCALE_UNARY_SIGNS = "+-\u2013\u2212"
+_LOCALE_UNARY_PREFIXES = frozenset(
+    "([{=:;,+*/|<>!%^&~?"
+    "\u2022"  # bullet
+    "\u00b7"  # middle dot
+    "\u00d7"  # multiplication sign
+    "\u00f7"  # division sign
+    "\u2219"  # bullet operator
+    "\u2260"  # not equal
+    "\u2264"  # less than or equal
+    "\u2265"  # greater than or equal
+)
+_GERMAN_LEXICAL_SCALE_VALUES = {
+    "Einhundertzwanzigstel": 120.0,
+    "Dreihundertsechzigstel": 360.0,
+    "Vierhundertfünfzigstel": 450.0,
+    "Vierundzwanzigstel": 24.0,
+    "Hundertzwanzigstel": 120.0,
+    "Fünfundsiebzigstel": 75.0,
+    "Dreihundertstel": 300.0,
+    "Sechshundertstel": 600.0,
+    "Zehntausendstel": 10_000.0,
+    "Vierzehntel": 14.0,
+    "Fünfzehntel": 15.0,
+    "Neunzehntel": 19.0,
+    "Dreizehntel": 13.0,
+    "Tausendstel": 1_000.0,
+    "Hundertstel": 100.0,
+    "Dreißigstel": 30.0,
+    "Fünfzigstel": 50.0,
+    "Zwanzigstel": 20.0,
+    "Zwölftel": 12.0,
+    "Siebtel": 7.0,
+    "Sechstel": 6.0,
+    "Fünftel": 5.0,
+    "Viertel": 4.0,
+    "Drittel": 3.0,
+    "Zehntel": 10.0,
+    "Achtel": 8.0,
+}
+_GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_LEXICAL_SCALE_VALUES.items()
+}
+_GERMAN_LEXICAL_SCALE_PATTERN = re.compile(
+    r"(?<!\w)(?P<denominator>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_LEXICAL_SCALE_VALUES, key=len, reverse=True)
+    )
+    + r")(?:n)?(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _numeric_profile_for_citation_path(citation_path: str | None) -> str:
+    """Select a locale only from a canonical evidence citation path."""
+    if not isinstance(citation_path, str) or not citation_path:
+        return "legacy"
+    try:
+        canonical = require_canonical_corpus_citation_path(citation_path)
+    except (InvalidCorpusCitationError, TypeError, ValueError):
+        return "legacy"
+    return "de-DE" if canonical.startswith("de/") else "legacy"
+
+
+def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
+    prefix_index = sign_index - 1
+    while prefix_index >= 0 and text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES:
+        prefix_index -= 1
+    if prefix_index < 0:
+        return True
+    prefix = text[prefix_index]
+    return (
+        prefix.isspace()
+        or prefix in _LOCALE_UNARY_PREFIXES
+        or prefix in _LOCALE_UNARY_SIGNS
+    )
+
+
+def _de_glued_sentence_marker_end(text: str, dot_index: int) -> int | None:
+    """Return the end of a juris ``.3Die``-style marker prefix, if present."""
+    if dot_index >= len(text) or text[dot_index] != ".":
+        return None
+
+    marker_end = dot_index + 1
+    digit_count = 0
+    while marker_end < len(text) and digit_count < 2 and text[marker_end].isdecimal():
+        marker_end += 1
+        digit_count += 1
+
+    if (
+        digit_count > 0
+        and marker_end < len(text)
+        and unicodedata.category(text[marker_end]) == "Lu"
+    ):
+        return marker_end
+    return None
+
+
+def _iter_locale_numeric_envelopes(
+    text: str,
+    *,
+    profile: str,
+) -> Iterator[tuple[int, int]]:
+    """Reserve each complete numeric-looking span before locale validation."""
+    occupied_until = 0
+    for digit_match in re.finditer(r"\d", text):
+        digit_start = digit_match.start()
+        if digit_start < occupied_until:
+            continue
+        if profile == "de-DE" and digit_start > 0 and text[digit_start - 1] == ".":
+            marker_end = _de_glued_sentence_marker_end(text, digit_start - 1)
+            if marker_end is not None:
+                occupied_until = marker_end
+                continue
+
+        start = digit_start
+        while start > 0 and text[start - 1] in ".,":
+            start -= 1
+        whitespace_start = start
+        while (
+            whitespace_start > 0
+            and text[whitespace_start - 1] in _LOCALE_NUMERIC_GROUPING_SPACES
+        ):
+            whitespace_start -= 1
+        sign_index = whitespace_start - 1
+        if (
+            sign_index >= 0
+            and text[sign_index] in _LOCALE_UNARY_SIGNS
+            and _locale_sign_is_unary(text, sign_index)
+        ):
+            start = sign_index
+
+        index = digit_start
+        exponent_seen = False
+        reserved_until = 0
+        while index < len(text):
+            char = text[index]
+            if char.isdigit():
+                index += 1
+                continue
+            if char in ".,":
+                if profile == "de-DE" and char == ".":
+                    marker_end = _de_glued_sentence_marker_end(text, index)
+                    if marker_end is not None:
+                        reserved_until = marker_end
+                        break
+                separator_end = index
+                while separator_end < len(text) and text[separator_end] in ".,":
+                    separator_end += 1
+                if separator_end < len(text) and text[separator_end].isdigit():
+                    index = separator_end
+                    continue
+                break
+            if char in _LOCALE_NUMERIC_GROUPING_SPACES:
+                next_index = index
+                while (
+                    next_index < len(text)
+                    and text[next_index] in _LOCALE_NUMERIC_GROUPING_SPACES
+                ):
+                    next_index += 1
+                if next_index < len(text) and text[next_index].isdigit():
+                    index = next_index
+                    continue
+                break
+            if char in "Ee" and not exponent_seen:
+                exponent_seen = True
+                index += 1
+                while index < len(text) and text[index] in _LOCALE_UNARY_SIGNS:
+                    index += 1
+                continue
+            break
+
+        occupied_until = max(index, reserved_until)
+        yield start, index
+
+
+def _valid_grouped_integer(
+    raw: str,
+    *,
+    allowed_separators: str,
+) -> tuple[bool, str]:
+    separators = {char for char in raw if char in allowed_separators}
+    if not separators:
+        return raw.isdigit(), raw
+    if len(separators) != 1:
+        return False, ""
+    separator = next(iter(separators))
+    groups = raw.split(separator)
+    if (
+        not groups
+        or not groups[0].isdigit()
+        or not 1 <= len(groups[0]) <= 3
+        or (len(groups[0]) > 1 and groups[0].startswith("0"))
+        or any(len(group) != 3 or not group.isdigit() for group in groups[1:])
+    ):
+        return False, ""
+    return True, "".join(groups)
+
+
+def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
+    stripped = raw.strip(_LOCALE_NUMERIC_GROUPING_SPACES)
+    sign = 1.0
+    if stripped and stripped[0] in _LOCALE_UNARY_SIGNS:
+        if stripped[0] in "-\u2013\u2212":
+            sign = -1.0
+        stripped = stripped[1:].lstrip(_LOCALE_NUMERIC_GROUPING_SPACES)
+    if not stripped:
+        return None
+
+    scientific = re.fullmatch(
+        r"(?P<mantissa>.+?)(?P<exponent>[Ee][+\-\u2013\u2212]?\d+)?",
+        stripped,
+    )
+    if scientific is None:
+        return None
+    mantissa = scientific.group("mantissa")
+    exponent = (
+        (scientific.group("exponent") or "")
+        .replace("\u2013", "-")
+        .replace("\u2212", "-")
+    )
+
+    if profile == "de-DE":
+        if mantissa.count(",") > 1:
+            return None
+        integer, comma, fraction = mantissa.partition(",")
+        if comma and (not fraction or not fraction.isdigit()):
+            return None
+        valid, normalized_integer = _valid_grouped_integer(
+            integer,
+            allowed_separators="." + _LOCALE_NUMERIC_GROUPING_SPACES,
+        )
+        if not valid:
+            return None
+        normalized = normalized_integer + (f".{fraction}" if comma else "") + exponent
+    else:
+        if mantissa.count(".") > 1:
+            return None
+        integer, dot, fraction = mantissa.partition(".")
+        if dot and (not fraction or not fraction.isdigit()):
+            return None
+        valid, normalized_integer = _valid_grouped_integer(
+            integer,
+            allowed_separators=",",
+        )
+        if not valid:
+            return None
+        normalized = normalized_integer + (f".{fraction}" if dot else "") + exponent
+
+    with contextlib.suppress(ValueError, OverflowError):
+        value = sign * float(normalized)
+        if math.isfinite(value):
+            return value
+    return None
+
+
+def _locale_numeric_envelope_has_token_boundaries(
+    text: str,
+    span: tuple[int, int],
+) -> bool:
+    before = text[span[0] - 1] if span[0] > 0 else ""
+    after = text[span[1]] if span[1] < len(text) else ""
+    return not (
+        (before and (before.isalnum() or before == "_"))
+        or (after and (after.isalnum() or after == "_"))
+    )
+
+
+def _has_malformed_profiled_numeric_envelope(
+    text: str,
+    *,
+    profile: str,
+) -> bool:
+    """Return whether strict-profile text contains an unparseable full span."""
+    if profile == "legacy":
+        return False
+    if profile not in _NUMERIC_EXTRACTION_PROFILES:
+        raise ValueError(f"Unsupported numeric profile: {profile}")
+    cleaned = _clean_source_text_for_numeric_extraction(text)
+    return any(
+        _locale_numeric_envelope_has_token_boundaries(cleaned, span)
+        and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile) is None
+        for span in _iter_locale_numeric_envelopes(cleaned, profile=profile)
+    )
+
+
+def _tokenize_profiled_numeric_occurrences(
+    text: str,
+    *,
+    profile: str,
+) -> _NumericTokenization:
+    """Tokenize strict locale-aware numeric envelopes without suffix fallback."""
+    cleaned = _clean_source_text_for_numeric_extraction(text)
+    view = _NumericTextView.aligned(text, cleaned)
+    collector = _LegacyNumericCollector(text)
+    occurrences: list[NumericOccurrence] = []
+
+    for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
+        if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
+            continue
+        value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
+        if value is None:
+            continue
+        occurrences.append(collector.occurrence(view, span, value))
+
+    if profile == "de-DE":
+        for match in _GERMAN_LEXICAL_SCALE_PATTERN.finditer(cleaned):
+            value = _GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD.get(
+                match.group("denominator").casefold()
+            )
+            if value is not None:
+                occurrences.append(collector.occurrence(view, match.span(), value))
+
+    occurrences.sort(key=lambda occurrence: (occurrence.start, occurrence.end))
+    return _NumericTokenization(
+        grounding=tuple(occurrences),
+        inventory=tuple(occurrences),
+    )
+
+
+def _occurrence_value_matches(left: float, right: float) -> bool:
+    return math.isclose(
+        left,
+        right,
+        rel_tol=0,
+        abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+    )
+
+
+def _tokenize_numeric_occurrences_from_text(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> _NumericTokenization:
+    """Tokenize once into typed grounding and source-inventory emission streams."""
+    if profile not in _NUMERIC_EXTRACTION_PROFILES:
+        raise ValueError(f"Unsupported numeric profile: {profile}")
+    if profile != "legacy":
+        return _tokenize_profiled_numeric_occurrences(text, profile=profile)
+
+    collector = _LegacyNumericCollector(text)
+    source_view = _NumericTextView.identity(text)
+    implied_cents_matches = _iter_form_implied_cents_matches(text)
+    raw_text = _FORM_IMPLIED_CENTS_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+    raw_view = _NumericTextView.aligned(text, raw_text)
+    two_line_table_matches = _iter_two_line_table_value_occurrences(text)
+    cleaned_before_schedule = _clean_source_text_for_numeric_extraction(raw_text)
+    cleaned_before_schedule_view = _NumericTextView.aligned(
+        text,
+        cleaned_before_schedule,
+    )
+    schedule_matches, cleaned = _iter_collapsed_schedule_row_occurrences(
+        cleaned_before_schedule
+    )
+    cleaned_view = (
+        cleaned_before_schedule_view
+        if cleaned == cleaned_before_schedule
+        else _NumericTextView.aligned(text, cleaned)
+    )
+
+    def add_both(
+        view: _NumericTextView,
+        span: tuple[int, int],
+        value: float,
+        **kwargs: Any,
+    ) -> None:
+        collector.add_grounding(view, span, value, **kwargs)
+        collector.add_inventory(view, span, value, **kwargs)
+
+    def unique_matches(
+        matches: Iterable[tuple[tuple[int, int], float]],
+    ) -> list[tuple[tuple[int, int], float]]:
+        first_span_by_value: dict[float, tuple[int, int]] = {}
+        values: set[float] = set()
+        for span, value in matches:
+            values.add(value)
+            first_span_by_value.setdefault(value, span)
+        return [(first_span_by_value[value], value) for value in values]
+
+    for span, value in two_line_table_matches:
+        add_both(source_view, span, value)
+    for span, value in schedule_matches:
+        add_both(cleaned_before_schedule_view, span, value)
+    for span, value in implied_cents_matches:
+        add_both(source_view, span, value)
+
+    grounding_spans: list[tuple[int, int]] = []
+    inventory_spans: list[tuple[int, int]] = []
+
+    range_matches = _iter_belgian_numeric_range_endpoint_matches(cleaned)
+    for span, value in range_matches:
+        add_both(cleaned_view, span, value)
+        grounding_spans.append(span)
+        inventory_spans.append(span)
+
+    for match in re.finditer(
+        r"\b(?:age|aged)\s+(\d{1,3})(?=\b)",
+        raw_text,
+        re.IGNORECASE,
+    ):
+        with contextlib.suppress(ValueError):
+            collector.add_grounding(
+                raw_view,
+                match.span(1),
+                float(match.group(1)),
+            )
+
+    raw_money_matches = _iter_raw_european_money_value_matches(raw_text)
+    for span, value in raw_money_matches:
+        collector.add_grounding(raw_view, span, value)
+
+    cleaned_money_values: list[float] = []
+    for span, value in _iter_raw_european_money_value_matches(cleaned):
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+        if _span_overlaps(span, inventory_spans):
+            continue
+        collector.add_inventory(cleaned_view, span, value)
+        cleaned_money_values.append(value)
+        inventory_spans.append(span)
+    for span, value in raw_money_matches:
+        if any(
+            math.isclose(
+                value,
+                cleaned_value,
+                rel_tol=0,
+                abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+            )
+            for cleaned_value in cleaned_money_values
+        ):
+            continue
+        collector.add_inventory(raw_view, span, value)
+
+    direct_percentage_rate_matches = _iter_direct_percentage_rate_matches(raw_text)
+    for span, value in direct_percentage_rate_matches:
+        collector.add_grounding(
+            raw_view,
+            span,
+            value,
+            source_value=value * 100,
+            force_rate_context=True,
+            requires_rate_context=True,
+        )
+    for span, value in unique_matches(direct_percentage_rate_matches):
+        collector.add_inventory(
+            raw_view,
+            span,
+            value,
+            source_value=value * 100,
+            force_rate_context=True,
+            requires_rate_context=True,
+        )
+
+    week_matches: list[tuple[tuple[int, int], float]] = []
+    for match in _WEEK_DURATION_PATTERN.finditer(raw_text):
+        value = _parse_belgian_numeric_phrase(match.group("number"))
+        if value is not None:
+            week_matches.append((match.span(), value * 7))
+    for match in _ORDINAL_WEEK_DURATION_PATTERN.finditer(raw_text):
+        normalized = re.sub(r"\s+", " ", match.group("number").strip().lower())
+        value = _FRENCH_ORDINAL_PHRASE_VALUES.get(normalized)
+        if value is not None:
+            week_matches.append((match.span(), value * 7))
+    for span, value in unique_matches(week_matches):
+        add_both(raw_view, span, value)
+
+    year_matches: list[tuple[tuple[int, int], float]] = []
+    for match in _YEAR_DURATION_PATTERN.finditer(raw_text):
+        value = _parse_belgian_numeric_phrase(match.group("number"))
+        if value is not None:
+            year_matches.append((match.span(), value * 12))
+    for span, value in unique_matches(year_matches):
+        add_both(raw_view, span, value)
+
+    dotted_year_matches: list[tuple[tuple[int, int], float]] = []
+    for match in _DOTTED_DATE_PATTERN.finditer(raw_text):
+        with contextlib.suppress(ValueError):
+            dotted_year_matches.append((match.span("year"), float(match.group("year"))))
+    for span, value in unique_matches(dotted_year_matches):
+        add_both(raw_view, span, value)
+
+    centime_match = _CENTIME_UNIT_PATTERN.search(raw_text)
+    if centime_match:
+        add_both(raw_view, centime_match.span(), 100.0)
+    annual_match = _ANNUAL_CONTEXT_PATTERN.search(raw_text)
+    if annual_match:
+        collector.add_grounding(raw_view, annual_match.span(), 12.0)
+
+    form_fraction_spans: list[tuple[int, int]] = []
+    for match in (
+        *_FORM_ARITHMETIC_FRACTION_PATTERN.finditer(raw_text),
+        *_STANDALONE_FORM_FRACTION_PATTERN.finditer(raw_text),
+    ):
+        with contextlib.suppress(ValueError, ZeroDivisionError):
+            denominator = float(match.group("denominator"))
+            add_both(
+                raw_view,
+                match.span(),
+                float(match.group("numerator")) / denominator,
+            )
+            form_fraction_spans.append(match.span())
+    for match in _FORM_ARITHMETIC_OPERAND_PATTERN.finditer(raw_text):
+        if _span_overlaps(match.span(), form_fraction_spans):
+            continue
+        with contextlib.suppress(ValueError):
+            source_value = float(match.group("number").replace(",", ""))
+            is_rate = bool(match.group("percent"))
+            value = source_value / 100 if is_rate else source_value
+            add_both(
+                raw_view,
+                match.span(),
+                value,
+                source_value=source_value,
+                force_rate_context=is_rate,
+                requires_rate_context=is_rate,
+            )
+
+    for match in _CONTEXTUAL_ASCII_FRACTION_PATTERN.finditer(raw_text):
+        with contextlib.suppress(ValueError, ZeroDivisionError):
+            whole = float(match.group("whole") or 0)
+            numerator = float(match.group("numerator"))
+            denominator = float(match.group("denominator"))
+            add_both(
+                raw_view,
+                match.span(),
+                whole + numerator / denominator,
+            )
+
+    month_range_matches: list[tuple[tuple[int, int], float]] = []
+    for match in _SMALL_MONTH_RANGE_PATTERN.finditer(raw_text):
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        preceding_context = raw_text[max(0, match.start() - 500) : match.start()]
+        row_context = raw_text[match.start() : match.end() + 80]
+        if (
+            0 <= start <= end <= 24
+            and re.search(
+                r"\bmonthly\s+proration\s+table\b",
+                preceding_context,
+                re.IGNORECASE,
+            )
+            and re.search(r"\bline\s+[A-E]\b", row_context, re.IGNORECASE)
+        ):
+            month_range_matches.extend(
+                (match.span(), float(value)) for value in range(start, end + 1)
+            )
+    for span, value in month_range_matches:
+        add_both(raw_view, span, value)
+
+    vehicle_matches: list[tuple[tuple[int, int], float]] = []
+    lowered_raw_text = raw_text.lower()
+    for match in _VEHICLE_TAX_FISCAL_POWER_TABLE_CELL_PATTERN.finditer(raw_text):
+        context = lowered_raw_text[max(0, match.start() - 2000) : match.start()]
+        if not re.search(
+            r"\b(?:chevaux\s+fiscaux|fiscale\s+paardenkracht|aantal\s+pk|cv)\b",
+            context,
+        ):
+            continue
+        with contextlib.suppress(ValueError):
+            vehicle_matches.append((match.span("cv"), float(match.group("cv"))))
+    for span, value in unique_matches(vehicle_matches):
+        collector.add_grounding(raw_view, span, value)
+
+    for match in GLUED_UNIT_NUMBER_PATTERN.finditer(cleaned):
+        with contextlib.suppress(ValueError):
+            collector.add_grounding(
+                cleaned_view,
+                match.span(),
+                float(match.group("number").replace(",", "")),
+            )
+            grounding_spans.append(match.span())
+
+    for match in CENTS_VALUE_NUMBER_PATTERN.finditer(cleaned):
+        span = match.span()
+        if _span_overlaps(span, grounding_spans):
+            continue
+        with contextlib.suppress(ValueError):
+            value = float(match.group("number").replace(",", ""))
+            collector.add_grounding(cleaned_view, span, value)
+            collector.add_grounding(cleaned_view, span, value / 100)
+            grounding_spans.append(span)
+
+    special_matches = list(_iter_normalized_special_numeric_matches(cleaned))
+    rate_marker_pattern = re.compile(
+        r"(?:%|\bp\.?[ \t]*c\.?\b|\bpercent\b|"
+        r"\bper[ \t-]+cent(?:um)?\b|\bProzent\b|"
+        r"\bvom[ \t]+Hundert\b)",
+        re.IGNORECASE,
+    )
+    for span, value in special_matches:
+        raw = cleaned[span[0] : span[1]]
+        is_rate = bool(rate_marker_pattern.search(raw))
+        kwargs = {
+            "source_value": value * 100 if is_rate else value,
+            "force_rate_context": is_rate,
+            "requires_rate_context": is_rate,
+        }
+        if not _span_overlaps(span, grounding_spans):
+            collector.add_grounding(cleaned_view, span, value, **kwargs)
+            grounding_spans.append(span)
+        if not _span_overlaps(span, inventory_spans):
+            collector.add_inventory(cleaned_view, span, value, **kwargs)
+            inventory_spans.append(span)
+
+    for match in re.finditer(
+        r"(-?[\d,]+)\s+(\d+)\s*/\s*(\d+)"
+        r"(?:\s+|-)(?:percent|per\s*cent(?:um)?)",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        for group_index in (1, 2, 3):
+            with contextlib.suppress(ValueError):
+                collector.add_grounding(
+                    cleaned_view,
+                    match.span(group_index),
+                    float(match.group(group_index).replace(",", "")),
+                )
+
+    percentage_number = (
+        r"-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+)"
+        r"(?:,\d{1,4})?"
+    )
+    range_separator = (
+        "(?:and|to|through|thru|et|\\u00e0|a|tot|bis|en|[-\\u2010-\\u2015])"
+    )
+    for match in re.finditer(
+        rf"\b({percentage_number})\s+{range_separator}\s+({percentage_number})"
+        r"\s*(?:%|\bp\.?\s*c\.?\b|\b(?:percent|per\s*cent(?:um)?)\b)",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        for group_index in (1, 2):
+            raw = _normalize_european_decimal_number(match.group(group_index))
+            with contextlib.suppress(ValueError):
+                source_value = float(raw)
+                collector.add_grounding(
+                    cleaned_view,
+                    match.span(group_index),
+                    source_value / 100,
+                    source_value=source_value,
+                    force_rate_context=True,
+                    requires_rate_context=True,
+                )
+
+    for match in re.finditer(
+        r"(?:^|(?<=[\s(\[,+\-−*/\"'`“”‘’]))"
+        r"(-?(?:\d{1,3}(?:[.\u00a0\u202f ]\d{3})+|\d+),\d{1,4})"
+        r"\s*(?:%|\bp\.?\s*c\.?\b|\b(?:percent|per\s*cent(?:um)?)\b)",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        raw = _normalize_european_decimal_number(match.group(1))
+        with contextlib.suppress(ValueError):
+            source_value = float(raw)
+            collector.add_grounding(
+                cleaned_view,
+                match.span(1),
+                source_value / 100,
+                source_value=source_value,
+                force_rate_context=True,
+                requires_rate_context=True,
+            )
+            collector.add_grounding(
+                cleaned_view,
+                match.span(1),
+                source_value,
+                force_rate_context=True,
+            )
+
+    percentage_context_number_matches = list(
+        SOURCE_TEXT_NUMBER_PATTERN.finditer(cleaned)
+    )
+    for match in percentage_context_number_matches:
+        raw = match.group(1).replace(",", "")
+        with contextlib.suppress(ValueError):
+            source_value = float(raw)
+            if source_value <= 1:
+                continue
+            context = cleaned[max(0, match.start() - 500) : match.end() + 80].lower()
+            if not re.search(r"\bpercent(?:age|ages)?\b", context):
+                continue
+            collector.add_grounding(
+                cleaned_view,
+                match.span(1),
+                source_value / 100,
+                source_value=source_value,
+                requires_rate_context=True,
+            )
+            if source_value >= 100 and re.search(
+                r"\b(?:percent\s+of\s+(?:the\s+)?poverty\s+line|"
+                r"percent\s+of\s+(?:the\s+)?federal\s+poverty\s+"
+                r"(?:line|level)|fpl|income\s+tier)\b",
+                context,
+            ):
+                collector.add_grounding(
+                    cleaned_view,
+                    match.span(1),
+                    source_value,
+                )
+
+    word_quantity_matches = list(_iter_word_quantity_fraction_matches(cleaned))
+    for span, value in word_quantity_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    standalone_fraction_matches = list(_iter_standalone_fraction_word_matches(cleaned))
+    for span, value in standalone_fraction_matches:
+        if not _span_overlaps(span, grounding_spans):
+            collector.add_grounding(cleaned_view, span, value)
+            grounding_spans.append(span)
+        if not _span_overlaps(span, inventory_spans):
+            collector.add_inventory(cleaned_view, span, value)
+            inventory_spans.append(span)
+
+    ordinal_word_matches = _iter_ordinal_word_number_matches(cleaned)
+    for span, value in ordinal_word_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    compound_cardinal_matches = _iter_cardinal_word_number_matches(
+        cleaned,
+        compound_only=True,
+    )
+    for span, value in compound_cardinal_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    digit_scale_matches = _iter_digit_scale_number_matches(cleaned)
+    for span, value, raw_value in digit_scale_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        collector.add_grounding(cleaned_view, span, raw_value)
+        grounding_spans.append(span)
+
+    french_cardinal_matches = _iter_french_cardinal_phrase_matches(cleaned)
+    for span, value in french_cardinal_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    dutch_cardinal_matches = _iter_dutch_cardinal_phrase_matches(cleaned)
+    for span, value in dutch_cardinal_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    cardinal_matches = _iter_cardinal_word_number_matches(cleaned)
+    for span, value in cardinal_matches:
+        if _span_overlaps(span, grounding_spans):
+            continue
+        collector.add_grounding(cleaned_view, span, value)
+        grounding_spans.append(span)
+
+    for pattern, normalize, include_grounding, include_inventory in (
+        (
+            SPACED_EUROPEAN_DECIMAL_MONEY_PATTERN,
+            _normalize_european_decimal_number,
+            True,
+            True,
+        ),
+        (
+            EUROPEAN_DECIMAL_NUMBER_PATTERN,
+            _normalize_european_decimal_number,
+            True,
+            True,
+        ),
+        (
+            EUROPEAN_LEADING_ZERO_DECIMAL_NUMBER_PATTERN,
+            _normalize_european_decimal_number,
+            True,
+            False,
+        ),
+    ):
+        for match in pattern.finditer(cleaned):
+            span = match.span(1)
+            with contextlib.suppress(ValueError):
+                value = float(normalize(match.group(1)))
+                if include_grounding:
+                    collector.add_grounding(cleaned_view, span, value)
+                    grounding_spans.append(span)
+                if include_inventory and not _span_overlaps(span, inventory_spans):
+                    collector.add_inventory(cleaned_view, span, value)
+                    inventory_spans.append(span)
+
+    for match in EUROPEAN_THOUSANDS_NUMBER_PATTERN.finditer(cleaned):
+        span = match.span(1)
+        with contextlib.suppress(ValueError):
+            value = float(_normalize_grouped_thousands_number(match.group(1)))
+            if not _span_overlaps(span, grounding_spans):
+                collector.add_grounding(cleaned_view, span, value)
+                grounding_spans.append(span)
+            if not _span_overlaps(span, inventory_spans):
+                collector.add_inventory(cleaned_view, span, value)
+                inventory_spans.append(span)
+
+    for span, value, _ in digit_scale_matches:
+        if _span_overlaps(span, inventory_spans):
+            continue
+        if value not in GROUNDING_ALLOWED_VALUES:
+            collector.add_inventory(cleaned_view, span, value)
+        inventory_spans.append(span)
+
+    for match in EUROPEAN_DOT_THOUSANDS_NUMBER_PATTERN.finditer(cleaned):
+        span = match.span(1)
+        if _span_overlaps(span, grounding_spans):
+            continue
+        if _number_span_is_immediately_followed_by_percent_marker(cleaned, span):
+            grounding_spans.append(span)
+            continue
+        with contextlib.suppress(ValueError):
+            collector.add_grounding(
+                cleaned_view,
+                span,
+                float(_normalize_grouped_thousands_number(match.group(1))),
+            )
+            grounding_spans.append(span)
+        if re.fullmatch(r"-?[1-9]\d{0,2}\.\d{3}", match.group(1)):
+            with contextlib.suppress(ValueError):
+                collector.add_grounding(
+                    cleaned_view,
+                    span,
+                    float(match.group(1)),
+                )
+
+    for match in percentage_context_number_matches:
+        span = match.span(1)
+        raw = match.group(1).replace(",", "")
+        with contextlib.suppress(ValueError):
+            value = float(raw)
+            if not _span_overlaps(span, grounding_spans):
+                if not _number_span_is_immediately_followed_by_percent_marker(
+                    cleaned,
+                    span,
+                ) and not _has_captured_percentage_rate(
+                    direct_percentage_rate_matches,
+                    value,
+                    span=span,
+                ):
+                    collector.add_grounding(cleaned_view, span, value)
+            if _span_overlaps(span, inventory_spans):
+                continue
+            if _number_span_is_immediately_followed_by_percent_marker(cleaned, span):
+                continue
+            if value.is_integer() and 1900 <= value <= 2100:
+                continue
+            if _has_captured_percentage_rate(
+                direct_percentage_rate_matches,
+                value,
+                span=span,
+            ):
+                continue
+            grouped_value = _parse_belgian_numeric_phrase(match.group(1))
+            if (
+                grouped_value is not None
+                and not math.isclose(
+                    grouped_value,
+                    value,
+                    rel_tol=0,
+                    abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+                )
+                and any(
+                    math.isclose(
+                        grouped_value,
+                        occurrence.value,
+                        rel_tol=0,
+                        abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+                    )
+                    for occurrence in collector.inventory
+                )
+            ):
+                continue
+            collector.add_inventory(cleaned_view, span, value)
+
+    for match in _ORDINAL_NUMBER_PATTERN.finditer(cleaned):
+        with contextlib.suppress(ValueError):
+            value = float(match.group(1))
+            collector.add_grounding(cleaned_view, match.span(1), value)
+            if value.is_integer() and 1900 <= value <= 2100:
+                continue
+            if _ordinal_is_calendar_day_reference(cleaned, match.end(), value):
+                continue
+            collector.add_inventory(cleaned_view, match.span(1), value)
+
+    for span, value in ordinal_word_matches:
+        if _span_overlaps(span, inventory_spans):
+            continue
+        if value not in GROUNDING_ALLOWED_VALUES:
+            collector.add_inventory(cleaned_view, span, value)
+        inventory_spans.append(span)
+
+    for glyph, value in _UNICODE_FRACTION_VALUES.items():
+        for match in re.finditer(re.escape(glyph), cleaned):
+            collector.add_grounding(cleaned_view, match.span(), value)
+            collector.add_inventory(cleaned_view, match.span(), value)
+
+    for span, value in compound_cardinal_matches:
+        if _span_overlaps(span, inventory_spans):
+            continue
+        if value not in GROUNDING_ALLOWED_VALUES:
+            collector.add_inventory(cleaned_view, span, value)
+        inventory_spans.append(span)
+
+    for matches in (
+        french_cardinal_matches,
+        dutch_cardinal_matches,
+        cardinal_matches,
+    ):
+        for span, value in matches:
+            if _span_overlaps(span, inventory_spans):
+                continue
+            if value not in GROUNDING_ALLOWED_VALUES:
+                collector.add_inventory(cleaned_view, span, value)
+            inventory_spans.append(span)
+
+    text_lower = cleaned.lower()
+    for match in _CARDINAL_WORD_PATTERN.finditer(text_lower):
+        if _span_overlaps(match.span(1), grounding_spans):
+            continue
+        collector.add_grounding(
+            cleaned_view,
+            match.span(1),
+            _CARDINAL_WORD_VALUES[match.group(1)],
+        )
+        grounding_spans.append(match.span(1))
+
+    occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
+    normalized_inventory = tuple(
+        occurrence
+        for occurrence in collector.inventory
+        if not (
+            occurrence.value <= 1
+            and round(occurrence.value * 100, 9) in occurrence_counts
+        )
+    )
+    return _NumericTokenization(
+        grounding=tuple(collector.grounding),
+        inventory=normalized_inventory,
+    )
+
+
+def extract_typed_numeric_occurrences_from_text(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> list[NumericOccurrence]:
+    """Extract typed numeric grounding candidates with exact source metadata."""
+    return list(
+        _tokenize_numeric_occurrences_from_text(text, profile=profile).grounding
+    )
+
+
+def extract_typed_numeric_inventory_occurrences_from_text(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> list[NumericOccurrence]:
+    """Extract the ordered typed source-recall occurrence stream."""
+    return list(
+        _tokenize_numeric_occurrences_from_text(text, profile=profile).inventory
+    )
+
+
+def extract_numbers_from_text(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> set[float]:
+    """Extract numeric values from embedded statute text."""
+    return {
+        occurrence.value
+        for occurrence in _tokenize_numeric_occurrences_from_text(
+            text,
+            profile=profile,
+        ).grounding
+    }
+
+
+def extract_numeric_occurrences_from_text(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> list[float]:
+    """Extract substantive numeric occurrences from source text, preserving repeats."""
+    return [
+        occurrence.value
+        for occurrence in _tokenize_numeric_occurrences_from_text(
+            text,
+            profile=profile,
+        ).inventory
+    ]
+
+
 def extract_named_scalar_occurrences(content: str) -> list[NamedScalarOccurrence]:
     """Extract direct named scalar definitions from a RuleSpec file."""
     with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
@@ -5211,12 +6795,79 @@ def _decimal_place_scale_values_from_source(source: str) -> set[float]:
     return values
 
 
+def _module_numeric_citation_path(payload: Mapping[str, Any]) -> str | None:
+    """Return the exact, unnormalized module citation identity when present."""
+    citation_path: str | None = None
+    module = payload.get("module")
+    source_verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    if isinstance(source_verification, dict):
+        raw_citation_path = source_verification.get("corpus_citation_path")
+        if isinstance(raw_citation_path, str):
+            citation_path = raw_citation_path
+    return citation_path
+
+
+def _module_numeric_evidence_item(
+    payload: Mapping[str, Any],
+    module_source: str,
+    *,
+    citation_path: str | None = None,
+) -> _NumericEvidenceItem | None:
+    """Attach the module source to its exact persisted citation identity."""
+    if not module_source:
+        return None
+    if citation_path is None:
+        citation_path = _module_numeric_citation_path(payload)
+    return _NumericEvidenceItem(citation_path, module_source)
+
+
+def _numeric_evidence_index(
+    evidence_items: Sequence[_NumericEvidenceItem],
+    *,
+    suppress_ambiguous_half_up_terms: bool = False,
+    cache: dict[
+        tuple[str, str],
+        tuple[tuple[NumericOccurrence, ...], frozenset[float]],
+    ]
+    | None = None,
+) -> tuple[tuple[NumericOccurrence, ...], set[float]]:
+    """Parse each evidence item under its own profile, then union the indexes."""
+    occurrences: list[NumericOccurrence] = []
+    decimal_place_scale_values: set[float] = set()
+    for item in evidence_items:
+        source = (
+            _strip_ambiguous_half_up_terms(item.text)
+            if suppress_ambiguous_half_up_terms
+            else item.text
+        )
+        if not source:
+            continue
+        profile = _numeric_profile_for_citation_path(item.citation_path)
+        cache_key = (profile, source)
+        source_index = cache.get(cache_key) if cache is not None else None
+        if source_index is None:
+            source_index = (
+                _tokenize_numeric_occurrences_from_text(
+                    source,
+                    profile=profile,
+                ).grounding,
+                frozenset(_decimal_place_scale_values_from_source(source)),
+            )
+            if cache is not None:
+                cache[cache_key] = source_index
+        occurrences.extend(source_index[0])
+        decimal_place_scale_values.update(source_index[1])
+    return tuple(occurrences), decimal_place_scale_values
+
+
 def _numeric_value_grounded_in_source(
     value: float,
-    source_numbers: set[float],
+    source_occurrences: Sequence[NumericOccurrence],
     decimal_place_scale_values: set[float],
 ) -> bool:
-    if numeric_value_is_grounded(value, source_numbers):
+    if numeric_value_is_grounded(value, source_occurrences):
         return True
     return any(
         math.isclose(
@@ -5233,18 +6884,18 @@ def _ungrounded_from_values(
     grounding_values: Sequence[tuple[int, str, float]],
     source: str,
     *,
-    source_numbers: set[float] | None = None,
+    source_occurrences: Sequence[NumericOccurrence] | None = None,
     decimal_place_scale_values: set[float] | None = None,
 ) -> list[str]:
     """Report values not grounded in ``source`` (which must be pre-stripped)."""
-    if source_numbers is None:
-        source_numbers = extract_numbers_from_text(source)
+    if source_occurrences is None:
+        source_occurrences = _tokenize_numeric_occurrences_from_text(source).grounding
     if decimal_place_scale_values is None:
         decimal_place_scale_values = _decimal_place_scale_values_from_source(source)
     issues: list[str] = []
     for _, raw, value in grounding_values:
         if _numeric_value_grounded_in_source(
-            value, source_numbers, decimal_place_scale_values
+            value, source_occurrences, decimal_place_scale_values
         ):
             continue
         display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
@@ -5260,18 +6911,22 @@ def evaluate_numeric_grounding_values(
     source_text: str,
     *,
     authoritative_source_text: str | None = None,
+    source_citation_path: str | None = None,
 ) -> list[tuple[int, str, float, bool]]:
     """Return a grounding decision for every generated numeric literal.
 
     ``source_text`` may include excerpt-verified proof evidence used for ordinary
     literal matching. Semantic rounding support is intentionally restricted to
     ``authoritative_source_text`` when supplied, so inline excerpts cannot grant
-    the half-up helper exemption.
+    the half-up helper exemption. A single annotated source is parsed under the
+    profile selected by its exact canonical citation; unannotated text remains
+    legacy.
     """
     grounding_values = extract_grounding_values(content)
     if not grounding_values:
         return []
 
+    source_profile = _numeric_profile_for_citation_path(source_citation_path)
     authoritative_source = (
         source_text
         if authoritative_source_text is None
@@ -5279,11 +6934,18 @@ def evaluate_numeric_grounding_values(
     )
     with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
         payload = yaml.safe_load(content)
+        if isinstance(payload, dict) and source_citation_path is None:
+            source_profile = _numeric_profile_for_citation_path(
+                _module_numeric_citation_path(payload)
+            )
         rules = payload.get("rules") if isinstance(payload, dict) else None
         if isinstance(rules, list):
             selector_table_keys = _rulespec_index_selector_keys(rules)
             decisions: list[tuple[int, str, float, bool]] = []
-            source_indexes: dict[str, tuple[set[float], set[float]]] = {}
+            source_indexes: dict[
+                tuple[str, str],
+                tuple[tuple[NumericOccurrence, ...], set[float]],
+            ] = {}
             for rule in rules:
                 anchored_values = _rule_grounding_values_by_path(
                     rule, selector_table_keys=selector_table_keys
@@ -5309,13 +6971,17 @@ def evaluate_numeric_grounding_values(
                         if _is_half_up_rounding_helper_scalar(rule_name, value)
                         else source_text
                     )
-                    source_index = source_indexes.get(grounding_source)
+                    source_index_key = (source_profile, grounding_source)
+                    source_index = source_indexes.get(source_index_key)
                     if source_index is None:
                         source_index = (
-                            extract_numbers_from_text(grounding_source),
+                            _tokenize_numeric_occurrences_from_text(
+                                grounding_source,
+                                profile=source_profile,
+                            ).grounding,
                             _decimal_place_scale_values_from_source(grounding_source),
                         )
-                        source_indexes[grounding_source] = source_index
+                        source_indexes[source_index_key] = source_index
                     decisions.append(
                         (
                             1,
@@ -5329,7 +6995,10 @@ def evaluate_numeric_grounding_values(
             if len(decisions) == len(grounding_values):
                 return decisions
 
-    source_numbers = extract_numbers_from_text(source_text)
+    source_occurrences = _tokenize_numeric_occurrences_from_text(
+        source_text,
+        profile=source_profile,
+    ).grounding
     decimal_place_scale_values = _decimal_place_scale_values_from_source(source_text)
     return [
         (
@@ -5337,7 +7006,7 @@ def evaluate_numeric_grounding_values(
             raw,
             value,
             _numeric_value_grounded_in_source(
-                value, source_numbers, decimal_place_scale_values
+                value, source_occurrences, decimal_place_scale_values
             ),
         )
         for line, raw, value in grounding_values
@@ -5349,6 +7018,7 @@ def find_ungrounded_numeric_issues(
     source_text: str | None = None,
     *,
     authoritative_source_text: str | None = None,
+    source_citation_path: str | None = None,
 ) -> list[str]:
     """Return issues for generated numeric literals absent from source text."""
     grounding_values = extract_grounding_values(content)
@@ -5371,6 +7041,7 @@ def find_ungrounded_numeric_issues(
         content,
         source,
         authoritative_source_text=authoritative_source_text,
+        source_citation_path=source_citation_path,
     ):
         if grounded:
             continue
@@ -5382,11 +7053,150 @@ def find_ungrounded_numeric_issues(
     return issues
 
 
+def evaluate_numeric_grounding_values_scoped(
+    content: str,
+    *,
+    module_source_text: str | None,
+    module_citation_path: str | None = None,
+    proof_source_texts: Mapping[str, str | None] | None = None,
+    authoritative_source_text: str | None = None,
+    require_body_bound_proof_evidence: bool = True,
+) -> list[tuple[int, str, float, bool]]:
+    """Evaluate anchored literals against separately profiled evidence items."""
+    grounding_values = extract_grounding_values(content)
+    if not grounding_values:
+        return []
+
+    module_source = (module_source_text or "").strip()
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, ValueError):
+        payload = None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != "rulespec/v1"
+        or not isinstance(payload.get("rules"), list)
+    ):
+        return evaluate_numeric_grounding_values(
+            content,
+            module_source,
+            authoritative_source_text=authoritative_source_text,
+            source_citation_path=module_citation_path,
+        )
+
+    module_evidence = _module_numeric_evidence_item(
+        payload,
+        module_source,
+        citation_path=module_citation_path,
+    )
+    evidence_items_by_rule = [
+        _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+            require_body_bound_evidence=require_body_bound_proof_evidence,
+        )
+        for rule in payload["rules"]
+    ]
+    selector_table_keys = _rulespec_index_selector_keys(payload["rules"])
+    evidence_index_cache: dict[
+        tuple[str, str],
+        tuple[tuple[NumericOccurrence, ...], frozenset[float]],
+    ] = {}
+    decisions: list[tuple[int, str, float, bool]] = []
+    for rule, evidence_items_by_path in zip(
+        payload["rules"],
+        evidence_items_by_rule,
+        strict=True,
+    ):
+        anchored_values = _rule_grounding_values_by_path(
+            rule,
+            selector_table_keys=selector_table_keys,
+        )
+        if not anchored_values:
+            continue
+        verified_source_pairs_by_path = _rule_verified_source_excerpt_pairs_by_path(
+            rule,
+            proof_source_texts,
+        )
+        rule_name = (
+            str(rule.get("name") or "").strip() if isinstance(rule, dict) else ""
+        )
+        for anchor_path, raw, value in anchored_values:
+            direct_half_up_helper = _is_direct_half_up_rounding_helper_value(
+                rule,
+                anchor_path,
+                value,
+            )
+            module_supports_rounding = bool(module_source) and (
+                _is_source_backed_half_up_rounding_helper(
+                    rule_name,
+                    value,
+                    module_source,
+                )
+            )
+            source_evidence = verified_source_pairs_by_path.get(anchor_path, ())
+            atom_supports_rounding = any(
+                (
+                    excerpt is None
+                    or _is_source_backed_half_up_rounding_helper(
+                        rule_name,
+                        value,
+                        excerpt,
+                    )
+                )
+                and _is_source_backed_half_up_rounding_helper(
+                    rule_name,
+                    value,
+                    resolved_source,
+                )
+                for excerpt, resolved_source in source_evidence
+            )
+            if direct_half_up_helper and (
+                module_supports_rounding or atom_supports_rounding
+            ):
+                decisions.append((1, raw, value, True))
+                continue
+
+            evidence_items = (
+                [module_evidence] if module_evidence is not None else []
+            ) + list(evidence_items_by_path.get(anchor_path, ()))
+            source_occurrences, decimal_place_scale_values = _numeric_evidence_index(
+                evidence_items,
+                suppress_ambiguous_half_up_terms=(
+                    _is_half_up_rounding_helper_scalar(rule_name, value)
+                ),
+                cache=evidence_index_cache,
+            )
+            decisions.append(
+                (
+                    1,
+                    raw,
+                    value,
+                    _numeric_value_grounded_in_source(
+                        value,
+                        source_occurrences,
+                        decimal_place_scale_values,
+                    ),
+                )
+            )
+
+    if len(decisions) == len(grounding_values):
+        return decisions
+    return evaluate_numeric_grounding_values(
+        content,
+        module_source,
+        authoritative_source_text=authoritative_source_text,
+        source_citation_path=module_citation_path,
+    )
+
+
 def find_ungrounded_numeric_issues_scoped(
     content: str,
     *,
     module_source_text: str | None,
+    module_citation_path: str | None = None,
     proof_source_texts: Mapping[str, str | None] | None = None,
+    require_body_bound_proof_evidence: bool = True,
 ) -> list[str]:
     """Ground each rule's literals against the provisions that rule actually cites.
 
@@ -5409,13 +7219,30 @@ def find_ungrounded_numeric_issues_scoped(
         or payload.get("format") != "rulespec/v1"
         or not isinstance(payload.get("rules"), list)
     ):
-        return find_ungrounded_numeric_issues(content, source_text=module_source_text)
+        return find_ungrounded_numeric_issues(
+            content,
+            source_text=module_source_text,
+            source_citation_path=module_citation_path,
+        )
 
     if not extract_grounding_values(content):
         return []
-    any_evidence = bool(module_source) or any(
-        any(_rule_atom_evidence_by_path(rule, proof_source_texts).values())
+    module_evidence = _module_numeric_evidence_item(
+        payload,
+        module_source,
+        citation_path=module_citation_path,
+    )
+    evidence_items_by_rule = [
+        _rule_atom_numeric_evidence_items_by_path(
+            rule,
+            proof_source_texts,
+            require_body_bound_evidence=require_body_bound_proof_evidence,
+        )
         for rule in payload["rules"]
+    ]
+    any_evidence = module_evidence is not None or any(
+        any(items for items in evidence_by_path.values())
+        for evidence_by_path in evidence_items_by_rule
     )
     if not any_evidence:
         return [
@@ -5424,67 +7251,28 @@ def find_ungrounded_numeric_issues_scoped(
             "`module.summary` is not accepted as source text for numeric grounding."
         ]
 
-    selector_table_keys = _rulespec_index_selector_keys(payload["rules"])
     seen: set[str] = set()
     issues: list[str] = []
-    for rule in payload["rules"]:
-        anchored_values = _rule_grounding_values_by_path(
-            rule, selector_table_keys=selector_table_keys
-        )
-        if not anchored_values:
+    # Bind each literal to only the proof atom at its exact RuleSpec path plus
+    # the designated module source. The evaluator parses each source fragment
+    # under its own citation-selected profile before unioning typed indexes.
+    for _line, raw, value, grounded in evaluate_numeric_grounding_values_scoped(
+        content,
+        module_source_text=module_source,
+        module_citation_path=module_citation_path,
+        proof_source_texts=proof_source_texts,
+        require_body_bound_proof_evidence=require_body_bound_proof_evidence,
+    ):
+        if grounded:
             continue
-        # Bind each literal to ONLY the proof atom anchored to that literal's
-        # exact path (versions[i].formula / versions[i].values), plus the single
-        # designated module source. Grounding against just that atom's
-        # excerpt-verified evidence — not every atom in the rule, and not the
-        # full text of cited provisions — is the tightest correct semantics: an
-        # unrelated atom in the same rule (e.g. a note) cannot launder a
-        # fabricated value that merely appears in its own excerpt. Module-source
-        # retention matches the pre-existing single-source check (no regression).
-        evidence_by_path = _rule_atom_evidence_by_path(rule, proof_source_texts)
-        verified_source_pairs_by_path = _rule_verified_source_excerpt_pairs_by_path(
-            rule, proof_source_texts
+        display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        issue = (
+            "Ungrounded generated numeric literal: "
+            f"{display} does not appear as a substantive numeric value in the source text."
         )
-        rule_name = (
-            str(rule.get("name") or "").strip() if isinstance(rule, dict) else ""
-        )
-        for anchor_path, raw, value in anchored_values:
-            direct_half_up_helper = _is_direct_half_up_rounding_helper_value(
-                rule, anchor_path, value
-            )
-            texts = [module_source, evidence_by_path.get(anchor_path, "")]
-            combined = "\n".join(text for text in texts if text).strip()
-            source_evidence = verified_source_pairs_by_path.get(anchor_path, ())
-            module_supports_rounding = bool(module_source) and (
-                _is_source_backed_half_up_rounding_helper(
-                    rule_name, value, module_source
-                )
-            )
-            atom_supports_rounding = any(
-                (
-                    excerpt is None
-                    or _is_source_backed_half_up_rounding_helper(
-                        rule_name, value, excerpt
-                    )
-                )
-                and _is_source_backed_half_up_rounding_helper(
-                    rule_name, value, resolved_source
-                )
-                for excerpt, resolved_source in source_evidence
-            )
-            if direct_half_up_helper and (
-                module_supports_rounding or atom_supports_rounding
-            ):
-                continue
-            grounding_source = (
-                _strip_ambiguous_half_up_terms(combined)
-                if _is_half_up_rounding_helper_scalar(rule_name, value)
-                else combined
-            )
-            for issue in _ungrounded_from_values([(1, raw, value)], grounding_source):
-                if issue not in seen:
-                    seen.add(issue)
-                    issues.append(issue)
+        if issue not in seen:
+            seen.add(issue)
+            issues.append(issue)
     return issues
 
 
@@ -6704,7 +8492,12 @@ def repair_source_table_open_ended_bound_sentinels(
         if source_text is not None
         else (extract_numeric_grounding_source_text(content) or "").strip()
     )
-    source_numbers = extract_numbers_from_text(source) if source else set()
+    profile = _numeric_profile_for_citation_path(_module_numeric_citation_path(payload))
+    source_occurrences = (
+        extract_typed_numeric_occurrences_from_text(source, profile=profile)
+        if source
+        else []
+    )
     changed_rules: set[str] = set()
 
     for rule in rules:
@@ -6733,7 +8526,10 @@ def repair_source_table_open_ended_bound_sentinels(
             if numeric is None:
                 continue
             _raw, value = numeric
-            if not _is_generated_open_ended_bound_sentinel(value, source_numbers):
+            if not _is_generated_open_ended_bound_sentinel(
+                value,
+                source_occurrences,
+            ):
                 continue
             del values[max_key]
             changed_rules.add(rule_name or "<unknown>")
@@ -7819,11 +9615,11 @@ def _max_structural_integer_table_key(values: dict[Any, Any]) -> Any | None:
 
 def _is_generated_open_ended_bound_sentinel(
     value: float,
-    source_numbers: set[float],
+    source_occurrences: Sequence[NumericOccurrence],
 ) -> bool:
     if abs(value) < 1_000_000:
         return False
-    if source_numbers and numeric_value_is_grounded(value, source_numbers):
+    if source_occurrences and numeric_value_is_grounded(value, source_occurrences):
         return False
     return True
 
@@ -19523,11 +21319,19 @@ def _find_source_text_value_issues(
     expected_value: Any,
 ) -> list[str]:
     """Check expected values are present in the ingested source page text."""
+    numeric_profile = _numeric_profile_for_citation_path(source_label)
     normalized_text = _normalize_source_verification_text(source_text)
     if isinstance(expected_value, dict):
         issues: list[str] = []
+        profiled_numeric_cells: list[tuple[str, Any]] = []
         for raw_key, expected_cell in expected_value.items():
             cell_key = str(raw_key)
+            if (
+                numeric_profile != "legacy"
+                and _numeric_rule_value(expected_cell) is not None
+            ):
+                profiled_numeric_cells.append((cell_key, expected_cell))
+                continue
             if not _source_text_contains_indexed_value(
                 normalized_text,
                 index=cell_key,
@@ -19538,17 +21342,50 @@ def _find_source_text_value_issues(
                     f"`{source_label}` does not contain `{value_name}[{cell_key}]` = "
                     f"{_format_verification_value(expected_cell)}."
                 )
-        if issues and _source_text_contains_table_value_multiset(
-            normalized_text,
-            expected_value.values(),
+        if (
+            numeric_profile == "legacy"
+            and issues
+            and _source_text_contains_table_value_multiset(
+                normalized_text,
+                expected_value.values(),
+            )
         ):
             return []
+        if profiled_numeric_cells and not (
+            _source_text_contains_profiled_table_value_multiset(
+                source_text,
+                (cell for _, cell in profiled_numeric_cells),
+                profile=numeric_profile,
+            )
+        ):
+            issues.extend(
+                "Source verification value missing: "
+                f"`{source_label}` does not contain `{value_name}[{cell_key}]` = "
+                f"{_format_verification_value(expected_cell)}."
+                for cell_key, expected_cell in profiled_numeric_cells
+            )
         return issues
 
-    if _source_text_contains_scalar_value(
-        normalized_text,
-        expected_value,
-    ) or _source_text_contains_numeric_value_equivalent(source_text, expected_value):
+    expected_is_numeric = _numeric_rule_value(expected_value) is not None
+    if numeric_profile != "legacy" and expected_is_numeric:
+        value_is_present = _source_text_contains_numeric_value_equivalent(
+            source_text,
+            expected_value,
+            profile=numeric_profile,
+        )
+    else:
+        value_is_present = _source_text_contains_scalar_value(
+            normalized_text,
+            expected_value,
+        ) or (
+            expected_is_numeric
+            and _source_text_contains_numeric_value_equivalent(
+                source_text,
+                expected_value,
+                profile=numeric_profile,
+            )
+        )
+    if value_is_present:
         return []
     return [
         "Source verification value missing: "
@@ -19639,11 +21476,19 @@ def _source_text_contains_scalar_value(text: str, value: Any) -> bool:
     )
 
 
-def _source_text_contains_numeric_value_equivalent(text: str, value: Any) -> bool:
+def _source_text_contains_numeric_value_equivalent(
+    text: str,
+    value: Any,
+    *,
+    profile: str = "legacy",
+) -> bool:
     numeric = _numeric_rule_value(value)
     if numeric is None:
         return False
-    return numeric_value_is_grounded(numeric[1], extract_numbers_from_text(text))
+    return numeric_value_is_grounded(
+        numeric[1],
+        extract_typed_numeric_occurrences_from_text(text, profile=profile),
+    )
 
 
 def _source_text_contains_table_value_multiset(
@@ -19664,6 +21509,57 @@ def _source_text_contains_table_value_multiset(
         )
         >= expected_count
         for value_texts_key, expected_count in expected_counts.items()
+    )
+
+
+def _source_text_contains_profiled_table_value_multiset(
+    text: str,
+    values: Iterable[Any],
+    *,
+    profile: str,
+) -> bool:
+    """Match locale-parsed table values without reusing source occurrences."""
+    expected_values: list[float] = []
+    for value in values:
+        numeric = _numeric_rule_value(value)
+        if numeric is None:
+            return False
+        expected_values.append(numeric[1])
+
+    source_occurrences = extract_typed_numeric_occurrences_from_text(
+        text,
+        profile=profile,
+    )
+    candidate_indexes = [
+        [
+            occurrence_index
+            for occurrence_index, occurrence in enumerate(source_occurrences)
+            if numeric_value_is_grounded(expected, (occurrence,))
+        ]
+        for expected in expected_values
+    ]
+    if any(not candidates for candidates in candidate_indexes):
+        return False
+
+    matched_expected_by_occurrence: dict[int, int] = {}
+
+    def assign(expected_index: int, visited: set[int]) -> bool:
+        for occurrence_index in candidate_indexes[expected_index]:
+            if occurrence_index in visited:
+                continue
+            visited.add(occurrence_index)
+            previous = matched_expected_by_occurrence.get(occurrence_index)
+            if previous is None or assign(previous, visited):
+                matched_expected_by_occurrence[occurrence_index] = expected_index
+                return True
+        return False
+
+    return all(
+        assign(expected_index, set())
+        for expected_index in sorted(
+            range(len(expected_values)),
+            key=lambda index: len(candidate_indexes[index]),
+        )
     )
 
 
@@ -20652,21 +22548,37 @@ def _embedded_integer_scale_selector(formula: str) -> str | None:
     return None
 
 
-def numeric_value_is_grounded(value: float, source_numbers: set[float]) -> bool:
-    """Return true when a generated number is present in extracted source numbers."""
-    for source_value in source_numbers:
+def numeric_value_is_grounded(
+    value: float,
+    source_occurrences: Iterable[NumericOccurrence],
+) -> bool:
+    """Return whether a generated value is grounded by typed source evidence.
+
+    Percentage scaling requires an occurrence whose own context supplies rate
+    evidence; an unrelated integer can never authorize the conversion.
+    """
+    for occurrence in source_occurrences:
+        source_value = occurrence.value
         if math.isclose(
             value,
             source_value,
             rel_tol=0,
             abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+        ) and not (
+            occurrence.requires_rate_context and not occurrence.has_rate_context
         ):
             return True
-        if 0 < abs(value) <= 1 and math.isclose(
-            value * 100,
-            source_value,
-            rel_tol=0,
-            abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+        if (
+            occurrence.has_rate_context
+            and 0 < abs(value) <= 1
+            and math.isclose(
+                value * 100,
+                occurrence.source_value
+                if occurrence.source_value is not None
+                else source_value,
+                rel_tol=0,
+                abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+            )
         ):
             return True
     return False
@@ -22806,7 +24718,9 @@ class ValidatorPipeline:
         if self.source_text is not None:
             issues.extend(
                 find_ungrounded_numeric_issues(
-                    content, source_text=validation_source_text
+                    content,
+                    source_text=validation_source_text,
+                    source_citation_path=self.source_citation_path,
                 )
             )
         else:
@@ -22814,6 +24728,7 @@ class ValidatorPipeline:
                 find_ungrounded_numeric_issues_scoped(
                     content,
                     module_source_text=validation_source_text,
+                    module_citation_path=self.source_citation_path,
                     proof_source_texts=numeric_source_texts,
                 )
             )
