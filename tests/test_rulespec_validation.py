@@ -52,6 +52,7 @@ from axiom_encode.harness.validator_pipeline import (
     extract_named_scalar_occurrences,
     extract_numbers_from_text,
     extract_numeric_occurrences_from_text,
+    extract_typed_numeric_inventory_occurrences_from_text,
     extract_typed_numeric_occurrences_from_text,
     find_aggregate_exception_predicate_issues,
     find_anaphoric_scope_omission_issues,
@@ -8272,6 +8273,86 @@ def test_de_numeric_profile_types_local_rate_context(source_text, expected):
     )
 
     assert numeric_value_is_grounded(0.42, occurrences) is expected
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+@pytest.mark.parametrize(
+    ("source_text", "expected_temporal_values"),
+    (
+        ("für das Jahr 2025", [2025.0]),
+        ("ab dem 1. Januar 2025", [1.0, 2025.0]),
+        (
+            "vom 1. Oktober 2022 bis zum 31. Dezember 2022",
+            [1.0, 2022.0, 31.0, 2022.0],
+        ),
+        ("Veranlagungszeitraum 2026", [2026.0]),
+        ("für die Jahre 2022 bis 2025", [2022.0, 2025.0]),
+        ("31.12.2022", [2022.0]),
+    ),
+)
+def test_typed_temporal_occurrences_stay_grounding_only(
+    profile,
+    source_text,
+    expected_temporal_values,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    assert [
+        occurrence.value for occurrence in grounding if occurrence.has_temporal_context
+    ] == expected_temporal_values
+    assert not inventory
+    assert all(
+        occurrence.raw == source_text[occurrence.start : occurrence.end]
+        for occurrence in grounding
+    )
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+def test_year_shaped_money_is_not_temporal(profile):
+    source_text = "Die Pauschale beträgt 2025 Euro."
+
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    occurrence = next(item for item in grounding if item.value == 2025)
+    assert not occurrence.has_temporal_context
+    assert [(item.value, item.raw) for item in inventory] == [(2025.0, "2025")]
+
+
+def test_temporal_recall_filter_does_not_exempt_generated_literal_grounding():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/regulation/example/1
+rules:
+  - name: fabricated_year_value
+    kind: parameter
+    dtype: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2025
+"""
+
+    issues = find_ungrounded_numeric_issues(
+        content,
+        source_text="Die Regel gilt für das Jahr 2026.",
+    )
+
+    assert any("2025" in issue for issue in issues), issues
 
 
 @pytest.mark.parametrize(

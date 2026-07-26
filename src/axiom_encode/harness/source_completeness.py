@@ -29,6 +29,7 @@ class NumericOccurrenceLike(Protocol):
     end: int
     raw: str
     has_rate_context: bool
+    has_temporal_context: bool
     source_value: float | None
     requires_rate_context: bool
 
@@ -42,6 +43,7 @@ class _NumericOccurrenceView:
     end: int
     raw: str
     has_rate_context: bool
+    has_temporal_context: bool
     source_value: float | None
     requires_rate_context: bool
 
@@ -2052,69 +2054,11 @@ def _active_or_root_source_branches(
 
 
 def _source_boundary_is_temporal(
-    branch: SourceStructureBranch,
+    _branch: SourceStructureBranch,
     boundary: NumericOccurrenceLike,
 ) -> bool:
-    """Keep effective-period bounds eligible for parameter versioning."""
-
-    if not 1800 <= float(boundary.value) <= 2200:
-        return False
-    relative_start, relative_end = _boundary_span_in_branch(branch, boundary)
-    before = branch.text[max(0, relative_start - 100) : relative_start]
-    after = branch.text[relative_end : min(len(branch.text), relative_end + 80)]
-    substantive_unit = (
-        r"(?:€|eur\b|euro\b|dollar\b|prozent\b|%\b|"
-        r"einkommen\b|betrag\b|grenze\b|income\b|amount\b|threshold\b)"
-    )
-    if re.search(rf"{substantive_unit}\s*$", before, flags=re.IGNORECASE):
-        return False
-    if re.match(rf"\s*{substantive_unit}", after, flags=re.IGNORECASE):
-        return False
-    period_cue = (
-        r"(?:veranlagungszeitraum|besteuerungszeitraum|kalenderjahr|"
-        r"steuerjahr|tax\s+year|calendar\s+year|effective(?:_from)?|"
-        r"january|february|march|april|may|june|july|august|september|"
-        r"october|november|december|"
-        r"januar|februar|märz|april|mai|juni|juli|august|september|"
-        r"oktober|november|dezember)"
-    )
-    return bool(
-        re.search(
-            rf"\b{period_cue}\s*$",
-            before,
-            flags=re.IGNORECASE,
-        )
-        or re.match(
-            rf"\s*{period_cue}\b",
-            after,
-            flags=re.IGNORECASE,
-        )
-        or re.search(
-            r"\b(?:ab|seit|effective\s+from)\s*$",
-            before,
-            flags=re.IGNORECASE,
-        )
-    )
-
-
-def _boundary_span_in_branch(
-    branch: SourceStructureBranch,
-    boundary: NumericOccurrenceLike,
-) -> tuple[int, int]:
-    """Realign offsets after structural ordinals were removed for extraction."""
-
-    raw = str(getattr(boundary, "raw", "") or "").strip()
-    if raw:
-        candidates = tuple(re.finditer(re.escape(raw), branch.text))
-        if candidates:
-            closest = min(
-                candidates,
-                key=lambda match: abs(match.start() - boundary.start),
-            )
-            return closest.start(), closest.end()
-    start = max(0, min(len(branch.text), boundary.start))
-    end = max(start, min(len(branch.text), boundary.end))
-    return start, end
+    """Read temporal boundary context from the shared typed occurrence."""
+    return boundary.has_temporal_context
 
 
 def _rounding_clause_refers_to_previous_result(
@@ -3276,6 +3220,7 @@ def _numeric_occurrences_are_equivalent(
     return (
         math.isclose(float(left.value), float(right.value))
         and left.has_rate_context == right.has_rate_context
+        and left.has_temporal_context == right.has_temporal_context
         and left.source_value == right.source_value
         and left.requires_rate_context == right.requires_rate_context
     )
@@ -4590,6 +4535,7 @@ def _shift_numeric_occurrence(
         end=occurrence.end + offset,
         raw=occurrence.raw,
         has_rate_context=occurrence.has_rate_context,
+        has_temporal_context=occurrence.has_temporal_context,
         source_value=occurrence.source_value,
         requires_rate_context=occurrence.requires_rate_context,
     )
