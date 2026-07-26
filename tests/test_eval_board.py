@@ -2171,6 +2171,36 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
     assert stats.policyengine_pass_rate == pytest.approx(0.5)
 
 
+@pytest.mark.parametrize("evidence_kind", ["runtime_only", "score_only"])
+def test_fold_refuses_producer_impossible_policyengine_evidence(
+    tmp_path,
+    evidence_kind,
+):
+    runtime = _policyengine_runtime_identity()
+    metrics = _metrics(
+        policyengine_pass=None,
+        policyengine_score=1.0 if evidence_kind == "score_only" else None,
+    )
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        f"{evidence_kind}-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", CASE_IDENTITIES[0], metrics=metrics),
+                _result("terra", CASE_IDENTITIES[1]),
+                _result("terra", CASE_IDENTITIES[2]),
+            ],
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
     expected_runtime = _policyengine_runtime_identity()
     foreign_runtime = _policyengine_runtime_identity(pe_version="1.10.0")
