@@ -769,6 +769,52 @@ def test_fold_refuses_path_only_engine_identities_that_normalize_equal(tmp_path)
         fold_eval_board([left, right])
 
 
+def test_fold_refuses_execution_identity_without_any_rulespec_root(tmp_path):
+    identity = _execution_identity()
+    identity["rulespec_roots"] = []
+    path = _write_payload(
+        tmp_path,
+        "empty-rulespec-roots.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("content_state", "file_count"),
+    [
+        ("missing", 0),
+        ("file", 1),
+    ],
+)
+def test_fold_refuses_nondirectory_rulespec_root(
+    tmp_path,
+    content_state,
+    file_count,
+):
+    identity = _execution_identity()
+    identity["rulespec_roots"][0]["content_state"] = content_state
+    identity["rulespec_roots"][0]["file_count"] = file_count
+    path = _write_payload(
+        tmp_path,
+        f"{content_state}-rulespec-root.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
 @pytest.mark.parametrize(
     "field_name",
     [
@@ -809,6 +855,28 @@ def test_fold_refuses_policyengine_runtime_wrapper_digest_mismatch(tmp_path):
     path = _write_payload(
         tmp_path,
         "stale-policyengine-wrapper-digest.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_location_only_policyengine_runtime_identity(tmp_path):
+    runtime_identity = {"repository_root": "/ci/pe-uk"}
+    identity = _execution_identity(
+        policyengine_runtime={
+            "identity": runtime_identity,
+            "sha256": evals_canonical_json_sha256(runtime_identity),
+        }
+    )
+    path = _write_payload(
+        tmp_path,
+        "location-only-policyengine-runtime.json",
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
