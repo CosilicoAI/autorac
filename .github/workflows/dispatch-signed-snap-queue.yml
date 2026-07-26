@@ -1,9 +1,17 @@
 name: Dispatch protected SNAP queue
-run-name: "SNAP queue dispatch=${{ inputs.dispatch }} items=${{ inputs.item_ids || 'next' }} limit=${{ inputs.limit }}"
+run-name: "SNAP queue=${{ inputs.queue_id }} dispatch=${{ inputs.dispatch }} items=${{ inputs.item_ids || 'next' }} limit=${{ inputs.limit }}"
 
 on:
   workflow_dispatch:
     inputs:
+      queue_id:
+        description: Durable protected SNAP queue identifier
+        required: true
+        default: us-snap-or-ut-2026-07
+        type: choice
+        options:
+          - us-snap-or-ut-2026-07
+          - us-snap-all-states-2026-07
       item_ids:
         description: Optional comma-separated queue item IDs; defaults to the next items
         required: false
@@ -62,11 +70,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ITEM_IDS: ${{ inputs.item_ids }}
           LIMIT: ${{ inputs.limit }}
+          QUEUE_ID: ${{ inputs.queue_id }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          queue="data/encoding-queues/${QUEUE_ID}.json"
+          test -f "$queue"
           python3 scripts/prepare_signed_queue.py validate "$queue"
+          legacy_queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          all_state_queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+          if [ "$QUEUE_ID" = "us-snap-all-states-2026-07" ]; then
+            test "$(jq -r '.state' "$legacy_queue")" != "active"
+          elif [ -f "$all_state_queue" ]; then
+            test "$(jq -r '.state' "$all_state_queue")" != "active"
+          fi
           if [ "$(jq -r '.state' "$queue")" = "active" ]; then
             if [[ ! "$ACTIVATION_MERGE_RUN_ID" =~ ^[0-9]+$ ]]; then
               echo "active queue requires activation_merge_run_id" >&2

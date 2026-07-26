@@ -2340,7 +2340,12 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
         in provenance["env"]["CORPUS_RELEASE_PUBLIC_KEY"]
     )
     assert "release_objects?select=release_object" in provenance_command
-    assert "build-snap initial-axiom-corpus initial-rulespec-us" in provenance_command
+    assert "build_command=build-snap-all-states" in provenance_command
+    assert "build_command=build-snap" in provenance_command
+    assert '"$build_command" initial-axiom-corpus initial-rulespec-us' in (
+        provenance_command
+    )
+    assert "unsupported initial SNAP queue" in provenance_command
     assert "--state paused" in provenance_command
     assert "cmp --silent" in provenance_command
 

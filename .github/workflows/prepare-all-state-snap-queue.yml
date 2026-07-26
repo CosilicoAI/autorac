@@ -1,0 +1,125 @@
+name: Prepare protected all-state SNAP queue
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-all-state-snap-queue
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        && github.ref == 'refs/heads/main'
+        && github.run_attempt == 1
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CORPUS_REF: 0fd35bfbda98836c406ec539a492c4e661c6695d
+      RELEASE_NAME: us-rulespec-2026-07-24-snap-cms-pit-union
+      RELEASE_SHA: cb275c76c4f07f8ad37470a32296bb1763e5db853d152697524ab07021b6d544
+      RULES_ENGINE_REF: 05eac9d2f89dabe5c6673176260762cef3a58f47
+      RULESPEC_REF: 8f224620540f9e285428ec839d094835396f7d99
+      SUPABASE_URL: https://swocpijqqahhuwtuahwc.supabase.co
+    steps:
+      - name: Checkout immutable encoder main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout pinned corpus
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TheAxiomFoundation/axiom-corpus
+          ref: ${{ env.CORPUS_REF }}
+          path: pinned-corpus
+          persist-credentials: false
+
+      - name: Checkout pinned RuleSpec
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TheAxiomFoundation/rulespec-us
+          ref: ${{ env.RULESPEC_REF }}
+          path: pinned-rulespec
+          persist-credentials: false
+
+      - name: Install encoder
+        uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc # v7.2.0
+        with:
+          version: "0.9.26"
+
+      - name: Build authenticated paused queue
+        env:
+          CORPUS_READ_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          CORPUS_RELEASE_PUBLIC_KEY: ${{ vars.AXIOM_CORPUS_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$CORPUS_READ_KEY"
+          test -n "$CORPUS_RELEASE_PUBLIC_KEY"
+          uv sync --frozen --python 3.13
+
+          response="$RUNNER_TEMP/corpus-release-response.json"
+          release_object="$RUNNER_TEMP/corpus-release-object.json"
+          release_public_key="$RUNNER_TEMP/corpus-release-public-key"
+          queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+          url="${SUPABASE_URL%/}/rest/v1/release_objects?select=release_object&release_name=eq.${RELEASE_NAME}&content_sha256=eq.${RELEASE_SHA}&limit=2"
+          curl --fail --silent --show-error \
+            --header "apikey: $CORPUS_READ_KEY" \
+            --header "Authorization: Bearer $CORPUS_READ_KEY" \
+            --header "Accept-Profile: corpus" \
+            --output "$response" "$url"
+          jq -e 'if length == 1 then .[0].release_object else
+            error("expected exactly one signed corpus release object") end' \
+            "$response" > "$release_object"
+          printf '%s\n' "$CORPUS_RELEASE_PUBLIC_KEY" > "$release_public_key"
+
+          uv run --frozen --python 3.13 python scripts/prepare_signed_queue.py \
+            build-snap-all-states pinned-corpus pinned-rulespec \
+            --corpus-ref "$CORPUS_REF" \
+            --rulespec-ref "$RULESPEC_REF" \
+            --rules-engine-ref "$RULES_ENGINE_REF" \
+            --release-name "$RELEASE_NAME" \
+            --release-content-sha256 "$RELEASE_SHA" \
+            --release-object "$release_object" \
+            --release-public-key "$release_public_key" \
+            --state paused \
+            --pause-reason \
+              "Awaiting a green, independently reviewed exact RuleSpec protected-branch tip." \
+            > "$queue"
+          uv run --frozen --python 3.13 python scripts/prepare_signed_queue.py \
+            validate "$queue"
+
+          {
+            echo "### All-state SNAP queue"
+            echo
+            echo "Items: $(jq '.expected_counts.total' "$queue")"
+            echo "Jurisdictions: $(jq '.expected_counts | keys - [\"total\"] | length' "$queue")"
+            echo "Queue SHA-256: $(sha256sum "$queue" | cut -d' ' -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open durable queue pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="queue/all-state-snap-${GITHUB_RUN_ID}"
+          queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add "$queue"
+          git commit -m "Add durable all-state SNAP encoding queue"
+          git push origin "$branch"
+          gh pr create \
+            --draft \
+            --base main \
+            --head "$branch" \
+            --title "Add durable all-state SNAP encoding queue" \
+            --body "Creates the authenticated, paused 50-state-plus-DC SNAP queue tracked by #1287. The queue is generated from the pinned signed corpus release and remains paused until the protected RuleSpec branch is green and independently reviewed."
