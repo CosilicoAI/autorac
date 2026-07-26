@@ -3696,6 +3696,76 @@ class TestClaudePromptEval:
         assert response.text == ""
         assert response.error == "Claude eval returned an error"
 
+    def test_prompt_eval_classifies_usage_limit_from_non_success_envelope(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "private-receiver-detail"
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(
+                f"{secret}: usage limit reached",
+                subtype="error_during_execution",
+                is_error=True,
+                error={"message": f"{secret}: quota exhausted"},
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == "Claude eval stopped by usage limit"
+        assert secret not in json.dumps(response.trace)
+
+    @pytest.mark.parametrize(
+        "stop_reason",
+        ["max_tokens", "model_context_window_exceeded"],
+    )
+    def test_prompt_eval_classifies_truncated_stop_reason_for_non_success_envelope(
+        self,
+        tmp_path,
+        stop_reason,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(
+                "=== FILE: partial.yaml ===\nformat: rulespec/v1\n",
+                subtype="error_during_execution",
+                is_error=True,
+                stop_reason=stop_reason,
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.failure_kind == "output_truncated"
+        assert stop_reason in response.error
+
     @pytest.mark.parametrize(
         "stop_reason",
         ["max_tokens", "model_context_window_exceeded"],
@@ -4004,6 +4074,54 @@ class TestClaudePromptEval:
 
 
 class TestCodexPromptEval:
+    def test_prompt_eval_classifies_usage_limit_from_nonzero_stderr_before_sanitization(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "private-receiver-detail"
+        stderr_text = f"{secret}: usage limit\n"
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 1
+                stderr.write(stderr_text)
+                stderr.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error == "Codex eval stopped by usage limit"
+        assert secret not in json.dumps(response.trace)
+        assert response.trace["stderr_diagnostic"]["byte_count"] == len(
+            stderr_text.encode()
+        )
+        result = _fake_eval_result("codex-gpt-5.4", "sample")
+        result.error = response.error
+        assert evals_module._eval_result_indicates_usage_limit(result)
+
     def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
         runner = parse_runner_spec("codex:gpt-5.4")
         workspace = EvalWorkspace(

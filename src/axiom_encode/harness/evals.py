@@ -13542,6 +13542,43 @@ def _run_prompt_eval(
     raise ValueError(f"Unsupported backend: {runner.backend}")
 
 
+def _receiver_value_indicates_usage_limit(
+    value: object,
+    *,
+    depth: int = 0,
+) -> bool:
+    """Classify bounded raw receiver diagnostics without persisting their text."""
+
+    if depth > 4:
+        return False
+    if isinstance(value, str):
+        bounded = (
+            value if len(value) <= 131_072 else f"{value[:65_536]} {value[-65_536:]}"
+        )
+        normalized = re.sub(r"[-_]+", " ", bounded.casefold())
+        return bool(
+            re.search(
+                r"\busage\s+limit\b"
+                r"|\brate\s+limit(?:ed|ing|s)?\b"
+                r"|\bquota\s+(?:has\s+been\s+)?(?:exceeded|exhausted)\b"
+                r"|\binsufficient\s+quota\b"
+                r"|\blimit\s+(?:has\s+been\s+)?reached\b",
+                normalized,
+            )
+        )
+    if isinstance(value, dict):
+        return any(
+            _receiver_value_indicates_usage_limit(item, depth=depth + 1)
+            for item in list(value.values())[:32]
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _receiver_value_indicates_usage_limit(item, depth=depth + 1)
+            for item in value[:32]
+        )
+    return False
+
+
 def _run_claude_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
@@ -13655,6 +13692,9 @@ def _run_claude_prompt_eval(
             "byte_count": len(stderr_bytes),
             "sha256": hashlib.sha256(stderr_bytes).hexdigest(),
         }
+    raw_stderr_usage_limit = (
+        result.returncode != 0 and _receiver_value_indicates_usage_limit(result.stderr)
+    )
 
     tokens = None
     actual_cost = None
@@ -13670,7 +13710,11 @@ def _run_claude_prompt_eval(
             text="",
             duration_ms=duration_ms,
             trace=trace,
-            error="Claude eval stdout did not contain a valid JSON object",
+            error=(
+                "Claude eval stopped by usage limit"
+                if raw_stderr_usage_limit
+                else "Claude eval stdout did not contain a valid JSON object"
+            ),
         )
 
     if not isinstance(parsed_payload, dict):
@@ -13685,12 +13729,51 @@ def _run_claude_prompt_eval(
     trace["result_envelope"] = {
         key: payload.get(key) for key in ("type", "subtype", "is_error", "stop_reason")
     }
+    stop_reason = payload.get("stop_reason")
+    if payload.get("type") == "result" and stop_reason in {
+        "max_tokens",
+        "model_context_window_exceeded",
+    }:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error=f"Claude eval output was truncated: stop_reason={stop_reason}",
+            failure_kind="output_truncated",
+        )
+    if raw_stderr_usage_limit:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval stopped by usage limit",
+        )
     if payload.get("type") != "result":
         return EvalPromptResponse(
             text="",
             duration_ms=duration_ms,
             trace=trace,
             error="Claude eval JSON envelope requires type='result'",
+        )
+    non_success_envelope = (
+        payload.get("subtype") != "success" or payload.get("is_error") is True
+    )
+    if non_success_envelope and any(
+        _receiver_value_indicates_usage_limit(payload.get(field))
+        for field in ("result", "error")
+    ):
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval stopped by usage limit",
+        )
+    if not isinstance(stop_reason, str) or not stop_reason.strip():
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace=trace,
+            error="Claude eval JSON envelope requires a nonempty stop_reason",
         )
     if payload.get("subtype") != "success":
         return EvalPromptResponse(
@@ -13706,28 +13789,12 @@ def _run_claude_prompt_eval(
             trace=trace,
             error="Claude eval JSON envelope requires boolean is_error",
         )
-    stop_reason = payload.get("stop_reason")
-    if not isinstance(stop_reason, str) or not stop_reason.strip():
-        return EvalPromptResponse(
-            text="",
-            duration_ms=duration_ms,
-            trace=trace,
-            error="Claude eval JSON envelope requires a nonempty stop_reason",
-        )
     if payload["is_error"]:
         return EvalPromptResponse(
             text="",
             duration_ms=duration_ms,
             trace=trace,
             error="Claude eval returned an error",
-        )
-    if stop_reason in {"max_tokens", "model_context_window_exceeded"}:
-        return EvalPromptResponse(
-            text="",
-            duration_ms=duration_ms,
-            trace=trace,
-            error=f"Claude eval output was truncated: stop_reason={stop_reason}",
-            failure_kind="output_truncated",
         )
     if stop_reason not in {"end_turn", "stop_sequence"}:
         return EvalPromptResponse(
@@ -13900,6 +13967,16 @@ def _run_codex_prompt_eval(
     stdout_path.unlink(missing_ok=True)
     stderr_path.unlink(missing_ok=True)
     duration_ms = int((time.time() - start) * 1000)
+    stderr_diagnostic = None
+    if stderr_text:
+        stderr_bytes = stderr_text.encode("utf-8", errors="replace")
+        stderr_diagnostic = {
+            "byte_count": len(stderr_bytes),
+            "sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        }
+    raw_stderr_usage_limit = (
+        process.returncode != 0 and _receiver_value_indicates_usage_limit(stderr_text)
+    )
 
     events: list[dict] = []
     assistant_messages: list[str] = []
@@ -13984,13 +14061,28 @@ def _run_codex_prompt_eval(
                         "failure_kind": "output_truncated",
                     }
                 )
+            elif _receiver_value_indicates_usage_limit(failure_message):
+                failure_kind = "error"
+                error = "Codex eval stopped by usage limit"
+                events.append(
+                    {
+                        "type": "turn.failed",
+                        "failure_kind": "usage_limit",
+                    }
+                )
             else:
                 failure_kind = "error"
                 error = "Codex eval turn failed"
                 events.append({"type": "turn.failed", "failure_kind": "error"})
         elif payload.get("type") == "error":
-            events.append(payload)
-            error = payload.get("message") or "Codex eval error"
+            raw_error = payload.get("message")
+            if _receiver_value_indicates_usage_limit(raw_error):
+                events.append({"type": "error", "failure_kind": "usage_limit"})
+                error = "Codex eval stopped by usage limit"
+                failure_kind = "error"
+            else:
+                events.append(payload)
+                error = raw_error or "Codex eval error"
         else:
             events.append(payload)
 
@@ -14022,6 +14114,10 @@ def _run_codex_prompt_eval(
             )
     elif terminal_receiver_failure:
         events = [_redact_codex_integrity_trace_event(event) for event in events]
+    elif raw_stderr_usage_limit:
+        events = [_redact_codex_integrity_trace_event(event) for event in events]
+        error = "Codex eval stopped by usage limit"
+        failure_kind = "error"
 
     final_text = "\n".join(assistant_messages).strip()
     if last_message_text.strip():
@@ -14063,6 +14159,11 @@ def _run_codex_prompt_eval(
             "wall_timeout_seconds": codex_timeout_seconds,
             "idle_timeout_seconds": codex_idle_timeout_seconds,
             "events": events,
+            **(
+                {"stderr_diagnostic": stderr_diagnostic}
+                if stderr_diagnostic is not None
+                else {}
+            ),
         },
         unexpected_accesses=unexpected_accesses,
         error=error,

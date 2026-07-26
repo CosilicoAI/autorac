@@ -13,9 +13,12 @@ input, avoiding operating-system command-line size limits.
 OpenAI Responses must report a completed response and completed output, use the
 model's 128,000-token output ceiling, and reject incomplete or max-token output
 as `output_truncated`; Agent API max-token stops are likewise rejected. Claude
-and Codex terminal envelopes are checked explicitly, and output from any
-receiver error or terminal partial is cleared before artifact materialization
-so it cannot be scored.
+and Codex terminal envelopes are checked explicitly, including truncation on
+non-success envelopes. Usage-limit diagnostics are classified before raw
+receiver text is reduced to hashes and byte counts, allowing the suite circuit
+breaker to stop without persisting the diagnostic. Output from any receiver
+error or terminal partial is cleared before artifact materialization so it
+cannot be scored.
 Capability boards render overflow, truncation, and integrity failures
 distinctly and never score their artifacts. Eval suites preflight each local
 CLI's version and required flags once before case dispatch, execute that exact
