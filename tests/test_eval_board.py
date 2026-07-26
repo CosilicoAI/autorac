@@ -45,6 +45,7 @@ CASE_IDENTITIES = [
         "name": "alpha",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/2007/3/35",
+        "oracle": "none",
         "sha256": "aa" * 32,
     },
     {
@@ -52,6 +53,7 @@ CASE_IDENTITIES = [
         "name": "beta",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/1994/23/2",
+        "oracle": "none",
         "sha256": "bb" * 32,
     },
     {
@@ -59,9 +61,18 @@ CASE_IDENTITIES = [
         "name": "gamma",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/2012/5/8",
+        "oracle": "none",
         "sha256": "cc" * 32,
     },
 ]
+
+
+def _case_identities_with_policyengine(*case_indexes):
+    identities = copy.deepcopy(CASE_IDENTITIES)
+    for case_index in case_indexes:
+        identities[case_index - 1]["oracle"] = "policyengine"
+    return identities
+
 
 CORPUS_IDENTITY = {
     "corpus_release": "uk-rulespec-2026-07-14",
@@ -310,6 +321,7 @@ def _result(
         "name": case["name"],
         "kind": case["kind"],
         "corpus_citation_path": case["corpus_citation_path"],
+        "oracle": case["oracle"],
         "sha256": case["sha256"],
     }
     if eval_case_overrides:
@@ -2140,6 +2152,7 @@ def test_out_of_range_reviewer_scores_fold_like_the_producer_emits_them(tmp_path
 
 
 def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
+    case_identities = _case_identities_with_policyengine(1, 2)
     path = _write_payload(
         tmp_path,
         "oracle.json",
@@ -2148,17 +2161,18 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
             [
                 _result(
                     "terra",
-                    CASE_IDENTITIES[0],
+                    case_identities[0],
                     metrics=_metrics(policyengine_pass=True, policyengine_score=1.0),
                 ),
                 # A legitimate oracle exception: pass=False with no score.
                 _result(
                     "terra",
-                    CASE_IDENTITIES[1],
+                    case_identities[1],
                     metrics=_metrics(policyengine_pass=False, policyengine_score=None),
                 ),
-                _result("terra", CASE_IDENTITIES[2]),
+                _result("terra", case_identities[2]),
             ],
+            case_identities=case_identities,
             execution_identity=_execution_identity(
                 policyengine_runtime=_policyengine_runtime_identity(),
             ),
@@ -2177,6 +2191,7 @@ def test_fold_refuses_producer_impossible_policyengine_evidence(
     evidence_kind,
 ):
     runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
     metrics = _metrics(
         policyengine_pass=None,
         policyengine_score=1.0 if evidence_kind == "score_only" else None,
@@ -2189,10 +2204,11 @@ def test_fold_refuses_producer_impossible_policyengine_evidence(
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [
-                _result("terra", CASE_IDENTITIES[0], metrics=metrics),
-                _result("terra", CASE_IDENTITIES[1]),
-                _result("terra", CASE_IDENTITIES[2]),
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
             ],
+            case_identities=case_identities,
             execution_identity=_execution_identity(policyengine_runtime=runtime),
         ),
     )
@@ -2207,16 +2223,65 @@ def test_successful_policyengine_case_requires_oracle_evidence():
 
     with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
         eval_board_module._validate_result_policyengine_runtime_evidence(
-            _result("terra", CASE_IDENTITIES[0]),
+            _result("terra", case_identity),
             case_identity=case_identity,
             execution_identity=_execution_identity(policyengine_runtime=runtime),
             context="successful PolicyEngine case",
         )
 
 
+def test_fold_refuses_successful_policyengine_case_without_oracle_evidence(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    path = _write_payload(
+        tmp_path,
+        "missing-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in case_identities],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        fold_eval_board([path])
+
+
+def test_fold_allows_failed_policyengine_case_without_artifact_evidence(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    results = [
+        _result(
+            "terra",
+            case_identities[0],
+            success=False,
+            error="generation failed before validation",
+            metrics=None,
+            failure_kind="error",
+        ),
+        *[_result("terra", case) for case in case_identities[1:]],
+    ]
+    path = _write_payload(
+        tmp_path,
+        "failed-before-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            results,
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].policyengine_case_count == 0
+
+
 def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
     expected_runtime = _policyengine_runtime_identity()
     foreign_runtime = _policyengine_runtime_identity(pe_version="1.10.0")
+    case_identities = _case_identities_with_policyengine(1)
     metrics = _metrics(policyengine_pass=True, policyengine_score=1.0)
     metrics["policyengine_runtime_identity"] = foreign_runtime["identity"]
     metrics["policyengine_runtime_identity_sha256"] = foreign_runtime["sha256"]
@@ -2226,10 +2291,11 @@ def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_pat
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [
-                _result("terra", CASE_IDENTITIES[0], metrics=metrics),
-                _result("terra", CASE_IDENTITIES[1]),
-                _result("terra", CASE_IDENTITIES[2]),
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
             ],
+            case_identities=case_identities,
             execution_identity=_execution_identity(
                 policyengine_runtime=expected_runtime,
             ),
@@ -2241,6 +2307,7 @@ def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_pat
 
 
 def test_fold_refuses_oracle_evidence_without_bound_policyengine_runtime(tmp_path):
+    case_identities = _case_identities_with_policyengine(1)
     path = _write_payload(
         tmp_path,
         "unbound-oracle.json",
@@ -2249,12 +2316,13 @@ def test_fold_refuses_oracle_evidence_without_bound_policyengine_runtime(tmp_pat
             [
                 _result(
                     "terra",
-                    CASE_IDENTITIES[0],
+                    case_identities[0],
                     metrics=_metrics(policyengine_pass=True, policyengine_score=1.0),
                 ),
-                _result("terra", CASE_IDENTITIES[1]),
-                _result("terra", CASE_IDENTITIES[2]),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
             ],
+            case_identities=case_identities,
         ),
     )
 

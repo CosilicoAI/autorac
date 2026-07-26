@@ -499,6 +499,7 @@ def _fake_verified_eval_suite_artifacts(
                 "name": case.name,
                 "kind": case.kind,
                 "corpus_citation_path": case.corpus_citation_path,
+                "oracle": getattr(case, "oracle", "none"),
                 "sha256": hashlib.sha256(
                     f"{index}:{case.name}:{case.kind}".encode()
                 ).hexdigest(),

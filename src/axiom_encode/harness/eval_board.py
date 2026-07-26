@@ -467,6 +467,7 @@ def _payload_case_identities(payload: dict, source: str) -> list[dict]:
                 "name",
                 "kind",
                 "corpus_citation_path",
+                "oracle",
                 "sha256",
             }
             or type(identity.get("index")) is not int
@@ -474,6 +475,7 @@ def _payload_case_identities(payload: dict, source: str) -> list[dict]:
             or not _is_nonempty_string(identity.get("name"))
             or identity.get("kind") not in {"citation", "source"}
             or not _is_nonempty_string(identity.get("corpus_citation_path"))
+            or identity.get("oracle") not in {"none", "policyengine"}
             or not _is_sha256_hex(identity.get("sha256"))
         ):
             raise EvalBoardError(
@@ -1528,37 +1530,56 @@ def _validate_result_execution_admission(
 def _validate_result_policyengine_runtime_evidence(
     result: dict,
     *,
+    case_identity: dict,
     execution_identity: dict,
     context: str,
 ) -> None:
     """Bind oracle metrics to the exact sealed runtime admitted for the suite."""
 
     metrics = _result_metrics(result)
-    if metrics is None:
-        return
-    metric_identity = metrics.get("policyengine_runtime_identity")
-    metric_digest = metrics.get("policyengine_runtime_identity_sha256")
+    metric_identity = (
+        metrics.get("policyengine_runtime_identity")
+        if isinstance(metrics, dict)
+        else None
+    )
+    metric_digest = (
+        metrics.get("policyengine_runtime_identity_sha256")
+        if isinstance(metrics, dict)
+        else None
+    )
     has_policyengine_evidence = any(
         value is not None
         for value in (
-            metrics.get("policyengine_pass"),
-            metrics.get("policyengine_score"),
+            metrics.get("policyengine_pass") if isinstance(metrics, dict) else None,
+            metrics.get("policyengine_score") if isinstance(metrics, dict) else None,
             metric_identity,
             metric_digest,
         )
     )
-    if not has_policyengine_evidence:
+    if case_identity.get("oracle") == "none":
+        if has_policyengine_evidence:
+            raise EvalBoardError(
+                f"{context} has undeclared PolicyEngine oracle evidence"
+            )
         return
-    if metrics.get("policyengine_pass") is None:
+    expected_runtime = execution_identity.get("policyengine_runtime")
+    if not isinstance(expected_runtime, dict):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime is not admitted for this case"
+        )
+    if metrics is None:
+        if result.get("success") is True:
+            raise EvalBoardError(
+                f"{context} PolicyEngine case succeeded without oracle evidence"
+            )
+        return
+    if not has_policyengine_evidence or metrics.get("policyengine_pass") is None:
         raise EvalBoardError(
             f"{context} PolicyEngine oracle evidence has no pass outcome"
         )
-    expected_runtime = execution_identity.get("policyengine_runtime")
-    if (
-        not isinstance(expected_runtime, dict)
-        or metric_identity != expected_runtime.get("identity")
-        or metric_digest != expected_runtime.get("sha256")
-    ):
+    if metric_identity != expected_runtime.get(
+        "identity"
+    ) or metric_digest != expected_runtime.get("sha256"):
         raise EvalBoardError(
             f"{context} PolicyEngine runtime evidence does not match the "
             "suite execution identity"
@@ -1583,7 +1604,7 @@ def _validate_result_case_binding(
             f"1..{len(reference_cases)} cases"
         )
     reference = reference_cases[case_index - 1]
-    for field_name in ("name", "kind", "corpus_citation_path", "sha256"):
+    for field_name in ("name", "kind", "corpus_citation_path", "oracle", "sha256"):
         if eval_case.get(field_name) != reference.get(field_name):
             raise EvalBoardError(
                 f"{context} case identity field {field_name!r} "
@@ -1802,6 +1823,7 @@ def fold_eval_board(
             _validate_result_types(result, context=context)
             _validate_result_policyengine_runtime_evidence(
                 result,
+                case_identity=case_identities[case_index - 1],
                 execution_identity=execution_identity,
                 context=context,
             )

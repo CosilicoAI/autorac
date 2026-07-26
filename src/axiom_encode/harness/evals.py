@@ -2956,6 +2956,7 @@ def _eval_suite_case_identities(
             "name": case.name,
             "kind": case.kind,
             "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+            "oracle": case.oracle,
             "sha256": _canonical_json_sha256(_canonical_eval_suite_case_payload(case)),
         }
         for index, case in enumerate(manifest.cases, start=1)
@@ -3624,6 +3625,7 @@ def _eval_suite_result_admission_context(
         "name": case.name,
         "kind": case.kind,
         "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+        "oracle": case.oracle,
         "sha256": _canonical_json_sha256(_canonical_eval_suite_case_payload(case)),
     }:
         raise ValueError("Eval manifest case identity is inconsistent")
