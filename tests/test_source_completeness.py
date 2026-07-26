@@ -21,6 +21,8 @@ from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
     extract_named_scalar_occurrences,
     extract_typed_numeric_inventory_occurrences_from_text,
+    find_ungrounded_numeric_issues,
+    find_ungrounded_numeric_issues_scoped,
     numeric_value_is_grounded,
 )
 
@@ -450,6 +452,41 @@ MINUHV_SECTION_1_BODY = (
 )
 
 
+def _stated_conversion_rulespec_with_divisor(
+    citation_path: str,
+    parameters: tuple[tuple[str, str], ...],
+    *,
+    annual_parameter: str,
+    divisor: str,
+) -> str:
+    parameter_rules = "\n".join(
+        f"""\
+  - name: {name}
+    kind: parameter
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: {value}"""
+        for name, value in parameters
+    )
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+{parameter_rules}
+  - name: derived_monthly_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: {annual_parameter} / {divisor}
+"""
+
+
 def test_exact_svbezgrv_2025_section_1_excludes_temporal_year_from_recall():
     citation_path = "de/regulation/svbezgrv-2025/1"
     assert (
@@ -559,6 +596,178 @@ rules:
         SVBEZGRV_2025_SECTION_2_BODY,
         corpus_citation_path=citation_path,
         test_cases=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "source_body", "parameters", "annual_parameter"),
+    (
+        (
+            "de/regulation/svbezgrv-2025/1",
+            SVBEZGRV_2025_SECTION_1_BODY,
+            (
+                ("annual_reference_amount", "44940"),
+                ("monthly_reference_amount", "3745"),
+            ),
+            "annual_reference_amount",
+        ),
+        (
+            "de/regulation/svbezgrv-2025/2",
+            SVBEZGRV_2025_SECTION_2_BODY,
+            (
+                ("general_annual_income_limit", "73800"),
+                ("general_monthly_income_limit", "6150"),
+                ("special_annual_income_limit", "66150"),
+                ("special_monthly_income_limit", "5512.5"),
+            ),
+            "general_annual_income_limit",
+        ),
+    ),
+)
+def test_exact_svbezgrv_bare_calendar_divisor_gets_complete_mode_hint(
+    citation_path,
+    source_body,
+    parameters,
+    annual_parameter,
+):
+    content = _stated_conversion_rulespec_with_divisor(
+        citation_path,
+        parameters,
+        annual_parameter=annual_parameter,
+        divisor="12",
+    )
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text=source_body,
+        module_citation_path=citation_path,
+        require_complete_source_unit=True,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].startswith(
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    )
+    assert "separate grounded `kind: parameter` rules" in issues[0]
+    assert "annual and monthly amounts" in issues[0]
+    assert "companion tests" in issues[0]
+
+
+def test_stated_conversion_other_ungrounded_literal_keeps_original_error():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="13",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 13 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+def test_stated_conversion_calendar_hint_is_complete_mode_only():
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor="12",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+    ) == [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+@pytest.mark.parametrize("calendar_constant", ("4", "12", "24", "52", "365"))
+def test_complete_mode_stated_conversion_hint_covers_calendar_constants(
+    calendar_constant,
+):
+    content = _stated_conversion_rulespec_with_divisor(
+        "de/regulation/svbezgrv-2025/1",
+        (
+            ("annual_reference_amount", "44940"),
+            ("monthly_reference_amount", "3745"),
+        ),
+        annual_parameter="annual_reference_amount",
+        divisor=calendar_constant,
+    )
+
+    issues = find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    )
+
+    assert len(issues) == 1
+    assert "Complete-source stated-conversion hint" in issues[0]
+
+
+def test_stated_conversion_hint_requires_module_source_citation():
+    content = """\
+format: rulespec/v1
+module:
+  summary: Annual and monthly amounts.
+rules:
+  - name: derived_monthly_amount
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2025-01-01'
+        formula: annual_reference_amount / 12
+"""
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=SVBEZGRV_2025_SECTION_1_BODY,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 12 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+def test_explicit_calendar_literal_in_source_grounds_normally():
+    citation_path = "de/regulation/example/1"
+    source = "Der Jahresbetrag ist das 12-Fache des Monatsbetrags."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: annual_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: monthly_amount * 12
+"""
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=source,
+            require_complete_source_unit=True,
+        )
+        == []
     )
 
 

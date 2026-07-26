@@ -11670,6 +11670,13 @@ class TestCmdEncode:
         ]
         assert validated == generated
         assert mock_run.call_count == 3
+        assert [
+            call.kwargs["validation_retry_feedback"] for call in mock_run.call_args_list
+        ] == [
+            (),
+            ("validator rejected generated section",),
+            ("validator rejected generated section",),
+        ]
         assert mock_validate.call_count == 3
         mock_apply.assert_called_once()
         assert mock_apply.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
@@ -11687,6 +11694,29 @@ class TestCmdEncode:
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
+
+    def test_encode_retry_feedback_includes_actionable_ci_issue(self):
+        import axiom_encode.cli as cli_module
+
+        hint = (
+            "Ungrounded generated numeric literal: 12 does not appear as a "
+            "substantive numeric value in the source text. Complete-source "
+            "stated-conversion hint: encode separate grounded parameters."
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(
+                    compile_issues=[],
+                    ci_issues=[hint],
+                )
+            ),
+            error="Generated RuleSpec failed CI validation",
+        )
+
+        assert cli_module._encode_validation_retry_feedback([failed_attempt]) == (
+            "Generated RuleSpec failed CI validation",
+            hint,
+        )
 
     def test_encode_rejects_incompatible_escalation_model_before_generation(
         self, tmp_path

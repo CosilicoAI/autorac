@@ -19412,6 +19412,36 @@ class _FailedEncodeAttempt(NamedTuple):
     error: str
 
 
+def _encode_validation_retry_feedback(
+    prior_attempts: Sequence[_FailedEncodeAttempt],
+) -> tuple[str, ...]:
+    """Return bounded, deduplicated validator guidance for the next attempt."""
+
+    feedback: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw_item: object) -> None:
+        if len(feedback) >= 12 or not isinstance(raw_item, str):
+            return
+        item = raw_item.strip()[:2000]
+        if not item or item in seen:
+            return
+        seen.add(item)
+        feedback.append(item)
+
+    for failed_attempt in reversed(prior_attempts):
+        add(failed_attempt.error)
+        metrics = getattr(failed_attempt.result, "metrics", None)
+        for attribute in ("compile_issues", "ci_issues"):
+            issues = getattr(metrics, attribute, ())
+            if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
+                for issue in issues:
+                    add(issue)
+        if len(feedback) >= 12:
+            break
+    return tuple(feedback)
+
+
 class _EncodeAttemptExecution(NamedTuple):
     result: Any
     outcome: dict[str, Any]
@@ -19868,6 +19898,7 @@ def _run_encode_attempt(
             if replacement_target is not None
             else None
         ),
+        validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
     )
 
     result = results[0]

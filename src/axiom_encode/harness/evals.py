@@ -1361,6 +1361,7 @@ def run_model_eval(
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1399,6 +1400,7 @@ def run_model_eval(
                         review_findings_paths=review_findings_paths or [],
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
+                        validation_retry_feedback=validation_retry_feedback,
                     )
                 )
 
@@ -7027,6 +7029,7 @@ def _evaluate_artifact_in_scope(
         module_citation_path=numeric_source_citation_path,
         proof_source_texts=numeric_proof_source_texts,
         require_body_bound_proof_evidence=False,
+        require_complete_source_unit=require_complete_source_unit,
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,
@@ -7857,6 +7860,7 @@ def _run_single_eval(
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -7919,6 +7923,7 @@ def _run_single_eval(
         runner_backend=runner.backend,
         policyengine_rule_hint=policyengine_rule_hint,
         require_complete_source_unit=require_complete_source_unit,
+        validation_retry_feedback=validation_retry_feedback,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
     output_file = _contained_eval_output_file(output_root, runner.name, relative_output)
@@ -8770,6 +8775,33 @@ Mandatory independent-review corrections:
 """
 
 
+def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
+    """Render bounded prior-attempt validator output as non-authority guidance."""
+
+    rendered_items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in feedback[:12]:
+        item = str(raw_item).strip()[:2000]
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        rendered_items.append(f"- {json.dumps(item, ensure_ascii=False)}")
+    if not rendered_items:
+        return ""
+    return f"""
+Deterministic validation feedback from prior generation attempts:
+- This is repair guidance from the validator, not legal authority. Keep the
+  authoritative source and release-bound corpus evidence as the sole basis for
+  legal facts and values.
+- Correct every listed issue in this attempt. Do not repeat the rejected
+  pattern.
+
+=== BEGIN PRIOR VALIDATION FEEDBACK ===
+{chr(10).join(rendered_items)}
+=== END PRIOR VALIDATION FEEDBACK ===
+"""
+
+
 def _build_rulespec_eval_prompt(
     citation: str,
     mode: EvalMode,
@@ -8782,6 +8814,7 @@ def _build_rulespec_eval_prompt(
     policyengine_rule_hint: str | None,
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
     source_text = workspace.source_text_file.read_text()
@@ -9304,6 +9337,9 @@ Preferred principal output:
 """
 
     mandatory_review_findings_section = _format_mandatory_review_findings(workspace)
+    validation_retry_feedback_section = _format_validation_retry_feedback(
+        validation_retry_feedback
+    )
     complete_source_unit_section = ""
     if require_complete_source_unit:
         complete_source_unit_section = """
@@ -9355,7 +9391,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -10175,6 +10211,7 @@ def _build_eval_prompt(
     policyengine_rule_hint: str | None = None,
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
+    validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
     return _build_rulespec_eval_prompt(
@@ -10189,6 +10226,7 @@ def _build_eval_prompt(
         policyengine_rule_hint=policyengine_rule_hint,
         include_corpus_context_injection=include_corpus_context_injection,
         require_complete_source_unit=require_complete_source_unit,
+        validation_retry_feedback=validation_retry_feedback,
     )
 
 

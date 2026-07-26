@@ -116,9 +116,19 @@ from .proof_validator import (
 from .source_completeness import (
     analyze_complete_source_unit,
     collect_artifact_numeric_bindings,
+    source_states_stated_conversion_result,
 )
 
 logger = logging.getLogger(__name__)
+
+_STATED_CONVERSION_CALENDAR_CONSTANTS = frozenset({4.0, 12.0, 24.0, 52.0, 365.0})
+_STATED_CONVERSION_UNGROUNDED_HINT = (
+    "Complete-source stated-conversion hint: encode the source-stated base and "
+    "converted result as separate grounded `kind: parameter` rules (for example, "
+    "annual and monthly amounts); do not derive one with an ungrounded calendar "
+    "constant. Assert both parameter outputs and their stated arithmetic relation "
+    "in companion tests."
+)
 
 _SENSITIVE_ENV_NAME_MARKERS = (
     "AUTH",
@@ -7301,6 +7311,7 @@ def find_ungrounded_numeric_issues(
     *,
     authoritative_source_text: str | None = None,
     source_citation_path: str | None = None,
+    require_complete_source_unit: bool = False,
 ) -> list[str]:
     """Return issues for generated numeric literals absent from source text."""
     grounding_values = extract_grounding_values(content)
@@ -7328,11 +7339,45 @@ def find_ungrounded_numeric_issues(
         if grounded:
             continue
         display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        hint = _stated_conversion_ungrounded_literal_hint(
+            content,
+            source,
+            value,
+            require_complete_source_unit=require_complete_source_unit,
+        )
         issues.append(
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
+            f"{hint}"
         )
     return issues
+
+
+def _stated_conversion_ungrounded_literal_hint(
+    content: str,
+    source_text: str,
+    value: float,
+    *,
+    require_complete_source_unit: bool,
+) -> str:
+    """Return targeted retry guidance for a complete-mode calendar conversion."""
+
+    if (
+        not require_complete_source_unit
+        or value not in _STATED_CONVERSION_CALENDAR_CONSTANTS
+        or not source_states_stated_conversion_result(source_text)
+    ):
+        return ""
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    citation_path = _module_numeric_citation_path(payload)
+    if not isinstance(citation_path, str) or not citation_path.strip():
+        return ""
+    return f" {_STATED_CONVERSION_UNGROUNDED_HINT}"
 
 
 def evaluate_numeric_grounding_values_scoped(
@@ -7479,6 +7524,7 @@ def find_ungrounded_numeric_issues_scoped(
     module_citation_path: str | None = None,
     proof_source_texts: Mapping[str, str | None] | None = None,
     require_body_bound_proof_evidence: bool = True,
+    require_complete_source_unit: bool = False,
 ) -> list[str]:
     """Ground each rule's literals against the provisions that rule actually cites.
 
@@ -7505,6 +7551,7 @@ def find_ungrounded_numeric_issues_scoped(
             content,
             source_text=module_source_text,
             source_citation_path=module_citation_path,
+            require_complete_source_unit=require_complete_source_unit,
         )
 
     if not extract_grounding_values(content):
@@ -7551,6 +7598,14 @@ def find_ungrounded_numeric_issues_scoped(
         issue = (
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
+            f"{
+                _stated_conversion_ungrounded_literal_hint(
+                    content,
+                    module_source,
+                    value,
+                    require_complete_source_unit=require_complete_source_unit,
+                )
+            }"
         )
         if issue not in seen:
             seen.add(issue)
@@ -25233,6 +25288,7 @@ class ValidatorPipeline:
                     content,
                     source_text=validation_source_text,
                     source_citation_path=self.source_citation_path,
+                    require_complete_source_unit=self.require_complete_source_unit,
                 )
             )
         else:
@@ -25242,6 +25298,7 @@ class ValidatorPipeline:
                     module_source_text=validation_source_text,
                     module_citation_path=self.source_citation_path,
                     proof_source_texts=numeric_source_texts,
+                    require_complete_source_unit=self.require_complete_source_unit,
                 )
             )
         issues.extend(find_deprecated_source_url_issues(content))
