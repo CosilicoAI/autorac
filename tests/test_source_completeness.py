@@ -2589,6 +2589,67 @@ def test_match_uses_last_arm_as_runtime_fallback():
     ) == "match:1"
 
 
+@pytest.mark.parametrize(
+    ("pattern", "pattern_input"),
+    [
+        ("holds", {"holds": "married"}),
+        ("_", {"_": "married"}),
+    ],
+)
+def test_bare_match_patterns_resolve_as_runtime_names(
+    pattern: str,
+    pattern_input: dict[str, str],
+):
+    rule = {
+        "versions": [
+            {
+                "formula": (
+                    f'match status: {pattern} => married_amount; '
+                    '"fallback" => fallback_amount'
+                ),
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {
+            "input": {
+                "status": True if pattern == "holds" else "_",
+                **pattern_input,
+            }
+        },
+    ) == "match:1"
+
+
+@pytest.mark.parametrize(
+    ("guard_name", "guard_value"),
+    [
+        ("holds", False),
+        ("not_holds", False),
+        ("TRUE", False),
+    ],
+)
+def test_bare_condition_names_are_not_boolean_aliases(
+    guard_name: str,
+    guard_value: bool,
+):
+    rule = {
+        "versions": [
+            {
+                "formula": (
+                    f"if {guard_name}: enabled_amount else: disabled_amount"
+                ),
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {guard_name: guard_value}},
+    ) == "if:1"
+
+
 def test_quoted_control_text_does_not_confuse_formula_execution():
     rule = {
         "versions": [
@@ -3522,6 +3583,114 @@ rules:
 
     assert source_states_explicit_computation(source)
     assert _has_issue(result, "formula-output", "parameter-only")
+
+
+@pytest.mark.parametrize(
+    ("source", "parameter_name", "parameter_value", "correct_formula", "wrong_formula"),
+    [
+        (
+            "(1) Das Einkommen ist zu verdreifachen.",
+            "factor",
+            3,
+            "income * factor",
+            "income * 2",
+        ),
+        (
+            "(1) Das Einkommen ist mit drei zu multiplizieren.",
+            "factor",
+            3,
+            "income * factor",
+            "income * 2",
+        ),
+        (
+            "(1) Das Einkommen ist mal drei zu nehmen.",
+            "factor",
+            3,
+            "income * factor",
+            "income * 2",
+        ),
+        (
+            "(1) Der Betrag ist durch zwei zu teilen.",
+            "divisor",
+            2,
+            "income / divisor",
+            "income / 3",
+        ),
+        (
+            "(1) Der Betrag ist um 2 zu erhöhen.",
+            "increment",
+            2,
+            "income + increment",
+            "income * increment",
+        ),
+    ],
+)
+def test_german_worded_computation_binds_operation_and_factor(
+    source: str,
+    parameter_name: str,
+    parameter_value: int,
+    correct_formula: str,
+    wrong_formula: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: {parameter_name}
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: {parameter_value}
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+"""
+
+    correct = _analyze(
+        content.replace("FORMULA", correct_formula),
+        source,
+        test_cases=[
+            {
+                "name": "correct computation",
+                "input": {"income": 12},
+                "output": {
+                    "amount": (
+                        6
+                        if parameter_name == "divisor"
+                        else 14
+                        if parameter_name == "increment"
+                        else 36
+                    )
+                },
+            }
+        ],
+    )
+    wrong = _analyze(
+        content.replace("FORMULA", wrong_formula),
+        source,
+        test_cases=[
+            {
+                "name": "wrong computation",
+                "input": {"income": 12},
+                "output": {
+                    "amount": (
+                        4
+                        if parameter_name == "divisor"
+                        else 24
+                    )
+                },
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
 
 
 def test_nonbranching_formula_must_execute_the_source_computation():
@@ -4627,6 +4796,97 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+def test_range_formula_branches_accept_asserted_derived_selector_values():
+    source = """\
+(1) Für Einkommen bis 100 Euro beträgt der Betrag Einkommen * 2.
+(2) Für Einkommen über 100 Euro beträgt der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: first_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: first_multiplier
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: second_multiplier
+    kind: parameter
+    source: de/statute/estg/32a(2)
+    versions: [{formula: 3}]
+  - name: taxable_income
+    kind: derived
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions: [{formula: 'gross_income - deduction'}]
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - formula: >-
+          if taxable_income <= first_limit:
+            taxable_income * first_multiplier
+          else:
+            taxable_income * second_multiplier
+"""
+    cases = [
+        {
+            "name": "derived lower selector",
+            "input": {"gross_income": 120, "deduction": 20},
+            "output": {"taxable_income": 100, "amount": 200},
+        },
+        {
+            "name": "derived upper selector",
+            "input": {"gross_income": 121, "deduction": 20},
+            "output": {"taxable_income": 101, "amount": 303},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_companion_input_cannot_shadow_local_derived_selector():
+    source = "(1) Der Anspruch gilt bis 100 Euro Einkommen."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: taxable_income
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'gross_income - deduction'}]
+  - name: eligible
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'taxable_income <= income_limit'}]
+"""
+    case = {
+        "name": "shadowed derived selector",
+        "input": {
+            "gross_income": 999,
+            "deduction": 0,
+            "taxable_income": 100,
+        },
+        "output": {"taxable_income": 100, "eligible": True},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "shadowed derived selector", "shadowed")
 
 
 def test_exception_accepts_asserted_reached_derived_selector_toggle():

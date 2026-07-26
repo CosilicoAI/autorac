@@ -1476,6 +1476,28 @@ def _companion_test_issues(
             "exceptions, and rounding rules."
         ]
 
+    colliding_cases = [
+        case
+        for case in cases
+        if _case_input_principal_output_collisions(case, set(principal_rules))
+    ]
+    for case in colliding_cases:
+        collisions = ", ".join(
+            sorted(
+                _case_input_principal_output_collisions(
+                    case,
+                    set(principal_rules),
+                )
+            )
+        )
+        issues.append(
+            "[complete-source-unit:tests] Companion case "
+            f"`{case.get('name') or '<unnamed>'}` supplies local principal "
+            f"output(s) {collisions} as inputs; derived outputs must be "
+            "computed and asserted, not shadowed."
+        )
+    cases = [case for case in cases if case not in colliding_cases]
+
     asserted_by_rule = {
         name: [
             case
@@ -1662,6 +1684,22 @@ def _test_case_output_names(case: dict[str, Any]) -> set[str]:
         text = str(key)
         names.add(text.rsplit("#", 1)[-1])
     return names
+
+
+def _case_input_principal_output_collisions(
+    case: dict[str, Any],
+    principal_rule_names: set[str],
+) -> set[str]:
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return set()
+    return set().union(
+        *(
+            _input_key_names(key) & principal_rule_names
+            for key in inputs
+        ),
+        set(),
+    )
 
 
 def _source_formula_branches(
@@ -1935,6 +1973,7 @@ def _formula_branch_test_witnesses(
                     for value in _case_numeric_selector_values(
                         case,
                         selector_names,
+                        dependency_environment=dependency_environment,
                     )
                 )
             ):
@@ -1984,6 +2023,13 @@ def _formula_execution_matches_source_branch(
             math.isclose(source_multiplier, 2.0)
             and _formula_is_duplicate_addition(operative_leaf)
         )
+    ):
+        return False
+    source_divisor = _source_named_divisor(branch.text)
+    if source_divisor is not None and not _formula_has_numeric_divisor(
+        operative_leaf,
+        binding_environment,
+        source_divisor,
     ):
         return False
     if _source_describes_half(branch.text):
@@ -2065,14 +2111,18 @@ def _formula_operation_kinds(text: str) -> set[str]:
         "add": (
             r"(?:\+|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
             r"\b(?:summieren|addieren)\b|"
-            r"\berhöh\w*\s+(?:sich\s+)?um\b)"
+            r"\berhöh\w*\s+(?:sich\s+)?um\b|"
+            r"\bum\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
+            r"(?:erhöhen|vermehren)\b)"
         ),
         "subtract": (
             r"(?:\s[−–-]\s|\bunterschied\b|\bdifferenz\b|"
             r"\bdifference\s+between\b|\babzüglich\b|"
             r"\b(?:vermindern|kürzen)\b|"
             r"\b(?:vermindert|gekürzt|mindert|kürzt)\w*\s+"
-            r"(?:sich\s+)?um\b)"
+            r"(?:sich\s+)?um\b|"
+            r"\bum\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
+            r"(?:vermindern|kürzen)\b)"
         ),
         "multiply": (
             r"(?:[*×·•∗∙]|\bprodukt\b|\bproduct\s+of\b|"
@@ -2165,16 +2215,24 @@ def _source_named_multiplier(text: str) -> float | None:
             r"\b(?:doppelte|zweifache|verdoppelt|verdoppeln|"
             r"twice|double[ds]?)\b",
         ),
-        (3.0, r"\b(?:dreifache|verdreifacht|threefold|triple[ds]?)\b"),
-        (4.0, r"\b(?:vierfache|vervierfacht|fourfold|quadruple[ds]?)\b"),
-        (5.0, r"\b(?:fünffache|fivefold)\b"),
-        (6.0, r"\b(?:sechsfache|sixfold)\b"),
-        (7.0, r"\b(?:siebenfache|sevenfold)\b"),
-        (8.0, r"\b(?:achtfache|eightfold)\b"),
-        (9.0, r"\b(?:neunfache|ninefold)\b"),
-        (10.0, r"\b(?:zehnfache|tenfold)\b"),
+        (
+            3.0,
+            r"\b(?:dreifache|verdreifacht|verdreifachen|"
+            r"threefold|triple[ds]?)\b",
+        ),
+        (
+            4.0,
+            r"\b(?:vierfache|vervierfacht|vervierfachen|"
+            r"fourfold|quadruple[ds]?)\b",
+        ),
+        (5.0, r"\b(?:fünffache|verfünffachen|fivefold)\b"),
+        (6.0, r"\b(?:sechsfache|versechsfachen|sixfold)\b"),
+        (7.0, r"\b(?:siebenfache|versiebenfachen|sevenfold)\b"),
+        (8.0, r"\b(?:achtfache|verachtfachen|eightfold)\b"),
+        (9.0, r"\b(?:neunfache|verneunfachen|ninefold)\b"),
+        (10.0, r"\b(?:zehnfache|verzehnfachen|tenfold)\b"),
     )
-    return next(
+    named_multiplier = next(
         (
             multiplier
             for multiplier, pattern in patterns
@@ -2182,6 +2240,64 @@ def _source_named_multiplier(text: str) -> float | None:
         ),
         None,
     )
+    if named_multiplier is not None:
+        return named_multiplier
+    contextual_word = _source_contextual_number_word(
+        text,
+        patterns=(
+            r"\bmal\s+(?P<number>[a-zäöüß]+)\b",
+            r"\bmit\s+(?:(?:dem|einem)\s+faktor\s+)?"
+            r"(?:von\s+)?(?P<number>[a-zäöüß]+)\s+zu\s+"
+            r"(?:multiplizieren|vervielfachen)\b",
+            r"\bdurch\s+multiplikation\s+mit\s+"
+            r"(?:(?:(?:dem|einem)\s+)?faktor\s+)?(?:von\s+)?"
+            r"(?P<number>[a-zäöüß]+)\b",
+            r"\bunter\s+anwendung\s+(?:des|eines)\s+faktors?\s+"
+            r"(?P<number>[a-zäöüß]+)\b",
+        ),
+    )
+    return contextual_word
+
+
+def _source_named_divisor(text: str) -> float | None:
+    return _source_contextual_number_word(
+        text,
+        patterns=(
+            r"\bdurch\s+(?P<number>[a-zäöüß]+)\s+zu\s+teilen\b",
+            r"\bgeteilt\s+durch\s+(?P<number>[a-zäöüß]+)\b",
+            r"\bdurch\s+(?P<number>[a-zäöüß]+)\s+geteilt\b",
+        ),
+    )
+
+
+def _source_contextual_number_word(
+    text: str,
+    *,
+    patterns: Sequence[str],
+) -> float | None:
+    values = {
+        "ein": 1.0,
+        "eins": 1.0,
+        "eine": 1.0,
+        "einen": 1.0,
+        "einem": 1.0,
+        "einer": 1.0,
+        "eines": 1.0,
+        "zwei": 2.0,
+        "drei": 3.0,
+        "vier": 4.0,
+        "fünf": 5.0,
+        "sechs": 6.0,
+        "sieben": 7.0,
+        "acht": 8.0,
+        "neun": 9.0,
+        "zehn": 10.0,
+    }
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match is not None:
+            return values.get(match.group("number").lower())
+    return None
 
 
 def _source_describes_half(text: str) -> bool:
@@ -2575,8 +2691,15 @@ def _case_dependency_environment(
     inputs = _case_input_formula_environment(case)
     if inputs is None:
         return {}
+    candidates = {
+        name: rule
+        for name, rule in principal_rules.items()
+        if allowed_names is None or name in allowed_names
+    }
     environment = dict(constants)
     for name, value in inputs.items():
+        if name in candidates:
+            continue
         if name in environment and not _formula_runtime_values_equal(
             environment[name],
             value,
@@ -2584,11 +2707,6 @@ def _case_dependency_environment(
             return {}
         environment[name] = value
 
-    candidates = {
-        name: rule
-        for name, rule in principal_rules.items()
-        if allowed_names is None or name in allowed_names
-    }
     resolved: dict[str, Any] = {}
     for _ in range(len(candidates) + 1):
         changed = False
@@ -2636,12 +2754,12 @@ def _formula_runtime_values_equal(left: Any, right: Any) -> bool:
         and isinstance(right, (int, float))
         and not isinstance(right, bool)
     ):
-        with contextlib.suppress(InvalidOperation):
-            return (
-                abs(Decimal(str(left)) - Decimal(str(right)))
-                <= Decimal("1e-18")
-            )
-        return False
+        return math.isclose(
+            float(left),
+            float(right),
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
     return type(left) is type(right) and left == right
 
 
@@ -3217,13 +3335,7 @@ def _formula_execution_leaf_is_computational(
             and literal == 0
         ):
             return False
-    return not bool(
-        re.fullmatch(
-            r"(?:true|false|holds|not_holds|null|none)",
-            leaf,
-            flags=re.IGNORECASE,
-        )
-    )
+    return leaf not in {"true", "false", "True", "False", "null", "none"}
 
 
 def _formula_execution_references_names(
@@ -3293,12 +3405,9 @@ def _match_arm_value(
     *,
     environment: dict[str, Any],
 ) -> Any:
-    if value == "_":
-        return value
-    lowered = value.lower()
-    if lowered in {"true", "holds"}:
+    if value == "true":
         return True
-    if lowered in {"false", "not_holds"}:
+    if value == "false":
         return False
     with contextlib.suppress(SyntaxError, ValueError):
         return ast.literal_eval(value)
@@ -3336,10 +3445,9 @@ def _evaluate_condition_expression(
     if isinstance(expression, ast.Constant):
         return expression.value
     if isinstance(expression, ast.Name):
-        lowered = expression.id.lower()
-        if lowered in {"true", "holds"}:
+        if expression.id == "true":
             return True
-        if lowered in {"false", "not_holds"}:
+        if expression.id == "false":
             return False
         return environment.get(expression.id, _UNRESOLVED_CONDITION_VALUE)
     if isinstance(expression, ast.BoolOp):
@@ -4088,12 +4196,15 @@ def _rule_numeric_selector_names(rule: dict[str, Any]) -> set[str]:
 def _case_numeric_selector_values(
     case: dict[str, Any],
     selector_names: set[str],
+    *,
+    dependency_environment: dict[str, Any] | None = None,
 ) -> tuple[float, ...]:
     return tuple(
         value
         for _key, _names, value in _case_numeric_selector_evidence(
             case,
             selector_names,
+            dependency_environment=dependency_environment,
         )
     )
 
