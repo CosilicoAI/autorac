@@ -2,9 +2,13 @@ Claude, Codex, and OpenAI eval runners now receive the same prompt bytes with
 the complete source and every declared context file inlined. Context is never
 silently truncated or skipped: prompts outside the shared receiver envelope
 fail as `context_overflow`. Claude keeps tools disabled, while Codex runs
-read-only in a fresh empty scratch workspace and treats undeclared reads as
-terminal integrity failures. Local CLI prompts are streamed as exact UTF-8
-bytes over standard input, avoiding operating-system command-line size limits.
+read-only in a fresh empty scratch workspace. This is detection-based
+isolation, not an operating-system sandbox: reported tool activity is a
+terminal integrity failure that voids the row, but host-visible reads are not
+prevented. Prompt-generated paths are opaque and location-independent, and
+disabling corpus context injection now excludes amendment files as well as
+their banner. Local CLI prompts are streamed as exact UTF-8 bytes over standard
+input, avoiding operating-system command-line size limits.
 
 OpenAI Responses must report a completed response and completed output, use the
 model's 128,000-token output ceiling, and reject incomplete or max-token output

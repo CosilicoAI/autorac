@@ -1613,7 +1613,9 @@ def test_workspace_without_manifest_metadata_stays_minimal(tmp_path):
     assert prompt == prompt_without_injection_feature
 
 
-def test_injected_context_preserves_full_metadata_and_amendments(tmp_path):
+def test_build_eval_prompt_excludes_amendments_when_corpus_injection_disabled(
+    tmp_path,
+):
     amendments = tuple(
         CorpusAmendmentDocument(
             citation_path=f"dk/statute/amendment-{year}",
@@ -1635,6 +1637,18 @@ def test_injected_context_preserves_full_metadata_and_amendments(tmp_path):
         amendment_documents=amendments,
         extra_context_paths=[],
     )
+    ordinary_source = tmp_path / "ordinary-context.yaml"
+    ordinary_source.write_text("ordinary-context-sentinel\n")
+    ordinary_workspace_path = Path("context") / "ordinary-context.yaml"
+    (workspace.root / ordinary_workspace_path).write_text(ordinary_source.read_text())
+    workspace.context_files.append(
+        EvalContextFile(
+            source_path=str(ordinary_source),
+            workspace_path=ordinary_workspace_path.as_posix(),
+            import_path="dk:statute/ordinary-context",
+            kind="extra",
+        )
+    )
 
     amendment_texts = [
         (workspace.root / item.workspace_path).read_text().rstrip("\n")
@@ -1650,6 +1664,84 @@ def test_injected_context_preserves_full_metadata_and_amendments(tmp_path):
     assert "O" * 11_500 in amendment_texts[1]
     assert "truncated" not in (workspace.provision_metadata_text or "")
     assert all("truncated" not in text for text in amendment_texts)
+
+    prompt_with_injection = _build_eval_prompt(
+        "dk/statute/benefit/section-1",
+        "cold",
+        workspace,
+        workspace.context_files,
+        target_file_name="target.yaml",
+        include_tests=True,
+        runner_backend="openai",
+    )
+    prompt_without_injection = _build_eval_prompt(
+        "dk/statute/benefit/section-1",
+        "cold",
+        workspace,
+        workspace.context_files,
+        target_file_name="target.yaml",
+        include_tests=True,
+        runner_backend="openai",
+        include_corpus_context_injection=False,
+    )
+
+    assert "N" * 11_500 in prompt_with_injection
+    assert "O" * 11_500 in prompt_with_injection
+    assert "p" * 5_500 in prompt_with_injection
+    assert "ordinary-context-sentinel" in prompt_with_injection
+    assert "N" * 11_500 not in prompt_without_injection
+    assert "O" * 11_500 not in prompt_without_injection
+    assert "p" * 5_500 not in prompt_without_injection
+    assert "corpus-amendments" not in prompt_without_injection
+    assert "ordinary-context-sentinel" in prompt_without_injection
+
+
+def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_path):
+    prompts: list[str] = []
+    roots: list[Path] = []
+    for machine_name in ("machine-a", "machine-b"):
+        machine_root = tmp_path / machine_name
+        machine_root.mkdir()
+        source_file = machine_root / "source.txt"
+        source_file.write_text("The source amount is 12.")
+        rulespec_root = machine_root / "rulespec-us" / "us"
+        roots.append(rulespec_root)
+        workspace = EvalWorkspace(
+            root=machine_root,
+            source_text_file=source_file,
+            manifest_file=machine_root / "context-manifest.json",
+            source_metadata={
+                "source_attestation": {
+                    "requested_corpus_citation_path": "us/statute/example/section-1",
+                    "rulespec_root": str(rulespec_root),
+                    "row": {
+                        "citation_path": "us/statute/example/section-1",
+                        "source_path": str(machine_root / "corpus" / "source.json"),
+                    },
+                }
+            },
+        )
+        prompts.append(
+            _build_eval_prompt(
+                "us/statute/example/section-1",
+                "cold",
+                workspace,
+                [],
+                target_file_name="target.yaml",
+                include_tests=True,
+                runner_backend="codex",
+            )
+        )
+
+        assert workspace.source_metadata is not None
+        assert workspace.source_metadata["source_attestation"]["rulespec_root"] == str(
+            rulespec_root
+        )
+
+    assert prompts[0] == prompts[1]
+    assert "<opaque-host-path>" in prompts[0]
+    assert all(str(root) not in prompts[0] for root in roots)
+    assert str(tmp_path) not in prompts[0]
 
 
 def test_provision_metadata_rendering_preserves_full_content(tmp_path):

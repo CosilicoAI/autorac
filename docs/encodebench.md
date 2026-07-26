@@ -94,13 +94,21 @@ refuses the fold unless `--allow-mixed-toolchains` records the mismatch in
 the board output. `--allow-partial` folds incomplete runs, rendering
 missing cells as not run; ranking orders by gate-pass rate first, so a
 partial run's raw pass count never outranks a complete run's rate. The
-board also cross-checks every payload internally: only the v5 results
-schema is accepted, execution-identity and result digests are recomputed,
+board also cross-checks every payload internally: only
+`axiom-encode/eval-suite-results/v8` is accepted, execution-identity and
+result digests are recomputed,
 result rows must belong to runners the same payload declared (name,
 backend, and model), case identities in each row must match the manifest,
 the `coverage.complete` claim is verified against the actual result matrix
 in both directions, and malformed metric types are refused rather than
 reinterpreted.
+
+Codex prompt-only isolation is detection-based, not preventive. The receiver
+runs read-only in a fresh scratch workspace, but that mode is not an operating
+system sandbox and can still read other host-visible locations. Any reported
+filesystem or tool activity is a terminal integrity failure that voids the
+row; this detects a contract breach after the receiver reports it and does not
+guarantee that an attempted read was prevented.
 
 ## Adding a model
 
