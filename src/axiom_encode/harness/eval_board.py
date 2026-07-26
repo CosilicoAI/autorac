@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from statistics import mean, median
@@ -678,21 +677,32 @@ def _valid_policyengine_runtime_path_topology(
     stdlib_root = value.get("stdlib_root")
     site_packages_root = value.get("site_packages_root")
     python_executable = value.get("python_executable")
+    python_version = value.get("python_version")
     pin_path = value.get("rulespec_runtime_pin_path")
+    python_components = (
+        python_version.split(".") if isinstance(python_version, str) else []
+    )
+    expected_stdlib_path = (
+        f"lib/python{python_components[0]}.{python_components[1]}"
+        if len(python_components) == 3
+        else None
+    )
+    pin = PurePosixPath(pin_path) if isinstance(pin_path, str) else None
     if (
         not isinstance(repository_root, str)
         or PurePosixPath(repository_root).name != f"policyengine-{country}"
         or _posix_identity_relative(venv_root, repository_root) != ".venv"
-        or not isinstance(stdlib_root, str)
-        or re.fullmatch(
-            r"lib/python\d+\.\d+",
-            _posix_identity_relative(stdlib_root, venv_root) or "",
-        )
-        is None
+        or _posix_identity_relative(stdlib_root, venv_root) != expected_stdlib_path
         or _posix_identity_relative(site_packages_root, stdlib_root) != "site-packages"
         or _posix_identity_relative(python_executable, venv_root) != "bin/python"
-        or not isinstance(pin_path, str)
-        or not PurePosixPath(pin_path).is_absolute()
+        or pin is None
+        or not pin.is_absolute()
+        or pin.parts[-3:]
+        != (
+            f"rulespec-{country}",
+            ".axiom",
+            "policyengine-runtime.toml",
+        )
     ):
         return False
 
@@ -838,6 +848,10 @@ def _valid_policyengine_runtime_identity(value: object) -> bool:
         or value.get("rulespec_runtime_pin_schema") != POLICYENGINE_RUNTIME_PIN_SCHEMA
         or any(not _is_sha256_hex(value.get(field)) for field in digest_fields)
         or any(not _is_positive_int(value.get(field)) for field in count_fields)
+        or value.get("official_tree_file_count")
+        != value.get("checkout_execution_file_count")
+        or value.get("official_tree_byte_count")
+        != value.get("checkout_execution_byte_count")
         or any(not _is_nonempty_string(value.get(field)) for field in location_fields)
         or not isinstance(locked_versions, dict)
         or set(locked_versions) != {"policyengine-core", country_package}
