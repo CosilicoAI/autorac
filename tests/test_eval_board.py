@@ -159,6 +159,7 @@ def _execution_identity(
     suite_max_attempts=3,
 ):
     """A payload execution identity mirroring the current producer shape."""
+    rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
         "case_timeout_seconds": case_timeout_seconds,
@@ -208,14 +209,14 @@ def _execution_identity(
         "policyengine_runtime": policyengine_runtime,
         "rulespec_roots": [
             {
-                "path": f"{checkout}-rulespec/uk",
+                "path": f"{rulespec_checkout}/uk",
                 "content_state": "directory",
                 "content_sha256": "ab" * 32,
                 "file_count": 400,
-                "toolchain_root": f"{checkout}-rulespec",
+                "toolchain_root": rulespec_checkout,
                 "checkout_identity": {
                     "kind": "git",
-                    "path": f"{checkout}-rulespec",
+                    "path": rulespec_checkout,
                     "commit": "3" * 40,
                     "origin_repository": "github.com/TheAxiomFoundation/rulespec-uk",
                     "dirty": False,
@@ -578,6 +579,8 @@ def test_fold_admits_producer_policyengine_runtime_identity(tmp_path):
         "byte_count",
         "pin_filename",
         "pin_checkout",
+        "pin_unbound",
+        "pin_parent_traversal",
         "python_version",
     ],
 )
@@ -598,6 +601,14 @@ def test_fold_refuses_policyengine_identity_the_producer_cannot_emit(
     elif mutation == "pin_checkout":
         runtime_identity["rulespec_runtime_pin_path"] = (
             "/ci/not-rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    elif mutation == "pin_unbound":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/other/rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    elif mutation == "pin_parent_traversal":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/other/../rulespec-uk/.axiom/policyengine-runtime.toml"
         )
     else:
         runtime_identity["python_version"] = "3.12.5"
@@ -1513,6 +1524,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/home/ci/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
                     root="/home/ci/policyengine-uk"
                 ),
@@ -1526,6 +1538,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("sol", "codex", "gpt-5.6-sol")],
             [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/Users/max/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
                     root="/Users/max/policyengine-uk"
                 ),
@@ -1543,6 +1556,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("luna", "codex", "gpt-5.6-luna")],
             [_result("luna", case, model="gpt-5.6-luna") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/home/ci/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
                     root="/home/ci/policyengine-uk", pe_version="1.10.0"
                 ),
