@@ -49015,6 +49015,74 @@ def _validated_eval_suite_archive_runner_efforts(
     return validated
 
 
+def _validate_eval_suite_archive_effort_identity(
+    manifest: object,
+    runner_efforts: list[dict],
+) -> None:
+    """Bind archived effort choices to the manifest's exact receiver roster."""
+
+    if not isinstance(manifest, dict):
+        raise ValueError("Eval-suite archive metadata has malformed manifest")
+    runner_identities = manifest.get("effective_runner_identities")
+    if not isinstance(runner_identities, list) or not runner_identities:
+        raise ValueError(
+            "Eval-suite archive metadata is missing effective runner identities"
+        )
+    expected_fields = {"name", "backend", "model"}
+    validated_runners: list[dict] = []
+    names: set[str] = set()
+    for index, runner in enumerate(runner_identities, start=1):
+        if not isinstance(runner, dict) or set(runner) != expected_fields:
+            raise ValueError(
+                "Eval-suite archive metadata has malformed effective runner "
+                f"identity {index}"
+            )
+        name = runner.get("name")
+        backend = runner.get("backend")
+        model = runner.get("model")
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in names
+            or backend not in {"claude", "codex", "openai"}
+            or not isinstance(model, str)
+            or not model
+        ):
+            raise ValueError(
+                "Eval-suite archive metadata has malformed effective runner "
+                f"identity {index}"
+            )
+        names.add(name)
+        validated_runners.append(runner)
+    if [effort["name"] for effort in runner_efforts] != [
+        runner["name"] for runner in validated_runners
+    ]:
+        raise ValueError(
+            "Eval-suite archive metadata runner effort identity differs from "
+            "its effective runner identities"
+        )
+    for runner, effort in zip(validated_runners, runner_efforts, strict=True):
+        runner_spec = f"{runner['name']}={runner['backend']}:{runner['model']}"
+        if effort["requested_effort"] is not None:
+            runner_spec += f"@{effort['requested_effort']}"
+        try:
+            parsed_runner = parse_runner_spec(runner_spec)
+        except ValueError as exc:
+            raise ValueError(
+                "Eval-suite archive metadata has unsupported requested effort "
+                f"for runner {runner['name']}"
+            ) from exc
+        if (
+            parsed_runner.name != runner["name"]
+            or parsed_runner.backend != runner["backend"]
+            or parsed_runner.model != runner["model"]
+            or parsed_runner.effort != effort["requested_effort"]
+        ):
+            raise ValueError(
+                "Eval-suite archive metadata runner effort identity is inconsistent"
+            )
+
+
 def _validate_eval_suite_archive_metadata(metadata: object) -> None:
     """Require one exact versioned archive-registry metadata row."""
 
@@ -49057,7 +49125,13 @@ def _validate_eval_suite_archive_metadata(metadata: object) -> None:
         metadata,
         require_digests=True,
     )
-    _validated_eval_suite_archive_runner_efforts(metadata.get("runner_efforts"))
+    runner_efforts = _validated_eval_suite_archive_runner_efforts(
+        metadata.get("runner_efforts")
+    )
+    _validate_eval_suite_archive_effort_identity(
+        metadata.get("manifest"),
+        runner_efforts,
+    )
 
 
 def _validate_eval_suite_archive_legacy_metadata(metadata: dict) -> None:

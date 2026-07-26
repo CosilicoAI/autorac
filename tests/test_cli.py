@@ -4498,6 +4498,21 @@ def _archive_registry_modern_metadata(*, archive_name: str = "modern") -> dict:
         **_archive_registry_legacy_metadata(),
         "schema": "axiom-encode/eval-suite-archive-metadata/v1",
         "archive_dir": f"/tmp/eval-archives/{archive_name}",
+        "manifest": {
+            "name": "Archive registry test",
+            "effective_runner_identities": [
+                {
+                    "name": "codex-gpt-5.4",
+                    "backend": "codex",
+                    "model": "gpt-5.4",
+                },
+                {
+                    "name": "claude-claude-opus-4-1",
+                    "backend": "claude",
+                    "model": "claude-opus-4-1",
+                },
+            ],
+        },
         "results_schema": "axiom-encode/eval-suite-results/v8",
         "summary_schema": "axiom-encode/eval-suite-summary/v8",
         "execution_identity_schema": ("axiom-encode/eval-execution-identity/v5"),
@@ -4563,7 +4578,21 @@ class TestCmdEvalSuiteArchive:
         (archive_dir / "suite-run.json").write_text(
             json.dumps(
                 {
-                    "manifest": {"name": "Versioned archive"},
+                    "manifest": {
+                        "name": "Versioned archive",
+                        "effective_runner_identities": [
+                            {
+                                "name": "claude-claude-opus-4-1",
+                                "backend": "claude",
+                                "model": "claude-opus-4-1",
+                            },
+                            {
+                                "name": "codex-gpt-5.4",
+                                "backend": "codex",
+                                "model": "gpt-5.4",
+                            },
+                        ],
+                    },
                     "status": "completed",
                     "run_id": "12345678-1234-4234-8234-123456789abc",
                     "started_at": "2026-04-10T12:00:00+00:00",
@@ -4799,6 +4828,18 @@ class TestCmdEvalSuiteArchive:
                     uses_receiver_default=True
                 ),
                 "receiver-default marker",
+            ),
+            (
+                lambda metadata: metadata["runner_efforts"][0].update(
+                    name="unrelated-runner"
+                ),
+                "runner effort identity",
+            ),
+            (
+                lambda metadata: metadata["runner_efforts"][0].update(
+                    requested_effort="banana"
+                ),
+                "requested effort",
             ),
             (
                 lambda metadata: metadata.update(unexpected=True),
