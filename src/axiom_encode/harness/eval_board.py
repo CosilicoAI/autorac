@@ -689,9 +689,15 @@ def _validate_result_types(result: dict, *, context: str) -> None:
             f"{context} metrics must be null or an object, got {raw_metrics!r}"
         )
     metrics = _result_metrics(result)
-    if failure_kind == "timeout" and (timeout_attempts == 0 or metrics is not None):
+    if failure_kind == "timeout" and (
+        timeout_attempts == 0
+        or metrics is not None
+        or bool(result.get("output_file"))
+        or result.get("generated_output_sha256") is not None
+    ):
         raise EvalBoardError(
-            f"{context} timeout row must have attempts and no artifact metrics"
+            f"{context} timeout row must have attempts and no generated artifact "
+            "or artifact metrics"
         )
     if failure_kind == "validation" and metrics is None:
         raise EvalBoardError(f"{context} validation failure has no artifact metrics")

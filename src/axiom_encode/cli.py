@@ -47885,11 +47885,6 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
         result.success = validation_error is None
         result.error = validation_error
         result.failure_kind = None if result.success else "validation"
-        result.timed_out = False
-        result.timeout_stage = None
-        result.timeout_reason = None
-        result.timeout_seconds = None
-        result.timeout_attempts = 0
         if not isinstance(result.admission, dict):  # verified admission invariant
             raise ValueError(
                 f"Result for case '{case.name}' is missing its signed admission"

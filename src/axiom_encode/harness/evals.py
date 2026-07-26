@@ -12847,6 +12847,13 @@ def _run_openai_prompt_eval(
     except requests.RequestException as exc:
         duration_ms = int((time.time() - start) * 1000)
         timed_out = isinstance(exc, requests.Timeout)
+        timeout_attempts = getattr(exc, "timeout_attempts", None)
+        if (
+            isinstance(timeout_attempts, bool)
+            or not isinstance(timeout_attempts, int)
+            or timeout_attempts < 0
+        ):
+            timeout_attempts = 1 if timed_out else 0
         timeout_reason = None
         timeout_seconds = None
         if isinstance(exc, requests.ConnectTimeout):
@@ -12869,13 +12876,14 @@ def _run_openai_prompt_eval(
                 "timeout_stage": "encoder" if timed_out else None,
                 "timeout_reason": timeout_reason,
                 "timeout_seconds": timeout_seconds,
+                "timeout_attempts": timeout_attempts,
             },
             error=str(exc),
             timed_out=timed_out,
             timeout_stage="encoder" if timed_out else None,
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
-            timeout_attempts=1 if timed_out else 0,
+            timeout_attempts=timeout_attempts,
         )
     duration_ms = int((time.time() - start) * 1000)
 
@@ -12936,6 +12944,7 @@ def _post_openai_eval_request(
     """POST a Responses API eval request with transient retry handling."""
     last_response: requests.Response | None = None
     last_error: requests.RequestException | None = None
+    timeout_attempts = 0
     for attempt in range(1, attempts + 1):
         try:
             response = requests.post(
@@ -12949,7 +12958,11 @@ def _post_openai_eval_request(
             )
         except requests.RequestException as exc:
             last_error = exc
+            if isinstance(exc, requests.Timeout):
+                timeout_attempts += 1
             if attempt == attempts:
+                if timeout_attempts:
+                    exc.timeout_attempts = timeout_attempts
                 raise
             time.sleep(
                 _OPENAI_REQUEST_BACKOFF_SECONDS[
