@@ -1698,6 +1698,7 @@ _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN = re.compile(
     r"\bpercent\b|"
     r"\bper[ \t-]+cent(?:um)?\b|"
     r"\bProzent\b|"
+    r"\b(?:Beitragssatz|Prozent)punkt(?:e|en|es|s)?\b|"
     r"\bvom[ \t]+Hundert\b"
     r")",
     re.IGNORECASE,
@@ -1707,6 +1708,7 @@ _TABLE_RATE_HEADER_PATTERN = re.compile(
     r"\bpercent(?:age)?\b|"
     r"\bper[ \t-]+cent(?:um)?\b|"
     r"\bProzent\b|"
+    r"\b(?:Beitragssatz|Prozent)punkt(?:e|en|es|s)?\b|"
     r"\bvom[ \t]+Hundert\b"
     r")",
     re.IGNORECASE,
@@ -1874,6 +1876,8 @@ class NumericOccurrence:
     has_temporal_context: bool = False
     source_value: float | None = None
     requires_rate_context: bool = False
+    is_word_number: bool = False
+    alternative_values: tuple[float, ...] = ()
 
     @property
     def span(self) -> tuple[int, int]:
@@ -5800,6 +5804,8 @@ class _LegacyNumericCollector:
         source_value: float | None = None,
         force_rate_context: bool = False,
         requires_rate_context: bool = False,
+        is_word_number: bool = False,
+        alternative_values: tuple[float, ...] = (),
     ) -> NumericOccurrence:
         source_span = view.source_span(span)
         start, end = source_span
@@ -5849,6 +5855,8 @@ class _LegacyNumericCollector:
             has_temporal_context=has_temporal_context,
             source_value=value if source_value is None else source_value,
             requires_rate_context=requires_rate_context,
+            is_word_number=is_word_number,
+            alternative_values=alternative_values,
         )
 
     def add_grounding(
@@ -5884,7 +5892,7 @@ _LOCALE_UNARY_PREFIXES = frozenset(
     "\u2264"  # less than or equal
     "\u2265"  # greater than or equal
 )
-_GERMAN_LEXICAL_SCALE_VALUES = {
+_GERMAN_FRACTION_DENOMINATOR_VALUES = {
     "Einhundertzwanzigstel": 120.0,
     "Dreihundertsechzigstel": 360.0,
     "Vierhundertfünfzigstel": 450.0,
@@ -5911,17 +5919,158 @@ _GERMAN_LEXICAL_SCALE_VALUES = {
     "Drittel": 3.0,
     "Zehntel": 10.0,
     "Achtel": 8.0,
+    "Hälfte": 2.0,
 }
-_GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD = {
-    word.casefold(): value for word, value in _GERMAN_LEXICAL_SCALE_VALUES.items()
+_GERMAN_FRACTION_DENOMINATOR_VALUES_CASEFOLD = {
+    word.casefold(): value
+    for word, value in _GERMAN_FRACTION_DENOMINATOR_VALUES.items()
 }
-_GERMAN_LEXICAL_SCALE_PATTERN = re.compile(
-    r"(?<!\w)(?P<denominator>"
+_GERMAN_FRACTION_WORD_PATTERN = re.compile(
+    r"(?<!\w)(?P<fraction>"
     + "|".join(
         re.escape(word)
-        for word in sorted(_GERMAN_LEXICAL_SCALE_VALUES, key=len, reverse=True)
+        for word in sorted(
+            _GERMAN_FRACTION_DENOMINATOR_VALUES,
+            key=len,
+            reverse=True,
+        )
     )
-    + r")(?:n)?(?!\w)",
+    + r")(?:n|s)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_QUANTITATIVE_CARDINAL_VALUES = {
+    "null": 0.0,
+    "zwei": 2.0,
+    "drei": 3.0,
+    "vier": 4.0,
+    "fünf": 5.0,
+    "sechs": 6.0,
+    "sieben": 7.0,
+    "acht": 8.0,
+    "neun": 9.0,
+    "zehn": 10.0,
+    "elf": 11.0,
+    "zwölf": 12.0,
+    "dreißig": 30.0,
+    "dreihundertsechzig": 360.0,
+}
+_GERMAN_QUANTITATIVE_CARDINAL_VALUES_CASEFOLD = {
+    word.casefold(): value
+    for word, value in _GERMAN_QUANTITATIVE_CARDINAL_VALUES.items()
+}
+_GERMAN_QUANTITATIVE_CARDINAL_BODY = "|".join(
+    re.escape(word)
+    for word in sorted(_GERMAN_QUANTITATIVE_CARDINAL_VALUES, key=len, reverse=True)
+)
+_GERMAN_FRACTION_NUMERATOR_CARDINAL_BODY = "|".join(
+    re.escape(word)
+    for word in sorted(
+        (
+            word
+            for word, value in _GERMAN_QUANTITATIVE_CARDINAL_VALUES.items()
+            if value != 1
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+_GERMAN_QUANTITATIVE_UNIT_BODY = (
+    r"(?:[A-Za-zÄÖÜäöüß]+)?"
+    r"(?:stunde|stunden|tag|tage|tagen|woche|wochen|monat|monate|monaten|"
+    r"jahr|jahre|jahren|teil|teile|teilen|kind|kinder|kindern|person|"
+    r"personen|partner|partnern|monatswert|monatswerte|monatswerten|"
+    r"haushaltsmitglied|haushaltsmitglieder|haushaltsmitgliedern|euro|prozent)"
+)
+_GERMAN_CARDINAL_BEFORE_UNIT_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)"
+    rf"(?=[ \t]+{_GERMAN_QUANTITATIVE_UNIT_BODY}\b)",
+    re.IGNORECASE,
+)
+_GERMAN_CARDINAL_BEFORE_MODIFIED_UNIT_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)"
+    rf"(?=[ \t]+zu[ \t]+berücksichtigende[ \t]+"
+    rf"{_GERMAN_QUANTITATIVE_UNIT_BODY}\b)",
+    re.IGNORECASE,
+)
+_GERMAN_CARDINAL_BEFORE_FRACTION_PATTERN = re.compile(
+    rf"(?<!\w)(?P<cardinal>{_GERMAN_FRACTION_NUMERATOR_CARDINAL_BODY})(?!\w)"
+    r"(?=[ \t]+(?:"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(
+            _GERMAN_FRACTION_DENOMINATOR_VALUES,
+            key=len,
+            reverse=True,
+        )
+    )
+    + r")(?:n|s)?(?!\w))",
+    re.IGNORECASE,
+)
+_GERMAN_PRORATION_CARDINAL_PATTERN = re.compile(
+    rf"\b(?:Woche|Monat|Jahr)\s+zu[ \t]+"
+    rf"(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_DIVISOR_CARDINAL_PATTERN = re.compile(
+    rf"\bdurch[ \t]+(?P<cardinal>{_GERMAN_QUANTITATIVE_CARDINAL_BODY})"
+    r"(?!\w)[ \t]+geteilt\b",
+    re.IGNORECASE,
+)
+_GERMAN_MULTIPLIER_VALUES = {
+    "ein": 1.0,
+    "zwei": 2.0,
+    "drei": 3.0,
+    "vier": 4.0,
+    "fünf": 5.0,
+    "sechs": 6.0,
+    "sieben": 7.0,
+    "acht": 8.0,
+    "neun": 9.0,
+    "zehn": 10.0,
+    "elf": 11.0,
+    "zwölf": 12.0,
+}
+_GERMAN_MULTIPLIER_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_MULTIPLIER_VALUES.items()
+}
+_GERMAN_WORD_MULTIPLIER_PATTERN = re.compile(
+    r"(?<!\w)(?P<multiplier>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_MULTIPLIER_VALUES, key=len, reverse=True)
+    )
+    + r")(?:-)?fache(?:n|r|s|m)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_DOUBLE_MULTIPLIER_PATTERN = re.compile(
+    r"(?<!\w)doppelt(?:e|en|er|es|em)?(?!\w)",
+    re.IGNORECASE,
+)
+_GERMAN_ORDINAL_PART_VALUES = {
+    "erste": 1.0,
+    "zweite": 2.0,
+    "dritte": 3.0,
+    "vierte": 4.0,
+    "fünfte": 5.0,
+    "sechste": 6.0,
+    "siebte": 7.0,
+    "achte": 8.0,
+    "neunte": 9.0,
+    "zehnte": 10.0,
+    "elfte": 11.0,
+    "zwölfte": 12.0,
+}
+_GERMAN_ORDINAL_PART_VALUES_CASEFOLD = {
+    word.casefold(): value for word, value in _GERMAN_ORDINAL_PART_VALUES.items()
+}
+_GERMAN_ORDINAL_PART_PATTERN = re.compile(
+    r"\b(?:der|die|das|den|dem|des|ein(?:e[nsrm]?)?)\s+"
+    r"(?P<ordinal>"
+    + "|".join(
+        re.escape(word)
+        for word in sorted(_GERMAN_ORDINAL_PART_VALUES, key=len, reverse=True)
+    )
+    + r")(?:n|r|s|m)?\s+Teil(?:s|e|en)?\b",
     re.IGNORECASE,
 )
 
@@ -6197,6 +6346,116 @@ def _has_malformed_profiled_numeric_envelope(
     )
 
 
+def _german_word_number_occurrences(
+    cleaned: str,
+    *,
+    view: _NumericTextView,
+    collector: _LegacyNumericCollector,
+) -> tuple[list[NumericOccurrence], list[NumericOccurrence]]:
+    """Extract German word-number candidates and one recall item per phrase."""
+
+    grounding: list[NumericOccurrence] = []
+    inventory: list[NumericOccurrence] = []
+
+    def add_unambiguous(span: tuple[int, int], value: float) -> None:
+        occurrence = collector.occurrence(
+            view,
+            span,
+            value,
+            is_word_number=True,
+        )
+        grounding.append(occurrence)
+
+    def add_fraction_alternatives(
+        span: tuple[int, int],
+        denominator: float,
+        *,
+        fraction_is_primary: bool = False,
+        include_in_inventory: bool = True,
+    ) -> None:
+        reciprocal = 1.0 / denominator
+        denominator_occurrence = collector.occurrence(
+            view,
+            span,
+            denominator,
+            is_word_number=True,
+            alternative_values=(reciprocal,),
+        )
+        reciprocal_occurrence = collector.occurrence(
+            view,
+            span,
+            reciprocal,
+            is_word_number=True,
+            alternative_values=(denominator,),
+        )
+        alternatives = (
+            (reciprocal_occurrence, denominator_occurrence)
+            if fraction_is_primary
+            else (denominator_occurrence, reciprocal_occurrence)
+        )
+        grounding.extend(alternatives)
+        # Complete-source recall treats the two readings as alternatives for one
+        # lexical occurrence rather than demanding two named scalar definitions.
+        if include_in_inventory:
+            inventory.append(alternatives[0])
+
+    for match in _GERMAN_FRACTION_WORD_PATTERN.finditer(cleaned):
+        normalized_fraction = match.group("fraction").casefold()
+        denominator = _GERMAN_FRACTION_DENOMINATOR_VALUES_CASEFOLD.get(
+            normalized_fraction
+        )
+        if denominator is not None:
+            add_fraction_alternatives(
+                match.span(),
+                denominator,
+                fraction_is_primary=normalized_fraction == "hälfte".casefold(),
+                include_in_inventory=normalized_fraction != "hälfte".casefold(),
+            )
+
+    seen_cardinal_spans: set[tuple[int, int]] = set()
+    for pattern in (
+        _GERMAN_CARDINAL_BEFORE_UNIT_PATTERN,
+        _GERMAN_CARDINAL_BEFORE_MODIFIED_UNIT_PATTERN,
+        _GERMAN_CARDINAL_BEFORE_FRACTION_PATTERN,
+        _GERMAN_PRORATION_CARDINAL_PATTERN,
+        _GERMAN_DIVISOR_CARDINAL_PATTERN,
+    ):
+        for match in pattern.finditer(cleaned):
+            span = match.span("cardinal")
+            if span in seen_cardinal_spans:
+                continue
+            value = _GERMAN_QUANTITATIVE_CARDINAL_VALUES_CASEFOLD.get(
+                match.group("cardinal").casefold()
+            )
+            if value is None:
+                continue
+            add_unambiguous(span, value)
+            seen_cardinal_spans.add(span)
+
+    for match in _GERMAN_WORD_MULTIPLIER_PATTERN.finditer(cleaned):
+        value = _GERMAN_MULTIPLIER_VALUES_CASEFOLD.get(
+            match.group("multiplier").casefold()
+        )
+        if value is not None:
+            add_unambiguous(match.span(), value)
+    for match in _GERMAN_DOUBLE_MULTIPLIER_PATTERN.finditer(cleaned):
+        add_unambiguous(match.span(), 2.0)
+
+    for match in _GERMAN_ORDINAL_PART_PATTERN.finditer(cleaned):
+        denominator = _GERMAN_ORDINAL_PART_VALUES_CASEFOLD.get(
+            match.group("ordinal").casefold()
+        )
+        if denominator is not None:
+            add_fraction_alternatives(
+                match.span("ordinal"),
+                denominator,
+                fraction_is_primary=True,
+                include_in_inventory=False,
+            )
+
+    return grounding, inventory
+
+
 def _non_temporal_numeric_inventory(
     occurrences: Iterable[NumericOccurrence],
 ) -> tuple[NumericOccurrence, ...]:
@@ -6273,7 +6532,8 @@ def _tokenize_profiled_numeric_occurrences(
     cleaned = _clean_source_text_for_numeric_extraction(text)
     view = _NumericTextView.aligned(text, cleaned)
     collector = _LegacyNumericCollector(text)
-    occurrences: list[NumericOccurrence] = []
+    grounding_occurrences: list[NumericOccurrence] = []
+    inventory_occurrences: list[NumericOccurrence] = []
 
     for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
         if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
@@ -6281,21 +6541,34 @@ def _tokenize_profiled_numeric_occurrences(
         value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
         if value is None:
             continue
-        occurrences.append(collector.occurrence(view, span, value))
+        occurrence = collector.occurrence(view, span, value)
+        grounding_occurrences.append(occurrence)
+        inventory_occurrences.append(occurrence)
 
     if profile == "de-DE":
-        for match in _GERMAN_LEXICAL_SCALE_PATTERN.finditer(cleaned):
-            value = _GERMAN_LEXICAL_SCALE_VALUES_CASEFOLD.get(
-                match.group("denominator").casefold()
-            )
-            if value is not None:
-                occurrences.append(collector.occurrence(view, match.span(), value))
+        word_grounding, word_inventory = _german_word_number_occurrences(
+            cleaned,
+            view=view,
+            collector=collector,
+        )
+        grounding_occurrences.extend(word_grounding)
+        inventory_occurrences.extend(word_inventory)
 
-    occurrences = list(_complete_typed_year_occurrences(collector, occurrences))
-    occurrences.sort(key=lambda occurrence: (occurrence.start, occurrence.end))
+    grounding_occurrences = list(
+        _complete_typed_year_occurrences(collector, grounding_occurrences)
+    )
+    inventory_occurrences = list(
+        _complete_typed_year_occurrences(collector, inventory_occurrences)
+    )
+    grounding_occurrences.sort(
+        key=lambda occurrence: (occurrence.start, occurrence.end)
+    )
+    inventory_occurrences.sort(
+        key=lambda occurrence: (occurrence.start, occurrence.end)
+    )
     return _NumericTokenization(
-        grounding=tuple(occurrences),
-        inventory=_non_temporal_numeric_inventory(occurrences),
+        grounding=tuple(grounding_occurrences),
+        inventory=_non_temporal_numeric_inventory(inventory_occurrences),
     )
 
 
@@ -22906,12 +23179,15 @@ def numeric_value_is_grounded(
     evidence; an unrelated integer can never authorize the conversion.
     """
     for occurrence in source_occurrences:
-        source_value = occurrence.value
-        if math.isclose(
-            value,
-            source_value,
-            rel_tol=0,
-            abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+        source_values = (occurrence.value, *occurrence.alternative_values)
+        if any(
+            math.isclose(
+                value,
+                source_value,
+                rel_tol=0,
+                abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+            )
+            for source_value in source_values
         ) and not (
             occurrence.requires_rate_context and not occurrence.has_rate_context
         ):
@@ -22923,7 +23199,7 @@ def numeric_value_is_grounded(
                 value * 100,
                 occurrence.source_value
                 if occurrence.source_value is not None
-                else source_value,
+                else occurrence.value,
                 rel_tol=0,
                 abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
             )

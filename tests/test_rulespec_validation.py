@@ -8063,6 +8063,7 @@ def test_de_numeric_profile_terminates_at_released_juris_sentence_marker():
         (0.45, "0,45"),
         (19470.38, "19 470,38"),
         (10000.0, "Zehntausendstel"),
+        (0.0001, "Zehntausendstel"),
     ]
     assert {3.0, 38.3, 470.38}.isdisjoint({item.value for item in occurrences})
 
@@ -8471,11 +8472,179 @@ def test_de_numeric_profile_reads_german_lexical_denominators(
     source_text,
     expected,
 ):
-    assert extract_numbers_from_text(source_text, profile="de-DE") == {expected}
+    reciprocal = 1 / expected
+    assert extract_numbers_from_text(source_text, profile="de-DE") == {
+        expected,
+        reciprocal,
+    }
     assert extract_numeric_occurrences_from_text(
         source_text,
         profile="de-DE",
     ) == [expected]
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    assert len(inventory) == 1
+    assert inventory[0].is_word_number
+    assert inventory[0].alternative_values == (reciprocal,)
+
+
+@pytest.mark.parametrize(
+    (
+        "source_text",
+        "expected_primary",
+        "expected_alternative",
+        "expected_inventory_count",
+    ),
+    (
+        # Exact released wave-2 corpus bytes from the cited bodies.
+        (
+            "für die Hälfte ihres gemeinsam zu versteuernden Einkommens",
+            0.5,
+            2.0,
+            0,
+        ),
+        ("ein Fünftel der monatlichen Bezugsgröße", 5.0, 0.2, 1),
+        ("abzüglich eines Zwölftels des Kinderfreibetrags", 12.0, 1 / 12, 1),
+        (
+            "von einem Dreihundertsechzigstel der Beitragsbemessungsgrenze",
+            360.0,
+            1 / 360,
+            1,
+        ),
+        (
+            "ein Zehntausendstel des den Grundfreibetrag übersteigenden Teils",
+            10000,
+            0.0001,
+            1,
+        ),
+    ),
+)
+def test_de_word_fraction_candidates_do_not_duplicate_recall_obligation(
+    source_text,
+    expected_primary,
+    expected_alternative,
+    expected_inventory_count,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    word_grounding = [item for item in grounding if item.is_word_number]
+
+    assert [item.value for item in word_grounding] == [
+        expected_primary,
+        expected_alternative,
+    ]
+    assert len(inventory) == expected_inventory_count
+    if inventory:
+        assert inventory[0].value == expected_primary
+        assert inventory[0].alternative_values == (expected_alternative,)
+    assert numeric_value_is_grounded(expected_primary, grounding)
+    assert numeric_value_is_grounded(expected_alternative, grounding)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("Haben zwei Partner Anspruch auf Leistungen", 2.0),
+        ("in nicht mehr als zwei Kalendermonaten", 2.0),
+        ("nach Ablauf von drei Sitzungswochen", 3.0),
+        ("durch drei geteilt", 3.0),
+        ("für sechs Monate", 6.0),
+        ("sieben Dreihundertsechzigstel", 7.0),
+        ("bei einer Arbeitszeit von zehn Wochenstunden", 10.0),
+        ("nicht mit mehr als zwölf Monatswerten", 12.0),
+        ("für bis zu zwölf zu berücksichtigende Haushaltsmitglieder", 12.0),
+    ),
+)
+def test_de_quantitative_cardinals_use_exact_released_wave_phrases(
+    source_text,
+    expected,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert any(
+        item.value == expected and item.is_word_number for item in occurrences
+    ), occurrences
+
+
+def test_de_proration_cardinals_use_exact_sgb_3_341_sentence():
+    # Exact sentence from body sha256
+    # cc18498f1bbf534679b14937e8750c38098112cd8c1bfab98a956b6a58b5378f.
+    source_text = (
+        "Für die Berechnung der Beiträge ist die Woche zu sieben, der Monat zu "
+        "dreißig und das Jahr zu dreihundertsechzig Tagen anzusetzen, soweit "
+        "dieses Buch nichts anderes bestimmt."
+    )
+
+    word_values = {
+        item.value
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="de-DE",
+        )
+        if item.is_word_number
+    }
+
+    assert {7.0, 30.0, 360.0} <= word_values
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "das Zweifache des Steuerbetrags",
+        "den doppelten Kinderfreibetrag",
+    ),
+)
+def test_de_multiplier_words_emit_typed_numeric_candidates(source_text):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert [(item.value, item.is_word_number) for item in occurrences] == [(2.0, True)]
+
+
+def test_de_ordinal_part_emits_divisor_and_fraction_candidates():
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        "der siebte Teil des Betrags",
+        profile="de-DE",
+    )
+
+    assert [item.value for item in occurrences] == [1 / 7, 7.0]
+    assert all(item.is_word_number for item in occurrences)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_rate"),
+    (
+        ("um 0,1 Prozentpunkte für je 2 Euro", 0.001),
+        ("nicht höher als 0,5 Beitragssatzpunkte über dem Beitragssatz", 0.005),
+        ("um 0,6 Beitragssatzpunkten", 0.006),
+        ("in Höhe von 0,25 Beitragssatzpunkten", 0.0025),
+    ),
+)
+def test_de_point_units_supply_rate_context_from_exact_wave_phrases(
+    source_text,
+    expected_rate,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    point_occurrence = next(item for item in occurrences if item.raw.startswith("0,"))
+
+    assert point_occurrence.has_rate_context
+    assert numeric_value_is_grounded(expected_rate, occurrences)
 
 
 def test_numeric_extraction_handles_uganda_shilling_suffix():

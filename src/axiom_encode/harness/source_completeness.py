@@ -32,6 +32,8 @@ class NumericOccurrenceLike(Protocol):
     has_temporal_context: bool
     source_value: float | None
     requires_rate_context: bool
+    is_word_number: bool
+    alternative_values: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class _NumericOccurrenceView:
     has_temporal_context: bool
     source_value: float | None
     requires_rate_context: bool
+    is_word_number: bool
+    alternative_values: tuple[float, ...]
 
 
 NumericOccurrenceExtractor = Callable[[str], Sequence[NumericOccurrenceLike]]
@@ -3389,6 +3393,8 @@ def _numeric_occurrences_are_equivalent(
         and left.has_temporal_context == right.has_temporal_context
         and left.source_value == right.source_value
         and left.requires_rate_context == right.requires_rate_context
+        and left.is_word_number == right.is_word_number
+        and left.alternative_values == right.alternative_values
     )
 
 
@@ -4704,6 +4710,8 @@ def _shift_numeric_occurrence(
         has_temporal_context=occurrence.has_temporal_context,
         source_value=occurrence.source_value,
         requires_rate_context=occurrence.requires_rate_context,
+        is_word_number=occurrence.is_word_number,
+        alternative_values=occurrence.alternative_values,
     )
 
 
@@ -6994,6 +7002,8 @@ def _source_boundary_obligations(
                 occurrence.has_rate_context,
                 occurrence.source_value,
                 occurrence.requires_rate_context,
+                occurrence.is_word_number,
+                occurrence.alternative_values,
                 occurrence.start,
                 occurrence.end,
             ): (branch, occurrence)
