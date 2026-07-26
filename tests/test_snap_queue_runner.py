@@ -709,3 +709,72 @@ def test_load_eval_artifact_rejects_schema_less_results(tmp_path):
             kind="results",
             schema_tracker=module.ConsumedSchemaTracker(),
         )
+
+
+def test_load_eval_artifact_rejects_non_boolean_summary_readiness(tmp_path):
+    module = load_queue_runner_module()
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(
+        module.json.dumps(eval_artifact_payload(module, "summary", all_ready="false"))
+    )
+
+    with pytest.raises(ValueError, match="boolean all_ready"):
+        module.load_eval_artifact(
+            summary_path,
+            kind="summary",
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
+def test_load_eval_artifact_rejects_malformed_result_rows(tmp_path):
+    module = load_queue_runner_module()
+    results_path = tmp_path / "results.json"
+    results_path.write_text(
+        module.json.dumps(
+            eval_artifact_payload(module, "results", results=["not-an-object"])
+        )
+    )
+
+    with pytest.raises(ValueError, match="result row 1 must be a JSON object"):
+        module.load_eval_artifact(
+            results_path,
+            kind="results",
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
+def test_load_run_ledger_ids_does_not_let_v1_suppress_stamped_v2_migration(
+    tmp_path,
+):
+    module = load_queue_runner_module()
+    ledger_path = tmp_path / "run-ledger.ndjson"
+    ledger_path.write_text(
+        "\n".join(
+            [
+                module.json.dumps(
+                    {
+                        "schema_version": 1,
+                        "run_id": "legacy-needs-v2",
+                    }
+                ),
+                module.json.dumps(
+                    {
+                        "schema_version": 2,
+                        "run_id": "already-versioned",
+                        "consumed_schemas": {
+                            "summary": module.EVAL_SUITE_SUMMARY_SCHEMA,
+                            "results": module.EVAL_SUITE_RESULTS_SCHEMA,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    known_ids = module.load_run_ledger_ids(
+        ledger_path,
+        schema_tracker=module.ConsumedSchemaTracker(),
+    )
+
+    assert known_ids == {"already-versioned"}

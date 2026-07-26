@@ -601,7 +601,72 @@ def _validate_eval_artifact_payload(
     if "schema" not in payload:
         raise ValueError(f"{source} is missing schema")
     schema_tracker.admit(kind=kind, schema=payload["schema"], source=source)
+    if kind == "summary":
+        _validate_consumed_eval_summary(payload, source=source)
+    elif kind == "results":
+        _validate_consumed_eval_results(payload, source=source)
     return payload
+
+
+def _validate_consumed_eval_summary(
+    payload: dict[str, Any],
+    *,
+    source: str,
+) -> None:
+    """Validate every summary structure the SNAP consumer interprets."""
+
+    if type(payload.get("all_ready")) is not bool:
+        raise ValueError(f"{source} must contain boolean all_ready")
+    manifest = payload.get("manifest")
+    if manifest is not None and not isinstance(manifest, dict):
+        raise ValueError(f"{source} has malformed manifest")
+    if isinstance(manifest, dict):
+        effective_runners = manifest.get("effective_runners")
+        if effective_runners is not None and (
+            not isinstance(effective_runners, list)
+            or any(
+                not isinstance(runner, str) or not runner
+                for runner in effective_runners
+            )
+        ):
+            raise ValueError(f"{source} has malformed effective runners")
+    readiness = payload.get("readiness")
+    if readiness is not None and not isinstance(readiness, dict):
+        raise ValueError(f"{source} has malformed readiness")
+
+
+def _validate_consumed_eval_results(
+    payload: dict[str, Any],
+    *,
+    source: str,
+) -> None:
+    """Validate every results structure the SNAP consumer scores or records."""
+
+    result_rows = payload.get("results")
+    if not isinstance(result_rows, list):
+        raise ValueError(f"{source} must contain a results list")
+    issue_fields = (
+        "compile_issues",
+        "ci_issues",
+        "generalist_review_issues",
+        "policyengine_issues",
+    )
+    for index, row in enumerate(result_rows, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"{source} result row {index} must be a JSON object")
+        metrics = row.get("metrics")
+        if metrics is not None and not isinstance(metrics, dict):
+            raise ValueError(f"{source} result row {index} has malformed metrics")
+        if isinstance(metrics, dict):
+            for field in issue_fields:
+                issues = metrics.get(field)
+                if issues is not None and (
+                    not isinstance(issues, list)
+                    or any(not isinstance(issue, str) for issue in issues)
+                ):
+                    raise ValueError(
+                        f"{source} result row {index} has malformed {field}"
+                    )
 
 
 def load_eval_artifact(
@@ -697,7 +762,11 @@ def load_run_ledger_ids(
             raise ValueError(
                 f"SNAP run ledger v2 row at line {line_number} has no run_id"
             )
-        if isinstance(run_id, str) and run_id:
+        if (
+            schema_version == RUN_LEDGER_SCHEMA_VERSION
+            and isinstance(run_id, str)
+            and run_id
+        ):
             ids.add(run_id)
     return ids
 
