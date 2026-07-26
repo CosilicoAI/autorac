@@ -2118,6 +2118,148 @@ rules:
     assert not _has_issue(both_branches, "formula branch")
 
 
+@pytest.mark.parametrize("inline", [False, True])
+def test_match_formula_branches_require_distinct_arm_executions(inline: bool):
+    source = """\
+(1) Bei Verheirateten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    match_formula = (
+        'match filing_status: "married" => income * married_multiplier; '
+        '"single" => income * single_multiplier'
+        if inline
+        else """\
+match filing_status:
+  "married" => income * married_multiplier
+  "single" => income * single_multiplier"""
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: married_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: single_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+{chr(10).join(f"          {line}" for line in match_formula.splitlines())}
+"""
+
+    def case(name: str, status: str, income: int) -> dict[str, object]:
+        return {
+            "name": name,
+            "input": {"filing_status": status, "income": income},
+            "output": {"amount": income * (2 if status == "married" else 3)},
+        }
+
+    repeated_arm = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married one", "married", 10),
+            case("married two", "married", 20),
+        ],
+    )
+    both_arms = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married", "married", 10),
+            case("single", "single", 10),
+        ],
+    )
+
+    assert _has_issue(repeated_arm, "formula branch", "distinct")
+    assert not _has_issue(both_arms, "formula branch")
+
+
+def test_inline_if_formula_requires_distinct_runtime_branch_executions():
+    source = """\
+(1) Bei Ehegatten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+        "formula: income * first_multiplier + income * second_multiplier",
+        "formula: >-\n"
+        "          if married or high_income: income * first_multiplier "
+        "else: income * second_multiplier",
+    ).replace(
+        "first_multiplier",
+        "married_multiplier",
+    ).replace(
+        "second_multiplier",
+        "single_multiplier",
+    )
+
+    def case(name: str, married: bool, high_income: bool) -> dict[str, object]:
+        return {
+            "name": name,
+            "input": {
+                "income": 10,
+                "married": married,
+                "high_income": high_income,
+            },
+            "output": {"combined_amount": 20 if married or high_income else 30},
+        }
+
+    repeated_branch = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married ordinary", True, False),
+            case("married high income", True, True),
+        ],
+    )
+    both_branches = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married", True, False),
+            case("single", False, False),
+        ],
+    )
+
+    assert _has_issue(repeated_branch, "formula branch", "distinct")
+    assert not _has_issue(both_branches, "formula branch")
+
+
+def test_judgment_selector_normalizes_holds_and_not_holds():
+    rule = {
+        "versions": [
+            {
+                "formula": "if eligible: eligible_amount else: ineligible_amount",
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"eligible": "holds"}},
+    ) == "if:0"
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"eligible": "not_holds"}},
+    ) == "if:1"
+
+
 def test_numbered_prose_formulas_require_distinct_executed_cases():
     source = """\
 (1) Es gelten folgende Berechnungen:

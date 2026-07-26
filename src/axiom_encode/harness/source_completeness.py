@@ -1511,10 +1511,10 @@ def _formula_branch_test_witnesses(
     for rule_name in sorted(rule_names):
         rule = principal_rules[rule_name]
         selector_names = _rule_numeric_selector_names(rule)
-        branch_selector_names = _rule_branch_selector_names(rule)
+        has_branching_formula = _rule_has_branching_formula(rule)
         for case in asserted_by_rule.get(rule_name, ()):
             if interval is None:
-                if branch_selector_names:
+                if has_branching_formula:
                     outcome = _case_formula_branch_outcome(
                         rule,
                         case,
@@ -1532,10 +1532,21 @@ def _formula_branch_test_witnesses(
     return witnesses
 
 
+def _rule_has_branching_formula(rule: dict[str, Any]) -> bool:
+    return bool(
+        re.search(
+            r"(?<![A-Za-z0-9_])(?:if|match)\s+[^:\n]+:",
+            _rule_formula_text(rule),
+        )
+    )
+
+
 def _rule_branch_selector_names(rule: dict[str, Any]) -> set[str]:
     """Return identifiers that choose branches in a principal formula."""
 
     names: set[str] = set()
+    if match_spec := _rule_match_branch_spec(rule):
+        names.add(match_spec[0])
     for condition in _rule_top_level_branch_conditions(rule):
         condition = re.sub(r"(['\"]).*?\1", "", condition)
         names.update(
@@ -1568,14 +1579,57 @@ def _rule_top_level_branch_conditions(rule: dict[str, Any]) -> tuple[str, ...]:
             _rule_formula_text(rule),
         )
     )
-    if not matches:
-        return ()
-    outer_indent = min(len(match.group("indent").expandtabs(8)) for match in matches)
+    if matches:
+        outer_indent = min(
+            len(match.group("indent").expandtabs(8)) for match in matches
+        )
+        return tuple(
+            match.group("condition").strip()
+            for match in matches
+            if len(match.group("indent").expandtabs(8)) == outer_indent
+        )
     return tuple(
         match.group("condition").strip()
-        for match in matches
-        if len(match.group("indent").expandtabs(8)) == outer_indent
+        for match in re.finditer(
+            r"(?<![A-Za-z0-9_])if[ \t]+(?P<condition>[^:\n]+):",
+            _rule_formula_text(rule),
+        )
     )
+
+
+def _rule_match_branch_spec(
+    rule: dict[str, Any],
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return one RuleSpec match selector and its ordered arm patterns."""
+
+    match = re.search(
+        r"(?<![A-Za-z0-9_])match[ \t]+"
+        r"(?P<selector>[A-Za-z_][A-Za-z0-9_]*)[ \t]*:"
+        r"(?P<body>[\s\S]*)",
+        _rule_formula_text(rule),
+    )
+    if match is None:
+        return None
+    body = match.group("body")
+    if "\n" in body:
+        arm_patterns = tuple(
+            arm.group("pattern").strip()
+            for arm in re.finditer(
+                r"(?m)^[ \t]*(?P<pattern>[^=\n]+?)[ \t]*=>",
+                body,
+            )
+        )
+    else:
+        arm_patterns = tuple(
+            arm.group("pattern").strip()
+            for arm in re.finditer(
+                r"(?:^|;)[ \t]*(?P<pattern>[^=;]+?)[ \t]*=>",
+                body,
+            )
+        )
+    if not arm_patterns:
+        return None
+    return match.group("selector"), arm_patterns
 
 
 _UNRESOLVED_CONDITION_VALUE = object()
@@ -1584,22 +1638,43 @@ _UNRESOLVED_CONDITION_VALUE = object()
 def _case_formula_branch_outcome(
     rule: dict[str, Any],
     case: dict[str, Any],
-) -> int | None:
+) -> str | None:
     """Return the outer formula branch selected by one executed test case."""
 
-    conditions = _rule_top_level_branch_conditions(rule)
     inputs = case.get("input")
-    if not conditions or not isinstance(inputs, dict):
+    if not isinstance(inputs, dict):
         return None
     environment: dict[str, Any] = {}
     for key, value in inputs.items():
+        boolean_value = _boolean_value(value)
+        normalized_value = boolean_value if boolean_value is not None else value
         environment.update(
             {
-                name: value
+                name: normalized_value
                 for name in _input_key_names(key)
                 if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
             }
         )
+    if match_spec := _rule_match_branch_spec(rule):
+        selector_name, arm_patterns = match_spec
+        if selector_name not in environment:
+            return None
+        selector_value = environment[selector_name]
+        default_index: int | None = None
+        for index, arm_pattern in enumerate(arm_patterns):
+            for alternative in re.split(r"[|,]", arm_pattern):
+                expected = _match_arm_value(alternative.strip())
+                if expected is _UNRESOLVED_CONDITION_VALUE:
+                    continue
+                if expected == "_":
+                    default_index = index
+                elif selector_value == expected:
+                    return f"match:{index}"
+        return f"match:{default_index}" if default_index is not None else None
+
+    conditions = _rule_top_level_branch_conditions(rule)
+    if not conditions:
+        return None
     for index, condition in enumerate(conditions):
         try:
             expression = ast.parse(condition, mode="eval").body
@@ -1609,8 +1684,23 @@ def _case_formula_branch_outcome(
         if evaluated is _UNRESOLVED_CONDITION_VALUE:
             return None
         if bool(evaluated):
-            return index
-    return len(conditions)
+            return f"if:{index}"
+    return f"if:{len(conditions)}"
+
+
+def _match_arm_value(value: str) -> Any:
+    if value == "_":
+        return value
+    lowered = value.lower()
+    if lowered in {"true", "holds"}:
+        return True
+    if lowered in {"false", "not_holds"}:
+        return False
+    with contextlib.suppress(SyntaxError, ValueError):
+        return ast.literal_eval(value)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        return value
+    return _UNRESOLVED_CONDITION_VALUE
 
 
 def _evaluate_condition_expression(
@@ -1681,7 +1771,7 @@ def _evaluate_condition_expression(
             right = _evaluate_condition_expression(comparator, environment)
             if right is _UNRESOLVED_CONDITION_VALUE:
                 return right
-            with contextlib.suppress(TypeError, ValueError):
+            try:
                 if isinstance(operator, ast.Eq):
                     matched = left == right
                 elif isinstance(operator, ast.NotEq):
@@ -1702,6 +1792,8 @@ def _evaluate_condition_expression(
                     return _UNRESOLVED_CONDITION_VALUE
                 if not matched:
                     return False
+            except (TypeError, ValueError):
+                return _UNRESOLVED_CONDITION_VALUE
             left = right
         return True
     if (
