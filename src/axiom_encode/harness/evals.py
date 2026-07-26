@@ -7840,9 +7840,7 @@ def _eval_artifact_validation_error(
         return "Generated RuleSpec failed compile validation"
     if not metrics.ci_pass:
         return "Generated RuleSpec failed CI validation"
-    if require_policyengine and (
-        metrics.policyengine_pass is not True or metrics.policyengine_score is None
-    ):
+    if require_policyengine and metrics.policyengine_pass is not True:
         return "Generated RuleSpec failed PolicyEngine oracle validation"
     return None
 

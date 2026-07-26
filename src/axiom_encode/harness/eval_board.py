@@ -1356,6 +1356,50 @@ def _result_metrics(result: dict) -> dict | None:
     return None
 
 
+def _validate_result_artifact_bindings(result: dict, *, context: str) -> None:
+    """Mirror the producer's path/digest and generated-artifact invariants."""
+
+    bound_fields: set[str] = set()
+    for path_field, digest_field, label in (
+        ("output_file", "generated_output_sha256", "generated RuleSpec"),
+        ("trace_file", "trace_sha256", "model trace"),
+        (
+            "context_manifest_file",
+            "context_manifest_sha256",
+            "context manifest",
+        ),
+    ):
+        raw_path = result.get(path_field)
+        digest = result.get(digest_field)
+        if not isinstance(raw_path, str):
+            raise EvalBoardError(f"{context} has a malformed {label} path")
+        if digest is None:
+            if raw_path:
+                raise EvalBoardError(
+                    f"{context} has a {label} path without its SHA-256 digest"
+                )
+            continue
+        if not _is_sha256_hex(digest):
+            raise EvalBoardError(f"{context} has a malformed {label} SHA-256 digest")
+        if not raw_path:
+            raise EvalBoardError(
+                f"{context} has a {label} SHA-256 digest without its path"
+            )
+        bound_fields.add(path_field)
+
+    if (
+        result.get("success") is True or isinstance(result.get("metrics"), dict)
+    ) and "output_file" not in bound_fields:
+        raise EvalBoardError(f"{context} has no content-bound generated RuleSpec")
+    if bound_fields and not {
+        "trace_file",
+        "context_manifest_file",
+    }.issubset(bound_fields):
+        raise EvalBoardError(
+            f"{context} is missing its content-bound trace or context manifest"
+        )
+
+
 def result_gate_pass(result: dict) -> bool:
     """The deterministic gate battery for one case x runner result."""
     if (
@@ -1431,6 +1475,7 @@ def _validate_result_types(result: dict, *, context: str) -> None:
         raise EvalBoardError(
             f"{context} metrics must be null or an object, got {raw_metrics!r}"
         )
+    _validate_result_artifact_bindings(result, context=context)
     metrics = _result_metrics(result)
     if failure_kind == "timeout" and (
         timeout_attempts == 0
@@ -1656,6 +1701,13 @@ def _validate_result_policyengine_runtime_evidence(
             raise EvalBoardError(
                 f"{context} PolicyEngine case succeeded without oracle evidence"
             )
+        if (
+            bool(result.get("output_file"))
+            or result.get("generated_output_sha256") is not None
+        ):
+            raise EvalBoardError(
+                f"{context} PolicyEngine artifact has no oracle evidence"
+            )
         return
     if not has_policyengine_evidence or metrics.get("policyengine_pass") is None:
         raise EvalBoardError(
@@ -1667,6 +1719,10 @@ def _validate_result_policyengine_runtime_evidence(
         raise EvalBoardError(
             f"{context} PolicyEngine runtime evidence does not match the "
             "suite execution identity"
+        )
+    if result.get("success") is True and metrics.get("policyengine_pass") is not True:
+        raise EvalBoardError(
+            f"{context} succeeded although its PolicyEngine oracle did not pass"
         )
 
 
