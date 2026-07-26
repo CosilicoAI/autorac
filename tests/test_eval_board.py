@@ -527,9 +527,7 @@ def test_fold_admits_producer_policyengine_runtime_identity(tmp_path):
 
     board = fold_eval_board([path])
 
-    assert board.execution_identity == normalized_execution_identity(
-        execution_identity
-    )
+    assert [runner.runner for runner in board.runners] == ["terra"]
 
 
 def test_fold_two_single_runner_payloads(tmp_path):

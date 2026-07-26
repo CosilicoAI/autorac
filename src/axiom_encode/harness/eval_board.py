@@ -643,7 +643,7 @@ def _valid_policyengine_runtime_identity(value: object) -> bool:
         value.get("schema") != POLICYENGINE_RUNTIME_SCHEMA
         or country not in {"us", "uk"}
         or value.get("official_repository_url")
-        != f"https://github.com/PolicyEngine/policyengine-{country}"
+        != f"https://github.com/PolicyEngine/policyengine-{country}.git"
         or not (
             isinstance(value.get("trusted_git_commit"), str)
             and len(value["trusted_git_commit"]) == 40
