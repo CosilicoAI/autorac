@@ -12744,6 +12744,38 @@ class TestEvalSuiteManifest:
             self.persisted_result_revalidation = mock_evaluate
             yield
 
+    def test_manifest_case_identity_exposes_oracle_mode(self, tmp_path):
+        manifest = EvalSuiteManifest(
+            name="Oracle identity",
+            path=tmp_path / "not-written.yaml",
+            runners=["openai:gpt-5.4"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="policyengine-case",
+                    mode="cold",
+                    corpus_citation_path="us/statute/7/2017",
+                    oracle="policyengine",
+                ),
+                EvalSuiteCase(
+                    kind="source",
+                    name="non-oracle-case",
+                    mode="cold",
+                    corpus_citation_path="us/statute/7/2017",
+                ),
+            ],
+        )
+
+        identity = evals_module._build_eval_suite_manifest_identity(manifest)
+
+        assert [
+            case_identity["oracle"]
+            for case_identity in identity["case_identities"]
+        ] == ["policyengine", "none"]
+
     def test_rejects_removed_source_id_field(self, tmp_path):
         manifest_file = tmp_path / "suite.yaml"
         manifest_file.write_text(
