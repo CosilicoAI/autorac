@@ -5058,6 +5058,79 @@ def test_packaged_kentucky_2026_oracle_registry_and_pin_are_synchronized():
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
+def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized():
+    root = Path(__file__).parents[1]
+    document = yaml.safe_load(
+        (root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml").read_text()
+    )
+    schedule_prefix = (
+        "us-al:policies/income_tax/"
+        "2026_section_40_18_5_schedule_before_credits#"
+    )
+    schedule = {
+        item["legal_id"].removeprefix(schedule_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(schedule_prefix)
+    }
+
+    assert set(schedule) == {
+        "al_pit_2026_section_40_18_5_first_rate",
+        "al_pit_2026_section_40_18_5_second_rate",
+        "al_pit_2026_section_40_18_5_third_rate",
+        "al_pit_2026_section_40_18_5_nonjoint_first_bracket_ceiling",
+        "al_pit_2026_section_40_18_5_nonjoint_second_bracket_ceiling",
+        "al_pit_2026_section_40_18_5_joint_first_bracket_ceiling",
+        "al_pit_2026_section_40_18_5_joint_second_bracket_ceiling",
+        "al_pit_2026_section_40_18_5_taxable_income_boundary",
+        "al_pit_2026_section_40_18_5_schedule_before_credits",
+    }
+    assert {
+        name: item["mapping_type"] for name, item in schedule.items()
+    } == {
+        "al_pit_2026_section_40_18_5_first_rate": "parameter_value",
+        "al_pit_2026_section_40_18_5_second_rate": "parameter_value",
+        "al_pit_2026_section_40_18_5_third_rate": "parameter_value",
+        "al_pit_2026_section_40_18_5_nonjoint_first_bracket_ceiling": (
+            "parameter_value"
+        ),
+        "al_pit_2026_section_40_18_5_nonjoint_second_bracket_ceiling": (
+            "parameter_value"
+        ),
+        "al_pit_2026_section_40_18_5_joint_first_bracket_ceiling": (
+            "parameter_value"
+        ),
+        "al_pit_2026_section_40_18_5_joint_second_bracket_ceiling": (
+            "parameter_value"
+        ),
+        "al_pit_2026_section_40_18_5_taxable_income_boundary": "direct_variable",
+        "al_pit_2026_section_40_18_5_schedule_before_credits": "direct_variable",
+    }
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}al_pit_2026_section_40_18_5_first_rate",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-al:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "parameter_value"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "67fea9c9a7afdb5d8eaf7a99971cfd9be578d7f3"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
 def test_policyengine_registry_classifies_medicaid_435_120_helpers_not_comparable():
     registry = load_policyengine_registry()
 
