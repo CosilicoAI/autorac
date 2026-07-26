@@ -4289,17 +4289,24 @@ rules:
       - formula: FORMULA
 """
 
-    correct = _analyze(
-        content.replace("FORMULA", "income * factor + supplement"),
-        source,
-        test_cases=[
-            {
-                "name": "source computation",
-                "input": {"income": 10},
-                "output": {"amount": 23},
-            }
-        ],
-    )
+    correct_results = [
+        _analyze(
+            content.replace("FORMULA", formula),
+            source,
+            test_cases=[
+                {
+                    "name": "source computation",
+                    "input": {"income": 10},
+                    "output": {"amount": 23},
+                }
+            ],
+        )
+        for formula in (
+            "income * factor + supplement",
+            "factor * income + supplement",
+            "supplement + (income * factor)",
+        )
+    ]
     wrong = _analyze(
         content.replace("FORMULA", "income + factor * supplement"),
         source,
@@ -4312,7 +4319,7 @@ rules:
         ],
     )
 
-    assert not correct.issues
+    assert all(not result.issues for result in correct_results)
     assert _has_issue(wrong, "formula branch")
 
 
