@@ -1573,6 +1573,42 @@ def _validate_result_execution_admission(
             f"{context} admission RuleSpec evidence does not match its "
             "execution identity"
         )
+    citation_path = case_identity.get("corpus_citation_path")
+    case_jurisdiction = (
+        citation_path.split("/", 1)[0] if isinstance(citation_path, str) else None
+    )
+    root_jurisdiction = _rulespec_root_topology(
+        root_identity.get("path"),
+        root_identity.get("toolchain_root"),
+    )
+    if root_jurisdiction != case_jurisdiction:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec root does not match its case "
+            "citation jurisdiction"
+        )
+    if case_identity.get("oracle") != "policyengine":
+        return
+    runtime_wrapper = execution_identity.get("policyengine_runtime")
+    runtime = (
+        runtime_wrapper.get("identity") if isinstance(runtime_wrapper, dict) else None
+    )
+    if not isinstance(runtime, dict):
+        return
+    toolchain_root = root_identity.get("toolchain_root")
+    expected_pin_path = (
+        (PurePosixPath(toolchain_root) / _RULESPEC_RUNTIME_PIN_PATHSPEC).as_posix()
+        if isinstance(toolchain_root, str) and "\\" not in toolchain_root
+        else None
+    )
+    if (
+        runtime.get("country") != case_jurisdiction.split("-", 1)[0]
+        or runtime.get("rulespec_runtime_pin_path") != expected_pin_path
+        or runtime.get("rulespec_runtime_pin_sha256")
+        != root_identity.get("policyengine_runtime_pin_sha256")
+    ):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime is not bound to its admitted RuleSpec root"
+        )
 
 
 def _validate_result_policyengine_runtime_evidence(
