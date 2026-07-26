@@ -20759,7 +20759,8 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
 
         trace_text = json.dumps(response.trace)
         assert secret not in trace_text
-        assert command in trace_text
+        assert command not in trace_text
+        assert response.unexpected_accesses == [command]
         assert "command_execution" in trace_text
         assert "completed" in trace_text
 
@@ -20823,6 +20824,172 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         assert outcome["failure_kind"] == "integrity"
         assert outcome["timed_out"] is False
         assert outcome["timeout_attempts"] == 1
+
+    @pytest.mark.parametrize("event_type", ["item.started", "item.updated"])
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"type": "command_execution", "command": "cat /outside/context"},
+            {"type": "mcp_tool_call", "server": "files", "tool": "read"},
+        ],
+    )
+    def test_run_codex_prompt_eval_makes_incomplete_tool_lifecycle_terminal_on_timeout(
+        self,
+        tmp_path,
+        event_type,
+        item,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        event_lines = "\n".join(
+            [
+                json.dumps({"type": event_type, "item": item}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "format: rulespec/v1\nrules: []\n",
+                        },
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                side_effect=subprocess.TimeoutExpired("codex", 600),
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        outcome = evals_module._eval_result_outcome(
+            response,
+            wrote_artifact=False,
+            validation_error=None,
+        )
+        assert response.text == ""
+        assert response.failure_kind == "integrity"
+        assert response.timed_out is True
+        assert "prompt-only" in (response.error or "")
+        assert response.unexpected_accesses
+        assert response.trace["events"][0]["type"] == event_type
+        assert outcome["failure_kind"] == "integrity"
+        assert outcome["timed_out"] is False
+
+    def test_run_codex_prompt_eval_scrubs_all_trace_content_after_tool_activity(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "RECEIVER_READ_SECRET_SENTINEL"
+        event_lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "reasoning", "text": secret},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat /outside/context",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.updated",
+                        "item": {
+                            "type": "command_execution",
+                            "aggregated_output": secret,
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": secret},
+                    }
+                ),
+                json.dumps({"type": "error", "message": secret}),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 7, "output_tokens": 11},
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.failure_kind == "integrity"
+        assert secret not in json.dumps(response.trace)
+        assert secret not in (response.error or "")
+        assert response.trace["events"][-1] == {
+            "type": "turn.completed",
+            "usage": {"input_tokens": 7, "output_tokens": 11},
+        }
 
 
 class TestUnexpectedAccessDetection:

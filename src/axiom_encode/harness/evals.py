@@ -5493,8 +5493,7 @@ def _mark_suite_case_budget_timeout(
 def _suite_case_results_should_retry(case_results: list[EvalResult]) -> bool:
     """Return True when a suite case likely failed for a transient reason."""
     if any(
-        result.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS
-        for result in case_results
+        result.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS for result in case_results
     ):
         return False
     if _suite_case_results_hit_usage_limit(case_results):
@@ -13692,7 +13691,8 @@ def _run_codex_prompt_eval(
         except json.JSONDecodeError:
             continue
 
-        if payload.get("type") == "item.completed":
+        event_type = payload.get("type")
+        if event_type in {"item.started", "item.updated", "item.completed"}:
             raw_item = payload.get("item")
             item = raw_item if isinstance(raw_item, dict) else {}
             item_type = item.get("type")
@@ -13705,7 +13705,8 @@ def _run_codex_prompt_eval(
             if item_type == "command_execution":
                 command = str(item.get("command", "") or "")
                 reported_command = command or "<empty command>"
-                unexpected_accesses.append(reported_command)
+                if reported_command not in unexpected_accesses:
+                    unexpected_accesses.append(reported_command)
                 if _command_uses_policyengine_skill(command):
                     if not error:
                         error = (
@@ -13723,9 +13724,10 @@ def _run_codex_prompt_eval(
                 reported_item_type = (
                     item_type
                     if isinstance(item_type, str) and item_type.strip()
-                    else "<invalid item.completed>"
+                    else f"<invalid {event_type}>"
                 )
-                unexpected_accesses.append(reported_item_type)
+                if reported_item_type not in unexpected_accesses:
+                    unexpected_accesses.append(reported_item_type)
                 if not error:
                     error = (
                         "Codex eval attempted a tool operation although tools are "
@@ -13755,6 +13757,21 @@ def _run_codex_prompt_eval(
                 }
             ),
         )
+
+    if failure_kind == "integrity":
+        events = [_redact_codex_integrity_trace_event(event) for event in events]
+        if any(
+            _command_uses_policyengine_skill(access) for access in unexpected_accesses
+        ):
+            error = (
+                "Codex eval attempted to use PolicyEngine skills, which are "
+                "disallowed for Axiom encoding"
+            )
+        else:
+            error = (
+                "Codex eval attempted tool activity although tools are disabled "
+                "by the prompt-only contract"
+            )
 
     final_text = "\n".join(assistant_messages).strip()
     if last_message_text.strip():
@@ -13816,9 +13833,38 @@ def _redact_codex_tool_event(payload: dict) -> dict:
         if isinstance((value := item.get(key)), (str, int, float, bool))
     }
     return {
-        "type": "item.completed",
+        "type": payload.get("type"),
         "item": redacted_item,
     }
+
+
+def _redact_codex_integrity_trace_event(payload: dict) -> dict:
+    """Retain typed integrity evidence and usage without model-generated content."""
+
+    event_type = payload.get("type")
+    redacted: dict = {
+        "type": event_type if isinstance(event_type, str) else "<invalid event>"
+    }
+    if event_type in {"item.started", "item.updated", "item.completed"}:
+        raw_item = payload.get("item")
+        item = raw_item if isinstance(raw_item, dict) else {}
+        redacted_item = {
+            key: value
+            for key in ("type", "status")
+            if isinstance((value := item.get(key)), (str, int, float, bool))
+        }
+        redacted["item"] = redacted_item
+    elif event_type == "turn.completed":
+        raw_usage = payload.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        redacted["usage"] = {
+            key: value
+            for key, value in usage.items()
+            if isinstance(key, str)
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
+    return redacted
 
 
 def _prepare_codex_eval_home(codex_home: Path) -> Path:
