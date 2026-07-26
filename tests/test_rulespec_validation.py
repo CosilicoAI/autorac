@@ -5064,8 +5064,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
         (root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml").read_text()
     )
     schedule_prefix = (
-        "us-al:policies/income_tax/"
-        "2026_section_40_18_5_schedule_before_credits#"
+        "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits#"
     )
     schedule = {
         item["legal_id"].removeprefix(schedule_prefix): item
@@ -5084,9 +5083,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
         "al_pit_2026_section_40_18_5_taxable_income_boundary",
         "al_pit_2026_section_40_18_5_schedule_before_credits",
     }
-    assert {
-        name: item["mapping_type"] for name, item in schedule.items()
-    } == {
+    assert {name: item["mapping_type"] for name, item in schedule.items()} == {
         "al_pit_2026_section_40_18_5_first_rate": "parameter_value",
         "al_pit_2026_section_40_18_5_second_rate": "parameter_value",
         "al_pit_2026_section_40_18_5_third_rate": "parameter_value",
@@ -5096,12 +5093,8 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
         "al_pit_2026_section_40_18_5_nonjoint_second_bracket_ceiling": (
             "parameter_value"
         ),
-        "al_pit_2026_section_40_18_5_joint_first_bracket_ceiling": (
-            "parameter_value"
-        ),
-        "al_pit_2026_section_40_18_5_joint_second_bracket_ceiling": (
-            "parameter_value"
-        ),
+        "al_pit_2026_section_40_18_5_joint_first_bracket_ceiling": ("parameter_value"),
+        "al_pit_2026_section_40_18_5_joint_second_bracket_ceiling": ("parameter_value"),
         "al_pit_2026_section_40_18_5_taxable_income_boundary": "direct_variable",
         "al_pit_2026_section_40_18_5_schedule_before_credits": "direct_variable",
     }
