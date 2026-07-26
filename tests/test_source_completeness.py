@@ -705,6 +705,27 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
+def test_deferral_symbol_cannot_mask_a_conflicting_source_section():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/1#amount
+      reason: >-
+        Absatz 1 cannot be computed because the Bemessungsgrundlage is missing.
+      blocked_by:
+        - de:statutes/estg/9999#bemessungsgrundlage
+rules: []
+"""
+    source = "(1) Maßgeblich ist die Bemessungsgrundlage nach § 26."
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "(1)", "deferral", "dependency")
+
+
 def test_invalid_present_blocker_cannot_fall_back_to_prose_dependency():
     content = """\
 format: rulespec/v1
@@ -1690,6 +1711,85 @@ def test_complete_companion_suite_covers_source_controls():
     )
 
     assert not result.issues
+
+
+def test_predicate_only_boundary_requires_an_exact_boundary_case():
+    source = "(1) Der Anspruch gilt bis 100 Euro Einkommen."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income <= income_limit
+"""
+
+    def case(income: int) -> dict[str, object]:
+        return {
+            "name": f"income {income}",
+            "input": {"income": income},
+            "output": {"eligible": income <= 100},
+        }
+
+    below_only = _analyze(content, source, test_cases=[case(50)])
+    exact_boundary = _analyze(content, source, test_cases=[case(100)])
+
+    assert _has_issue(below_only, "boundary", "test")
+    assert not exact_boundary.issues
+
+
+def test_predicate_only_exception_requires_paired_cases():
+    source = """\
+(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if exemption_applies:
+            false
+          else:
+            true
+"""
+
+    def case(exemption_applies: bool) -> dict[str, object]:
+        return {
+            "name": f"exemption={exemption_applies}",
+            "input": {"exemption_applies": exemption_applies},
+            "output": {"eligible": not exemption_applies},
+        }
+
+    ordinary_only = _analyze(content, source, test_cases=[case(False)])
+    paired = _analyze(
+        content,
+        source,
+        test_cases=[case(False), case(True)],
+    )
+
+    assert _has_issue(ordinary_only, "exception", "test")
+    assert not paired.issues
 
 
 NARRATIVE_PIECEWISE_SOURCE = """\

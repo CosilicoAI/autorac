@@ -239,6 +239,11 @@ _GERMAN_LEGAL_CITATION = re.compile(
     r"(?:\s*(?:und|bis)\s*\d+[a-z]?)*",
     flags=re.IGNORECASE,
 )
+_EXPLICIT_LEGAL_SECTION_REFERENCE = re.compile(
+    r"(?:§{1,2}\s*|\b(?:sections?|paragra(?:f|phs?))\s+)"
+    r"(?P<section>\d+[a-z]?)",
+    flags=re.IGNORECASE,
+)
 _ENGLISH_LEGAL_CITATION = re.compile(
     r"\b(?:sections?|secs?\.?|regulations?|paragraphs?)\s+"
     r"\d+(?:\.\d+)*(?:\s*(?:through|to|-|and|,)\s*\d+(?:\.\d+)*)*",
@@ -545,7 +550,7 @@ def _analyze_rulespec_payload(
             "`module.summary` is not consulted."
         )
 
-    if formula_branches and principal_rules:
+    if principal_rules:
         issues.extend(
             _companion_test_issues(
                 principal_rules,
@@ -1030,6 +1035,12 @@ def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
 
     target_path, _separator, symbol = blocker.partition("#")
     section = target_path.rstrip("/").rsplit("/", 1)[-1]
+    explicit_sections = {
+        match.group("section").lower()
+        for match in _EXPLICIT_LEGAL_SECTION_REFERENCE.finditer(reason)
+    }
+    if explicit_sections and section.lower() not in explicit_sections:
+        return False
     if section and re.search(
         rf"(?:§{{1,2}}\s*|\b(?:section|paragraph|paragraf|abschnitt)\s+)"
         rf"{re.escape(section)}(?![A-Za-z0-9])",
@@ -1253,9 +1264,9 @@ def _companion_test_issues(
     cases = [case for case in (test_cases or ()) if isinstance(case, dict)]
     if not cases:
         return [
-            "[complete-source-unit:tests] Explicit source computations require "
-            "a companion test suite covering branches, boundaries, exceptions, "
-            "and rounding rules."
+            "[complete-source-unit:tests] Complete source-unit controls require "
+            "a companion test suite covering outputs, branches, boundaries, "
+            "exceptions, and rounding rules."
         ]
 
     asserted_by_rule = {
@@ -1296,8 +1307,18 @@ def _companion_test_issues(
             "test evidence."
         )
 
+    boundary_branches = active_branches or [
+        SourceStructureBranch(
+            (),
+            "source-unit",
+            "source unit",
+            source_text,
+            0,
+            len(source_text),
+        )
+    ]
     boundary_obligations = _source_boundary_obligations(
-        active_branches,
+        boundary_branches,
         narrative_formula_branches=formula_branches,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
@@ -3047,7 +3068,13 @@ def _source_boundary_obligations(
 ) -> tuple[tuple[SourceStructureBranch, NumericOccurrenceLike], ...]:
     obligations: list[tuple[SourceStructureBranch, NumericOccurrenceLike]] = []
     for branch in branches:
-        if branch.kind not in {"number", "letter"}:
+        if branch.kind not in {
+            "paragraph",
+            "number",
+            "letter",
+            "sentence",
+            "source-unit",
+        }:
             continue
         first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
         prefix = first_line.split(":", 1)[0]
@@ -3059,10 +3086,17 @@ def _source_boundary_obligations(
             flags=re.IGNORECASE,
         ):
             continue
-        prefix = _NUMBER_MARKER.sub("", prefix)
+        prefix = authoritative_numeric_recall_text(prefix)
+        interval = _formula_interval_from_text(
+            prefix,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        if interval is None:
+            continue
         obligations.extend(
-            (branch, occurrence)
-            for occurrence in extract_numeric_occurrences(prefix)
+            (branch, boundary)
+            for boundary in (interval.lower, interval.upper)
+            if boundary is not None
         )
     for branch in narrative_formula_branches:
         interval = _formula_branch_interval(
