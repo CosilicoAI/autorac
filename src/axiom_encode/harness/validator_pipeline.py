@@ -115,7 +115,7 @@ from .proof_validator import (
 )
 from .source_completeness import (
     analyze_complete_source_unit,
-    collect_artifact_numeric_values,
+    collect_artifact_numeric_bindings,
 )
 
 logger = logging.getLogger(__name__)
@@ -23478,12 +23478,16 @@ class ValidatorPipeline:
         corpus_citation_path = (
             self.source_citation_path or (citation_paths[0] if citation_paths else "")
         )
-        artifact_numeric_values = collect_artifact_numeric_values(
+        imported_symbol_contents = (
+            self._complete_source_unit_import_symbol_contents(rules_file)
+        )
+        artifact_numeric_bindings = collect_artifact_numeric_bindings(
             content,
             extract_named_scalars=extract_named_scalar_occurrences,
-            imported_symbol_contents=(
-                self._complete_source_unit_import_symbol_contents(rules_file)
-            ),
+            imported_symbol_contents=imported_symbol_contents,
+        )
+        artifact_numeric_values = tuple(
+            value for _name, value in artifact_numeric_bindings
         )
         numeric_occurrence_extractor = functools.partial(
             extract_typed_numeric_inventory_occurrences_from_text,
@@ -23498,6 +23502,7 @@ class ValidatorPipeline:
             extract_named_scalars=extract_named_scalar_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
             artifact_numeric_values=artifact_numeric_values,
+            artifact_numeric_bindings=artifact_numeric_bindings,
         )
         return list(completeness.issues)
 

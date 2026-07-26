@@ -407,6 +407,7 @@ def analyze_complete_source_unit(
     extract_named_scalars: NamedScalarExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None = None,
+    artifact_numeric_bindings: Sequence[tuple[str, float]] | None = None,
 ) -> CompleteSourceUnitAnalysis:
     """Analyze one artifact against its authoritative, resolver-owned body."""
 
@@ -432,6 +433,7 @@ def analyze_complete_source_unit(
                 extract_named_scalars=extract_named_scalars,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 artifact_numeric_values=artifact_numeric_values,
+                artifact_numeric_bindings=artifact_numeric_bindings,
             )
 
     return CompleteSourceUnitAnalysis((), (), 0, 0, 0)
@@ -448,6 +450,7 @@ def _analyze_rulespec_payload(
     extract_named_scalars: NamedScalarExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None,
+    artifact_numeric_bindings: Sequence[tuple[str, float]] | None,
 ) -> CompleteSourceUnitAnalysis:
     branches = recognize_source_structure(source_text)
     (
@@ -558,6 +561,12 @@ def _analyze_rulespec_payload(
         )
 
     if principal_rules:
+        formula_environment = _constant_rule_environment(payload)
+        if artifact_numeric_bindings is not None:
+            formula_environment = _merge_unambiguous_numeric_bindings(
+                formula_environment,
+                artifact_numeric_bindings,
+            )
         issues.extend(
             _companion_test_issues(
                 principal_rules,
@@ -571,7 +580,7 @@ def _analyze_rulespec_payload(
                 test_cases=test_cases,
                 extract_numeric_occurrences=extract_numeric_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
-                formula_environment=_constant_rule_environment(payload),
+                formula_environment=formula_environment,
             )
         )
 
@@ -1337,23 +1346,66 @@ def collect_artifact_numeric_values(
 
     values = [float(value) for value in additional_values]
     values.extend(
-        float(item.value)
-        for item in extract_named_scalars(content)
-        if hasattr(item, "value")
+        value
+        for _name, value in collect_artifact_numeric_bindings(
+            content,
+            extract_named_scalars=extract_named_scalars,
+            imported_symbol_contents=imported_symbol_contents,
+        )
     )
+    return tuple(values)
+
+
+def collect_artifact_numeric_bindings(
+    content: str,
+    *,
+    extract_named_scalars: NamedScalarExtractor,
+    imported_symbol_contents: Sequence[tuple[str, str]] = (),
+) -> tuple[tuple[str, float], ...]:
+    """Collect exact scalar names together with strict recall values."""
+
+    bindings = [
+        (str(item.name), float(item.value))
+        for item in extract_named_scalars(content)
+        if hasattr(item, "name") and hasattr(item, "value")
+    ]
     for imported_symbol, artifact_content in imported_symbol_contents:
-        values.extend(
-            float(item.value)
+        bindings.extend(
+            (imported_symbol, float(item.value))
             for item in extract_named_scalars(artifact_content)
             if hasattr(item, "value")
             and _named_scalar_base_name(str(getattr(item, "name", "")))
             == imported_symbol
         )
-    return tuple(values)
+    return tuple(bindings)
 
 
 def _named_scalar_base_name(name: str) -> str:
     return name.split("[", 1)[0]
+
+
+def _merge_unambiguous_numeric_bindings(
+    environment: dict[str, Any],
+    bindings: Sequence[tuple[str, float]],
+) -> dict[str, Any]:
+    """Merge exact scalar bindings while rejecting conflicting definitions."""
+
+    values_by_name: dict[str, list[int | float]] = {}
+    for name, value in environment.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values_by_name.setdefault(name, []).append(value)
+    for name, value in bindings:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            values_by_name.setdefault(name, []).append(value)
+
+    merged = dict(environment)
+    for name, values in values_by_name.items():
+        first = values[0]
+        if all(math.isclose(float(value), float(first)) for value in values[1:]):
+            merged[name] = first
+        else:
+            merged.pop(name, None)
+    return merged
 
 
 def _companion_test_issues(

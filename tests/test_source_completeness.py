@@ -10,6 +10,7 @@ from axiom_encode.harness import validator_pipeline as validator_pipeline_module
 from axiom_encode.harness.source_completeness import (
     analyze_complete_source_unit,
     authoritative_numeric_recall_text,
+    collect_artifact_numeric_bindings,
     collect_artifact_numeric_values,
     recognize_source_structure,
     source_states_explicit_computation,
@@ -33,6 +34,8 @@ def _analyze(
     authoritative_source_text: str,
     *,
     test_cases: list[object] | None = None,
+    artifact_numeric_values: tuple[float, ...] | None = None,
+    artifact_numeric_bindings: tuple[tuple[str, float], ...] | None = None,
 ):
     return analyze_complete_source_unit(
         content,
@@ -42,6 +45,8 @@ def _analyze(
         extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
         extract_named_scalars=extract_named_scalar_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
+        artifact_numeric_values=artifact_numeric_values,
+        artifact_numeric_bindings=artifact_numeric_bindings,
     )
 
 
@@ -1013,6 +1018,87 @@ rules:
     )
 
     assert values == (5.0,)
+
+
+def test_imported_scalar_bindings_witness_exact_formula_branches():
+    source = """\
+(1) Bei Ehegatten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+imports:
+  - de:statutes/constants#married_multiplier
+  - de:statutes/constants#single_multiplier
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if married:
+            income * married_multiplier
+          else:
+            income * single_multiplier
+"""
+    bindings = (
+        ("married_multiplier", 2.0),
+        ("single_multiplier", 3.0),
+    )
+    cases = [
+        {
+            "name": "married",
+            "input": {"married": True, "income": 10},
+            "output": {"amount": 20},
+        },
+        {
+            "name": "single",
+            "input": {"married": False, "income": 10},
+            "output": {"amount": 30},
+        },
+    ]
+
+    result = _analyze(
+        content,
+        source,
+        test_cases=cases,
+        artifact_numeric_values=(2.0, 3.0),
+        artifact_numeric_bindings=bindings,
+    )
+
+    assert not result.issues
+
+
+def test_artifact_numeric_bindings_preserve_imported_symbol_names():
+    content = """\
+format: rulespec/v1
+imports:
+  - de:statutes/constants#needed_amount
+rules: []
+"""
+    imported = """\
+format: rulespec/v1
+rules:
+  - name: needed_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5
+"""
+
+    bindings = collect_artifact_numeric_bindings(
+        content,
+        extract_named_scalars=extract_named_scalar_occurrences,
+        imported_symbol_contents=(("needed_amount", imported),),
+    )
+
+    assert bindings == (("needed_amount", 5.0),)
 
 
 def test_complete_import_inventory_does_not_walk_transitive_same_name(
