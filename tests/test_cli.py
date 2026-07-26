@@ -515,6 +515,7 @@ def _fake_verified_eval_suite_artifacts(
     }
     execution_identity = {
         "schema": "axiom-encode/eval-execution-identity/v3",
+        "case_timeout_seconds": 3600,
         "runner_timeouts": {
             "claude": {"wall_seconds": 1800},
             "codex": {

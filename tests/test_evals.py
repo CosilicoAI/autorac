@@ -12029,6 +12029,45 @@ class TestOpenAIEvalRequest:
         assert response is ok_response
         assert [item.args[0] for item in mock_sleep.call_args_list] == [7, 11]
 
+    def test_post_openai_eval_request_is_bounded_by_case_deadline(
+        self,
+        monkeypatch,
+    ):
+        clock = [100.0]
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def exhaust_deadline(*_args, **kwargs):
+            assert kwargs["timeout"] == (5.0, 5.0)
+            clock[0] = 106.0
+            raise requests.exceptions.ReadTimeout("timed out")
+
+        deadline_token = evals_module._EVAL_CASE_DEADLINE_MONOTONIC.set(105.0)
+        timeout_token = evals_module._EVAL_CASE_TIMEOUT_SECONDS.set(5)
+        try:
+            with (
+                patch(
+                    "axiom_encode.harness.evals.requests.post",
+                    side_effect=exhaust_deadline,
+                ) as mock_post,
+                patch("axiom_encode.harness.evals.time.sleep") as mock_sleep,
+                pytest.raises(requests.Timeout) as exc_info,
+            ):
+                _post_openai_eval_request(
+                    headers={"Authorization": "Bearer test"},
+                    body={"model": "gpt-5.4", "input": "hi"},
+                    attempts=3,
+                )
+        finally:
+            evals_module._EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+            evals_module._EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+        assert exc_info.value.timeout_stage == "case_budget"
+        assert exc_info.value.timeout_reason == "wall"
+        assert exc_info.value.timeout_seconds == 5
+        assert exc_info.value.timeout_attempts == 1
+
     @pytest.mark.parametrize(
         ("error", "expected_reason", "expected_seconds"),
         [
@@ -12063,6 +12102,34 @@ class TestOpenAIEvalRequest:
         assert response.timeout_seconds == expected_seconds
         assert response.trace["timeout_reason"] == expected_reason
         assert response.trace["timeout_seconds"] == expected_seconds
+
+    def test_openai_prompt_eval_classifies_case_budget_timeout(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        error = requests.exceptions.Timeout("Eval case budget timed out")
+        error.timeout_stage = "case_budget"
+        error.timeout_reason = "wall"
+        error.timeout_seconds = 17
+        error.timeout_attempts = 2
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            side_effect=error,
+        ):
+            response = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert response.timed_out is True
+        assert response.timeout_stage == "case_budget"
+        assert response.timeout_reason == "wall"
+        assert response.timeout_seconds == 17
+        assert response.timeout_attempts == 2
+        assert response.trace["timeout_stage"] == "case_budget"
 
 
 def test_repeated_openai_timeouts_reach_durable_result_attempt_count(
@@ -13248,6 +13315,56 @@ cases:
         assert result.timeout_seconds == 600
         assert result.timeout_attempts == 1
 
+    def test_case_budget_stops_suite_retry_and_marks_terminal_timeout(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manifest = EvalSuiteManifest(
+            name="Case budget suite",
+            path=tmp_path / "suite.yaml",
+            runners=["openai:gpt-5.4"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        clock = [0.0]
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def exhaust_budget(**_kwargs):
+            clock[0] = 11.0
+            raise RuntimeError("stream disconnected")
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=exhaust_budget,
+        ) as mock_source:
+            [result] = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+            )
+
+        mock_source.assert_called_once()
+        assert result.failure_kind == "timeout"
+        assert result.timed_out is True
+        assert result.timeout_stage == "case_budget"
+        assert result.timeout_reason == "wall"
+        assert result.timeout_seconds == 10
+        assert result.timeout_attempts == 1
+        assert "case budget" in (result.error or "").lower()
+
     def test_suite_timeout_history_does_not_promote_later_error_to_timeout(
         self,
     ):
@@ -14126,6 +14243,7 @@ cases:
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
                 "schema": "axiom-encode/eval-execution-identity/v3",
+                "case_timeout_seconds": 3600,
                 "runner_timeouts": {
                     "claude": {"wall_seconds": 1800},
                     "codex": {
@@ -14182,6 +14300,7 @@ cases:
         monkeypatch,
     ):
         monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1234")
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "2400")
         monkeypatch.setenv("AXIOM_ENCODE_CODEX_TIMEOUT_SECONDS", "456")
         monkeypatch.setenv("AXIOM_ENCODE_CODEX_IDLE_TIMEOUT_SECONDS", "123")
         monkeypatch.setenv("AXIOM_ENCODE_CODEX_LONG_TIMEOUT_SECONDS", "2345")
@@ -14190,6 +14309,7 @@ cases:
         identity = _test_eval_suite_execution_identity()
 
         assert identity["schema"] == "axiom-encode/eval-execution-identity/v3"
+        assert identity["case_timeout_seconds"] == 2400
         assert identity["runner_timeouts"] == {
             "claude": {"wall_seconds": 1234},
             "codex": {
@@ -14231,6 +14351,26 @@ cases:
         monkeypatch.setenv("AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS", "1800")
 
         with pytest.raises(ValueError, match="execution identity"):
+            _validate_eval_suite_execution_identity(
+                payload,
+                _test_eval_suite_execution_identity(),
+            )
+
+    def test_resume_identity_rejects_different_case_budget(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "2400")
+        persisted_identity = _test_eval_suite_execution_identity()
+        payload = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+        }
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "3600")
+
+        with pytest.raises(ValueError, match="overall case timeout"):
             _validate_eval_suite_execution_identity(
                 payload,
                 _test_eval_suite_execution_identity(),
