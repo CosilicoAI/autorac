@@ -146,14 +146,36 @@ def _execution_identity(
     checkout="/ci/axiom-encode",
     policyengine_runtime=None,
     claude_timeout_seconds=1800,
-    case_timeout_seconds=3600,
+    codex_timeout_seconds=600,
+    suite_max_attempts=3,
 ):
     """A payload execution identity mirroring the current producer shape."""
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
-        "case_timeout_seconds": case_timeout_seconds,
         "runner_timeouts": {
             "claude": {"wall_seconds": claude_timeout_seconds},
+            "codex": {
+                "short_source": {
+                    "wall_seconds": codex_timeout_seconds,
+                    "idle_seconds": min(300, codex_timeout_seconds),
+                },
+                "long_source": {
+                    "wall_seconds": 1800,
+                    "idle_seconds": 900,
+                },
+                "long_source_char_threshold": 40_000,
+            },
+            "openai": {
+                "request_connect_seconds": 30,
+                "request_read_seconds": 180,
+            },
+        },
+        "timeout_retry_policy": {
+            "empty_artifact_max_attempts": 2,
+            "suite_max_attempts": suite_max_attempts,
+            "suite_retries_after_timeout": False,
+            "openai_request_max_attempts": 6,
+            "openai_request_backoff_seconds": [1, 2, 4, 8, 10],
         },
         "axiom_encode": {
             "kind": "git",
@@ -420,8 +442,8 @@ def test_real_producer_identity_matches_consumer_contract():
     assert '"path"' not in rendered
     # Score-affecting fields survive normalization.
     assert identity["axiom_encode"]["version"] in rendered
-    assert identity["case_timeout_seconds"] == normalized["case_timeout_seconds"]
     assert identity["runner_timeouts"] == normalized["runner_timeouts"]
+    assert identity["timeout_retry_policy"] == normalized["timeout_retry_policy"]
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
@@ -620,6 +642,23 @@ def test_fold_refuses_execution_identity_without_timeout_policy(tmp_path):
     )
 
     with pytest.raises(EvalBoardError, match="runner timeout"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_execution_identity_without_timeout_retry_policy(tmp_path):
+    identity = _execution_identity()
+    identity.pop("timeout_retry_policy")
+    path = _write_payload(
+        tmp_path,
+        "missing-timeout-retry-policy.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="timeout retry"):
         fold_eval_board([path])
 
 
@@ -831,14 +870,14 @@ def test_fold_refuses_mismatched_encoder_timeout(tmp_path):
         fold_eval_board([left, right])
 
 
-def test_fold_refuses_mismatched_overall_case_timeout(tmp_path):
+def test_fold_refuses_mismatched_codex_timeout(tmp_path):
     left = _write_payload(
         tmp_path,
         "left.json",
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
-            execution_identity=_execution_identity(case_timeout_seconds=2400),
+            execution_identity=_execution_identity(codex_timeout_seconds=599),
         ),
     )
     right = _write_payload(
@@ -847,7 +886,31 @@ def test_fold_refuses_mismatched_overall_case_timeout(tmp_path):
         _payload(
             [("sol", "codex", "gpt-5.6-sol")],
             [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
-            execution_identity=_execution_identity(case_timeout_seconds=3600),
+            execution_identity=_execution_identity(codex_timeout_seconds=600),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
+
+
+def test_fold_refuses_mismatched_timeout_retry_policy(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(suite_max_attempts=1),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(suite_max_attempts=3),
         ),
     )
 
@@ -1428,7 +1491,7 @@ def test_renderers_and_exports(tmp_path):
     assert [line.split()[-1] for line in grid_lines] == ["P", "F", "E"]
 
     payload = eval_board_to_json(board)
-    assert payload["schema"] == "axiom-encode/eval-board/v1"
+    assert payload["schema"] == "axiom-encode/eval-board/v2"
     assert payload["runners"][0]["gate_pass_count"] == 1
     expected_digest = terra_payload["evidence"]["execution_identity_sha256"]
     assert payload["execution_identity_sha256s"] == {str(terra_path): expected_digest}

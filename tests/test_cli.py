@@ -514,9 +514,30 @@ def _fake_verified_eval_suite_artifacts(
     }
     execution_identity = {
         "schema": "axiom-encode/eval-execution-identity/v3",
-        "case_timeout_seconds": 3600,
         "runner_timeouts": {
             "claude": {"wall_seconds": 1800},
+            "codex": {
+                "short_source": {
+                    "wall_seconds": 600,
+                    "idle_seconds": 300,
+                },
+                "long_source": {
+                    "wall_seconds": 1800,
+                    "idle_seconds": 900,
+                },
+                "long_source_char_threshold": 40_000,
+            },
+            "openai": {
+                "request_connect_seconds": 30,
+                "request_read_seconds": 180,
+            },
+        },
+        "timeout_retry_policy": {
+            "empty_artifact_max_attempts": 2,
+            "suite_max_attempts": 3,
+            "suite_retries_after_timeout": False,
+            "openai_request_max_attempts": 6,
+            "openai_request_backoff_seconds": [1, 2, 4, 8, 10],
         },
         "axiom_encode": {
             "kind": "tree",
