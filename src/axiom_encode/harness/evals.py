@@ -6780,27 +6780,25 @@ def _evaluate_artifact_in_scope(
             policy_repo_root=policy_repo_root,
             rulespec_dependency_roots=rulespec_dependency_roots,
         )
-        pipeline_options: dict[str, Any] = {
-            "policy_repo_path": validation_policy_repo_root,
-            "axiom_rules_path": axiom_rules_path,
-            "enable_oracles": oracle != "none",
-            "policyengine_runtime": policyengine_runtime,
-            "policyengine_rule_hint": policyengine_rule_hint,
-            "require_policy_proofs": True,
-            "source_text": source_text,
-            "source_metadata": source_metadata,
-            "local_corpus_release": local_corpus_release,
-            "source_citation_path": source_citation_path,
-            "rulespec_dependency_roots": validation_dependency_roots,
-            "validation_staging_root": validation_staging_root,
-            "require_complete_source_unit": require_complete_source_unit,
-        }
-        if amendment_documents:
-            pipeline_options["amendment_source_texts"] = {
+        pipeline = ValidatorPipeline(
+            policy_repo_path=validation_policy_repo_root,
+            axiom_rules_path=axiom_rules_path,
+            enable_oracles=oracle != "none",
+            policyengine_runtime=policyengine_runtime,
+            policyengine_rule_hint=policyengine_rule_hint,
+            require_policy_proofs=True,
+            source_text=source_text,
+            source_metadata=source_metadata,
+            local_corpus_release=local_corpus_release,
+            source_citation_path=source_citation_path,
+            rulespec_dependency_roots=validation_dependency_roots,
+            validation_staging_root=validation_staging_root,
+            require_complete_source_unit=require_complete_source_unit,
+            amendment_source_texts={
                 document.citation_path: document.body
                 for document in amendment_documents
-            }
-        pipeline = ValidatorPipeline(**pipeline_options)
+            },
+        )
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
 
