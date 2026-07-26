@@ -49209,15 +49209,6 @@ def _validated_eval_suite_report_payload(
             "sha256": canonical_case["sha256"],
         }:
             raise ValueError("Eval suite result uses a different case identity")
-        corpus_citation_path = case_marker.get("corpus_citation_path")
-        if (
-            not isinstance(corpus_citation_path, str)
-            or not corpus_citation_path
-            or result.get("citation") != corpus_citation_path
-        ):
-            raise ValueError(
-                "Eval suite result citation does not match its canonical case path"
-            )
         runner_name = result.get("runner")
         if not isinstance(runner_name, str) or runner_name not in runners_by_name:
             raise ValueError("Eval suite result uses an unknown runner")

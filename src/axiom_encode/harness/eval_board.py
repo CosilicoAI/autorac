@@ -1753,6 +1753,15 @@ def _validate_result_row_admission(
 ) -> None:
     """Apply the complete shared admission policy for one durable result row."""
 
+    canonical_citation = case_identity.get("corpus_citation_path")
+    if (
+        not isinstance(canonical_citation, str)
+        or not canonical_citation
+        or result.get("citation") != canonical_citation
+    ):
+        raise EvalBoardError(
+            f"{context} citation does not match its canonical case path"
+        )
     _validate_result_execution_admission(
         result,
         run_identity=run_identity,
