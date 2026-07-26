@@ -71,10 +71,16 @@ CORPUS_IDENTITY = {
 
 def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
     """Mirror the sealed-runtime identity shape, paths included."""
+    stdlib = f"{root}/.venv/lib/python3.13"
+    site_packages = f"{stdlib}/site-packages"
+    initial_sys_path = [
+        stdlib,
+        f"{stdlib}/lib-dynload",
+    ]
     identity = {
         "schema": POLICYENGINE_RUNTIME_SCHEMA,
         "country": "uk",
-        "official_repository_url": "https://github.com/PolicyEngine/policyengine-uk",
+        "official_repository_url": "https://github.com/PolicyEngine/policyengine-uk.git",
         "trusted_git_commit": "9" * 40,
         "official_tree_sha256": "13" * 32,
         "official_tree_file_count": 5000,
@@ -90,8 +96,8 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
         "venv_execution_tree_sha256": "16" * 32,
         "venv_execution_file_count": 21000,
         "venv_execution_byte_count": 923456789,
-        "stdlib_root": f"{root}/.venv/lib/python3.13",
-        "site_packages_root": f"{root}/.venv/lib/python3.13/site-packages",
+        "stdlib_root": stdlib,
+        "site_packages_root": site_packages,
         "pyproject_sha256": "17" * 32,
         "uv_lock_sha256": "18" * 32,
         "locked_versions": {
@@ -102,19 +108,14 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
         "python_implementation": "cpython",
         "python_executable": f"{root}/.venv/bin/python",
         "python_prefix": f"{root}/.venv",
-        "python_base_prefix": f"{root}/toolcache/python-3.13.5",
+        "python_base_prefix": f"{root}/.venv",
         "python_exec_prefix": f"{root}/.venv",
-        "python_base_exec_prefix": f"{root}/toolcache/python-3.13.5",
-        "initial_sys_path": [
-            f"{root}/toolcache/python-3.13.5/lib/python313.zip",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13/lib-dynload",
-        ],
+        "python_base_exec_prefix": f"{root}/.venv",
+        "initial_sys_path": initial_sys_path,
         "effective_sys_path": [
-            f"{root}/toolcache/python-3.13.5/lib/python313.zip",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13/lib-dynload",
-            f"{root}/.venv/lib/python3.13/site-packages",
+            root,
+            site_packages,
+            *initial_sys_path,
         ],
         "isolated": 1,
         "no_site": 1,
@@ -122,20 +123,14 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
             "policyengine-uk": {
                 "distribution": "policyengine-uk",
                 "version": pe_version,
-                "module_origin": (
-                    f"{root}/.venv/lib/python3.13/site-packages/"
-                    "policyengine_uk/__init__.py"
-                ),
-                "metadata_root": f"{root}/.venv/lib/python3.13/site-packages",
+                "module_origin": f"{root}/policyengine_uk/__init__.py",
+                "metadata_root": site_packages,
             },
             "policyengine-core": {
                 "distribution": "policyengine-core",
                 "version": "3.20.0",
-                "module_origin": (
-                    f"{root}/.venv/lib/python3.13/site-packages/"
-                    "policyengine_core/__init__.py"
-                ),
-                "metadata_root": f"{root}/.venv/lib/python3.13/site-packages",
+                "module_origin": f"{site_packages}/policyengine_core/__init__.py",
+                "metadata_root": site_packages,
             },
         },
     }
@@ -514,6 +509,27 @@ def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
     )
     assert admitted_identity == identity
     assert admitted_digest == digest
+
+
+def test_fold_admits_producer_policyengine_runtime_identity(tmp_path):
+    execution_identity = _execution_identity(
+        policyengine_runtime=_policyengine_runtime_identity(),
+    )
+    path = _write_payload(
+        tmp_path,
+        "producer-policyengine-runtime.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.execution_identity == normalized_execution_identity(
+        execution_identity
+    )
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
