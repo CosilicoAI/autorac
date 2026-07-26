@@ -2378,9 +2378,49 @@ rules:
             case("single", disabled=False, filing_status="single"),
         ],
     )
+    nested_guard_content = content.replace(
+        """\
+          if disabled:
+            0
+          else:
+""",
+        """\
+          if disabled:
+            if audited:
+              0
+            else:
+              0
+          else:
+""",
+    )
+    executed_match_below_nested_guard = _analyze(
+        nested_guard_content,
+        source,
+        test_cases=[
+            {
+                **case("nested married", disabled=False, filing_status="married"),
+                "input": {
+                    "disabled": False,
+                    "audited": False,
+                    "filing_status": "married",
+                    "income": 10,
+                },
+            },
+            {
+                **case("nested single", disabled=False, filing_status="single"),
+                "input": {
+                    "disabled": False,
+                    "audited": False,
+                    "filing_status": "single",
+                    "income": 10,
+                },
+            },
+        ],
+    )
 
     assert _has_issue(bypassed_match, "formula branch", "distinct")
     assert not _has_issue(executed_match, "formula branch")
+    assert not _has_issue(executed_match_below_nested_guard, "formula branch")
 
 
 def test_numbered_prose_formulas_require_distinct_executed_cases():

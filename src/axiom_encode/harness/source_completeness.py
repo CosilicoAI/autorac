@@ -1806,6 +1806,11 @@ def _rule_match_outer_branch(rule: dict[str, Any]) -> str | int | None:
             for header in multiline_headers
             if len(header.group("indent").expandtabs(8)) == outer_indent
         ]
+        outer_condition_headers = [
+            header
+            for header in outer_headers
+            if header.group("kind") in {"if", "elif"}
+        ]
         match_line_start = formula.rfind("\n", 0, match.start()) + 1
         match_indent = len(
             formula[match_line_start : match.start()].expandtabs(8)
@@ -1821,7 +1826,7 @@ def _rule_match_outer_branch(rule: dict[str, Any]) -> str | int | None:
                 branch_index = condition_index
                 condition_index += 1
             else:
-                branch_index = len(condition_headers)
+                branch_index = len(outer_condition_headers)
         return branch_index if branch_index >= 0 else None
 
     inline_condition_headers = list(
