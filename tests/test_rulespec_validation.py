@@ -323,6 +323,54 @@ def test_validator_subprocess_cleanup_error_cannot_mask_timeout():
     assert cleanup_failures[0].endswith("/stdout.log")
 
 
+def test_rulespec_run_compiled_timeout_is_reproducible_across_temp_roots(
+    tmp_path,
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+    )
+
+    def timeout_with_command_path(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    issue_sets: list[list[str]] = []
+    with patch.object(
+        validator_pipeline.subprocess,
+        "run",
+        side_effect=timeout_with_command_path,
+    ):
+        for staging_name in ("tmpABC123", "tmpXYZ789"):
+            outputs, issues = pipeline._run_rulespec_derived_test_case(
+                binary=tmp_path / "axiom-rules-engine",
+                compiled_path=tmp_path / staging_name / "compiled.json",
+                case={"input": {}},
+                case_name="timeout_case",
+                case_index=1,
+                period={
+                    "period_kind": "month",
+                    "start": "2026-01-01",
+                    "end": "2026-01-31",
+                },
+                output_names=["benefit"],
+                derived_by_key={"benefit": {"entity": "Household"}},
+                require_legal_input_keys=False,
+                legal_ids_by_friendly_name={},
+                declared_relation_names=set(),
+                module_target=None,
+            )
+            assert outputs is None
+            issue_sets.append(issues)
+
+    assert issue_sets == [
+        ["Test case `timeout_case` execution timed out after 60 seconds."],
+        ["Test case `timeout_case` execution timed out after 60 seconds."],
+    ]
+    assert all("tmpABC123" not in issue and "tmpXYZ789" not in issue for issue in issues)
+
+
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:
     """Create and return ``rulespec-<country>/<jurisdiction>``."""
 
@@ -15200,6 +15248,21 @@ def test_validation_staging_normalization_accepts_right_delimiters_without_match
         "child=<rulespec-validation-root>/compiled.json "
         f"prefix={staging_root}-extra extension={staging_root}.bak "
         f"embedded=token{staging_root}"
+    )
+
+
+def test_validation_staging_normalization_respects_unicode_token_boundaries(tmp_path):
+    staging_root = tmp_path / "stage"
+    prefixed = f"café{staging_root}/compiled.json"
+    suffixed = f"{staging_root}é"
+    standalone = f"({staging_root}/compiled.json)"
+
+    assert _normalize_validation_staging_text(
+        f"{prefixed} {suffixed} {standalone}",
+        staging_root,
+    ) == (
+        f"{prefixed} {suffixed} "
+        "(<rulespec-validation-root>/compiled.json)"
     )
 
 
