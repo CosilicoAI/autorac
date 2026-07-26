@@ -10,13 +10,13 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, generation/retry case budget, backend timeout policy,
-timeout retry policy, PolicyEngine runtime) — compared after dropping
-location-only fields, so the same toolchain checked out at different paths still
-folds. The manifest content hash may differ (single-runner variants of one suite
-differ byte-wise but share case identities), and runner sets may differ — that
-is the add-a-model path. Duplicate runner names across payloads are refused
-rather than merged: two runs of one runner are two boards, not one.
+content/toolchain/waivers, per-case-runner generation/retry budget, backend
+timeout policy, timeout retry policy, PolicyEngine runtime) — compared after
+dropping location-only fields, so the same toolchain checked out at different
+paths still folds. The manifest content hash may differ (single-runner variants
+of one suite differ byte-wise but share case identities), and runner sets may
+differ — that is the add-a-model path. Duplicate runner names across payloads
+are refused rather than merged: two runs of one runner are two boards, not one.
 
 The board consumes canonical v6 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows

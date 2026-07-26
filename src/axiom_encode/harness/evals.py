@@ -3285,9 +3285,9 @@ def _build_eval_suite_execution_identity(
     encoder_identity["version"] = __version__
     return {
         "schema": EVAL_EXECUTION_IDENTITY_SCHEMA,
-        # This suite-wide deadline covers artifact generation and every retry.
-        # Deterministic validation and optional reviewers run after generation
-        # and deliberately are not presented as preemptible work.
+        # Each case-runner receives this full deadline for artifact generation
+        # and every retry. Deterministic validation and optional reviewers run
+        # after generation and deliberately are not presented as preemptible.
         "case_timeout_seconds": _eval_case_timeout_seconds(),
         "runner_timeouts": {
             "claude": {
@@ -3317,7 +3317,7 @@ def _build_eval_suite_execution_identity(
 
 
 def _eval_timeout_retry_policy(suite_retry_attempts: int) -> dict[str, object]:
-    """Return the retry limits that bound one suite case's execution."""
+    """Return the retry limits that bound one case-runner's execution."""
 
     if isinstance(suite_retry_attempts, bool) or not isinstance(
         suite_retry_attempts, int
@@ -12821,7 +12821,7 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def _eval_case_timeout_seconds() -> int:
-    """Return one case's wall budget for generation and all generation retries."""
+    """Return each case-runner's generation and generation-retry wall budget."""
 
     return _positive_int_env(
         "AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS",
@@ -12831,7 +12831,7 @@ def _eval_case_timeout_seconds() -> int:
 
 @contextlib.contextmanager
 def _active_eval_case_budget(timeout_seconds: int) -> Iterator[None]:
-    """Install one deadline shared by a case's generation and retry work."""
+    """Install one deadline shared by a case-runner's generation and retries."""
 
     deadline_token = _EVAL_CASE_DEADLINE_MONOTONIC.set(
         time.monotonic() + timeout_seconds
@@ -12845,7 +12845,7 @@ def _active_eval_case_budget(timeout_seconds: int) -> Iterator[None]:
 
 
 def _remaining_eval_case_budget_seconds() -> float | None:
-    """Return the active generation/retry budget, if inside a suite case."""
+    """Return the active budget, if inside a suite case-runner generation."""
 
     deadline = _EVAL_CASE_DEADLINE_MONOTONIC.get()
     if deadline is None:
