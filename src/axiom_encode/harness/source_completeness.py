@@ -1501,17 +1501,27 @@ def _formula_branch_test_witnesses(
     rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
-) -> set[tuple[str, int]]:
+) -> set[tuple[str, str]]:
     interval = _formula_branch_interval(
         branch,
         extract_numeric_occurrences=extract_numeric_occurrences,
     )
-    witnesses: set[tuple[str, int]] = set()
+    witnesses: set[tuple[str, str]] = set()
     for rule_name in sorted(rule_names):
-        selector_names = _rule_numeric_selector_names(principal_rules[rule_name])
+        rule = principal_rules[rule_name]
+        selector_names = _rule_numeric_selector_names(rule)
+        branch_selector_names = _rule_branch_selector_names(rule)
         for case in asserted_by_rule.get(rule_name, ()):
             if interval is None:
-                witnesses.add((rule_name, id(case)))
+                if branch_selector_names:
+                    signature = _case_selector_signature(
+                        case,
+                        branch_selector_names,
+                    )
+                    if signature:
+                        witnesses.add((rule_name, f"selectors:{signature!r}"))
+                else:
+                    witnesses.add((rule_name, f"case:{id(case)}"))
                 continue
             if selector_names and any(
                 _interval_contains(interval, value)
@@ -1519,6 +1529,56 @@ def _formula_branch_test_witnesses(
             ):
                 witnesses.add((rule_name, id(case)))
     return witnesses
+
+
+def _rule_branch_selector_names(rule: dict[str, Any]) -> set[str]:
+    """Return identifiers that choose branches in a principal formula."""
+
+    names: set[str] = set()
+    for match in re.finditer(
+        r"(?m)^[ \t]*(?:if|elif)[ \t]+(?P<condition>[^:\n]+):",
+        _rule_formula_text(rule),
+    ):
+        condition = re.sub(r"(['\"]).*?\1", "", match.group("condition"))
+        names.update(
+            identifier
+            for identifier in _FORMULA_IDENTIFIER.findall(condition)
+            if identifier.lower()
+            not in {
+                "if",
+                "elif",
+                "else",
+                "and",
+                "or",
+                "not",
+                "true",
+                "false",
+                "holds",
+                "not_holds",
+            }
+        )
+    return names
+
+
+def _case_selector_signature(
+    case: dict[str, Any],
+    selector_names: set[str],
+) -> tuple[tuple[str, str], ...]:
+    """Fingerprint only case inputs that select a principal formula branch."""
+
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return ()
+    return tuple(
+        sorted(
+            (
+                str(key),
+                repr(value),
+            )
+            for key, value in inputs.items()
+            if _input_key_names(key) & selector_names
+        )
+    )
 
 
 def _branch_boundary_has_test_evidence(

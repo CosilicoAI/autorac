@@ -2030,6 +2030,72 @@ def test_distinct_cases_cover_distinct_paragraph_formulas():
     assert not _has_issue(result, "formula branch")
 
 
+def test_non_range_formula_branches_require_distinct_selector_executions():
+    source = """\
+(1) Bei Ehegatten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: married_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: single_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if married:
+            income * married_multiplier
+          else:
+            income * single_multiplier
+"""
+
+    def case(name: str, *, married: bool, income: int) -> dict[str, object]:
+        return {
+            "name": name,
+            "input": {"married": married, "income": income},
+            "output": {"amount": income * (2 if married else 3)},
+        }
+
+    repeated_married = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married one", married=True, income=10),
+            case("married two", married=True, income=20),
+        ],
+    )
+    both_branches = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married", married=True, income=10),
+            case("single", married=False, income=10),
+        ],
+    )
+
+    assert _has_issue(repeated_married, "formula branch", "distinct")
+    assert not _has_issue(both_branches, "formula branch")
+
+
 def test_numbered_prose_formulas_require_distinct_executed_cases():
     source = """\
 (1) Es gelten folgende Berechnungen:
