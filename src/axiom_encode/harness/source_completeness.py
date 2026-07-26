@@ -160,10 +160,19 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"geteilt\s+durch|durch\s+(?:\d+|[a-zäöüß]+)\s+geteilt|"
     r"multipliziert\s+mit|"
     r"mit\s+(?:(?:dem|einem)\s+faktor\s+)?"
+    r"(?:von\s+)?"
     r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
     r"(?:multiplizieren|vervielfachen)|"
+    r"durch\s+multiplikation\s+mit\s+"
+    r"(?:(?:(?:dem|einem)\s+)?faktor\s+)?(?:von\s+)?"
+    r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+ermitteln|"
     r"unter\s+anwendung\s+(?:des|eines)\s+faktors?\s+"
     r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+ermitteln|"
+    r"(?:ist|sind)\s+zu\s+(?:verdoppeln|verdreifachen|vervierfachen)|"
+    r"durch\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+teilen|"
+    r"um\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
+    r"(?:erhöhen|vermindern|kürzen|vermehren)|"
+    r"aus\s+[^.;]{1,100}\s+zu\s+(?:summieren|addieren)|"
     r"\bmal\s+(?:\d+(?:[.,]\d+)?|"
     r"ein(?:s|e[nsrm]?)?|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn)|"
     r"(?:wird|werden)\s+(?:verdoppelt|verdreifacht|vervierfacht)|"
@@ -1977,11 +1986,13 @@ def _formula_operation_kinds(text: str) -> set[str]:
     operation_patterns = {
         "add": (
             r"(?:\+|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
+            r"\b(?:summieren|addieren)\b|"
             r"\berhöh\w*\s+(?:sich\s+)?um\b)"
         ),
         "subtract": (
             r"(?:\s[−–-]\s|\bunterschied\b|\bdifferenz\b|"
             r"\bdifference\s+between\b|\babzüglich\b|"
+            r"\b(?:vermindern|kürzen)\b|"
             r"\b(?:vermindert|gekürzt|mindert|kürzt)\w*\s+"
             r"(?:sich\s+)?um\b)"
         ),
@@ -1992,7 +2003,8 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
-            r"(?:/|\bgeteilt\b|\bdivided\b|\bhälfte\b|\bhalf\s+of\b)"
+            r"(?:/|\bgeteilt\b|\bteilen\b|\bdivided\b|"
+            r"\bhälfte\b|\bhalf\s+of\b)"
         ),
     }
     operations.update(
@@ -2070,7 +2082,11 @@ def _source_describes_doubling(text: str) -> bool:
 
 def _source_named_multiplier(text: str) -> float | None:
     patterns = (
-        (2.0, r"\b(?:doppelte|zweifache|verdoppelt|twice|double[ds]?)\b"),
+        (
+            2.0,
+            r"\b(?:doppelte|zweifache|verdoppelt|verdoppeln|"
+            r"twice|double[ds]?)\b",
+        ),
         (3.0, r"\b(?:dreifache|verdreifacht|threefold|triple[ds]?)\b"),
         (4.0, r"\b(?:vierfache|vervierfacht|fourfold|quadruple[ds]?)\b"),
         (5.0, r"\b(?:fünffache|fivefold)\b"),

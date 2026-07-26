@@ -3490,7 +3490,16 @@ rules:
     [
         "(1) Das Einkommen ist mit 2 zu multiplizieren.",
         "(1) Das Einkommen ist mit dem Faktor 2 zu vervielfachen.",
+        "(1) Das Einkommen ist mit dem Faktor von 2 zu multiplizieren.",
+        "(1) Das Einkommen ist mit einem Faktor von 2 zu vervielfachen.",
+        "(1) Das Einkommen ist durch Multiplikation mit Faktor 2 zu ermitteln.",
+        "(1) Das Einkommen ist durch Multiplikation mit dem Faktor 2 zu ermitteln.",
         "(1) Der Betrag ist unter Anwendung des Faktors 2 zu ermitteln.",
+        "(1) Das Einkommen ist zu verdoppeln.",
+        "(1) Der Betrag ist durch zwei zu teilen.",
+        "(1) Der Betrag ist um 2 zu erhöhen.",
+        "(1) Der Betrag ist um 2 zu vermindern.",
+        "(1) Der Betrag ist aus Einkommen und Zuschlag zu summieren.",
     ],
 )
 def test_german_infinitive_formula_wording_rejects_parameter_only(source: str):
