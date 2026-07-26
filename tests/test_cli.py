@@ -2979,6 +2979,103 @@ class TestCmdEvalSuite:
             lambda *_args, **_kwargs: fake_release,
         )
 
+    def test_preflights_effective_receivers_once_and_shares_exact_environment(
+        self,
+        tmp_path,
+    ):
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(
+            "name: receiver-bound\n"
+            "runners:\n"
+            "  - codex:gpt-5.4\n"
+            "  - alternate=codex:gpt-5.4@high\n"
+            "  - openai:gpt-5.4\n"
+            "cases:\n"
+            "  - kind: source\n"
+            "    corpus_citation_path: us/statute/7/2017\n"
+        )
+        args = SimpleNamespace(
+            manifest=manifest_file,
+            output=tmp_path / "out",
+            corpus_path=tmp_path / "axiom-corpus",
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            policy_repo_path=self.policy_repo_path,
+            json=True,
+            resume=False,
+            auto_resume_attempts=0,
+            auto_resume_delay_seconds=0,
+        )
+        args.axiom_rules_path.mkdir()
+        args.corpus_path.mkdir(exist_ok=True)
+        codex_environment = EvalCliEnvironment(
+            backend="codex",
+            executable="/tools/codex",
+            version="codex 9.9.9",
+            executable_sha256="a" * 64,
+            launcher_sha256="a" * 64,
+            native_executable="/tools/vendor/codex",
+            native_sha256="b" * 64,
+        )
+        environments = {"codex": codex_environment}
+        payload = {
+            "schema": "axiom-encode/eval-suite-results/v8",
+            "manifest": {},
+            "evidence": {},
+            "coverage": {},
+            "results": [],
+            "readiness": {},
+            "all_ready": False,
+        }
+
+        with (
+            patch("axiom_encode.cli.load_eval_suite_manifest") as mock_load,
+            patch(
+                "axiom_encode.cli._preflight_eval_cli_runners",
+                return_value=environments,
+            ) as preflight,
+            patch("axiom_encode.cli.run_eval_suite", return_value=[]) as run_suite,
+            patch(
+                "axiom_encode.cli._load_verified_eval_suite_artifacts",
+                return_value={
+                    "results": [],
+                    "completed_case_indexes": set(),
+                    "run_state": {},
+                },
+            ) as verify_suite,
+            patch(
+                "axiom_encode.cli._build_eval_suite_payload",
+                return_value=payload,
+            ),
+        ):
+            mock_load.return_value.name = "receiver-bound"
+            mock_load.return_value.path = manifest_file
+            mock_load.return_value.runners = [
+                "codex:gpt-5.4",
+                "alternate=codex:gpt-5.4@high",
+                "openai:gpt-5.4",
+            ]
+            mock_load.return_value.cases = [
+                SimpleNamespace(
+                    kind="source",
+                    name="case-a",
+                    corpus_citation_path="us/statute/7/2017",
+                    citation=None,
+                    oracle="none",
+                )
+            ]
+            mock_load.return_value.gates = MagicMock()
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_eval_suite(args)
+
+        assert exc_info.value.code == 1
+        expected_runners = [
+            parse_runner_spec(spec) for spec in mock_load.return_value.runners
+        ]
+        preflight.assert_called_once_with(expected_runners)
+        assert run_suite.call_args.kwargs["cli_environments"] is environments
+        assert verify_suite.call_args.kwargs["cli_environments"] is environments
+
     def test_exits_nonzero_when_runner_is_not_ready(self, tmp_path, capsys):
         manifest_file = tmp_path / "suite.yaml"
         manifest_file.write_text(
