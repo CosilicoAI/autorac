@@ -2923,6 +2923,51 @@ class TestClaudePromptEval:
             "timeout_seconds": 1234,
         }
 
+    def test_claude_prompt_eval_rejects_success_returned_after_case_deadline(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        clock = [100.0]
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"result": "late success", "usage": {}}),
+            stderr="",
+        )
+
+        def return_after_deadline(*_args, **_kwargs):
+            clock[0] = 106.0
+            return completed
+
+        with (
+            evals_module._active_eval_case_budget(5),
+            patch(
+                "axiom_encode.harness.evals.subprocess.run",
+                side_effect=return_after_deadline,
+            ),
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error == "Eval case budget timed out"
+        assert response.timed_out is True
+        assert response.timeout_stage == "case_budget"
+        assert response.timeout_reason == "wall"
+        assert response.timeout_seconds == 5
+        assert response.timeout_attempts == 1
+        assert response.trace["timed_out"] is True
+        assert response.trace["timeout_stage"] == "case_budget"
+        assert response.trace["timeout_reason"] == "wall"
+        assert response.trace["timeout_seconds"] == 5
+
     @pytest.mark.parametrize(
         "configured_value",
         [None, "not-a-number", "0", "-1"],
@@ -3026,6 +3071,62 @@ class TestClaudePromptEval:
 
 
 class TestCodexPromptEval:
+    def test_codex_prompt_eval_rejects_success_returned_after_case_deadline(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        bundle = "=== FILE: example.yaml ===\nformat: rulespec/v1\nrules: []\n"
+        clock = [100.0]
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                Path(cwd, ".codex-last-message.txt").write_text(bundle)
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def return_after_deadline(*_args, **_kwargs):
+            clock[0] = 106.0
+            return False
+
+        with (
+            evals_module._active_eval_case_budget(5),
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                side_effect=return_after_deadline,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error == "Eval case budget timed out"
+        assert response.timed_out is True
+        assert response.timeout_stage == "case_budget"
+        assert response.timeout_reason == "wall"
+        assert response.timeout_seconds == 5
+        assert response.timeout_attempts == 1
+        assert response.trace["timed_out"] is True
+        assert response.trace["timeout_stage"] == "case_budget"
+        assert response.trace["timeout_reason"] == "wall"
+        assert response.trace["timeout_seconds"] == 5
+
     def test_wait_for_codex_process_terminates_after_stable_last_message(
         self, tmp_path
     ):
