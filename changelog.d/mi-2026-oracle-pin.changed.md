@@ -1,0 +1,1 @@
+Pin axiom-oracles to the reviewed Michigan tax-year-2026 full-year-resident income-tax source-hold classifications, preserving the federal AGI diagnostic while keeping source-readiness predicates and fail-closed State liability sentinels out of PolicyEngine value comparisons.
