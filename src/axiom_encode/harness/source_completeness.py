@@ -3618,6 +3618,9 @@ def _branch_boundary_has_test_evidence(
                         input_names=input_names,
                         formula_environment=execution.constant_environment,
                         source_interval=source_interval,
+                        source_boolean_polarity=(
+                            _source_boundary_boolean_polarity(branch.text)
+                        ),
                         extract_numeric_occurrences=(
                             extract_numeric_occurrences
                         ),
@@ -3635,6 +3638,10 @@ def _branch_boundary_has_test_evidence(
                         principal_rules=principal_rules,
                         dependency_names=set(dependency_environment),
                         formula_environment=formula_environment or {},
+                        source_interval=source_interval,
+                        source_boolean_polarity=(
+                            _source_boundary_boolean_polarity(branch.text)
+                        ),
                     )
                     for input_key, input_names, value in (
                         _case_numeric_selector_evidence(
@@ -3656,6 +3663,7 @@ def _formula_execution_binds_boundary(
     input_names: set[str],
     formula_environment: dict[str, Any],
     source_interval: _NumericInterval | None,
+    source_boolean_polarity: int,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
@@ -3679,7 +3687,7 @@ def _formula_execution_binds_boundary(
             (selector, True)
             for selector in step.selectors
         )
-    checks.append((execution.leaf, False))
+    checks.append((execution.leaf, source_boolean_polarity < 0))
     return any(
         _formula_text_has_boundary_comparison(
             text,
@@ -3710,9 +3718,7 @@ def _formula_text_has_boundary_comparison(
 ) -> bool:
     with contextlib.suppress(SyntaxError):
         expression = ast.parse(text.strip(), mode="eval").body
-        for comparison in (
-            node for node in ast.walk(expression) if isinstance(node, ast.Compare)
-        ):
+        for comparison, negated in _formula_comparisons_with_polarity(expression):
             operands = (comparison.left, *comparison.comparators)
             for operator, left, right in zip(
                 comparison.ops,
@@ -3754,10 +3760,46 @@ def _formula_text_has_boundary_comparison(
                         numeric_value_is_grounded=numeric_value_is_grounded,
                         source_interval=source_interval,
                         allow_complement_relation=allow_complement_relation,
+                        negated=negated,
                     )
                 ):
                     return True
     return False
+
+
+def _formula_comparisons_with_polarity(
+    node: ast.AST,
+    *,
+    negated: bool = False,
+) -> Iterable[tuple[ast.Compare, bool]]:
+    """Yield comparisons with the boolean negation parity that contains them."""
+
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        yield from _formula_comparisons_with_polarity(
+            node.operand,
+            negated=not negated,
+        )
+        return
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and len(node.args) == 1
+        and not node.keywords
+        and node.func.id in {"holds", "not_holds"}
+    ):
+        yield from _formula_comparisons_with_polarity(
+            node.args[0],
+            negated=negated != (node.func.id == "not_holds"),
+        )
+        return
+    if isinstance(node, ast.Compare):
+        yield node, negated
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _formula_comparisons_with_polarity(
+            child,
+            negated=negated,
+        )
 
 
 def _formula_node_references_names(
@@ -3850,11 +3892,14 @@ def _comparison_matches_source_interval(
     numeric_value_is_grounded: NumericGroundingPredicate,
     source_interval: _NumericInterval,
     allow_complement_relation: bool,
+    negated: bool,
 ) -> bool:
     del boundary_names
     relation = _input_comparison_relation(operator, input_on_left=input_on_left)
     if relation is None:
         return False
+    if negated:
+        relation = _complement_comparison_relation(relation)
     relations = {relation}
     if allow_complement_relation:
         relations.add(_complement_comparison_relation(relation))
@@ -3971,6 +4016,8 @@ def _boundary_case_changes_formula_effect(
     principal_rules: dict[str, dict[str, Any]],
     dependency_names: set[str],
     formula_environment: dict[str, Any],
+    source_interval: _NumericInterval | None,
+    source_boolean_polarity: int,
 ) -> bool:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
@@ -3981,6 +4028,22 @@ def _boundary_case_changes_formula_effect(
         else max(abs(boundary_value) * 1e-6, 1e-9)
     )
     signature = _formula_execution_effect_signature(execution)
+    boundary_boolean = _formula_execution_boolean_value(execution)
+    if (
+        boundary_boolean is not None
+        and source_interval is not None
+        and source_boolean_polarity
+        and boundary_boolean
+        != (
+            _interval_contains(source_interval, float(boundary_value))
+            if source_boolean_polarity > 0
+            else not _interval_contains(
+                source_interval,
+                float(boundary_value),
+            )
+        )
+    ):
+        return False
     for raw_key, raw_value in inputs.items():
         if (
             isinstance(raw_value, bool)
@@ -4016,16 +4079,19 @@ def _boundary_case_changes_formula_effect(
                 require_asserted_value=False,
                 allowed_names=dependency_names,
             )
-            selector_changed = any(
-                names & selector_names
-                and not math.isclose(value, float(boundary_value))
+            candidate_selector_values = tuple(
+                value
                 for _key, names, value in _case_numeric_selector_evidence(
                     candidate_case,
                     selector_names,
                     dependency_environment=candidate_dependencies,
                 )
+                if names & selector_names
             )
-            if not selector_changed:
+            if not any(
+                not math.isclose(value, float(boundary_value))
+                for value in candidate_selector_values
+            ):
                 continue
             candidate_execution = _case_formula_execution(
                 rule,
@@ -4033,13 +4099,65 @@ def _boundary_case_changes_formula_effect(
                 formula_environment=formula_environment,
                 dependency_environment=candidate_dependencies,
             )
+            candidate_boolean = (
+                _formula_execution_boolean_value(candidate_execution)
+                if candidate_execution is not None
+                else None
+            )
             if (
                 candidate_execution is not None
+                and (
+                    candidate_boolean is None
+                    or source_interval is None
+                    or not source_boolean_polarity
+                    or any(
+                        candidate_boolean
+                        == (
+                            _interval_contains(source_interval, value)
+                            if source_boolean_polarity > 0
+                            else not _interval_contains(
+                                source_interval,
+                                value,
+                            )
+                        )
+                        for value in candidate_selector_values
+                    )
+                )
                 and _formula_execution_effect_signature(candidate_execution)
                 != signature
             ):
                 return True
     return False
+
+
+def _formula_execution_boolean_value(
+    execution: _FormulaExecution | None,
+) -> bool | None:
+    if execution is None or execution.evaluated_value is None:
+        return None
+    value_type, raw_value = execution.evaluated_value
+    if value_type != "bool":
+        return None
+    return raw_value == "True"
+
+
+def _source_boundary_boolean_polarity(text: str) -> int:
+    lowered = _collapse_text(text).lower()
+    if re.search(
+        r"\b(?:keine?\s+berechtigung|keinen?\s+anspruch|"
+        r"nicht\s+berechtigt|ausgeschlossen|gilt\s+nicht|"
+        r"does\s+not\s+apply|not\s+applicable|not\s+eligible|"
+        r"ineligible|excluded)\b",
+        lowered,
+    ):
+        return -1
+    if re.search(
+        r"\b(?:gilt(?:\s+für)?|anspruch\s+besteht|berechtigt|"
+        r"appl(?:y|ies)|eligible|qualif(?:y|ies))\b",
+        lowered,
+    ):
+        return 1
+    return 0
 
 
 def _is_adjacent_integral_boundary(
@@ -4455,6 +4573,15 @@ def _toggled_formula_boolean_selectors(
                 right_dependencies,
                 right_selectors,
             ) in records[left_index + 1 :]:
+                if (
+                    _normalized_case_period(left_case)
+                    != _normalized_case_period(right_case)
+                    or not _cases_differ_by_one_boolean_input(
+                        left_case,
+                        right_case,
+                    )
+                ):
+                    continue
                 if set(left_selectors) != set(right_selectors):
                     continue
                 changed_names = {
@@ -4465,42 +4592,59 @@ def _toggled_formula_boolean_selectors(
                 if len(changed_names) != 1:
                     continue
                 selector_name = next(iter(changed_names))
-                left_execution = _case_formula_execution(
+                if left_selectors[selector_name]:
+                    blocking_case = left_case
+                    blocking_dependencies = left_dependencies
+                    ordinary_case = right_case
+                    ordinary_dependencies = right_dependencies
+                else:
+                    ordinary_case = left_case
+                    ordinary_dependencies = left_dependencies
+                    blocking_case = right_case
+                    blocking_dependencies = right_dependencies
+                ordinary_execution = _case_formula_execution(
                     rule,
-                    left_case,
+                    ordinary_case,
                     formula_environment=formula_environment,
-                    dependency_environment=left_dependencies,
+                    dependency_environment=ordinary_dependencies,
                 )
-                right_execution = _case_formula_execution(
+                blocking_execution = _case_formula_execution(
                     rule,
-                    right_case,
+                    blocking_case,
                     formula_environment=formula_environment,
-                    dependency_environment=right_dependencies,
+                    dependency_environment=blocking_dependencies,
                 )
-                if left_execution is None or right_execution is None:
+                counterfactual_execution = (
+                    _case_formula_execution_with_boolean_selector(
+                        rule,
+                        ordinary_case,
+                        selector_name=selector_name,
+                        selector_value=True,
+                        formula_environment=formula_environment,
+                        dependency_environment=ordinary_dependencies,
+                    )
+                )
+                if (
+                    ordinary_execution is None
+                    or blocking_execution is None
+                    or counterfactual_execution is None
+                ):
                     continue
-                left_asserted = _test_case_asserted_output_value(
-                    left_case,
+                ordinary_asserted = _test_case_asserted_output_value(
+                    ordinary_case,
                     rule_name,
                 )
-                right_asserted = _test_case_asserted_output_value(
-                    right_case,
+                blocking_asserted = _test_case_asserted_output_value(
+                    blocking_case,
                     rule_name,
                 )
                 if (
-                    left_asserted is not _UNRESOLVED_CONDITION_VALUE
-                    and right_asserted is not _UNRESOLVED_CONDITION_VALUE
-                    and _formula_runtime_values_equal(
-                        left_asserted,
-                        right_asserted,
+                    ordinary_asserted is _UNRESOLVED_CONDITION_VALUE
+                    or blocking_asserted is _UNRESOLVED_CONDITION_VALUE
+                    or not _exception_effect_is_blocking(
+                        ordinary_asserted,
+                        blocking_asserted,
                     )
-                ) or (
-                    (
-                        left_asserted is _UNRESOLVED_CONDITION_VALUE
-                        or right_asserted is _UNRESOLVED_CONDITION_VALUE
-                    )
-                    and _formula_execution_effect_signature(left_execution)
-                    == _formula_execution_effect_signature(right_execution)
                 ):
                     continue
                 if all(
@@ -4508,10 +4652,112 @@ def _toggled_formula_boolean_selectors(
                         execution,
                         selector_name,
                     )
-                    for execution in (left_execution, right_execution)
+                    for execution in (
+                        ordinary_execution,
+                        blocking_execution,
+                        counterfactual_execution,
+                    )
+                ) and _exception_effect_is_blocking(
+                    _formula_execution_runtime_value(ordinary_execution),
+                    _formula_execution_runtime_value(counterfactual_execution),
                 ):
                     toggled.add((rule_name, selector_name))
     return toggled
+
+
+def _cases_differ_by_one_boolean_input(
+    left_case: dict[str, Any],
+    right_case: dict[str, Any],
+) -> bool:
+    left_inputs = left_case.get("input")
+    right_inputs = right_case.get("input")
+    if not isinstance(left_inputs, dict) or not isinstance(right_inputs, dict):
+        return False
+    if set(left_inputs) != set(right_inputs):
+        return False
+    changed = [
+        key
+        for key in left_inputs
+        if not _formula_runtime_values_equal(
+            left_inputs[key],
+            right_inputs[key],
+        )
+    ]
+    if len(changed) != 1:
+        return False
+    key = changed[0]
+    left_boolean = _boolean_value(left_inputs[key])
+    right_boolean = _boolean_value(right_inputs[key])
+    return (
+        left_boolean is not None
+        and right_boolean is not None
+        and left_boolean != right_boolean
+    )
+
+
+def _case_formula_execution_with_boolean_selector(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+    *,
+    selector_name: str,
+    selector_value: bool,
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+) -> _FormulaExecution | None:
+    dependencies = dict(dependency_environment)
+    candidate_case = case
+    if selector_name in dependencies:
+        dependencies[selector_name] = selector_value
+    else:
+        inputs = case.get("input")
+        if not isinstance(inputs, dict):
+            return None
+        matching_keys = [
+            key
+            for key in inputs
+            if selector_name in _input_key_names(key)
+        ]
+        if len(matching_keys) != 1:
+            return None
+        candidate_inputs = dict(inputs)
+        candidate_inputs[matching_keys[0]] = selector_value
+        candidate_case = dict(case)
+        candidate_case["input"] = candidate_inputs
+    return _case_formula_execution(
+        rule,
+        candidate_case,
+        formula_environment=formula_environment,
+        dependency_environment=dependencies,
+    )
+
+
+def _formula_execution_runtime_value(execution: _FormulaExecution) -> Any:
+    if execution.evaluated_value is None:
+        return _UNRESOLVED_CONDITION_VALUE
+    _value_type, raw_value = execution.evaluated_value
+    with contextlib.suppress(SyntaxError, ValueError):
+        return ast.literal_eval(raw_value)
+    return _UNRESOLVED_CONDITION_VALUE
+
+
+def _exception_effect_is_blocking(ordinary: Any, blocking: Any) -> bool:
+    if (
+        ordinary is _UNRESOLVED_CONDITION_VALUE
+        or blocking is _UNRESOLVED_CONDITION_VALUE
+    ):
+        return False
+    ordinary_boolean = _boolean_value(ordinary)
+    blocking_boolean = _boolean_value(blocking)
+    if ordinary_boolean is not None or blocking_boolean is not None:
+        return ordinary_boolean is True and blocking_boolean is False
+    if (
+        isinstance(ordinary, (int, float))
+        and not isinstance(ordinary, bool)
+        and isinstance(blocking, (int, float))
+        and not isinstance(blocking, bool)
+    ):
+        return float(blocking) < float(ordinary)
+    return False
 
 
 def _case_boolean_selector_environment(

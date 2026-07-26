@@ -4212,6 +4212,61 @@ def test_boundary_comparator_preserves_direction_and_inclusivity(
 
 
 @pytest.mark.parametrize(
+    ("formula", "endpoint_output", "expected_issue"),
+    [
+        ("income <= income_limit", True, False),
+        ("not (income > income_limit)", True, False),
+        ("if income > income_limit: false else: true", True, False),
+        ("not (income <= income_limit)", False, True),
+        ("if income > income_limit: true else: false", False, True),
+        ("if income <= income_limit: false else: true", False, True),
+    ],
+)
+def test_boundary_predicate_preserves_applicability_polarity(
+    formula: str,
+    endpoint_output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    content = _boundary_control_content(
+        formula=formula,
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "endpoint polarity",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": endpoint_output},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "boundary", "100") is expected_issue
+
+
+def test_negative_boundary_prose_inverts_boolean_applicability():
+    source = "(1) Einkommen bis 100 Euro begründen keine Berechtigung."
+    content = _boundary_control_content(
+        formula="income > income_limit",
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "excluded endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
     ("wording", "formula"),
     [
         ("höchstens 100 Euro", "income <= income_limit"),
@@ -4924,6 +4979,144 @@ rules:
     result = _analyze(content, source, test_cases=cases)
 
     assert not result.issues
+
+
+def _exception_control_content(formula: str, *, extra_rules: str = "") -> str:
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+{extra_rules}  - name: result
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: '{formula}'
+"""
+
+
+def test_exception_toggle_cannot_borrow_effect_from_changed_numeric_input():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: income else: income",
+    )
+    cases = [
+        {
+            "name": "ordinary low",
+            "input": {"exemption_applies": False, "income": 10},
+            "output": {"result": 10},
+        },
+        {
+            "name": "exempt high",
+            "input": {"exemption_applies": True, "income": 20},
+            "output": {"result": 20},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_exception_toggle_cannot_borrow_effect_from_another_boolean():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: "
+        "(if bonus_applies: income + 1 else: income) "
+        "else: (if bonus_applies: income + 1 else: income)",
+    )
+    cases = [
+        {
+            "name": "ordinary without bonus",
+            "input": {
+                "exemption_applies": False,
+                "bonus_applies": False,
+                "income": 10,
+            },
+            "output": {"result": 10},
+        },
+        {
+            "name": "exempt with bonus",
+            "input": {
+                "exemption_applies": True,
+                "bonus_applies": True,
+                "income": 10,
+            },
+            "output": {"result": 11},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_exception_toggle_cases_must_share_period():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(
+        "if exemption_applies: base_amount else: base_amount",
+        extra_rules="""\
+  - name: base_amount
+    kind: parameter
+    versions:
+      - effective_from: '2025-01-01'
+        effective_to: '2025-12-31'
+        formula: 10
+      - effective_from: '2026-01-01'
+        formula: 20
+""",
+    )
+    cases = [
+        {
+            "name": "ordinary old",
+            "period": "2025",
+            "input": {"exemption_applies": False},
+            "output": {"result": 10},
+        },
+        {
+            "name": "exempt new",
+            "period": "2026",
+            "input": {"exemption_applies": True},
+            "output": {"result": 20},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    ("formula", "ordinary_output", "blocking_output"),
+    [
+        ("if exemption_applies: true else: false", False, True),
+        ("if exemption_applies: 20 else: 10", 10, 20),
+    ],
+)
+def test_exception_selector_must_block_not_enable(
+    formula: str,
+    ordinary_output: bool | int,
+    blocking_output: bool | int,
+):
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = _exception_control_content(formula)
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False},
+            "output": {"result": ordinary_output},
+        },
+        {
+            "name": "blocking",
+            "input": {"exemption_applies": True},
+            "output": {"result": blocking_output},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
 
 
 def test_derived_match_pattern_cannot_fall_back_to_identifier_text():
