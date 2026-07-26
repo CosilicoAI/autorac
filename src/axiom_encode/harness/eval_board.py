@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from statistics import mean, median
 from typing import Literal
@@ -456,8 +458,22 @@ def _payload_case_identities(payload: dict, source: str) -> list[dict]:
     if not isinstance(identities, list) or not identities:
         raise EvalBoardError(f"Suite results carry no case identities: {source}")
     for position, identity in enumerate(identities, start=1):
-        if not isinstance(identity, dict) or not (
-            type(identity.get("index")) is int and identity["index"] == position
+        if (
+            not isinstance(identity, dict)
+            or set(identity)
+            != {
+                "index",
+                "name",
+                "kind",
+                "corpus_citation_path",
+                "sha256",
+            }
+            or type(identity.get("index")) is not int
+            or identity["index"] != position
+            or not _is_nonempty_string(identity.get("name"))
+            or identity.get("kind") not in {"citation", "source"}
+            or not _is_nonempty_string(identity.get("corpus_citation_path"))
+            or not _is_sha256_hex(identity.get("sha256"))
         ):
             raise EvalBoardError(
                 f"Suite results case identities are malformed at position "
@@ -467,10 +483,48 @@ def _payload_case_identities(payload: dict, source: str) -> list[dict]:
 
 
 def _payload_suite_name(payload: dict, source: str) -> str:
-    name = payload["evidence"]["manifest"].get("name")
-    if not isinstance(name, str) or not name:
+    manifest = payload["evidence"]["manifest"]
+    name = manifest.get("name")
+    if (
+        set(manifest) != {"name", "path", "content_sha256", "case_identities"}
+        or not _is_nonempty_string(name)
+        or not _is_nonempty_string(manifest.get("path"))
+        or not _is_sha256_hex(manifest.get("content_sha256"))
+    ):
         raise EvalBoardError(f"Suite results carry no suite name: {source}")
     return name
+
+
+def _payload_run_identity(payload: dict, source: str) -> dict:
+    """Require the immutable producer run identity bound into every row."""
+
+    run = payload["evidence"].get("run")
+    if not isinstance(run, dict) or set(run) != {"id", "started_at"}:
+        raise EvalBoardError(f"Suite results carry a malformed run identity: {source}")
+    run_id = run.get("id")
+    started_at = run.get("started_at")
+    try:
+        parsed_run_id = uuid.UUID(run_id) if isinstance(run_id, str) else None
+    except ValueError:
+        parsed_run_id = None
+    try:
+        parsed_started_at = (
+            datetime.fromisoformat(started_at)
+            if isinstance(started_at, str) and started_at
+            else None
+        )
+    except ValueError:
+        parsed_started_at = None
+    if (
+        parsed_run_id is None
+        or parsed_run_id.version != 4
+        or str(parsed_run_id) != run_id
+        or parsed_started_at is None
+        or parsed_started_at.tzinfo is None
+        or parsed_started_at.utcoffset() is None
+    ):
+        raise EvalBoardError(f"Suite results carry a malformed run identity: {source}")
+    return run
 
 
 _SHA256_HEX = frozenset("0123456789abcdef")
@@ -973,6 +1027,31 @@ def _payload_runner_identities(payload: dict, source: str) -> list[dict]:
     identities = payload["evidence"].get("effective_runner_identities")
     if not isinstance(identities, list) or not identities:
         raise EvalBoardError(f"Suite results carry no runner identities: {source}")
+    names: set[str] = set()
+    for identity in identities:
+        name = identity.get("name") if isinstance(identity, dict) else None
+        if _is_nonempty_string(name):
+            backend = identity.get("backend")
+            if backend not in {"claude", "codex", "openai"}:
+                raise EvalBoardError(
+                    f"Suite results declare runner {name!r} without a "
+                    f"valid backend: {source}"
+                )
+            if not _is_nonempty_string(identity.get("model")):
+                raise EvalBoardError(
+                    f"Suite results declare runner {name!r} without a "
+                    f"valid model: {source}"
+                )
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"name", "backend", "model"}
+            or not _is_nonempty_string(name)
+            or identity["name"] in names
+        ):
+            raise EvalBoardError(
+                f"Suite results carry a malformed runner identity: {source}"
+            )
+        names.add(identity["name"])
     return identities
 
 
@@ -1349,11 +1428,17 @@ def _validate_result_types(result: dict, *, context: str) -> None:
 def _validate_result_execution_admission(
     result: dict,
     *,
+    run_identity: dict,
+    suite_name: str,
+    manifest_identity: dict,
+    case_identity: dict,
+    corpus_identity: dict,
+    runner_identities: list[dict],
     execution_identity: dict,
     execution_identity_sha256: str,
     context: str,
 ) -> None:
-    """Bind each durable row to the exact execution identity in its evidence."""
+    """Bind each durable row to its complete producer admission context."""
 
     admission = result.get("admission")
     admitted_execution = (
@@ -1361,6 +1446,16 @@ def _validate_result_execution_admission(
     )
     if (
         not isinstance(admission, dict)
+        or set(admission)
+        != {
+            "schema",
+            "run",
+            "suite",
+            "case",
+            "corpus",
+            "execution",
+            "rulespec",
+        }
         or admission.get("schema") != _RESULT_ADMISSION_SCHEMA
         or not isinstance(admitted_execution, dict)
         or set(admitted_execution) != {"identity", "sha256"}
@@ -1369,6 +1464,56 @@ def _validate_result_execution_admission(
     ):
         raise EvalBoardError(
             f"{context} admission execution identity does not match the suite evidence"
+        )
+    expected_suite = {
+        "name": suite_name,
+        "manifest_path": manifest_identity.get("path"),
+        "manifest_content_sha256": manifest_identity.get("content_sha256"),
+        "manifest_case_identities": manifest_identity.get("case_identities"),
+        "effective_runner_identities": runner_identities,
+    }
+    if (
+        admission.get("run") != run_identity
+        or admission.get("suite") != expected_suite
+        or admission.get("case") != case_identity
+        or admission.get("corpus") != corpus_identity
+    ):
+        raise EvalBoardError(
+            f"{context} admission does not match its run, manifest, case, "
+            "corpus, or runner evidence"
+        )
+
+    rulespec_admission = admission.get("rulespec")
+    if not isinstance(rulespec_admission, dict):
+        raise EvalBoardError(f"{context} admission has malformed RuleSpec evidence")
+    admitted_policy_root = rulespec_admission.get("policy_repo_root")
+    roots = execution_identity.get("rulespec_roots")
+    matching_roots = (
+        [
+            root
+            for root in roots
+            if isinstance(root, dict) and root.get("path") == admitted_policy_root
+        ]
+        if isinstance(roots, list)
+        else []
+    )
+    if len(matching_roots) != 1:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec root is not unique in its execution identity"
+        )
+    root_identity = matching_roots[0]
+    expected_rulespec = {
+        "policy_repo_root": root_identity.get("path"),
+        "root_content_sha256": root_identity.get("content_sha256"),
+        "toolchain_contract_sha256": root_identity.get("toolchain_contract_sha256"),
+        "validation_waiver_set_sha256": root_identity.get(
+            "validation_waiver_set_sha256"
+        ),
+    }
+    if rulespec_admission != expected_rulespec:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec evidence does not match its "
+            "execution identity"
         )
 
 
@@ -1519,7 +1664,10 @@ def fold_eval_board(
         payload = load_eval_suite_results(resolved)
         suite_name = _payload_suite_name(payload, source)
         case_identities = _payload_case_identities(payload, source)
+        manifest_identity = payload["evidence"]["manifest"]
+        run_identity = _payload_run_identity(payload, source)
         corpus_identity = _payload_corpus_identity(payload, source)
+        payload_runner_identities = _payload_runner_identities(payload, source)
         execution_identity, execution_digest = _payload_execution_identity(
             payload, source
         )
@@ -1566,23 +1714,9 @@ def fold_eval_board(
                 mixed_toolchain_sources.append(source)
 
         payload_runner_names: set[str] = set()
-        for identity in _payload_runner_identities(payload, source):
-            if not isinstance(identity, dict):
-                raise EvalBoardError(
-                    f"Suite results carry a malformed runner identity: {source}"
-                )
+        for identity in payload_runner_identities:
             name = identity.get("name")
-            if not isinstance(name, str) or not name:
-                raise EvalBoardError(
-                    f"Suite results carry a malformed runner identity: {source}"
-                )
-            for identity_field in ("backend", "model"):
-                declared_value = identity.get(identity_field)
-                if not isinstance(declared_value, str) or not declared_value:
-                    raise EvalBoardError(
-                        f"Suite results declare runner {name!r} without a "
-                        f"valid {identity_field}: {source}"
-                    )
+            assert isinstance(name, str)
             if name in runner_sources:
                 raise EvalBoardError(
                     f"Runner {name!r} appears in both {runner_sources[name]} "
@@ -1611,12 +1745,6 @@ def fold_eval_board(
                     f"{_RESULT_SHA256_FIELD} binding or does not match it"
                 )
             context = f"Result row #{position} in {source}"
-            _validate_result_execution_admission(
-                result,
-                execution_identity=execution_identity,
-                execution_identity_sha256=execution_digest,
-                context=context,
-            )
             runner = result.get("runner")
             if not isinstance(runner, str) or runner not in payload_runner_names:
                 raise EvalBoardError(
@@ -1640,6 +1768,18 @@ def fold_eval_board(
             case_index = _validate_result_case_binding(
                 eval_case,
                 case_identities,
+                context=context,
+            )
+            _validate_result_execution_admission(
+                result,
+                run_identity=run_identity,
+                suite_name=suite_name,
+                manifest_identity=manifest_identity,
+                case_identity=case_identities[case_index - 1],
+                corpus_identity=corpus_identity,
+                runner_identities=payload_runner_identities,
+                execution_identity=execution_identity,
+                execution_identity_sha256=execution_digest,
                 context=context,
             )
             if case_index in runner_results[runner]:
