@@ -563,6 +563,47 @@ class TestParseRunnerSpec:
         assert runner.name == "openai-gpt-5.4"
         assert runner.backend == "openai"
         assert runner.model == "gpt-5.4"
+        assert runner.effort is None
+
+    @pytest.mark.parametrize(
+        ("spec", "expected_effort"),
+        [
+            ("sol=codex:gpt-5.6-sol@ultra", "ultra"),
+            ("claude:opus@max", "max"),
+            ("openai:gpt-5.4@xhigh", "xhigh"),
+        ],
+    )
+    def test_parses_backend_specific_requested_effort(
+        self,
+        spec,
+        expected_effort,
+    ):
+        runner = parse_runner_spec(spec)
+
+        assert runner.effort == expected_effort
+        assert runner.model not in {"gpt-5.6-sol@ultra", "opus@max", "gpt-5.4@xhigh"}
+
+    def test_requested_effort_does_not_change_default_runner_name(self):
+        low = parse_runner_spec("codex:gpt-5.6-sol@low")
+        high = parse_runner_spec("codex:gpt-5.6-sol@high")
+
+        assert low.name == high.name == "codex-gpt-5.6-sol"
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "codex:gpt-5.6-terra@minimal",
+            "codex:gpt-5.6-sol@max",
+            "claude:opus@xhigh",
+            "claude:opus@ultra",
+            "openai:gpt-5.4@ultra",
+            "openai:gpt-5.4@max",
+            "openai:gpt-5.4@default",
+        ],
+    )
+    def test_rejects_effort_level_unsupported_by_backend(self, spec):
+        with pytest.raises(ValueError, match="Unsupported effort"):
+            parse_runner_spec(spec)
 
     @pytest.mark.parametrize("alias", ["../../other", ".", "-runner"])
     def test_rejects_unsafe_runner_alias(self, alias):
@@ -3010,6 +3051,44 @@ class TestCorpusSourceResolution:
 
 
 class TestClaudePromptEval:
+    @pytest.mark.parametrize(
+        ("spec", "expected_effort"),
+        [
+            ("claude:opus", None),
+            ("claude:opus@max", "max"),
+        ],
+    )
+    def test_prompt_eval_passes_only_declared_effort(
+        self,
+        tmp_path,
+        spec,
+        expected_effort,
+    ):
+        runner = parse_runner_spec(spec)
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"result": "review complete", "usage": {}}),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ) as mock_run:
+            _run_claude_prompt_eval(runner, workspace, "review this")
+
+        command = mock_run.call_args.args[0]
+        if expected_effort is None:
+            assert "--effort" not in command
+        else:
+            assert command[command.index("--effort") + 1] == expected_effort
+
     def test_prompt_eval_uses_configurable_encoder_timeout_and_records_it(
         self,
         tmp_path,
@@ -3218,6 +3297,67 @@ class TestClaudePromptEval:
 
 
 class TestCodexPromptEval:
+    @pytest.mark.parametrize(
+        ("spec", "expected_config"),
+        [
+            ("codex:gpt-5.6-sol", None),
+            (
+                "codex:gpt-5.6-sol@high",
+                'model_reasoning_effort="high"',
+            ),
+        ],
+    )
+    def test_prompt_eval_uses_strict_declared_reasoning_effort(
+        self,
+        tmp_path,
+        spec,
+        expected_config,
+    ):
+        runner = parse_runner_spec(spec)
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        observed_commands: list[list[str]] = []
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                observed_commands.append(cmd)
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        [command] = observed_commands
+        assert "--strict-config" in command
+        configs = [
+            command[index + 1]
+            for index, value in enumerate(command)
+            if value in {"-c", "--config"}
+        ]
+        if expected_config is None:
+            assert configs == []
+        else:
+            assert configs == [expected_config]
+        assert not any(config.startswith("reasoning_effort=") for config in configs)
+
     def test_codex_prompt_eval_rejects_success_returned_after_case_deadline(
         self,
         tmp_path,
@@ -13021,6 +13161,41 @@ rules:
 
 
 class TestOpenAIEvalRequest:
+    @pytest.mark.parametrize(
+        ("spec", "expected_effort"),
+        [
+            ("openai:gpt-5.4", None),
+            ("openai:gpt-5.4@high", "high"),
+        ],
+    )
+    def test_openai_prompt_eval_uses_only_declared_effort(
+        self,
+        monkeypatch,
+        spec,
+        expected_effort,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        response = Mock(status_code=200, headers={}, text="")
+        response.json.return_value = {
+            "status": "completed",
+            "output_text": "format: rulespec/v1\nrules: []\n",
+            "usage": {},
+        }
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            return_value=response,
+        ) as mock_post:
+            result = evals_module._run_openai_prompt_eval(
+                parse_runner_spec(spec),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        body = mock_post.call_args.kwargs["body"]
+        assert body["reasoning"].get("effort") == expected_effort
+        assert result.error is None
+
     def test_post_openai_eval_request_retries_transient_status(self):
         error_response = Mock()
         error_response.status_code = 502

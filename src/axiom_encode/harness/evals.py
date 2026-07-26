@@ -259,6 +259,11 @@ _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
 _OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
 _OPENAI_REQUEST_MAX_ATTEMPTS = 6
 _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
+_RUNNER_EFFORTS_BY_BACKEND = {
+    "claude": frozenset({"low", "medium", "high", "max"}),
+    "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
+    "openai": frozenset({"low", "medium", "high", "xhigh"}),
+}
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -684,6 +689,7 @@ class EvalRunnerSpec:
     name: str
     backend: str
     model: str
+    effort: str | None = None
 
 
 @dataclass
@@ -1282,10 +1288,11 @@ class EvalReadinessSummary:
 
 
 def parse_runner_spec(spec: str) -> EvalRunnerSpec:
-    """Parse `[name=]backend:model` into a structured runner spec."""
+    """Parse `[name=]backend:model[@effort]` into a structured runner spec."""
     if not isinstance(spec, str) or not spec or spec != spec.strip():
         raise ValueError(
-            f"Invalid runner spec '{spec}'. Expected canonical [name=]backend:model."
+            f"Invalid runner spec '{spec}'. Expected canonical "
+            "[name=]backend:model[@effort]."
         )
     alias = ""
     target = spec
@@ -1294,33 +1301,45 @@ def parse_runner_spec(spec: str) -> EvalRunnerSpec:
         if not alias or alias != alias.strip():
             raise ValueError(
                 f"Invalid runner spec '{spec}'. Expected canonical "
-                "[name=]backend:model."
+                "[name=]backend:model[@effort]."
             )
 
     if ":" not in target:
         raise ValueError(
-            f"Invalid runner spec '{spec}'. Expected [name=]backend:model."
+            f"Invalid runner spec '{spec}'. Expected [name=]backend:model[@effort]."
         )
 
-    backend, model = target.split(":", 1)
+    backend, model_and_effort = target.split(":", 1)
+    effort: str | None = None
+    model = model_and_effort
+    if "@" in model_and_effort:
+        model, effort = model_and_effort.rsplit("@", 1)
     if (
         not backend
         or not model
+        or effort == ""
         or backend != backend.strip()
         or model != model.strip()
         or any(character.isspace() or ord(character) < 32 for character in model)
     ):
         raise ValueError(
-            f"Invalid runner spec '{spec}'. Expected canonical [name=]backend:model."
+            f"Invalid runner spec '{spec}'. Expected canonical "
+            "[name=]backend:model[@effort]."
         )
     name = alias or re.sub(r"[^a-zA-Z0-9._-]+", "-", f"{backend}-{model}")
 
-    if backend not in {"claude", "codex", "openai"}:
+    if backend not in _RUNNER_EFFORTS_BY_BACKEND:
         raise ValueError(f"Unsupported backend '{backend}' in runner spec '{spec}'")
+    if effort is not None and effort not in _RUNNER_EFFORTS_BY_BACKEND[backend]:
+        accepted = ", ".join(sorted(_RUNNER_EFFORTS_BY_BACKEND[backend]))
+        raise ValueError(
+            f"Unsupported effort '{effort}' for backend '{backend}' in runner "
+            f"spec '{spec}'; accepted values: {accepted}"
+        )
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is None or name in {".", ".."}:
         raise ValueError(f"Unsafe runner name '{name}' in runner spec '{spec}'")
 
-    return EvalRunnerSpec(name=name, backend=backend, model=model)
+    return EvalRunnerSpec(name=name, backend=backend, model=model, effort=effort)
 
 
 def _validate_eval_oracle_runtime(
@@ -12873,11 +12892,17 @@ def _run_claude_prompt_eval(
         "",
         "--allowed-tools",
         "",
-        "--model",
-        runner.model,
-        "-p",
-        prompt,
     ]
+    if runner.effort is not None:
+        cmd.extend(["--effort", runner.effort])
+    cmd.extend(
+        [
+            "--model",
+            runner.model,
+            "-p",
+            prompt,
+        ]
+    )
 
     configured_timeout_seconds = _claude_encoder_timeout_seconds()
     timeout_seconds, case_budget_limited = _timeout_bounded_by_eval_case_budget(
@@ -13009,18 +13034,19 @@ def _run_codex_prompt_eval(
         "--json",
         "--skip-git-repo-check",
         "--ignore-user-config",
+        "--strict-config",
         "-o",
         str(last_message_file),
         "-m",
         runner.model,
-        "-c",
-        'reasoning_effort="low"',
         "-C",
         str(workspace.root),
         "-s",
         "read-only",
-        prompt,
     ]
+    if runner.effort is not None:
+        cmd.extend(["-c", f'model_reasoning_effort="{runner.effort}"'])
+    cmd.append(prompt)
 
     start = time.time()
     terminated_after_output = False
@@ -13506,10 +13532,11 @@ def _run_openai_prompt_eval(
         "input": prompt,
         "max_output_tokens": 16384,
         "reasoning": {
-            "effort": "low",
             "summary": "auto",
         },
     }
+    if runner.effort is not None:
+        body["reasoning"]["effort"] = runner.effort
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
