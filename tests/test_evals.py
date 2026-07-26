@@ -1579,9 +1579,7 @@ def test_model_eval_rejects_target_override_for_multiple_citations(tmp_path):
 
 def test_workspace_classifies_output_override_as_existing_target(tmp_path):
     policy_root = _canonical_rulespec_content_root(tmp_path, "us-nc")
-    target_relative = Path(
-        "policies/income_tax/pilot_liability_pipeline.yaml"
-    )
+    target_relative = Path("policies/income_tax/pilot_liability_pipeline.yaml")
     target = policy_root / target_relative
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n")
@@ -1611,9 +1609,7 @@ def test_model_eval_uses_output_override_for_prompt_and_artifact_path(tmp_path):
         citation_path="us-nc/statute/105/105-153.7",
     )
     policy_root = _canonical_rulespec_content_root(tmp_path, "us-nc")
-    target_relative = Path(
-        "policies/income_tax/pilot_liability_pipeline.yaml"
-    )
+    target_relative = Path("policies/income_tax/pilot_liability_pipeline.yaml")
     target = policy_root / target_relative
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n")

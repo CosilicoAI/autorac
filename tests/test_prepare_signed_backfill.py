@@ -204,9 +204,7 @@ def test_validate_dependent_cascade_uses_nondefault_replacement_target(
     dependent = _write_module(
         repo,
         "regulations/42-cfr/435/559.yaml",
-        imports=(
-            "us:policies/income_tax/pilot_liability_pipeline#target_rule",
-        ),
+        imports=("us:policies/income_tax/pilot_liability_pipeline#target_rule",),
     )
     _write_module(repo, "regulations/42-cfr/435/555.yaml")
 

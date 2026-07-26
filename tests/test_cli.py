@@ -11867,9 +11867,7 @@ class TestCmdEncode:
         )
         companion = target.with_name("pilot_liability_pipeline.test.yaml")
         replacement = SimpleNamespace(
-            relative_output=Path(
-                "policies/income_tax/pilot_liability_pipeline.yaml"
-            ),
+            relative_output=Path("policies/income_tax/pilot_liability_pipeline.yaml"),
             context_paths=(target, companion),
         )
 
@@ -32356,10 +32354,7 @@ class TestEncodeReplacementTarget:
         checkout = tmp_path / "rulespec-us"
         content_root = checkout / "us-nc"
         target = (
-            content_root
-            / "policies"
-            / "income_tax"
-            / "pilot_liability_pipeline.yaml"
+            content_root / "policies" / "income_tax" / "pilot_liability_pipeline.yaml"
         )
         target.parent.mkdir(parents=True)
         target.write_text(

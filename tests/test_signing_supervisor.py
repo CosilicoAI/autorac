@@ -2019,8 +2019,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert cascade_step["env"]["REPLACE_RULESPEC_PATH"] == (
         "${{ inputs.replace_rulespec_path }}"
     )
-    assert 'cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")' in (
-        cascade_step["run"]
+    assert (
+        'cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")'
+        in (cascade_step["run"])
     )
     assert 'cascade_args+=("${dependent_citations[@]}")' in cascade_step["run"]
     assert '"${cascade_args[@]}"' in cascade_step["run"]
@@ -2061,16 +2062,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"$SECOND_DEPENDENT_CITATION"' in command
     assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""' in command
     assert (
-        '"$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"'
-        in command
+        '"$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"' in command
     )
     assert (
         '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent ""'
         in command
     )
     assert (
-        '"$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"'
-        in command
+        '"$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"' in command
     )
     assert "dependent review finding is required with dependent citation" in command
     assert steps.index(cascade_step) < steps.index(apply_step)
@@ -2599,9 +2598,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     replacement_path = "us-nc/policies/income_tax/pilot_liability_pipeline.yaml"
-    dependent_citation = (
-        "us-nc/statute/105/105-153.5" if with_dependent else ""
-    )
+    dependent_citation = "us-nc/statute/105/105-153.5" if with_dependent else ""
     dependent_finding = (
         "Preserve the resident pipeline semantics." if with_dependent else ""
     )
