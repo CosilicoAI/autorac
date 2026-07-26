@@ -113,6 +113,10 @@ from .proof_validator import (
     find_rulespec_proof_issues,
     validate_rulespec_proofs,
 )
+from .source_completeness import (
+    analyze_complete_source_unit,
+    collect_artifact_numeric_bindings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23147,6 +23151,7 @@ class ValidatorPipeline:
         policyengine_runtime: PolicyEngineRuntime | None = None,
         policyengine_rule_hint: str | None = None,
         require_policy_proofs: bool = False,
+        require_complete_source_unit: bool = False,
         enforce_repository_layout: bool = True,
         source_text: str | None = None,
         source_metadata: dict[str, object] | None = None,
@@ -23191,6 +23196,9 @@ class ValidatorPipeline:
         self.session_id = session_id
         self.policyengine_rule_hint = policyengine_rule_hint
         self.require_policy_proofs = require_policy_proofs
+        if not isinstance(require_complete_source_unit, bool):
+            raise TypeError("require_complete_source_unit must be a boolean")
+        self.require_complete_source_unit = require_complete_source_unit
         self.enforce_repository_layout = enforce_repository_layout
         self.source_text = source_text
         if source_metadata is not None and not isinstance(source_metadata, dict):
@@ -23427,6 +23435,114 @@ class ValidatorPipeline:
             f"the trusted requested source `{trusted_primary}`, but declared "
             f"{declared}."
         ]
+
+    def _complete_source_unit_issues(
+        self,
+        content: str,
+        *,
+        validation_source_texts: Mapping[str, str] | None,
+        test_cases: Sequence[object] | None,
+        rules_file: Path | None = None,
+    ) -> list[str]:
+        """Apply opt-in completeness checks to the resolver-owned corpus body."""
+
+        if not self.require_complete_source_unit:
+            return []
+        source_texts = (
+            dict(validation_source_texts)
+            if validation_source_texts is not None
+            else None
+        )
+        authoritative_source_text = (
+            _source_verification_text(
+                citation_paths=(self.source_citation_path,),
+                source_label=self.source_citation_path,
+                source_texts=source_texts,
+            )
+            if self.source_citation_path
+            else _extract_source_verification_text(
+                content,
+                source_texts=source_texts,
+            )
+        )
+        source_verification = None
+        with contextlib.suppress(yaml.YAMLError, TypeError, ValueError):
+            rulespec_payload = yaml.safe_load(content)
+            if isinstance(rulespec_payload, dict):
+                source_verification = _source_verification_block(rulespec_payload)
+        citation_paths, _source_label = (
+            _source_verification_source_fields(source_verification)
+            if source_verification is not None
+            else ((), "")
+        )
+        corpus_citation_path = self.source_citation_path or (
+            citation_paths[0] if citation_paths else ""
+        )
+        imported_symbol_contents = self._complete_source_unit_import_symbol_contents(
+            rules_file
+        )
+        artifact_numeric_bindings = collect_artifact_numeric_bindings(
+            content,
+            extract_named_scalars=extract_named_scalar_occurrences,
+            imported_symbol_contents=imported_symbol_contents,
+        )
+        artifact_numeric_values = tuple(
+            value for _name, value in artifact_numeric_bindings
+        )
+        numeric_occurrence_extractor = functools.partial(
+            extract_typed_numeric_inventory_occurrences_from_text,
+            profile=_numeric_profile_for_citation_path(corpus_citation_path),
+        )
+        completeness = analyze_complete_source_unit(
+            content,
+            authoritative_source_text or "",
+            corpus_citation_path=corpus_citation_path,
+            test_cases=test_cases,
+            extract_numeric_occurrences=numeric_occurrence_extractor,
+            extract_named_scalars=extract_named_scalar_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+            artifact_numeric_values=artifact_numeric_values,
+            artifact_numeric_bindings=artifact_numeric_bindings,
+        )
+        return list(completeness.issues)
+
+    def _complete_source_unit_import_symbol_contents(
+        self,
+        rules_file: Path | None,
+    ) -> tuple[tuple[str, str], ...]:
+        """Bind every directly imported symbol to its exact resolved artifact."""
+
+        if rules_file is None:
+            return ()
+        try:
+            source_root = self._validation_source_root(rules_file)
+            import_items = self._extract_import_items(rules_file.read_text())
+        except (OSError, ValueError, UnsafeRulespecContextPath):
+            return ()
+        seen: set[tuple[Path, str]] = set()
+        bindings: list[tuple[str, str]] = []
+        for import_item in import_items:
+            _target, separator, imported_symbol = import_item.rpartition("#")
+            imported_symbol = imported_symbol.strip()
+            if not separator or not imported_symbol:
+                continue
+            try:
+                dependency = _resolve_rulespec_import_file_static(
+                    import_item,
+                    rules_file=rules_file,
+                    policy_repo_path=source_root,
+                    rulespec_dependency_roots=self.rulespec_dependency_roots,
+                )
+                if dependency is None:
+                    continue
+                binding_key = (dependency.resolve(), imported_symbol)
+                if binding_key in seen:
+                    continue
+                seen.add(binding_key)
+                bindings.append((imported_symbol, dependency.read_text()))
+            except (OSError, ValueError, UnsafeRulespecContextPath):
+                continue
+        return tuple(bindings)
 
     def _rulespec_compile_roots(self) -> tuple[Path, ...]:
         """Return the exact country checkouts authorized for engine compilation."""
@@ -24809,6 +24925,7 @@ class ValidatorPipeline:
         """Run RuleSpec compile, executable tests, and source-grounding checks."""
         start = time.time()
         issues: list[str] = []
+        complete_source_unit_test_cases: list[Any] | None = None
         content = rules_file.read_text()
         raw_output: str | None = None
         compiled_payload: dict[str, Any] | None = None
@@ -25067,6 +25184,8 @@ class ValidatorPipeline:
                     else:
                         issues.append("RuleSpec tests must be a YAML list of cases.")
                         payload = None
+                if isinstance(payload, list):
+                    complete_source_unit_test_cases = payload
                 if isinstance(payload, list) and compiled_payload and compiled_path:
                     pre_test_issue_count = len(issues)
                     if strict_layout_checks:
@@ -25103,6 +25222,15 @@ class ValidatorPipeline:
                         )
         elif not issues and not self._is_nonassertable_rulespec_artifact(rules_file):
             issues.append("No tests found.")
+
+        issues.extend(
+            self._complete_source_unit_issues(
+                content,
+                validation_source_texts=validation_source_texts,
+                test_cases=complete_source_unit_test_cases,
+                rules_file=rules_file,
+            )
+        )
 
         duration = int((time.time() - start) * 1000)
         try:

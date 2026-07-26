@@ -6067,15 +6067,27 @@ def test_eval_result_payload_round_trips_prompt_digests():
             "requested_corpus_citation_path": "us/statute/7/2014/e/6/A",
             "source_sha256": "a" * 64,
         },
+        require_complete_source_unit=True,
     )
 
-    restored = _eval_result_from_payload(result.to_dict())
+    strict_payload = result.to_dict()
+    restored = _eval_result_from_payload(strict_payload)
 
+    assert strict_payload["require_complete_source_unit"] is True
+    assert restored.require_complete_source_unit is True
     assert restored.generation_prompt_sha256 == "generation-digest"
     assert restored.retry_count == 1
     assert restored.metrics is not None
     assert restored.metrics.generalist_review_prompt_sha256 == "review-digest"
     assert restored.source_attestation == result.source_attestation
+    result.require_complete_source_unit = False
+    assert "require_complete_source_unit" not in result.to_dict()
+
+    malformed_payload = dict(strict_payload)
+    malformed_payload["require_complete_source_unit"] = "true"
+    malformed_payload = _bind_eval_result_payload(malformed_payload)
+    with pytest.raises(ValueError, match="invalid boolean field"):
+        _eval_result_from_payload(malformed_payload)
 
     def test_wait_for_codex_process_terminates_after_persistent_output(self, tmp_path):
         last_message = tmp_path / ".codex-last-message.txt"
@@ -7322,6 +7334,131 @@ rules:
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
 
+    @pytest.mark.parametrize("pass_source_citation_path", [False, True])
+    def test_complete_mode_numeric_recall_uses_authoritative_body(
+        self,
+        tmp_path,
+        pass_source_citation_path,
+    ):
+        authoritative_source_text = (
+            "(1) Der Freibetrag beträgt 259 Euro; der Zuschlag beträgt 73 Euro."
+        )
+        caller_source_summary = "(1) Der Freibetrag beträgt 259 Euro."
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path="de/statute/estg/32a",
+            body=authoritative_source_text,
+        )
+        rulespec_file = tmp_path / "statutes" / "estg" / "32a.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        rulespec_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Der Freibetrag beträgt 259 Euro.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+        )
+        compile_result = ValidationResult("compile", True, issues=[])
+        ci_result = ValidationResult("ci", True, issues=[])
+
+        with (
+            patch.object(
+                ValidatorPipeline, "_run_compile_check", return_value=compile_result
+            ),
+            patch.object(ValidatorPipeline, "_run_ci", return_value=ci_result),
+        ):
+            metrics = evaluate_artifact(
+                rulespec_file=rulespec_file,
+                policy_repo_root=_canonical_rulespec_content_root(tmp_path, "de"),
+                axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                source_text=caller_source_summary,
+                local_corpus_release=corpus_release,
+                source_citation_path=(
+                    "de/statute/estg/32a" if pass_source_citation_path else None
+                ),
+                require_complete_source_unit=True,
+            )
+
+        assert not metrics.ci_pass
+        assert metrics.source_numeric_occurrence_count == 2
+        assert metrics.covered_source_numeric_occurrence_count == 1
+        assert metrics.missing_source_numeric_occurrence_count == 1
+        assert any("73" in issue for issue in metrics.numeric_occurrence_issues)
+
+    def test_complete_mode_numeric_recall_is_summary_invariant(self, tmp_path):
+        source_text = "If the 3rd digit is 5 or more, increase the 2nd digit by 1."
+        citation_path = "ca/policy/cra/example/rounding"
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path=citation_path,
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "policies" / "cra" / "example" / "rounding.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        signatures = []
+
+        for summary in (
+            source_text,
+            "A deliberately terse summary with no numeric inventory.",
+        ):
+            rulespec_file.write_text(
+                f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+  summary: {summary}
+rules:
+  - name: rounding_half_unit
+    kind: parameter
+    dtype: Decimal
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.5
+"""
+            )
+            with (
+                patch.object(
+                    ValidatorPipeline,
+                    "_run_compile_check",
+                    return_value=ValidationResult("compile", True, issues=[]),
+                ),
+                patch.object(
+                    ValidatorPipeline,
+                    "_run_ci",
+                    return_value=ValidationResult("ci", True, issues=[]),
+                ),
+            ):
+                metrics = evaluate_artifact(
+                    rulespec_file=rulespec_file,
+                    policy_repo_root=_canonical_rulespec_content_root(
+                        tmp_path,
+                        "ca",
+                    ),
+                    axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                    source_text=source_text,
+                    local_corpus_release=corpus_release,
+                    source_citation_path=citation_path,
+                    require_complete_source_unit=True,
+                )
+            signatures.append(
+                (
+                    metrics.source_numeric_occurrence_count,
+                    metrics.covered_source_numeric_occurrence_count,
+                    metrics.missing_source_numeric_occurrence_count,
+                    metrics.numeric_occurrence_issues,
+                )
+            )
+
+        assert signatures[0] == signatures[1]
+
     def test_numeric_occurrence_check_counts_inline_source_table_bounds(self, tmp_path):
         rulespec_file = tmp_path / "statutes" / "26" / "3241" / "b.yaml"
         rulespec_file.parent.mkdir(parents=True)
@@ -7522,8 +7659,11 @@ rules: []
         assert metrics.source_numeric_occurrence_count == 0
         assert metrics.numeric_occurrence_issues == []
 
+    @pytest.mark.parametrize("require_complete_source_unit", [False, True])
     def test_generated_numeric_grounding_uses_authoritative_module_source(
-        self, tmp_path
+        self,
+        tmp_path,
+        require_complete_source_unit,
     ):
         source_text = (
             "(a) Households in which each member receives qualifying public "
@@ -7571,11 +7711,15 @@ rules:
                 axiom_rules_path=Path("/tmp/axiom-rules-engine"),
                 source_text=source_text,
                 local_corpus_release=corpus_release,
+                require_complete_source_unit=require_complete_source_unit,
             )
 
         assert metrics.ci_pass
         assert metrics.grounded_numeric_count == 1
         assert metrics.ungrounded_numeric_count == 0
+        if require_complete_source_unit:
+            assert metrics.source_numeric_occurrence_count == 1
+            assert metrics.missing_source_numeric_occurrence_count == 0
 
     def test_generated_numeric_grounding_never_uses_module_summary(self, tmp_path):
         source_text = (
@@ -13053,6 +13197,79 @@ class TestEvalSuiteManifest:
 
         assert manifest.cases[0].citation == "7 USC 2017"
 
+    def test_complete_source_unit_case_mode_is_default_off_and_identity_preserving(
+        self,
+        tmp_path,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        default_case = load_eval_suite_manifest(manifest_file).cases[0]
+        explicit_off_case = replace(default_case, require_complete_source_unit=False)
+        complete_case = replace(default_case, require_complete_source_unit=True)
+
+        default_identity = evals_module._canonical_eval_suite_case_payload(default_case)
+        assert default_case.require_complete_source_unit is False
+        assert (
+            evals_module._canonical_eval_suite_case_payload(explicit_off_case)
+            == default_identity
+        )
+        assert "require_complete_source_unit" not in default_identity
+        assert (
+            evals_module._canonical_eval_suite_case_payload(complete_case)[
+                "require_complete_source_unit"
+            ]
+            is True
+        )
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "true", []])
+    def test_complete_source_unit_case_mode_requires_a_boolean(
+        self,
+        tmp_path,
+        value,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"][0]["require_complete_source_unit"] = value
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        with pytest.raises(
+            ValueError,
+            match="require_complete_source_unit.*must be a boolean",
+        ):
+            load_eval_suite_manifest(manifest_file)
+
+    def test_complete_source_unit_case_mode_loads_when_enabled(self, tmp_path):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"][0]["require_complete_source_unit"] = True
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+
+        manifest = load_eval_suite_manifest(manifest_file)
+
+        assert manifest.cases[0].require_complete_source_unit is True
+
+    def test_complete_source_unit_case_rejects_mismatched_runner_result(self):
+        case = EvalSuiteCase(
+            kind="source",
+            name="sample",
+            mode="cold",
+            corpus_citation_path="us/statute/7/2017",
+            require_complete_source_unit=True,
+        )
+        result = _fake_eval_result(
+            "openai-gpt-5.4",
+            "us/statute/7/2017",
+        )
+
+        with pytest.raises(ValueError, match="different complete-source-unit mode"):
+            evals_module._validate_new_eval_suite_case_results(
+                case,
+                [result],
+                [parse_runner_spec("openai:gpt-5.4")],
+            )
+
     def test_manifest_context_path_does_not_rewrite_legacy_checkout_layout(
         self, tmp_path
     ):
@@ -13689,6 +13906,54 @@ cases:
         assert mock_source.call_args.kwargs["rulespec_dependency_roots"] == [
             dependency_root
         ]
+
+    def test_run_eval_suite_forwards_complete_source_unit_mode_per_case(
+        self,
+        tmp_path,
+    ):
+        payload = _strict_eval_suite_manifest_payload()
+        payload["cases"] = [
+            {
+                "kind": "source",
+                "name": "source-case",
+                "corpus_citation_path": "us/statute/7/2017",
+                "require_complete_source_unit": True,
+            },
+            {
+                "kind": "citation",
+                "name": "citation-case",
+                "citation": "7 USC 2017",
+                "require_complete_source_unit": True,
+            },
+        ]
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(yaml.safe_dump(payload))
+        manifest = load_eval_suite_manifest(manifest_file)
+        corpus_release = _write_test_corpus_provision(tmp_path)
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.run_source_eval",
+                side_effect=RuntimeError("source runner stopped"),
+            ) as mock_source,
+            patch(
+                "axiom_encode.harness.evals.run_model_eval",
+                side_effect=RuntimeError("citation runner stopped"),
+            ) as mock_model,
+        ):
+            results = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=corpus_release,
+                suite_retry_attempts=0,
+            )
+
+        assert mock_source.call_args.kwargs["require_complete_source_unit"] is True
+        assert mock_model.call_args.kwargs["require_complete_source_unit"] is True
+        assert len(results) == 2
+        assert all(result.require_complete_source_unit is True for result in results)
 
     def test_run_eval_suite_passes_policyengine_rule_hint_to_source_runner(
         self, tmp_path
@@ -19853,6 +20118,8 @@ def _revalidation_result(
 def _run_case_revalidation(
     persisted: EvalArtifactMetrics | None,
     fresh: EvalArtifactMetrics | None,
+    *,
+    require_complete_source_unit: bool = False,
     **result_overrides,
 ):
     case = evals_module.EvalSuiteCase(
@@ -19860,6 +20127,7 @@ def _run_case_revalidation(
         name="vat_standard_rate",
         mode="cold",
         corpus_citation_path="uk/statute/ukpga/1994/23/2",
+        require_complete_source_unit=require_complete_source_unit,
     )
     source_unit = SimpleNamespace(body="The rate of VAT is 20 percent.")
     with (
@@ -19901,6 +20169,18 @@ def test_persisted_revalidation_ignores_reviewer_outcomes():
     )
     evaluate_mock = _run_case_revalidation(persisted, fresh)
     assert evaluate_mock.call_args.kwargs["skip_reviewers"] is True
+
+
+def test_persisted_revalidation_keeps_complete_source_unit_mode():
+    metrics = _revalidation_metrics()
+
+    evaluate_mock = _run_case_revalidation(
+        metrics,
+        metrics,
+        require_complete_source_unit=True,
+    )
+
+    assert evaluate_mock.call_args.kwargs["require_complete_source_unit"] is True
 
 
 @pytest.mark.parametrize(

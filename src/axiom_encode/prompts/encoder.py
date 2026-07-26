@@ -1623,11 +1623,36 @@ def _assemble(*blocks: str) -> str:
 
 ENCODER_PROMPT = _assemble(*_PROMPT_BLOCKS)
 
+_COMPLETE_SOURCE_UNIT_PROTOCOL = """
+Complete-source-unit mode is enabled for this request:
+- Treat the entire authoritative source unit as the completeness inventory.
+  `module.summary` is only a concise reviewer orientation and contributes
+  nothing to completeness accounting.
+- Every explicit computation stated in the source unit must have a principal
+  `kind: derived` or `kind: derived_relation` output. Naming its constants as
+  parameters without encoding the stated formula is invalid.
+- Encode every structural paragraph and list branch, including Absatz markers
+  such as `(1)` and `(2)`, `Abs. 5`, numbered items such as `1.` and `1a.`, and
+  Satz enumerations. If a branch cannot be encoded, use a precise typed
+  deferral that names the exact branch and its missing dependency or citation;
+  never omit it silently. Put the structural branch in the deferred output
+  path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`). Include
+  `blocked_by` only for known exact RuleSpec targets with a `#rule_fragment`;
+  otherwise omit `blocked_by` and name the exact missing legal dependency or
+  citation in `reason`. Never guess a blocker target.
+- Companion tests must execute every source-stated formula branch, boundary,
+  exception, and rounding rule with assertions on the affected principal
+  output. Each branch needs distinct runtime evidence; descriptive test
+  metadata is not coverage evidence.
+- A genuinely scalar-only source unit may remain parameter-only.
+"""
+
 
 def get_encoder_prompt(
     citation: str,
     output_path: str,
     corpus_citation_path: str | None = None,
+    require_complete_source_unit: bool = False,
 ) -> str:
     """Return a complete RuleSpec task prompt for a source unit."""
     corpus_section = ""
@@ -1641,6 +1666,10 @@ Never emit `corpus_citation_paths`. A provision split across storage rows must
 be composed by the corpus resolver under this one canonical path. If another
 legal source is required, import its separately attested RuleSpec or defer the
 affected executable surface.
+"""
+    if require_complete_source_unit:
+        corpus_section += f"""
+{_COMPLETE_SOURCE_UNIT_PROTOCOL.strip()}
 """
 
     return f"""{ENCODER_PROMPT}

@@ -40,6 +40,7 @@ class EncoderRequest:
     corpus_citation_path: str | None = None
     model: str = DEFAULT_CLI_MODEL
     timeout: int = 300
+    require_complete_source_unit: bool = False
 
 
 @dataclass
@@ -153,6 +154,7 @@ class ClaudeCodeBackend(EncoderBackend):
             request.citation,
             str(request.output_path),
             corpus_citation_path=request.corpus_citation_path,
+            require_complete_source_unit=request.require_complete_source_unit,
         )
         prompt += f"\n\nSource Text:\n{request.source_text}\n"
 
@@ -342,6 +344,7 @@ class CodexCLIBackend(EncoderBackend):
             request.citation,
             str(request.output_path),
             corpus_citation_path=request.corpus_citation_path,
+            require_complete_source_unit=request.require_complete_source_unit,
         )
         prompt += f"\n\nSource Text:\n{request.source_text}\n"
 
@@ -558,6 +561,7 @@ class AgentSDKBackend(EncoderBackend):
                 request.citation,
                 str(request.output_path),
                 corpus_citation_path=request.corpus_citation_path,
+                require_complete_source_unit=request.require_complete_source_unit,
             )
             prompt += f"\n\nSource Text:\n{request.source_text}\n"
 
