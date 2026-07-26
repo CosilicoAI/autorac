@@ -5450,6 +5450,8 @@ def _mark_suite_case_budget_timeout(
     for result in case_results:
         if result.output_file or result.metrics is not None:
             continue
+        if result.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS:
+            continue
         if result.error and message not in result.error:
             result.error = f"{message}; last error: {result.error}"
         else:
@@ -8576,12 +8578,17 @@ def _eval_result_outcome(
     timeout_attempts, timeout_stage, timeout_reason, timeout_seconds = (
         _prompt_response_timeout_evidence(response)
     )
-    terminal_timeout = response.timed_out is True
+    terminal_infra_failure = (
+        response.failure_kind
+        if response.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS
+        else None
+    )
+    terminal_timeout = response.timed_out is True and terminal_infra_failure is None
     failure_kind: EvalFailureKind | None
-    if terminal_timeout:
+    if terminal_infra_failure is not None:
+        failure_kind = terminal_infra_failure
+    elif terminal_timeout:
         failure_kind = "timeout"
-    elif response.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS:
-        failure_kind = response.failure_kind
     elif validation_error is not None:
         failure_kind = "validation"
     elif response.error is not None or not wrote_artifact:
@@ -13659,12 +13666,17 @@ def _run_codex_prompt_eval(
         except json.JSONDecodeError:
             continue
 
-        events.append(payload)
         if payload.get("type") == "item.completed":
-            item = payload.get("item", {}) or {}
-            if item.get("type") == "agent_message" and item.get("text"):
+            raw_item = payload.get("item")
+            item = raw_item if isinstance(raw_item, dict) else {}
+            item_type = item.get("type")
+            if item_type not in {"agent_message", "reasoning"}:
+                events.append(_redact_codex_tool_event(payload))
+            else:
+                events.append(payload)
+            if item_type == "agent_message" and item.get("text"):
                 assistant_messages.append(item["text"])
-            if item.get("type") == "command_execution":
+            if item_type == "command_execution":
                 command = str(item.get("command", "") or "")
                 reported_command = command or "<empty command>"
                 unexpected_accesses.append(reported_command)
@@ -13681,10 +13693,28 @@ def _run_codex_prompt_eval(
                         f"{reported_command}"
                     )
                 failure_kind = "integrity"
+            elif item_type not in {"agent_message", "reasoning"}:
+                reported_item_type = (
+                    item_type
+                    if isinstance(item_type, str) and item_type.strip()
+                    else "<invalid item.completed>"
+                )
+                unexpected_accesses.append(reported_item_type)
+                if not error:
+                    error = (
+                        "Codex eval attempted a tool operation although tools are "
+                        "disabled by the prompt-only contract: "
+                        f"{reported_item_type}"
+                    )
+                failure_kind = "integrity"
         elif payload.get("type") == "turn.completed":
+            events.append(payload)
             usage_payload = payload.get("usage") or {}
         elif payload.get("type") == "error":
+            events.append(payload)
             error = payload.get("message") or "Codex eval error"
+        else:
+            events.append(payload)
 
     tokens = None
     if usage_payload is not None:
@@ -13747,6 +13777,22 @@ def _run_codex_prompt_eval(
         timeout_seconds=triggering_timeout_seconds if timed_out else None,
         timeout_attempts=1 if timed_out else 0,
     )
+
+
+def _redact_codex_tool_event(payload: dict) -> dict:
+    """Keep tool-attempt evidence without persisting receiver output bodies."""
+
+    raw_item = payload.get("item")
+    item = raw_item if isinstance(raw_item, dict) else {}
+    redacted_item = {
+        key: value
+        for key in ("type", "command", "status")
+        if isinstance((value := item.get(key)), (str, int, float, bool))
+    }
+    return {
+        "type": "item.completed",
+        "item": redacted_item,
+    }
 
 
 def _prepare_codex_eval_home(codex_home: Path) -> Path:

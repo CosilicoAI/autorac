@@ -6193,6 +6193,36 @@ def test_timed_out_response_outcome_prioritizes_timeout_over_artifact_validation
     }
 
 
+def test_integrity_response_outcome_prioritizes_integrity_over_timeout():
+    response = EvalPromptResponse(
+        text="",
+        duration_ms=600_000,
+        unexpected_accesses=["cat $HOME/.ssh/id_rsa"],
+        error="Codex eval attempted command execution",
+        failure_kind="integrity",
+        timed_out=True,
+        timeout_stage="encoder",
+        timeout_reason="wall",
+        timeout_seconds=600,
+        timeout_attempts=1,
+    )
+
+    outcome = evals_module._eval_result_outcome(
+        response,
+        wrote_artifact=False,
+        validation_error=None,
+    )
+
+    assert outcome == {
+        "failure_kind": "integrity",
+        "timed_out": False,
+        "timeout_stage": "encoder",
+        "timeout_reason": "wall",
+        "timeout_seconds": 600,
+        "timeout_attempts": 1,
+    }
+
+
 def test_timeout_then_plain_error_keeps_terminal_error_classification():
     initial = EvalPromptResponse(
         text="",
@@ -15898,6 +15928,32 @@ cases:
         assert result.failure_kind is None
         assert result.timed_out is False
 
+    def test_case_budget_scope_does_not_relabel_terminal_integrity_failure(self):
+        result = _fake_eval_result("codex-gpt", "case-one")
+        result.output_file = ""
+        result.generated_output_sha256 = None
+        result.metrics = None
+        result.success = False
+        result.error = "Codex eval attempted command execution"
+        result.failure_kind = "integrity"
+        result.unexpected_accesses = ["cat $HOME/.ssh/id_rsa"]
+        result.timeout_attempts = 1
+        result.timeout_stage = "encoder"
+        result.timeout_reason = "wall"
+        result.timeout_seconds = 600
+
+        evals_module._mark_suite_case_budget_timeout(
+            [result],
+            timeout_seconds=10,
+        )
+
+        assert result.failure_kind == "integrity"
+        assert result.timed_out is False
+        assert result.timeout_stage == "encoder"
+        assert result.timeout_reason == "wall"
+        assert result.timeout_seconds == 600
+        assert result.timeout_attempts == 1
+
     def test_each_runner_case_gets_an_independent_generation_budget(
         self,
         tmp_path,
@@ -20577,6 +20633,192 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         assert response.failure_kind == "integrity"
         assert "prompt-only" in (response.error or "")
         assert response.unexpected_accesses == [command]
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"type": "web_search", "query": "outside context"},
+            {"type": "mcp_tool_call", "server": "files", "tool": "read"},
+            {"type": "file_change", "changes": [{"path": "answer.yaml"}]},
+            {"type": "future_tool", "secret": "receiver output"},
+        ],
+    )
+    def test_run_codex_prompt_eval_makes_any_tool_item_terminal(
+        self,
+        tmp_path,
+        item,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        event_lines = "\n".join(
+            [
+                json.dumps({"type": "item.completed", "item": item}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "format: rulespec/v1\nrules: []\n",
+                        },
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.failure_kind == "integrity"
+        assert "prompt-only" in (response.error or "")
+        assert response.unexpected_accesses == [item["type"]]
+
+    def test_run_codex_prompt_eval_redacts_tool_output_from_trace(self, tmp_path):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        secret = "TOP_SECRET_RECEIVER_OUTPUT"
+        command = "cat /outside/context"
+        event_line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": command,
+                    "status": "completed",
+                    "aggregated_output": secret,
+                    "output": secret,
+                    "result": {"content": secret},
+                },
+            }
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_line + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        trace_text = json.dumps(response.trace)
+        assert secret not in trace_text
+        assert command in trace_text
+        assert "command_execution" in trace_text
+        assert "completed" in trace_text
+
+    def test_run_codex_prompt_eval_keeps_integrity_terminal_when_it_times_out(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        command = "cat $HOME/.ssh/id_rsa"
+        event_line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": command,
+                },
+            }
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = None
+                stdout.write(event_line + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                side_effect=subprocess.TimeoutExpired("codex", 600),
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        outcome = evals_module._eval_result_outcome(
+            response,
+            wrote_artifact=False,
+            validation_error=None,
+        )
+        assert response.failure_kind == "integrity"
+        assert response.timed_out is True
+        assert response.unexpected_accesses == [command]
+        assert outcome["failure_kind"] == "integrity"
+        assert outcome["timed_out"] is False
+        assert outcome["timeout_attempts"] == 1
 
 
 class TestUnexpectedAccessDetection:
