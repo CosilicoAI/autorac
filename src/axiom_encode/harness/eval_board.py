@@ -1538,7 +1538,7 @@ def _validate_result_policyengine_runtime_evidence(
         return
     metric_identity = metrics.get("policyengine_runtime_identity")
     metric_digest = metrics.get("policyengine_runtime_identity_sha256")
-    has_oracle_evidence = any(
+    has_policyengine_evidence = any(
         value is not None
         for value in (
             metrics.get("policyengine_pass"),
@@ -1547,8 +1547,12 @@ def _validate_result_policyengine_runtime_evidence(
             metric_digest,
         )
     )
-    if not has_oracle_evidence:
+    if not has_policyengine_evidence:
         return
+    if metrics.get("policyengine_pass") is None:
+        raise EvalBoardError(
+            f"{context} PolicyEngine oracle evidence has no pass outcome"
+        )
     expected_runtime = execution_identity.get("policyengine_runtime")
     if (
         not isinstance(expected_runtime, dict)
