@@ -1,6 +1,9 @@
 """Tests for the N-runner eval board fold and its capability manifest."""
 
+import copy
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,7 +31,10 @@ from axiom_encode.harness.evals import (
 from axiom_encode.harness.evals import (
     _canonical_json_sha256 as evals_canonical_json_sha256,
 )
-from axiom_encode.harness.policyengine_runtime import POLICYENGINE_RUNTIME_SCHEMA
+from axiom_encode.harness.policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_SCHEMA,
+    POLICYENGINE_RUNTIME_SCHEMA,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAPABILITY_MANIFEST = REPO_ROOT / "benchmarks" / "encodebench_uk_v1.yaml"
@@ -39,6 +45,7 @@ CASE_IDENTITIES = [
         "name": "alpha",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/2007/3/35",
+        "oracle": "none",
         "sha256": "aa" * 32,
     },
     {
@@ -46,6 +53,7 @@ CASE_IDENTITIES = [
         "name": "beta",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/1994/23/2",
+        "oracle": "none",
         "sha256": "bb" * 32,
     },
     {
@@ -53,9 +61,18 @@ CASE_IDENTITIES = [
         "name": "gamma",
         "kind": "source",
         "corpus_citation_path": "uk/statute/ukpga/2012/5/8",
+        "oracle": "none",
         "sha256": "cc" * 32,
     },
 ]
+
+
+def _case_identities_with_policyengine(*case_indexes):
+    identities = copy.deepcopy(CASE_IDENTITIES)
+    for case_index in case_indexes:
+        identities[case_index - 1]["oracle"] = "policyengine"
+    return identities
+
 
 CORPUS_IDENTITY = {
     "corpus_release": "uk-rulespec-2026-07-14",
@@ -63,19 +80,37 @@ CORPUS_IDENTITY = {
     "corpus_release_selector_sha256": "dc" * 32,
 }
 
+RUN_IDENTITY = {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "started_at": "2026-07-25T00:00:00+00:00",
+}
 
-def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
+
+def _policyengine_runtime_identity(
+    *,
+    root="/ci/policyengine-uk",
+    pe_version="1.9.0",
+):
     """Mirror the sealed-runtime identity shape, paths included."""
+    rulespec_checkout = f"{root.rsplit('/', 1)[0]}/rulespec-uk"
+    stdlib = f"{root}/.venv/lib/python3.13"
+    site_packages = f"{stdlib}/site-packages"
+    initial_sys_path = [
+        stdlib,
+        f"{stdlib}/lib-dynload",
+    ]
     identity = {
         "schema": POLICYENGINE_RUNTIME_SCHEMA,
         "country": "uk",
-        "official_repository_url": "https://github.com/PolicyEngine/policyengine-uk",
+        "official_repository_url": "https://github.com/PolicyEngine/policyengine-uk.git",
         "trusted_git_commit": "9" * 40,
         "official_tree_sha256": "13" * 32,
-        "official_tree_file_count": 5000,
-        "official_tree_byte_count": 12345678,
-        "rulespec_runtime_pin_path": f"{root}/rulespec/.axiom/policyengine.toml",
-        "rulespec_runtime_pin_schema": "axiom-encode/policyengine-runtime-pin/v1",
+        "official_tree_file_count": 5100,
+        "official_tree_byte_count": 22345678,
+        "rulespec_runtime_pin_path": (
+            f"{rulespec_checkout}/.axiom/policyengine-runtime.toml"
+        ),
+        "rulespec_runtime_pin_schema": POLICYENGINE_RUNTIME_PIN_SCHEMA,
         "rulespec_runtime_pin_sha256": "14" * 32,
         "repository_root": root,
         "checkout_execution_tree_sha256": "15" * 32,
@@ -85,8 +120,8 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
         "venv_execution_tree_sha256": "16" * 32,
         "venv_execution_file_count": 21000,
         "venv_execution_byte_count": 923456789,
-        "stdlib_root": f"{root}/.venv/lib/python3.13",
-        "site_packages_root": f"{root}/.venv/lib/python3.13/site-packages",
+        "stdlib_root": stdlib,
+        "site_packages_root": site_packages,
         "pyproject_sha256": "17" * 32,
         "uv_lock_sha256": "18" * 32,
         "locked_versions": {
@@ -97,19 +132,14 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
         "python_implementation": "cpython",
         "python_executable": f"{root}/.venv/bin/python",
         "python_prefix": f"{root}/.venv",
-        "python_base_prefix": f"{root}/toolcache/python-3.13.5",
+        "python_base_prefix": f"{root}/.venv",
         "python_exec_prefix": f"{root}/.venv",
-        "python_base_exec_prefix": f"{root}/toolcache/python-3.13.5",
-        "initial_sys_path": [
-            f"{root}/toolcache/python-3.13.5/lib/python313.zip",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13/lib-dynload",
-        ],
+        "python_base_exec_prefix": f"{root}/.venv",
+        "initial_sys_path": initial_sys_path,
         "effective_sys_path": [
-            f"{root}/toolcache/python-3.13.5/lib/python313.zip",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13",
-            f"{root}/toolcache/python-3.13.5/lib/python3.13/lib-dynload",
-            f"{root}/.venv/lib/python3.13/site-packages",
+            root,
+            site_packages,
+            *initial_sys_path,
         ],
         "isolated": 1,
         "no_site": 1,
@@ -117,20 +147,14 @@ def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
             "policyengine-uk": {
                 "distribution": "policyengine-uk",
                 "version": pe_version,
-                "module_origin": (
-                    f"{root}/.venv/lib/python3.13/site-packages/"
-                    "policyengine_uk/__init__.py"
-                ),
-                "metadata_root": f"{root}/.venv/lib/python3.13/site-packages",
+                "module_origin": f"{root}/policyengine_uk/__init__.py",
+                "metadata_root": site_packages,
             },
             "policyengine-core": {
                 "distribution": "policyengine-core",
                 "version": "3.20.0",
-                "module_origin": (
-                    f"{root}/.venv/lib/python3.13/site-packages/"
-                    "policyengine_core/__init__.py"
-                ),
-                "metadata_root": f"{root}/.venv/lib/python3.13/site-packages",
+                "module_origin": f"{site_packages}/policyengine_core/__init__.py",
+                "metadata_root": site_packages,
             },
         },
     }
@@ -145,10 +169,51 @@ def _execution_identity(
     encoder_commit="1" * 40,
     checkout="/ci/axiom-encode",
     policyengine_runtime=None,
+    case_timeout_seconds=3600,
+    claude_timeout_seconds=1800,
+    codex_timeout_seconds=600,
+    suite_max_attempts=3,
 ):
-    """A payload execution identity mirroring the v2 producer shape."""
+    """A payload execution identity mirroring the current producer shape."""
+    rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
+    runtime_identity = (
+        policyengine_runtime.get("identity")
+        if isinstance(policyengine_runtime, dict)
+        else None
+    )
+    runtime_pin_sha256 = (
+        runtime_identity.get("rulespec_runtime_pin_sha256")
+        if isinstance(runtime_identity, dict)
+        else None
+    )
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
+        "case_timeout_seconds": case_timeout_seconds,
+        "runner_timeouts": {
+            "claude": {"wall_seconds": claude_timeout_seconds},
+            "codex": {
+                "short_source": {
+                    "wall_seconds": codex_timeout_seconds,
+                    "idle_seconds": min(300, codex_timeout_seconds),
+                },
+                "long_source": {
+                    "wall_seconds": 1800,
+                    "idle_seconds": 900,
+                },
+                "long_source_char_threshold": 40_000,
+            },
+            "openai": {
+                "request_connect_seconds": 30,
+                "request_read_seconds": 180,
+            },
+        },
+        "timeout_retry_policy": {
+            "empty_artifact_max_attempts": 2,
+            "suite_max_attempts": suite_max_attempts,
+            "suite_retries_after_timeout": False,
+            "openai_request_max_attempts": 6,
+            "openai_request_backoff_seconds": [1, 2, 4, 8, 10],
+        },
         "axiom_encode": {
             "kind": "git",
             "path": checkout,
@@ -170,14 +235,14 @@ def _execution_identity(
         "policyengine_runtime": policyengine_runtime,
         "rulespec_roots": [
             {
-                "path": f"{checkout}-rulespec/uk",
+                "path": f"{rulespec_checkout}/uk",
                 "content_state": "directory",
                 "content_sha256": "ab" * 32,
                 "file_count": 400,
-                "toolchain_root": f"{checkout}-rulespec",
+                "toolchain_root": rulespec_checkout,
                 "checkout_identity": {
                     "kind": "git",
-                    "path": f"{checkout}-rulespec",
+                    "path": rulespec_checkout,
                     "commit": "3" * 40,
                     "origin_repository": "github.com/TheAxiomFoundation/rulespec-uk",
                     "dirty": False,
@@ -185,14 +250,43 @@ def _execution_identity(
                     "pathspecs": [
                         "uk",
                         ".axiom/toolchain.toml",
+                        ".axiom/policyengine-runtime.toml",
                         "known-validation-gaps.yaml",
                     ],
                 },
                 "toolchain_contract_sha256": "ef" * 32,
+                "policyengine_runtime_pin_sha256": runtime_pin_sha256,
                 "validation_waiver_set_sha256": "12" * 32,
             }
         ],
     }
+
+
+def _append_rulespec_root(
+    identity,
+    *,
+    jurisdiction,
+    checkout=None,
+    runtime_pin_sha256="copied",
+):
+    """Expose another producer-shaped jurisdiction root for admission tests."""
+
+    root = copy.deepcopy(identity["rulespec_roots"][0])
+    country = jurisdiction.split("-", 1)[0]
+    if checkout is None:
+        original_checkout = root["toolchain_root"]
+        checkout = f"{original_checkout.rsplit('/', 1)[0]}/rulespec-{country}"
+    root["path"] = f"{checkout}/{jurisdiction}"
+    root["toolchain_root"] = checkout
+    root["checkout_identity"]["path"] = checkout
+    root["checkout_identity"]["origin_repository"] = (
+        f"github.com/TheAxiomFoundation/rulespec-{country}"
+    )
+    root["checkout_identity"]["pathspecs"][0] = jurisdiction
+    if runtime_pin_sha256 != "copied":
+        root["policyengine_runtime_pin_sha256"] = runtime_pin_sha256
+    identity["rulespec_roots"].append(root)
+    return root
 
 
 def _metrics(
@@ -240,28 +334,52 @@ def _result(
     cost=None,
     metrics="default",
     eval_case_overrides=None,
+    failure_kind=None,
+    timed_out=False,
+    timeout_stage=None,
+    timeout_reason=None,
+    timeout_seconds=None,
+    timeout_attempts=0,
 ):
     if metrics == "default":
         metrics = _metrics()
+    has_generated_artifact = success is True or isinstance(metrics, dict)
     eval_case = {
         "index": case["index"],
         "name": case["name"],
         "kind": case["kind"],
         "corpus_citation_path": case["corpus_citation_path"],
+        "oracle": case["oracle"],
         "sha256": case["sha256"],
     }
     if eval_case_overrides:
         eval_case.update(eval_case_overrides)
     return {
-        "citation": case["name"],
+        "citation": case["corpus_citation_path"],
         "runner": runner,
         "backend": backend,
         "model": model,
         "mode": "cold",
         "success": success,
         "error": error,
+        "failure_kind": failure_kind,
+        "timed_out": timed_out,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
         "duration_ms": duration_ms,
         "estimated_cost_usd": cost,
+        "output_file": (
+            f"/eval/{runner}/{case['index']}.yaml" if has_generated_artifact else ""
+        ),
+        "generated_output_sha256": "d0" * 32 if has_generated_artifact else None,
+        "trace_file": f"/eval/traces/{runner}/{case['index']}.json",
+        "trace_sha256": "e0" * 32,
+        "context_manifest_file": (
+            f"/eval/workspaces/{runner}/{case['index']}/context-manifest.json"
+        ),
+        "context_manifest_sha256": "f0" * 32,
         "metrics": metrics,
         "eval_case": eval_case,
     }
@@ -283,10 +401,95 @@ def _payload(
     schema=SUPPORTED_RESULTS_SCHEMA,
 ):
     case_identities = CASE_IDENTITIES if case_identities is None else case_identities
+    corpus_identity = dict(CORPUS_IDENTITY if corpus is None else corpus)
+    runner_identities = [
+        {
+            "name": name,
+            "backend": backend,
+            "model": model,
+        }
+        for name, backend, model in runners
+    ]
+    manifest_identity = {
+        "name": suite_name,
+        "path": "benchmarks/encodebench_uk_v1.yaml",
+        "content_sha256": "77" * 32,
+        "case_identities": case_identities,
+    }
     if execution_identity is None:
         execution_identity = _execution_identity()
     if execution_identity_sha256 is None:
         execution_identity_sha256 = evals_canonical_json_sha256(execution_identity)
+    bound_results = []
+    for original_row in results:
+        if not isinstance(original_row, dict):
+            bound_results.append(original_row)
+            continue
+        row = copy.deepcopy(original_row)
+        if "admission" not in row:
+            raw_case = row.get("eval_case")
+            case_index = raw_case.get("index") if isinstance(raw_case, dict) else None
+            admitted_case = (
+                case_identities[case_index - 1]
+                if (
+                    type(case_index) is int
+                    and 1 <= case_index <= len(case_identities)
+                    and isinstance(case_identities[case_index - 1], dict)
+                )
+                else raw_case
+            )
+            roots = execution_identity.get("rulespec_roots")
+            root_identity = (
+                next((root for root in roots if isinstance(root, dict)), {})
+                if isinstance(roots, list)
+                else {}
+            )
+            row["admission"] = {
+                "schema": "axiom-encode/eval-result-admission/v2",
+                "run": copy.deepcopy(RUN_IDENTITY),
+                "suite": {
+                    "name": suite_name,
+                    "manifest_path": manifest_identity["path"],
+                    "manifest_content_sha256": manifest_identity["content_sha256"],
+                    "manifest_case_identities": copy.deepcopy(case_identities),
+                    "effective_runner_identities": copy.deepcopy(runner_identities),
+                },
+                "case": copy.deepcopy(admitted_case),
+                "corpus": copy.deepcopy(corpus_identity),
+                "execution": {
+                    "identity": copy.deepcopy(execution_identity),
+                    "sha256": execution_identity_sha256,
+                },
+                "rulespec": {
+                    "policy_repo_root": root_identity.get("path"),
+                    "root_content_sha256": root_identity.get("content_sha256"),
+                    "toolchain_contract_sha256": root_identity.get(
+                        "toolchain_contract_sha256"
+                    ),
+                    "validation_waiver_set_sha256": root_identity.get(
+                        "validation_waiver_set_sha256"
+                    ),
+                },
+            }
+        metrics = row.get("metrics")
+        runtime = execution_identity.get("policyengine_runtime")
+        if (
+            isinstance(metrics, dict)
+            and isinstance(runtime, dict)
+            and (
+                metrics.get("policyengine_pass") is not None
+                or metrics.get("policyengine_score") is not None
+            )
+        ):
+            metrics.setdefault(
+                "policyengine_runtime_identity",
+                copy.deepcopy(runtime["identity"]),
+            )
+            metrics.setdefault(
+                "policyengine_runtime_identity_sha256",
+                runtime["sha256"],
+            )
+        bound_results.append(row)
     # Bind rows exactly like the producer: every persisted row carries a
     # digest over itself minus the digest field.
     results = [
@@ -295,7 +498,7 @@ def _payload(
             if isinstance(row, dict) and "result_sha256" not in row
             else row
         )
-        for row in results
+        for row in bound_results
     ]
     if results_sha256 is None:
         results_sha256 = cli._eval_suite_json_sha256(results)
@@ -319,21 +522,10 @@ def _payload(
         coverage.update(coverage_overrides)
     evidence = {
         "schema": cli._EVAL_SUITE_EVIDENCE_SCHEMA,
-        "manifest": {
-            "name": suite_name,
-            "path": "benchmarks/encodebench_uk_v1.yaml",
-            "content_sha256": "77" * 32,
-            "case_identities": case_identities,
-        },
-        "corpus": dict(CORPUS_IDENTITY if corpus is None else corpus),
-        "effective_runner_identities": [
-            {
-                "name": name,
-                "backend": backend,
-                "model": model,
-            }
-            for name, backend, model in runners
-        ],
+        "manifest": manifest_identity,
+        "run": copy.deepcopy(RUN_IDENTITY),
+        "corpus": corpus_identity,
+        "effective_runner_identities": runner_identities,
         "execution_identity": execution_identity,
         "execution_identity_sha256": execution_identity_sha256,
     }
@@ -364,8 +556,35 @@ def _write_payload(tmp_path, name, payload):
     return path
 
 
+def _rebind_payload_results(payload):
+    """Refresh producer digests after a test deliberately mutates result rows."""
+
+    for row in payload["results"]:
+        row.pop("result_sha256", None)
+        row["result_sha256"] = cli._eval_suite_json_sha256(row)
+    payload["coverage"]["results_sha256"] = cli._eval_suite_json_sha256(
+        payload["results"]
+    )
+
+
+def _bind_result_to_rulespec_root(payload, row_index, root):
+    """Refresh one row's producer admission after selecting another root."""
+
+    payload["results"][row_index]["admission"]["rulespec"] = {
+        "policy_repo_root": root["path"],
+        "root_content_sha256": root["content_sha256"],
+        "toolchain_contract_sha256": root["toolchain_contract_sha256"],
+        "validation_waiver_set_sha256": root["validation_waiver_set_sha256"],
+    }
+    _rebind_payload_results(payload)
+
+
 def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
+    assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v6"
+    assert (
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v3"
+    )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
     )
@@ -399,6 +618,167 @@ def test_real_producer_identity_matches_consumer_contract():
     assert '"path"' not in rendered
     # Score-affecting fields survive normalization.
     assert identity["axiom_encode"]["version"] in rendered
+    assert identity["case_timeout_seconds"] == normalized["case_timeout_seconds"]
+    assert identity["runner_timeouts"] == normalized["runner_timeouts"]
+    assert identity["timeout_retry_policy"] == normalized["timeout_retry_policy"]
+
+
+def test_real_producer_identity_is_admitted_by_consumer(tmp_path):
+    checkout = tmp_path / "rulespec-us"
+    content_root = checkout / "us"
+    content_root.mkdir(parents=True)
+    (content_root / "sample.yaml").write_text("format: rulespec/v1\nrules: []\n")
+    waiver_bytes = b"validate_failures: {}\n"
+    waiver_sha256 = hashlib.sha256(waiver_bytes).hexdigest()
+    (checkout / "known-validation-gaps.yaml").write_bytes(waiver_bytes)
+    toolchain = checkout / ".axiom" / "toolchain.toml"
+    toolchain.parent.mkdir()
+    toolchain.write_text(
+        "[toolchain]\n"
+        'axiom_corpus_release = "producer-consumer-lock"\n'
+        f'axiom_corpus_release_content_sha256 = "{"a" * 64}"\n'
+        f'validation_waiver_set_sha256 = "{waiver_sha256}"\n'
+    )
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(checkout), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "commit", "-qm", "fixture"],
+        check=True,
+    )
+
+    identity = _build_eval_suite_execution_identity(
+        REPO_ROOT,
+        (str(content_root),),
+    )
+    digest = _eval_suite_execution_identity_sha256(identity)
+
+    assert identity["axiom_encode"]["pathspecs"] == [
+        "src/axiom_encode",
+        "pyproject.toml",
+        "uv.lock",
+    ]
+    assert "pathspecs" not in identity["axiom_rules_engine"]
+    assert identity["rulespec_roots"][0]["checkout_identity"]["pathspecs"] == [
+        "us",
+        ".axiom/toolchain.toml",
+        ".axiom/policyengine-runtime.toml",
+        "known-validation-gaps.yaml",
+    ]
+    admitted_identity, admitted_digest = eval_board_module._payload_execution_identity(
+        {
+            "evidence": {
+                "execution_identity": identity,
+                "execution_identity_sha256": digest,
+            }
+        },
+        "real producer identity",
+    )
+    assert admitted_identity == identity
+    assert admitted_digest == digest
+
+
+def test_fold_admits_producer_policyengine_runtime_identity(tmp_path):
+    execution_identity = _execution_identity(
+        policyengine_runtime=_policyengine_runtime_identity(),
+    )
+    path = _write_payload(
+        tmp_path,
+        "producer-policyengine-runtime.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert [runner.runner for runner in board.runners] == ["terra"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "file_count",
+        "byte_count",
+        "pin_filename",
+        "pin_checkout",
+        "pin_unbound",
+        "pin_parent_traversal",
+        "python_version",
+    ],
+)
+def test_fold_refuses_policyengine_identity_the_producer_cannot_emit(
+    tmp_path,
+    mutation,
+):
+    runtime = _policyengine_runtime_identity()
+    runtime_identity = runtime["identity"]
+    if mutation == "file_count":
+        runtime_identity["official_tree_file_count"] -= 1
+    elif mutation == "byte_count":
+        runtime_identity["official_tree_byte_count"] -= 1
+    elif mutation == "pin_filename":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/rulespec-uk/.axiom/policyengine.toml"
+        )
+    elif mutation == "pin_checkout":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/not-rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    elif mutation == "pin_unbound":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/other/rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    elif mutation == "pin_parent_traversal":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/other/../rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    else:
+        runtime_identity["python_version"] = "3.12.5"
+    runtime["sha256"] = evals_canonical_json_sha256(runtime_identity)
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    path = _write_payload(
+        tmp_path,
+        f"producer-impossible-{mutation}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_policyengine_pin_digest_unbound_from_rulespec_checkout(
+    tmp_path,
+):
+    runtime = _policyengine_runtime_identity()
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    runtime["identity"]["rulespec_runtime_pin_sha256"] = "99" * 32
+    runtime["sha256"] = evals_canonical_json_sha256(runtime["identity"])
+    path = _write_payload(
+        tmp_path,
+        "producer-impossible-pin-digest.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
@@ -417,6 +797,12 @@ def test_fold_two_single_runner_payloads(tmp_path):
             success=False,
             error="encode timed out",
             metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
         ),
     ]
     sol_results = [
@@ -459,11 +845,218 @@ def test_fold_two_single_runner_payloads(tmp_path):
     assert sol.mean_cost_usd == pytest.approx(0.02)
     # Sol leads the ordering on gate-pass rate.
     assert board.ordered_runners()[0].runner == "sol"
-    assert board.cells[(3, "terra")].state == "error"
+    assert board.cells[(3, "terra")].state == "timeout"
     assert board.cells[(2, "terra")].state == "fail"
     assert "ungrounded=2" in board.cells[(2, "terra")].detail
     assert board.cells[(1, "terra")].state == "pass"
     assert board.mixed_toolchain_sources == []
+
+
+def test_board_distinguishes_timeout_validation_failure_and_plain_error(tmp_path):
+    results = [
+        _result(
+            "fable",
+            CASE_IDENTITIES[0],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Claude eval timed out",
+            metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=3,
+        ),
+        _result(
+            "fable",
+            CASE_IDENTITIES[1],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Generated RuleSpec failed CI validation",
+            metrics=_metrics(ci_pass=False),
+            failure_kind="validation",
+        ),
+        _result(
+            "fable",
+            CASE_IDENTITIES[2],
+            backend="claude",
+            model="claude-fable-5",
+            success=False,
+            error="Claude CLI failed",
+            metrics=None,
+            failure_kind="error",
+        ),
+    ]
+    path = _write_payload(
+        tmp_path,
+        "fable.json",
+        _payload(
+            [("fable", "claude", "claude-fable-5")],
+            results,
+        ),
+    )
+
+    board = fold_eval_board([path])
+    stats = board.runners[0]
+    assert board.cells[(1, "fable")].state == "timeout"
+    assert board.cells[(2, "fable")].state == "fail"
+    assert board.cells[(3, "fable")].state == "error"
+    assert stats.timeout_count == 1
+    assert stats.artifact_case_count == 1
+    assert stats.compile_pass_rate == 1.0
+    assert stats.ci_pass_rate == 0.0
+    assert stats.zero_ungrounded_rate == 1.0
+    assert "T = encoder/case timeout" in render_eval_board_markdown(board)
+    assert "T timeout" in render_eval_board_text(board)
+
+
+def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
+    timeout_result = _result(
+        "fable",
+        CASE_IDENTITIES[0],
+        backend="claude",
+        model="claude-fable-5",
+        success=False,
+        error="Claude eval timed out",
+        metrics=None,
+        failure_kind="timeout",
+        timed_out=True,
+        timeout_stage="encoder",
+        timeout_reason="wall",
+        timeout_seconds=600,
+        timeout_attempts=1,
+    )
+    timeout_result.update(
+        {
+            "output_file": "/tmp/generated.yaml",
+            "generated_output_sha256": "a" * 64,
+        }
+    )
+    path = _write_payload(
+        tmp_path,
+        "artifact-mislabeled-as-timeout.json",
+        _payload(
+            [("fable", "claude", "claude-fable-5")],
+            [
+                timeout_result,
+                _result(
+                    "fable",
+                    CASE_IDENTITIES[1],
+                    backend="claude",
+                    model="claude-fable-5",
+                ),
+                _result(
+                    "fable",
+                    CASE_IDENTITIES[2],
+                    backend="claude",
+                    model="claude-fable-5",
+                ),
+            ],
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="no generated artifact"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("row_kind", ["success", "metrics_failure"])
+def test_fold_refuses_artifact_rows_without_content_bound_output(tmp_path, row_kind):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    if row_kind == "metrics_failure":
+        results[0].update(
+            success=False,
+            error="Generated RuleSpec failed CI validation",
+            failure_kind="validation",
+        )
+    results[0].update(output_file="", generated_output_sha256=None)
+    path = _write_payload(
+        tmp_path,
+        f"unbound-{row_kind}.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="content-bound generated RuleSpec"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_generated_output_without_trace_context_binding(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0].update(trace_file="", trace_sha256=None)
+    path = _write_payload(
+        tmp_path,
+        "unbound-trace.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="content-bound trace or context manifest"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_unbound_validator_verdict_artifact(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0].update(
+        verdict_file="/eval/verdicts/terra/1.json",
+        verdict_sha256=None,
+    )
+    path = _write_payload(
+        tmp_path,
+        "unbound-verdict.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="validator verdict evidence path"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_missing_core_artifact_digest_key(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0] = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error="generation failed",
+        metrics=None,
+        failure_kind="error",
+    )
+    results[0].pop("generated_output_sha256")
+    path = _write_payload(
+        tmp_path,
+        "missing-output-digest.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match="missing immutable generated RuleSpec digest",
+    ):
+        fold_eval_board([path])
+
+
+def test_verdict_only_failure_does_not_require_generation_artifacts():
+    result = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error="generation failed",
+        metrics=None,
+        failure_kind="error",
+    )
+    result.update(
+        trace_file="",
+        trace_sha256=None,
+        context_manifest_file="",
+        context_manifest_sha256=None,
+        verdict_file="/eval/verdicts/terra/1.json",
+        verdict_sha256="ab" * 32,
+    )
+
+    eval_board_module._validate_result_artifact_bindings(
+        result,
+        context="verdict-only failure",
+    )
 
 
 def test_gate_pass_requires_all_deterministic_checks():
@@ -502,7 +1095,7 @@ def test_fold_refuses_unknown_schema(tmp_path):
 
 def test_fold_refuses_unknown_execution_identity_schema(tmp_path):
     identity = _execution_identity()
-    identity["schema"] = "axiom-encode/eval-execution-identity/v1"
+    identity["schema"] = "axiom-encode/eval-execution-identity/v2"
     path = _write_payload(
         tmp_path,
         "old-identity.json",
@@ -513,6 +1106,545 @@ def test_fold_refuses_unknown_execution_identity_schema(tmp_path):
         ),
     )
     with pytest.raises(EvalBoardError, match="execution identity carries schema"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_execution_identity_without_timeout_policy(tmp_path):
+    identity = _execution_identity()
+    identity.pop("runner_timeouts")
+    path = _write_payload(
+        tmp_path,
+        "missing-timeout-policy.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="runner timeout"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_execution_identity_without_case_budget(tmp_path):
+    identity = _execution_identity()
+    identity.pop("case_timeout_seconds")
+    path = _write_payload(
+        tmp_path,
+        "missing-case-budget.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="generation/retry case timeout"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "axiom_encode",
+        "axiom_rules_engine",
+        "rulespec_roots",
+        "policyengine_runtime",
+    ],
+)
+def test_fold_refuses_execution_identity_without_core_field(tmp_path, field_name):
+    identity = _execution_identity()
+    identity.pop(field_name)
+    path = _write_payload(
+        tmp_path,
+        f"missing-{field_name}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "pathspecs",
+    [
+        None,
+        ["pyproject.toml", "src/axiom_encode", "uv.lock"],
+        ["src/axiom_encode"],
+        ["src/axiom_encode", "pyproject.toml", "uv.lock", "tests"],
+    ],
+)
+def test_fold_refuses_encoder_identity_with_nonproducer_pathspecs(
+    tmp_path,
+    pathspecs,
+):
+    identity = _execution_identity()
+    if pathspecs is None:
+        identity["axiom_encode"].pop("pathspecs")
+    else:
+        identity["axiom_encode"]["pathspecs"] = pathspecs
+    path = _write_payload(
+        tmp_path,
+        "invalid-encoder-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_rules_engine_identity_with_pathspecs(tmp_path):
+    identity = _execution_identity()
+    identity["axiom_rules_engine"]["pathspecs"] = ["src"]
+    path = _write_payload(
+        tmp_path,
+        "invalid-engine-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "origin_repository",
+    [
+        "https://github.com/TheAxiomFoundation/axiom-encode",
+        "ssh://git@github.com/TheAxiomFoundation/axiom-encode",
+        "git@github.com:TheAxiomFoundation/axiom-encode",
+        "github.com:443/TheAxiomFoundation/axiom-encode",
+        "GitHub.com/TheAxiomFoundation/axiom-encode",
+        "github.com//axiom-encode",
+        "github.com/TheAxiomFoundation/",
+        "github.com/TheAxiomFoundation/axiom-encode/extra",
+        "github.com/The Axiom Foundation/axiom-encode",
+        "github.com/TheAxiomFoundation/axiom encode",
+    ],
+)
+def test_fold_refuses_noncanonical_checkout_origin_repository(
+    tmp_path,
+    origin_repository,
+):
+    identity = _execution_identity()
+    identity["axiom_encode"]["origin_repository"] = origin_repository
+    path = _write_payload(
+        tmp_path,
+        "noncanonical-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "checkout_selector",
+    ["axiom_encode", "axiom_rules_engine", "rulespec"],
+)
+def test_fold_applies_origin_contract_to_every_git_checkout(
+    tmp_path,
+    checkout_selector,
+):
+    identity = _execution_identity()
+    if checkout_selector == "rulespec":
+        checkout = identity["rulespec_roots"][0]["checkout_identity"]
+    else:
+        checkout = identity[checkout_selector]
+    checkout["origin_repository"] = (
+        "https://github.com/TheAxiomFoundation/producer-impossible"
+    )
+    path = _write_payload(
+        tmp_path,
+        f"noncanonical-{checkout_selector}-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "origin_repository",
+    [
+        None,
+        "github.com/Axiom-Foundation/axiom.encode.git?ref=release#signed",
+    ],
+)
+def test_fold_accepts_producer_checkout_origin_variants(
+    tmp_path,
+    origin_repository,
+):
+    identity = _execution_identity()
+    identity["axiom_encode"]["origin_repository"] = origin_repository
+    path = _write_payload(
+        tmp_path,
+        "valid-origin.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].cases_run == len(CASE_IDENTITIES)
+
+
+@pytest.mark.parametrize(
+    "pathspecs",
+    [
+        None,
+        ["uk", ".axiom/toolchain.toml"],
+        [".axiom/toolchain.toml", "uk", "known-validation-gaps.yaml"],
+        ["us", ".axiom/toolchain.toml", "known-validation-gaps.yaml"],
+        [
+            "uk",
+            ".axiom/toolchain.toml",
+            "known-validation-gaps.yaml",
+            "README.md",
+        ],
+    ],
+)
+def test_fold_refuses_rulespec_identity_with_nonproducer_pathspecs(
+    tmp_path,
+    pathspecs,
+):
+    identity = _execution_identity()
+    checkout_identity = identity["rulespec_roots"][0]["checkout_identity"]
+    if pathspecs is None:
+        checkout_identity.pop("pathspecs")
+    else:
+        checkout_identity["pathspecs"] = pathspecs
+    path = _write_payload(
+        tmp_path,
+        "invalid-rulespec-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("toolchain_root", "root_path", "first_pathspec"),
+    [
+        ("ci/rulespec-uk", "ci/rulespec-uk/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/./uk", "uk"),
+        ("/ci/./rulespec-uk", "/ci/./rulespec-uk/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/regions/uk", "regions/uk"),
+        ("/ci/policy-uk", "/ci/policy-uk/uk", "uk"),
+        ("/ci/rulespec-us", "/ci/rulespec-us/uk", "uk"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk/uk_private", "uk_private"),
+        ("/ci/rulespec-uk", "/ci/rulespec-uk", "."),
+        ("/ci/rulespec-uk/", "/ci/rulespec-uk/uk/", "uk"),
+    ],
+)
+def test_fold_refuses_noncanonical_rulespec_root_topology(
+    tmp_path,
+    toolchain_root,
+    root_path,
+    first_pathspec,
+):
+    identity = _execution_identity()
+    root = identity["rulespec_roots"][0]
+    root["toolchain_root"] = toolchain_root
+    root["path"] = root_path
+    root["checkout_identity"]["path"] = toolchain_root
+    root["checkout_identity"]["pathspecs"][0] = first_pathspec
+    path = _write_payload(
+        tmp_path,
+        "noncanonical-rulespec-root.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_allows_multiple_direct_jurisdiction_roots_in_one_checkout(tmp_path):
+    identity = _execution_identity()
+    scotland_root = _append_rulespec_root(
+        identity,
+        jurisdiction="uk-scotland",
+    )
+    case_identities = copy.deepcopy(CASE_IDENTITIES)
+    case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in case_identities],
+        case_identities=case_identities,
+        execution_identity=identity,
+    )
+    _bind_result_to_rulespec_root(payload, 0, scotland_root)
+    path = _write_payload(tmp_path, "multiple-jurisdictions.json", payload)
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].cases_run == len(case_identities)
+
+
+def test_fold_refuses_row_admitted_under_different_citation_jurisdiction(tmp_path):
+    identity = _execution_identity()
+    _append_rulespec_root(identity, jurisdiction="uk-scotland")
+    case_identities = copy.deepcopy(CASE_IDENTITIES)
+    case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+    path = _write_payload(
+        tmp_path,
+        "wrong-row-jurisdiction.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in case_identities],
+            case_identities=case_identities,
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="RuleSpec.*jurisdiction"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("binding_mismatch", ["country", "checkout", "pin_digest"])
+def test_fold_refuses_policyengine_row_unbound_from_its_admitted_rulespec_root(
+    tmp_path,
+    binding_mismatch,
+):
+    runtime = _policyengine_runtime_identity()
+    identity = _execution_identity(policyengine_runtime=runtime)
+    case_identities = _case_identities_with_policyengine(1)
+    if binding_mismatch == "country":
+        case_identities[0]["corpus_citation_path"] = "us/statute/usc/26/32/a"
+        admitted_root = _append_rulespec_root(identity, jurisdiction="us")
+    elif binding_mismatch == "checkout":
+        admitted_root = _append_rulespec_root(
+            identity,
+            jurisdiction="uk",
+            checkout="/foreign/rulespec-uk",
+        )
+    else:
+        case_identities[0]["corpus_citation_path"] = "uk-scotland/statute/asp/2025/1/1"
+        admitted_root = _append_rulespec_root(
+            identity,
+            jurisdiction="uk-scotland",
+            runtime_pin_sha256="99" * 32,
+        )
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [
+            _result(
+                "terra",
+                case_identities[0],
+                metrics=_metrics(
+                    policyengine_pass=True,
+                    policyengine_score=1.0,
+                ),
+            ),
+            *[_result("terra", case) for case in case_identities[1:]],
+        ],
+        case_identities=case_identities,
+        execution_identity=identity,
+    )
+    _bind_result_to_rulespec_root(payload, 0, admitted_root)
+    path = _write_payload(
+        tmp_path,
+        f"policyengine-row-{binding_mismatch}.json",
+        payload,
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*RuleSpec"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_path_only_engine_identities_that_normalize_equal(tmp_path):
+    left_identity = _execution_identity()
+    left_identity["axiom_rules_engine"] = {"path": "/engine/left"}
+    right_identity = _execution_identity()
+    right_identity["axiom_rules_engine"] = {"path": "/engine/right"}
+    left = _write_payload(
+        tmp_path,
+        "left-path-only-engine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=left_identity,
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right-path-only-engine.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=right_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([left, right])
+
+
+def test_fold_refuses_execution_identity_without_any_rulespec_root(tmp_path):
+    identity = _execution_identity()
+    identity["rulespec_roots"] = []
+    path = _write_payload(
+        tmp_path,
+        "empty-rulespec-roots.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("content_state", "file_count"),
+    [
+        ("missing", 0),
+        ("file", 1),
+    ],
+)
+def test_fold_refuses_nondirectory_rulespec_root(
+    tmp_path,
+    content_state,
+    file_count,
+):
+    identity = _execution_identity()
+    identity["rulespec_roots"][0]["content_state"] = content_state
+    identity["rulespec_roots"][0]["file_count"] = file_count
+    path = _write_payload(
+        tmp_path,
+        f"{content_state}-rulespec-root.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "path",
+        "content_state",
+        "content_sha256",
+        "file_count",
+        "toolchain_root",
+        "checkout_identity",
+        "toolchain_contract_sha256",
+        "policyengine_runtime_pin_sha256",
+        "validation_waiver_set_sha256",
+    ],
+)
+def test_fold_refuses_rulespec_root_without_required_identity_field(
+    tmp_path,
+    field_name,
+):
+    identity = _execution_identity()
+    identity["rulespec_roots"][0].pop(field_name)
+    path = _write_payload(
+        tmp_path,
+        f"missing-rulespec-root-{field_name}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_policyengine_runtime_wrapper_digest_mismatch(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    runtime["sha256"] = "99" * 32
+    identity = _execution_identity(policyengine_runtime=runtime)
+    path = _write_payload(
+        tmp_path,
+        "stale-policyengine-wrapper-digest.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_location_only_policyengine_runtime_identity(tmp_path):
+    runtime_identity = {"repository_root": "/ci/policyengine-uk"}
+    identity = _execution_identity(
+        policyengine_runtime={
+            "identity": runtime_identity,
+            "sha256": evals_canonical_json_sha256(runtime_identity),
+        }
+    )
+    path = _write_payload(
+        tmp_path,
+        "location-only-policyengine-runtime.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_execution_identity_without_timeout_retry_policy(tmp_path):
+    identity = _execution_identity()
+    identity.pop("timeout_retry_policy")
+    path = _write_payload(
+        tmp_path,
+        "missing-timeout-retry-policy.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="timeout retry"):
         fold_eval_board([path])
 
 
@@ -585,6 +1717,129 @@ def test_fold_refuses_tampered_result_row_binding(tmp_path):
         _payload([("terra", "codex", "gpt-5.6-terra")], rows),
     )
     with pytest.raises(EvalBoardError, match="result_sha256"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("mutation", ["missing", "identity", "digest"])
+def test_fold_refuses_result_without_matching_execution_admission(
+    tmp_path,
+    mutation,
+):
+    execution_identity = _execution_identity()
+    row = _result("terra", CASE_IDENTITIES[0])
+    if mutation == "missing":
+        row["admission"] = None
+    else:
+        admitted_identity = copy.deepcopy(execution_identity)
+        if mutation == "identity":
+            admitted_identity["axiom_encode"]["commit"] = "8" * 40
+        admitted_digest = evals_canonical_json_sha256(admitted_identity)
+        if mutation == "digest":
+            admitted_digest = "8" * 64
+        row["admission"] = {
+            "schema": "axiom-encode/eval-result-admission/v2",
+            "execution": {
+                "identity": admitted_identity,
+                "sha256": admitted_digest,
+            },
+        }
+    path = _write_payload(
+        tmp_path,
+        f"row-{mutation}-execution-admission.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                row,
+                _result("terra", CASE_IDENTITIES[1]),
+                _result("terra", CASE_IDENTITIES[2]),
+            ],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="admission execution identity"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_run",
+        "missing_suite",
+        "missing_case",
+        "missing_corpus",
+        "missing_rulespec",
+        "unexpected_section",
+        "run_mismatch",
+        "suite_mismatch",
+        "case_mismatch",
+        "corpus_mismatch",
+        "rulespec_root_mismatch",
+        "rulespec_digest_mismatch",
+    ],
+)
+def test_fold_refuses_result_without_complete_producer_admission(
+    tmp_path,
+    mutation,
+):
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+    )
+    admission = payload["results"][0]["admission"]
+    if mutation.startswith("missing_"):
+        admission.pop(mutation.removeprefix("missing_"))
+    elif mutation == "unexpected_section":
+        admission["unsigned_note"] = "producer cannot emit this"
+    elif mutation == "run_mismatch":
+        admission["run"]["id"] = "22222222-2222-4222-8222-222222222222"
+    elif mutation == "suite_mismatch":
+        admission["suite"]["manifest_content_sha256"] = "88" * 32
+    elif mutation == "case_mismatch":
+        admission["case"]["sha256"] = "88" * 32
+    elif mutation == "corpus_mismatch":
+        admission["corpus"]["corpus_release_selector_sha256"] = "88" * 32
+    elif mutation == "rulespec_root_mismatch":
+        admission["rulespec"]["policy_repo_root"] = "/foreign/rulespec-uk/uk"
+    else:
+        admission["rulespec"]["validation_waiver_set_sha256"] = "88" * 32
+    _rebind_payload_results(payload)
+    path = _write_payload(tmp_path, f"incomplete-admission-{mutation}.json", payload)
+
+    with pytest.raises(EvalBoardError, match="admission"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "bad_run",
+    [
+        {
+            "id": "11111111-1111-1111-8111-111111111111",
+            "started_at": RUN_IDENTITY["started_at"],
+        },
+        {
+            "id": RUN_IDENTITY["id"],
+            "started_at": "2026-07-25T00:00:00",
+        },
+    ],
+)
+def test_fold_refuses_malformed_run_identity_even_when_rows_match(
+    tmp_path,
+    bad_run,
+):
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+    )
+    payload["evidence"]["run"] = copy.deepcopy(bad_run)
+    for row in payload["results"]:
+        row["admission"]["run"] = copy.deepcopy(bad_run)
+    payload["evidence"].pop("sha256")
+    payload["evidence"]["sha256"] = cli._eval_suite_json_sha256(payload["evidence"])
+    _rebind_payload_results(payload)
+    path = _write_payload(tmp_path, "malformed-run.json", payload)
+
+    with pytest.raises(EvalBoardError, match="run identity"):
         fold_eval_board([path])
 
 
@@ -700,6 +1955,102 @@ def test_fold_refuses_mismatched_execution_identity(tmp_path):
     assert "Mixed toolchains" in markdown
 
 
+def test_fold_refuses_mismatched_encoder_timeout(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(claude_timeout_seconds=1200),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(claude_timeout_seconds=1800),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
+
+
+def test_fold_refuses_mismatched_codex_timeout(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(codex_timeout_seconds=599),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(codex_timeout_seconds=600),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
+
+
+def test_fold_refuses_mismatched_generation_retry_case_timeout(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(case_timeout_seconds=2400),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(case_timeout_seconds=3600),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
+
+
+def test_fold_refuses_mismatched_timeout_retry_policy(tmp_path):
+    left = _write_payload(
+        tmp_path,
+        "left.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(suite_max_attempts=1),
+        ),
+    )
+    right = _write_payload(
+        tmp_path,
+        "right.json",
+        _payload(
+            [("sol", "codex", "gpt-5.6-sol")],
+            [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
+            execution_identity=_execution_identity(suite_max_attempts=3),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="execution identity"):
+        fold_eval_board([left, right])
+
+
 def test_fold_ignores_checkout_locations_in_execution_identity(tmp_path):
     left = _write_payload(
         tmp_path,
@@ -732,8 +2083,9 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/home/ci/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/home/ci/pe-uk"
+                    root="/home/ci/policyengine-uk"
                 ),
             ),
         ),
@@ -745,8 +2097,9 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("sol", "codex", "gpt-5.6-sol")],
             [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/Users/max/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/Users/max/pe-uk"
+                    root="/Users/max/policyengine-uk"
                 ),
             ),
         ),
@@ -762,14 +2115,93 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [("luna", "codex", "gpt-5.6-luna")],
             [_result("luna", case, model="gpt-5.6-luna") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
+                checkout="/home/ci/axiom-encode",
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/home/ci/pe-uk", pe_version="1.10.0"
+                    root="/home/ci/policyengine-uk", pe_version="1.10.0"
                 ),
             ),
         ),
     )
     with pytest.raises(EvalBoardError, match="execution identity"):
         fold_eval_board([left, upgraded])
+
+
+@pytest.mark.parametrize("topology_change", ["sys_path_order", "module_origin"])
+def test_policyengine_import_topology_is_score_affecting(topology_change):
+    left_runtime = _policyengine_runtime_identity(root="/ci/policyengine-uk")
+    right_runtime = _policyengine_runtime_identity(root="/home/runner/policyengine-uk")
+    right_identity = right_runtime["identity"]
+    if topology_change == "sys_path_order":
+        right_identity["initial_sys_path"].reverse()
+        right_identity["effective_sys_path"] = [
+            right_identity["repository_root"],
+            right_identity["site_packages_root"],
+            *right_identity["initial_sys_path"],
+        ]
+    else:
+        right_identity["packages"]["policyengine-uk"]["module_origin"] = (
+            f"{right_identity['repository_root']}/alternate_policyengine_uk/__init__.py"
+        )
+    right_runtime["sha256"] = evals_canonical_json_sha256(right_identity)
+
+    left = _execution_identity(policyengine_runtime=left_runtime)
+    right = _execution_identity(policyengine_runtime=right_runtime)
+
+    assert normalized_execution_identity(left) != normalized_execution_identity(right)
+
+
+@pytest.mark.parametrize(
+    "topology_change",
+    [
+        "effective_sys_path",
+        "initial_sys_path",
+        "python_prefix",
+        "country_module_origin",
+        "core_module_origin",
+        "metadata_root",
+    ],
+)
+def test_fold_refuses_policyengine_runtime_path_topology(
+    tmp_path,
+    topology_change,
+):
+    runtime = _policyengine_runtime_identity()
+    runtime_identity = runtime["identity"]
+    if topology_change == "effective_sys_path":
+        runtime_identity["effective_sys_path"][0:2] = reversed(
+            runtime_identity["effective_sys_path"][0:2]
+        )
+    elif topology_change == "initial_sys_path":
+        runtime_identity["initial_sys_path"][0] = "/tmp/ambient-python"
+        runtime_identity["effective_sys_path"][2] = "/tmp/ambient-python"
+    elif topology_change == "python_prefix":
+        runtime_identity["python_prefix"] = "/tmp/ambient-prefix"
+    elif topology_change == "country_module_origin":
+        runtime_identity["packages"]["policyengine-uk"]["module_origin"] = (
+            "/tmp/policyengine_uk/__init__.py"
+        )
+    elif topology_change == "core_module_origin":
+        runtime_identity["packages"]["policyengine-core"]["module_origin"] = (
+            f"{runtime_identity['repository_root']}/policyengine_core/__init__.py"
+        )
+    else:
+        runtime_identity["packages"]["policyengine-core"]["metadata_root"] = (
+            runtime_identity["repository_root"]
+        )
+    runtime["sha256"] = evals_canonical_json_sha256(runtime_identity)
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    execution_digest = evals_canonical_json_sha256(execution_identity)
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        eval_board_module._payload_execution_identity(
+            {
+                "evidence": {
+                    "execution_identity": execution_identity,
+                    "execution_identity_sha256": execution_digest,
+                }
+            },
+            f"malformed {topology_change}",
+        )
 
 
 def test_normalized_execution_identity_drops_location_fields():
@@ -785,12 +2217,7 @@ def test_normalized_execution_identity_drops_location_fields():
     for key in (
         '"path"',
         '"toolchain_root"',
-        '"repository_root"',
-        '"venv_root"',
-        '"python_executable"',
-        '"effective_sys_path"',
-        '"module_origin"',
-        '"metadata_root"',
+        '"rulespec_runtime_pin_path"',
     ):
         assert key not in rendered
     # Score-affecting fields survive.
@@ -798,6 +2225,16 @@ def test_normalized_execution_identity_drops_location_fields():
     assert identity["rulespec_roots"][0]["validation_waiver_set_sha256"] in rendered
     assert '"locked_versions"' in rendered
     assert '"1.9.0"' in rendered
+    for key in (
+        '"repository_root"',
+        '"venv_root"',
+        '"python_executable"',
+        '"initial_sys_path"',
+        '"effective_sys_path"',
+        '"module_origin"',
+        '"metadata_root"',
+    ):
+        assert key in rendered
 
 
 def test_fold_refuses_duplicate_runner(tmp_path):
@@ -1000,6 +2437,22 @@ def test_fold_refuses_case_identity_mismatch_in_result(tmp_path, mutation):
         fold_eval_board([path])
 
 
+def test_fold_refuses_result_citation_mismatch_with_canonical_case(tmp_path):
+    rows = [_result("terra", case) for case in CASE_IDENTITIES]
+    rows[0]["citation"] = CASE_IDENTITIES[1]["corpus_citation_path"]
+    path = _write_payload(
+        tmp_path,
+        "wrong-citation.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], rows),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match="citation does not match its canonical case path",
+    ):
+        fold_eval_board([path])
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
@@ -1088,6 +2541,7 @@ def test_out_of_range_reviewer_scores_fold_like_the_producer_emits_them(tmp_path
 
 
 def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
+    case_identities = _case_identities_with_policyengine(1, 2)
     path = _write_payload(
         tmp_path,
         "oracle.json",
@@ -1096,17 +2550,24 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
             [
                 _result(
                     "terra",
-                    CASE_IDENTITIES[0],
+                    case_identities[0],
                     metrics=_metrics(policyengine_pass=True, policyengine_score=1.0),
                 ),
                 # A legitimate oracle exception: pass=False with no score.
                 _result(
                     "terra",
-                    CASE_IDENTITIES[1],
+                    case_identities[1],
                     metrics=_metrics(policyengine_pass=False, policyengine_score=None),
+                    success=False,
+                    error="Generated RuleSpec failed PolicyEngine oracle validation",
+                    failure_kind="validation",
                 ),
-                _result("terra", CASE_IDENTITIES[2]),
+                _result("terra", case_identities[2]),
             ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(
+                policyengine_runtime=_policyengine_runtime_identity(),
+            ),
         ),
     )
     board = fold_eval_board([path])
@@ -1114,6 +2575,237 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
     assert stats.policyengine_case_count == 2
     assert stats.policyengine_pass_count == 1
     assert stats.policyengine_pass_rate == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("evidence_kind", ["runtime_only", "score_only"])
+def test_fold_refuses_producer_impossible_policyengine_evidence(
+    tmp_path,
+    evidence_kind,
+):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(
+        policyengine_pass=None,
+        policyengine_score=1.0 if evidence_kind == "score_only" else None,
+    )
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        f"{evidence_kind}-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        fold_eval_board([path])
+
+
+def test_successful_policyengine_case_requires_oracle_evidence():
+    runtime = _policyengine_runtime_identity()
+    case_identity = {**CASE_IDENTITIES[0], "oracle": "policyengine"}
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        eval_board_module._validate_result_policyengine_runtime_evidence(
+            _result("terra", case_identity),
+            case_identity=case_identity,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+            context="successful PolicyEngine case",
+        )
+
+
+def test_fold_refuses_successful_policyengine_case_without_oracle_evidence(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    path = _write_payload(
+        tmp_path,
+        "missing-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in case_identities],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*oracle evidence"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_successful_policyengine_case_with_failed_oracle(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(policyengine_pass=False, policyengine_score=None)
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "successful-failed-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="succeeded.*PolicyEngine.*pass"):
+        fold_eval_board([path])
+
+
+def test_fold_accepts_successful_policyengine_case_without_optional_score(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(policyengine_pass=True, policyengine_score=None)
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "successful-scoreless-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].policyengine_case_count == 1
+    assert board.runners[0].policyengine_pass_rate == 1.0
+
+
+def test_fold_allows_failed_policyengine_case_without_artifact_evidence(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    results = [
+        _result(
+            "terra",
+            case_identities[0],
+            success=False,
+            error="generation failed before validation",
+            metrics=None,
+            failure_kind="error",
+        ),
+        *[_result("terra", case) for case in case_identities[1:]],
+    ]
+    path = _write_payload(
+        tmp_path,
+        "failed-before-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            results,
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].policyengine_case_count == 0
+
+
+def test_fold_refuses_artifact_bearing_policyengine_failure_without_metrics(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    result = _result(
+        "terra",
+        case_identities[0],
+        success=False,
+        error="oracle evidence was dropped",
+        metrics=None,
+        failure_kind="error",
+    )
+    result.update(
+        output_file="/eval/terra/1.yaml",
+        generated_output_sha256="d0" * 32,
+    )
+    path = _write_payload(
+        tmp_path,
+        "artifact-without-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                result,
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*artifact.*oracle evidence"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
+    expected_runtime = _policyengine_runtime_identity()
+    foreign_runtime = _policyengine_runtime_identity(pe_version="1.10.0")
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(policyengine_pass=True, policyengine_score=1.0)
+    metrics["policyengine_runtime_identity"] = foreign_runtime["identity"]
+    metrics["policyengine_runtime_identity_sha256"] = foreign_runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "foreign-oracle-runtime.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(
+                policyengine_runtime=expected_runtime,
+            ),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine runtime evidence"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_oracle_evidence_without_bound_policyengine_runtime(tmp_path):
+    case_identities = _case_identities_with_policyengine(1)
+    path = _write_payload(
+        tmp_path,
+        "unbound-oracle.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result(
+                    "terra",
+                    case_identities[0],
+                    metrics=_metrics(policyengine_pass=True, policyengine_score=1.0),
+                ),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine runtime"):
+        fold_eval_board([path])
 
 
 def test_fold_allows_honest_partial_run(tmp_path):
@@ -1254,6 +2946,7 @@ def test_renderers_and_exports(tmp_path):
                 success=False,
                 error="boom",
                 metrics=None,
+                failure_kind="error",
             ),
         ],
     )
@@ -1272,7 +2965,7 @@ def test_renderers_and_exports(tmp_path):
     assert [line.split()[-1] for line in grid_lines] == ["P", "F", "E"]
 
     payload = eval_board_to_json(board)
-    assert payload["schema"] == "axiom-encode/eval-board/v1"
+    assert payload["schema"] == "axiom-encode/eval-board/v2"
     assert payload["runners"][0]["gate_pass_count"] == 1
     expected_digest = terra_payload["evidence"]["execution_identity_sha256"]
     assert payload["execution_identity_sha256s"] == {str(terra_path): expected_digest}

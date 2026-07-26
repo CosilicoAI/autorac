@@ -124,6 +124,9 @@ _SENSITIVE_ENV_NAME_MARKERS = (
     "SECRET",
     "TOKEN",
 )
+_VALIDATION_STAGING_ROOT_PLACEHOLDER = "<rulespec-validation-root>"
+_VALIDATION_TEMP_ROOT_PLACEHOLDER = "<rulespec-validation-temp>"
+_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER = "<validator-subprocess-capture>"
 _AUTHORITATIVE_CORPUS_RELEASE: ContextVar[LocalCorpusRelease | None] = ContextVar(
     "axiom_authoritative_corpus_release",
     default=None,
@@ -415,68 +418,96 @@ def _run_subprocess_with_idle_timeout(
     poll_interval: float = 0.5,
 ) -> _SubprocessRunResult:
     """Run a subprocess, aborting if it stops emitting output for too long."""
-    with (
-        tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
-        tempfile.NamedTemporaryFile(mode="w+", delete=False) as stderr_file,
-    ):
-        stdout_path = Path(stdout_file.name)
-        stderr_path = Path(stderr_file.name)
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            text=True,
-            cwd=cwd,
-            env=(
-                scrub_attestation_signing_keys()
-                if env is None
-                else scrub_attestation_signing_keys(env)
-            ),
-        )
-
-    start = time.time()
-    last_activity = start
-    last_snapshot: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None
-
-    def _snapshot() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-        values: list[tuple[int, int, int]] = []
-        for path in (stdout_path, stderr_path):
-            try:
-                stat = path.stat()
-            except OSError:
-                values.append((0, 0, 0))
-                continue
-            values.append((1, stat.st_size, stat.st_mtime_ns))
-        return values[0], values[1]
-
+    capture_root: Path | None = None
     try:
-        while True:
-            if process.poll() is not None:
-                break
+        with tempfile.TemporaryDirectory(
+            prefix="axiom-validator-subprocess-",
+            ignore_cleanup_errors=True,
+        ) as capture_dir:
+            capture_root = Path(capture_dir)
+            stdout_path = capture_root / "stdout.log"
+            stderr_path = capture_root / "stderr.log"
+            with (
+                stdout_path.open("w+") as stdout_file,
+                stderr_path.open("w+") as stderr_file,
+            ):
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    cwd=cwd,
+                    env=(
+                        scrub_attestation_signing_keys()
+                        if env is None
+                        else scrub_attestation_signing_keys(env)
+                    ),
+                )
 
-            now = time.time()
-            if now - start > timeout:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(cmd, timeout)
+            start = time.time()
+            last_activity = start
+            last_snapshot: tuple[tuple[int, int, int], tuple[int, int, int]] | None = (
+                None
+            )
 
-            snapshot = _snapshot()
-            if snapshot != last_snapshot:
-                last_snapshot = snapshot
-                last_activity = now
-            elif idle_timeout >= 0 and now - last_activity >= idle_timeout:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(cmd, idle_timeout)
+            def _snapshot() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+                values: list[tuple[int, int, int]] = []
+                for path in (stdout_path, stderr_path):
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        values.append((0, 0, 0))
+                        continue
+                    values.append((1, stat.st_size, stat.st_mtime_ns))
+                return values[0], values[1]
 
-            time.sleep(poll_interval)
+            while True:
+                if process.poll() is not None:
+                    break
 
-        output = stdout_path.read_text() + stderr_path.read_text()
-        return _SubprocessRunResult(output=output, returncode=process.returncode or 0)
-    finally:
-        stdout_path.unlink(missing_ok=True)
-        stderr_path.unlink(missing_ok=True)
+                now = time.time()
+                if now - start > timeout:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                snapshot = _snapshot()
+                if snapshot != last_snapshot:
+                    last_snapshot = snapshot
+                    last_activity = now
+                elif idle_timeout >= 0 and now - last_activity >= idle_timeout:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(cmd, idle_timeout)
+
+                time.sleep(poll_interval)
+
+            output = stdout_path.read_text() + stderr_path.read_text()
+            normalized_output = _normalize_validation_staging_text(
+                output,
+                capture_root,
+                placeholder=_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER,
+            )
+            return _SubprocessRunResult(
+                output=normalized_output,
+                returncode=process.returncode or 0,
+            )
+    except subprocess.TimeoutExpired:
+        raise
+    except Exception as exc:
+        if capture_root is None:
+            raise RuntimeError(
+                f"Validator subprocess capture setup failed: {type(exc).__name__}"
+            ) from exc
+        normalized_error = _normalize_validation_staging_text(
+            str(exc),
+            capture_root,
+            placeholder=_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER,
+        )
+        if normalized_error == str(exc):
+            raise
+        raise RuntimeError(normalized_error) from exc
 
 
 def _extract_codex_text_output(output: str) -> str:
@@ -18645,7 +18676,10 @@ def find_rule_name_path_suffix_issues(
             if not name:
                 continue
             normalized = name.lower()
-            for suffix in suffixes:
+            for suffix in sorted(
+                suffixes,
+                key=lambda value: (-len(value.split("_")), -len(value), value),
+            ):
                 if normalized.endswith(f"_{suffix}"):
                     issues.append(
                         "Rule name includes citation suffix: "
@@ -22599,6 +22633,47 @@ class ValidationResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+def _normalize_validation_staging_text(
+    text: str,
+    staging_root: Path,
+    *,
+    placeholder: str = _VALIDATION_STAGING_ROOT_PLACEHOLDER,
+) -> str:
+    """Replace one harness-owned staging prefix while preserving its suffix."""
+
+    def is_path_token_character(character: str) -> bool:
+        return (
+            character == "_"
+            or character.isalnum()
+            or unicodedata.category(character).startswith("M")
+            or character in "./\\-"
+        )
+
+    normalized = text
+    root = Path(staging_root)
+    root_variants = {str(root), root.as_posix()}
+    with contextlib.suppress(OSError):
+        resolved_root = root.resolve()
+        root_variants.update({str(resolved_root), resolved_root.as_posix()})
+    for root_text in sorted(root_variants, key=len, reverse=True):
+
+        def replace_if_path_boundary(match: re.Match[str]) -> str:
+            left = normalized[match.start() - 1] if match.start() else ""
+            right = normalized[match.end()] if match.end() < len(normalized) else ""
+            left_boundary = not left or not is_path_token_character(left)
+            right_boundary = (
+                not right or right in "/\\" or not is_path_token_character(right)
+            )
+            return placeholder if left_boundary and right_boundary else match.group()
+
+        normalized = re.sub(
+            re.escape(root_text),
+            replace_if_path_boundary,
+            normalized,
+        )
+    return normalized
+
+
 @dataclass
 class OracleSubprocessResult:
     """Structured result from a local oracle subprocess."""
@@ -23077,9 +23152,16 @@ class ValidatorPipeline:
         source_metadata: dict[str, object] | None = None,
         source_citation_path: str | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
+        validation_staging_root: Path | None = None,
     ):
         self.policy_repo_path = Path(policy_repo_path)
         self.axiom_rules_path = Path(axiom_rules_path)
+        self.validation_staging_root = (
+            Path(validation_staging_root).resolve()
+            if validation_staging_root is not None
+            else None
+        )
+        self._validation_temporary_roots: list[Path] = []
         self.enable_oracles = enable_oracles
         self.oracle_validators = (
             ("policyengine",) if oracle_validators is None else oracle_validators
@@ -23170,6 +23252,46 @@ class ValidatorPipeline:
                 content=content,
                 metadata=metadata,
             )
+
+    def _normalize_validation_staging_result(
+        self,
+        result: ValidationResult,
+    ) -> ValidationResult:
+        """Remove every harness-owned ephemeral root from recorded text."""
+        normalization_roots = [
+            (root, _VALIDATION_TEMP_ROOT_PLACEHOLDER)
+            for root in self._validation_temporary_roots
+        ]
+        if self.validation_staging_root is not None:
+            normalization_roots.append(
+                (
+                    self.validation_staging_root,
+                    _VALIDATION_STAGING_ROOT_PLACEHOLDER,
+                )
+            )
+        if not normalization_roots:
+            return result
+
+        def normalize(text: str) -> str:
+            for root, placeholder in normalization_roots:
+                text = _normalize_validation_staging_text(
+                    text,
+                    root,
+                    placeholder=placeholder,
+                )
+            return text
+
+        result.issues = [normalize(issue) for issue in result.issues]
+        if result.error is not None:
+            result.error = normalize(result.error)
+        if result.raw_output is not None:
+            result.raw_output = normalize(result.raw_output)
+        return result
+
+    def _register_validation_temporary_root(self, root: Path) -> None:
+        """Record an inner harness temp root for persisted-text normalization."""
+
+        self._validation_temporary_roots.append(Path(root))
 
     def _pythonpath_env(self) -> dict[str, str]:
         """Build an env that prefers the configured Axiom rules engine checkout."""
@@ -23620,6 +23742,7 @@ class ValidatorPipeline:
         issues: list[str] = []
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
+                self._register_validation_temporary_root(Path(tmpdir))
                 output_path = Path(tmpdir) / "compiled.json"
                 result, payload = self._compile_rulespec_to_artifact(
                     rules_file, output_path
@@ -23656,14 +23779,15 @@ class ValidatorPipeline:
         """Tier 0: Compile check against the Axiom rules engine RuleSpec."""
         yaml_issue = self._rulespec_yaml_preflight_issue(rulespec_file)
         if yaml_issue:
-            return ValidationResult(
+            result = ValidationResult(
                 validator_name="compile",
                 passed=False,
                 issues=[yaml_issue],
                 error=yaml_issue,
             )
-
-        return self._run_rulespec_compile_check(rulespec_file)
+        else:
+            result = self._run_rulespec_compile_check(rulespec_file)
+        return self._normalize_validation_staging_result(result)
 
     def _coerce_rulespec_period(self, value: Any) -> dict[str, Any]:
         """Coerce compact `.test.yaml` period shorthands to engine JSON."""
@@ -24338,7 +24462,7 @@ class ValidatorPipeline:
                     f"list but has no `tables.{query_entity}` rows."
                 ]
             expected_row_count = len(table_rows)
-            for output_name in row_ordered_outputs:
+            for output_name in sorted(row_ordered_outputs):
                 expected_value = output_values_by_runtime_key.get(output_name)
                 if (
                     isinstance(expected_value, list)
@@ -24363,17 +24487,40 @@ class ValidatorPipeline:
                 for entity_id in query_entity_ids
             ],
         }
-        result = subprocess.run(
-            [str(binary), "run-compiled", "--artifact", str(compiled_path)],
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(self.axiom_rules_path) if self.axiom_rules_path.exists() else None,
-            env=self._rulespec_engine_env(),
-        )
+        command = [str(binary), "run-compiled", "--artifact", str(compiled_path)]
+        try:
+            result = subprocess.run(
+                command,
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=(
+                    str(self.axiom_rules_path)
+                    if self.axiom_rules_path.exists()
+                    else None
+                ),
+                env=self._rulespec_engine_env(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return None, [
+                f"Test case `{case_name}` execution timed out after "
+                f"{exc.timeout} seconds."
+            ]
+        except (OSError, subprocess.SubprocessError) as exc:
+            detail = _normalize_validation_staging_text(
+                str(exc),
+                compiled_path.parent,
+                placeholder=_VALIDATION_TEMP_ROOT_PLACEHOLDER,
+            )
+            return None, [f"Test case `{case_name}` execution failed: {detail}"]
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
+            detail = _normalize_validation_staging_text(
+                detail,
+                compiled_path.parent,
+                placeholder=_VALIDATION_TEMP_ROOT_PLACEHOLDER,
+            )
             return None, [f"Test case `{case_name}` execution failed: {detail}"]
         try:
             response = json.loads(result.stdout)
@@ -24673,6 +24820,7 @@ class ValidatorPipeline:
 
         tmpdir_cm = tempfile.TemporaryDirectory()
         tmpdir = Path(tmpdir_cm.name)
+        self._register_validation_temporary_root(tmpdir)
         try:
             compiled_path = tmpdir / "compiled.json"
             compile_result, payload = self._compile_rulespec_to_artifact(
@@ -25011,21 +25159,24 @@ class ValidatorPipeline:
                 )
             except (OSError, ValueError, UnsafeRulespecContextPath) as exc:
                 issue = f"RuleSpec validation target is not canonical: {exc}"
-                return ValidationResult(
+                result = ValidationResult(
                     validator_name="ci",
                     passed=False,
                     issues=[issue],
                     error=issue,
                 )
-            yaml_issue = self._rulespec_yaml_preflight_issue(canonical_file)
-            if yaml_issue:
-                return ValidationResult(
-                    validator_name="ci",
-                    passed=False,
-                    issues=[yaml_issue],
-                    error=yaml_issue,
-                )
-            return self._run_rulespec_ci(canonical_file)
+            else:
+                yaml_issue = self._rulespec_yaml_preflight_issue(canonical_file)
+                if yaml_issue:
+                    result = ValidationResult(
+                        validator_name="ci",
+                        passed=False,
+                        issues=[yaml_issue],
+                        error=yaml_issue,
+                    )
+                else:
+                    result = self._run_rulespec_ci(canonical_file)
+            return self._normalize_validation_staging_result(result)
 
     def _copy_validation_import_closure(
         self,

@@ -10,13 +10,16 @@ import math
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
 from collections import Counter, defaultdict
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -89,6 +92,7 @@ from .eval_prompt_surface import (
 )
 from .observability import emit_eval_result, extract_reasoning_output_tokens
 from .policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_PATH,
     POLICYENGINE_RUNTIME_SCHEMA,
     PolicyEngineRuntime,
     PolicyEngineRuntimeError,
@@ -130,6 +134,7 @@ from .validator_pipeline import (
 
 EvalMode = Literal["cold", "repo-augmented"]
 EvalOracleMode = Literal["none", "policyengine"]
+EvalFailureKind = Literal["timeout", "validation", "error"]
 IMPORT_ITEM_PATTERN = re.compile(r"^\s*-\s*(['\"]?)([^'\"]+?)\1\s*$")
 TABLE_BOUND_COMPARATOR_NUMBER_PATTERN = re.compile(
     r"(?:(?:<=|>=|<|>|==)\s*(-?[\d,]+(?:\.\d+)?)"
@@ -238,11 +243,36 @@ _RULESPEC_OUTPUT_ROOT_BY_SOURCE_TOKEN = {
 }
 _UK_LEGISLATION_DOMAIN_TOKEN = "legislation.gov.uk"
 _UK_LEGISLATION_SECTION_TOKENS = {"article", "regulation", "section"}
+_CLAUDE_DEFAULT_TIMEOUT_SECONDS = 1800
 _CODEX_DEFAULT_TIMEOUT_SECONDS = 600
 _CODEX_DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 _CODEX_LONG_SOURCE_CHAR_THRESHOLD = 40_000
 _CODEX_LONG_SOURCE_TIMEOUT_SECONDS = 1800
 _CODEX_LONG_SOURCE_IDLE_TIMEOUT_SECONDS = 900
+_EVAL_CASE_DEFAULT_TIMEOUT_SECONDS = 3600
+_DEFAULT_SUITE_RETRY_ATTEMPTS = 2
+_EMPTY_ARTIFACT_MAX_ATTEMPTS = 2
+_OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
+_OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
+_OPENAI_REQUEST_MAX_ATTEMPTS = 6
+_OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
+EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
+_EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
+    "_EVAL_CASE_DEADLINE_MONOTONIC",
+    default=None,
+)
+_EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC: ContextVar[float | None] = ContextVar(
+    "_EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC",
+    default=None,
+)
+_EVAL_CASE_TIMEOUT_SECONDS: ContextVar[int | None] = ContextVar(
+    "_EVAL_CASE_TIMEOUT_SECONDS",
+    default=None,
+)
+_RULESPEC_VALIDATION_STAGING_ROOT: ContextVar[Path | None] = ContextVar(
+    "_RULESPEC_VALIDATION_STAGING_ROOT",
+    default=None,
+)
 _POLICYENGINE_HINT_BROAD_PLACEHOLDER_RE = re.compile(
     r"\b(?:"
     r"person_is_described_in_[A-Za-z0-9_]*"
@@ -888,6 +918,11 @@ class EvalPromptResponse:
     trace: dict | None = None
     unexpected_accesses: list[str] = field(default_factory=list)
     error: str | None = None
+    timed_out: bool = False
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
+    timeout_attempts: int = 0
 
 
 @dataclass
@@ -918,6 +953,12 @@ class EvalResult:
     retrieved_files: list[str]
     unexpected_accesses: list[str]
     metrics: EvalArtifactMetrics | None
+    failure_kind: EvalFailureKind | None = None
+    timed_out: bool = False
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
+    timeout_attempts: int = 0
     generation_prompt_sha256: str | None = None
     codex_cli_version: str | None = None
     codex_cli_sha256: str | None = None
@@ -960,6 +1001,8 @@ def _validate_eval_result_artifact_binding(
 ) -> None:
     """Require paths and SHA-256 digests to describe the exact result artifacts."""
 
+    if not isinstance(payload.get("success"), bool):
+        raise ValueError(f"{artifact_name} success must be a boolean")
     for field_name in (
         "duration_ms",
         "input_tokens",
@@ -968,6 +1011,7 @@ def _validate_eval_result_artifact_binding(
         "cache_creation_tokens",
         "reasoning_output_tokens",
         "retry_count",
+        "timeout_attempts",
     ):
         value = payload.get(field_name, 0)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -975,6 +1019,56 @@ def _validate_eval_result_artifact_binding(
                 f"{artifact_name} has invalid nonnegative accounting field "
                 f"'{field_name}'"
             )
+    failure_kind = payload.get("failure_kind")
+    if failure_kind not in {None, "timeout", "validation", "error"}:
+        raise ValueError(f"{artifact_name} has an invalid failure_kind")
+    timed_out = payload.get("timed_out", False)
+    if not isinstance(timed_out, bool):
+        raise ValueError(f"{artifact_name} timed_out must be a boolean")
+    if timed_out is not (failure_kind == "timeout"):
+        raise ValueError(
+            f"{artifact_name} timeout classification is internally inconsistent"
+        )
+    timeout_attempts = payload.get("timeout_attempts", 0)
+    timeout_stage = payload.get("timeout_stage")
+    timeout_reason = payload.get("timeout_reason")
+    timeout_seconds = payload.get("timeout_seconds")
+    if timeout_stage is not None and not isinstance(timeout_stage, str):
+        raise ValueError(f"{artifact_name} timeout_stage must be null or a string")
+    if timeout_reason is not None and not isinstance(timeout_reason, str):
+        raise ValueError(f"{artifact_name} timeout_reason must be null or a string")
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(
+            f"{artifact_name} timeout_seconds must be null or a positive number"
+        )
+    if timeout_attempts == 0 and any(
+        value is not None for value in (timeout_stage, timeout_reason, timeout_seconds)
+    ):
+        raise ValueError(
+            f"{artifact_name} has timeout details without a timed-out attempt"
+        )
+    if timed_out and (
+        timeout_attempts == 0
+        or payload.get("success") is True
+        or payload.get("output_file")
+        or isinstance(payload.get("metrics"), dict)
+    ):
+        raise ValueError(
+            f"{artifact_name} terminal timeout must have attempts and no artifact"
+        )
+    if failure_kind == "validation" and not isinstance(payload.get("metrics"), dict):
+        raise ValueError(
+            f"{artifact_name} marks validation failure without artifact metrics"
+        )
+    if payload.get("success") is False and failure_kind is None:
+        raise ValueError(f"{artifact_name} has a failed result without a failure_kind")
+    if payload.get("success") is True and failure_kind is not None:
+        raise ValueError(f"{artifact_name} marks success with a failure_kind")
     for field_name in ("estimated_cost_usd", "actual_cost_usd"):
         value = payload.get(field_name)
         if value is not None and (
@@ -1157,11 +1251,13 @@ class EvalReadinessSummary:
     """Aggregated readiness summary for one runner across a suite."""
 
     total_cases: int
+    artifact_case_count: int
+    timeout_count: int
     success_rate: float
-    compile_pass_rate: float
-    ci_pass_rate: float
-    zero_ungrounded_rate: float
-    generalist_review_pass_rate: float
+    compile_pass_rate: float | None
+    ci_pass_rate: float | None
+    zero_ungrounded_rate: float | None
+    generalist_review_pass_rate: float | None
     mean_generalist_review_score: float | None
     policyengine_case_count: int
     policyengine_pass_rate: float | None
@@ -1869,6 +1965,10 @@ def _combine_retry_response(
     retry_prompt: str,
 ) -> EvalPromptResponse:
     """Return the retry response while preserving aggregate accounting."""
+    initial_timeout = _prompt_response_timeout_evidence(initial)
+    retry_timeout = _prompt_response_timeout_evidence(retry)
+    timeout_attempts = initial_timeout[0] + retry_timeout[0]
+    latest_timeout = retry_timeout if retry_timeout[0] else initial_timeout
     return EvalPromptResponse(
         text=retry.text,
         duration_ms=initial.duration_ms + retry.duration_ms,
@@ -1893,6 +1993,46 @@ def _combine_retry_response(
             *retry.unexpected_accesses,
         ],
         error=retry.error,
+        timed_out=retry.timed_out,
+        timeout_stage=latest_timeout[1],
+        timeout_reason=latest_timeout[2],
+        timeout_seconds=latest_timeout[3],
+        timeout_attempts=timeout_attempts,
+    )
+
+
+def _timeout_traces(trace: object) -> list[dict]:
+    """Return timed-out backend traces in attempt order."""
+
+    if not isinstance(trace, dict):
+        return []
+    attempts = trace.get("attempts")
+    if isinstance(attempts, list):
+        nested: list[dict] = []
+        for attempt in attempts:
+            if isinstance(attempt, dict):
+                nested.extend(_timeout_traces(attempt.get("trace")))
+        if nested:
+            return nested
+    return [trace] if trace.get("timed_out") is True else []
+
+
+def _prompt_response_timeout_evidence(
+    response: EvalPromptResponse,
+) -> tuple[int, str | None, str | None, float | None]:
+    """Return aggregate attempt count and latest typed timeout details."""
+
+    traces = _timeout_traces(response.trace)
+    attempts = response.timeout_attempts or len(traces)
+    latest = traces[-1] if traces else {}
+    stage = response.timeout_stage or ("encoder" if attempts else None)
+    reason = response.timeout_reason or latest.get("timeout_reason")
+    seconds = response.timeout_seconds or latest.get("timeout_seconds")
+    return (
+        attempts,
+        stage,
+        str(reason) if reason is not None else None,
+        float(seconds) if isinstance(seconds, (int, float)) else None,
     )
 
 
@@ -2204,7 +2344,7 @@ def run_eval_suite(
     policy_repo_path: Path,
     corpus_release: _corpus_resolver.LocalCorpusRelease,
     policyengine_runtime: PolicyEngineRuntime | None = None,
-    suite_retry_attempts: int = 2,
+    suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
     resume_existing: bool = False,
 ) -> list[EvalResult]:
     """Run a suite while keeping its evidence signer out of child environments."""
@@ -2267,9 +2407,14 @@ def _run_eval_suite_with_signer(
             axiom_rules_path,
             rulespec_roots,
             policyengine_runtime=policyengine_runtime,
+            suite_retry_attempts=suite_retry_attempts,
         )
         if policyengine_cases
-        else _build_eval_suite_execution_identity(axiom_rules_path, rulespec_roots)
+        else _build_eval_suite_execution_identity(
+            axiom_rules_path,
+            rulespec_roots,
+            suite_retry_attempts=suite_retry_attempts,
+        )
     )
     results: list[EvalResult] = []
     run_id = str(uuid.uuid4())
@@ -2343,7 +2488,9 @@ def _run_eval_suite_with_signer(
                     case_source_unit,
                     rulespec_root=policy_repo_root,
                 )
-            attempts = max(suite_retry_attempts, 0) + 1
+            attempts = int(
+                _eval_timeout_retry_policy(suite_retry_attempts)["suite_max_attempts"]
+            )
             active_case_index = index
             active_case_name = case.name
             active_case_started_at = _utc_now_iso()
@@ -2367,63 +2514,94 @@ def _run_eval_suite_with_signer(
                 active_case_started_at=active_case_started_at,
                 active_case_output_root=active_case_output_root,
             )
-            for attempt_index in range(attempts):
-                try:
-                    if case.kind == "citation":
-                        case_results = run_model_eval(
-                            citations=[case.citation or ""],
-                            runner_specs=resolved_runners,
-                            output_root=case_output_root,
-                            policy_path=policy_repo_root,
-                            runtime_axiom_rules_path=axiom_rules_path,
-                            corpus_release=corpus_release,
-                            mode=case.mode,
-                            extra_context_paths=extra_context,
-                            oracle=case.oracle,
-                            policyengine_runtime=policyengine_runtime,
-                            policyengine_rule_hint=case.policyengine_rule_hint,
-                            rulespec_dependency_roots=(
-                                manifest.rulespec_dependency_roots
-                            ),
-                        )
-                    elif case.kind == "source":
-                        if (
-                            case_source_unit is None
-                        ):  # pragma: no cover - branch invariant
-                            raise ValueError("Source eval case was not resolved")
-                        case_results = run_source_eval(
-                            source_unit=case_source_unit,
-                            runner_specs=resolved_runners,
-                            output_root=case_output_root,
-                            policy_path=policy_repo_root,
-                            local_corpus_release=corpus_release,
-                            runtime_axiom_rules_path=axiom_rules_path,
-                            mode=case.mode,
-                            extra_context_paths=extra_context,
-                            oracle=case.oracle,
-                            policyengine_runtime=policyengine_runtime,
-                            policyengine_rule_hint=case.policyengine_rule_hint,
-                            rulespec_dependency_roots=(
-                                manifest.rulespec_dependency_roots
-                            ),
-                        )
-                    else:
-                        raise ValueError(
-                            f"Unsupported eval suite case kind '{case.kind}'"
-                        )
-                except Exception as exc:
-                    case_results = _suite_case_failure_results(
-                        case,
-                        parsed_runners,
-                        exc,
-                        source_attestation=expected_source_attestation,
-                    )
+            case_timeout_seconds = int(execution_identity["case_timeout_seconds"])
+            case_results: list[EvalResult] = []
+            for runner_spec, parsed_runner in zip(
+                resolved_runners,
+                parsed_runners,
+                strict=True,
+            ):
+                with _active_eval_case_budget(case_timeout_seconds):
+                    timeout_history: dict[
+                        str,
+                        tuple[int, str | None, str | None, float | None],
+                    ] = {}
+                    for attempt_index in range(attempts):
+                        # Only deterministic validation/review work is outside
+                        # the generation budget. Resume before every suite
+                        # attempt so source resolution, workspace/prompt setup,
+                        # and failures before provider invocation are charged.
+                        _resume_eval_case_budget()
+                        try:
+                            if case.kind == "citation":
+                                runner_case_results = run_model_eval(
+                                    citations=[case.citation or ""],
+                                    runner_specs=[runner_spec],
+                                    output_root=case_output_root,
+                                    policy_path=policy_repo_root,
+                                    runtime_axiom_rules_path=axiom_rules_path,
+                                    corpus_release=corpus_release,
+                                    mode=case.mode,
+                                    extra_context_paths=extra_context,
+                                    oracle=case.oracle,
+                                    policyengine_runtime=policyengine_runtime,
+                                    policyengine_rule_hint=case.policyengine_rule_hint,
+                                    rulespec_dependency_roots=(
+                                        manifest.rulespec_dependency_roots
+                                    ),
+                                )
+                            elif case.kind == "source":
+                                if (
+                                    case_source_unit is None
+                                ):  # pragma: no cover - branch invariant
+                                    raise ValueError(
+                                        "Source eval case was not resolved"
+                                    )
+                                runner_case_results = run_source_eval(
+                                    source_unit=case_source_unit,
+                                    runner_specs=[runner_spec],
+                                    output_root=case_output_root,
+                                    policy_path=policy_repo_root,
+                                    local_corpus_release=corpus_release,
+                                    runtime_axiom_rules_path=axiom_rules_path,
+                                    mode=case.mode,
+                                    extra_context_paths=extra_context,
+                                    oracle=case.oracle,
+                                    policyengine_runtime=policyengine_runtime,
+                                    policyengine_rule_hint=case.policyengine_rule_hint,
+                                    rulespec_dependency_roots=(
+                                        manifest.rulespec_dependency_roots
+                                    ),
+                                )
+                            else:
+                                raise ValueError(
+                                    f"Unsupported eval suite case kind '{case.kind}'"
+                                )
+                        except Exception as exc:
+                            runner_case_results = _suite_case_failure_results(
+                                case,
+                                [parsed_runner],
+                                exc,
+                                source_attestation=expected_source_attestation,
+                            )
 
-                if (
-                    attempt_index >= attempts - 1
-                    or not _suite_case_results_should_retry(case_results)
-                ):
-                    break
+                        _accumulate_suite_case_timeout_attempts(
+                            runner_case_results,
+                            timeout_history,
+                        )
+                        remaining = _remaining_eval_case_budget_seconds()
+                        if remaining is not None and remaining <= 0:
+                            _mark_suite_case_budget_timeout(
+                                runner_case_results,
+                                timeout_seconds=case_timeout_seconds,
+                            )
+                            break
+                        if (
+                            attempt_index >= attempts - 1
+                            or not _suite_case_results_should_retry(runner_case_results)
+                        ):
+                            break
+                case_results.extend(runner_case_results)
 
             _validate_new_eval_suite_case_results(
                 case,
@@ -2570,7 +2748,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 _EVAL_RESULT_SHA256_FIELD = "result_sha256"
-_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v5"
+_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v6"
 _EVAL_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
 
@@ -2657,6 +2835,12 @@ def _eval_result_verdict_evidence_payload(
         "validation": {
             "success": result_payload.get("success"),
             "error": result_payload.get("error"),
+            "failure_kind": result_payload.get("failure_kind"),
+            "timed_out": result_payload.get("timed_out"),
+            "timeout_stage": result_payload.get("timeout_stage"),
+            "timeout_reason": result_payload.get("timeout_reason"),
+            "timeout_seconds": result_payload.get("timeout_seconds"),
+            "timeout_attempts": result_payload.get("timeout_attempts"),
             "metrics": result_payload.get("metrics"),
         },
     }
@@ -2772,6 +2956,7 @@ def _eval_suite_case_identities(
             "name": case.name,
             "kind": case.kind,
             "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+            "oracle": case.oracle,
             "sha256": _canonical_json_sha256(_canonical_eval_suite_case_payload(case)),
         }
         for index, case in enumerate(manifest.cases, start=1)
@@ -3057,11 +3242,20 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
     toolchain = load_rulespec_toolchain(content_root)
     waiver_digest = verify_rulespec_validation_waiver_set(content_root)
     contract_path = toolchain.root / ".axiom" / "toolchain.toml"
+    runtime_pin_path = toolchain.root / POLICYENGINE_RUNTIME_PIN_PATH
     try:
         contract_digest = hashlib.sha256(contract_path.read_bytes()).hexdigest()
     except OSError as exc:
         raise ValueError(
             f"Could not read RuleSpec toolchain contract: {contract_path}"
+        ) from exc
+    try:
+        runtime_pin_digest = hashlib.sha256(runtime_pin_path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        runtime_pin_digest = None
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read RuleSpec PolicyEngine runtime pin: {runtime_pin_path}"
         ) from exc
     tree_identity = _deterministic_tree_identity(content_root)
     try:
@@ -3075,6 +3269,7 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
             (
                 content_pathspec,
                 ".axiom/toolchain.toml",
+                POLICYENGINE_RUNTIME_PIN_PATH.as_posix(),
                 VALIDATION_WAIVER_SET_PATH,
             )
         )
@@ -3090,6 +3285,7 @@ def _rulespec_root_execution_identity(raw_root: Path) -> dict[str, object]:
             pathspecs=checkout_pathspecs,
         ),
         "toolchain_contract_sha256": contract_digest,
+        "policyengine_runtime_pin_sha256": runtime_pin_digest,
         "validation_waiver_set_sha256": waiver_digest,
     }
 
@@ -3099,6 +3295,7 @@ def _build_eval_suite_execution_identity(
     rulespec_roots: tuple[str, ...],
     *,
     policyengine_runtime: PolicyEngineRuntime | None = None,
+    suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
 ) -> dict[str, object]:
     """Return every executable and RuleSpec input identity used by a suite."""
 
@@ -3109,7 +3306,22 @@ def _build_eval_suite_execution_identity(
     )
     encoder_identity["version"] = __version__
     return {
-        "schema": "axiom-encode/eval-execution-identity/v2",
+        "schema": EVAL_EXECUTION_IDENTITY_SCHEMA,
+        # Each case-runner receives this full deadline for artifact generation
+        # and every retry. Deterministic validation and optional reviewers run
+        # after generation and deliberately are not presented as preemptible.
+        "case_timeout_seconds": _eval_case_timeout_seconds(),
+        "runner_timeouts": {
+            "claude": {
+                "wall_seconds": _claude_encoder_timeout_seconds(),
+            },
+            "codex": _codex_timeout_policy(),
+            "openai": {
+                "request_connect_seconds": _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS,
+                "request_read_seconds": _OPENAI_REQUEST_READ_TIMEOUT_SECONDS,
+            },
+        },
+        "timeout_retry_policy": _eval_timeout_retry_policy(suite_retry_attempts),
         "axiom_encode": encoder_identity,
         "axiom_rules_engine": _git_checkout_execution_identity(axiom_rules_path),
         "policyengine_runtime": (
@@ -3126,6 +3338,44 @@ def _build_eval_suite_execution_identity(
     }
 
 
+def _eval_timeout_retry_policy(suite_retry_attempts: int) -> dict[str, object]:
+    """Return the retry limits that bound one case-runner's execution."""
+
+    if isinstance(suite_retry_attempts, bool) or not isinstance(
+        suite_retry_attempts, int
+    ):
+        raise TypeError("suite_retry_attempts must be an integer")
+    return {
+        "empty_artifact_max_attempts": _EMPTY_ARTIFACT_MAX_ATTEMPTS,
+        "suite_max_attempts": max(suite_retry_attempts, 0) + 1,
+        "suite_retries_after_timeout": False,
+        "openai_request_max_attempts": _OPENAI_REQUEST_MAX_ATTEMPTS,
+        "openai_request_backoff_seconds": list(_OPENAI_REQUEST_BACKOFF_SECONDS),
+    }
+
+
+def _suite_retry_attempts_from_execution_identity(
+    identity: object,
+    *,
+    artifact_name: str,
+) -> int:
+    """Recover the suite retry count from a persisted v3 execution identity."""
+
+    if not isinstance(identity, dict):
+        raise ValueError(f"{artifact_name} is missing its timeout retry policy")
+    retry_policy = identity.get("timeout_retry_policy")
+    if not isinstance(retry_policy, dict):
+        raise ValueError(f"{artifact_name} has a malformed timeout retry policy")
+    suite_max_attempts = retry_policy.get("suite_max_attempts")
+    if (
+        isinstance(suite_max_attempts, bool)
+        or not isinstance(suite_max_attempts, int)
+        or suite_max_attempts <= 0
+    ):
+        raise ValueError(f"{artifact_name} has a malformed timeout retry policy")
+    return suite_max_attempts - 1
+
+
 def _eval_suite_execution_identity_sha256(identity: dict[str, object]) -> str:
     """Return the suite-wide digest copied into every durable ledger row."""
 
@@ -3138,7 +3388,7 @@ def _validate_eval_suite_execution_identity(
     *,
     artifact_name: str = "suite-run.json",
 ) -> None:
-    """Reject resume across encoder, engine, RuleSpec, or waiver changes."""
+    """Reject resume across runner limits, encoder, engine, or RuleSpec changes."""
 
     persisted = payload.get("execution_identity")
     persisted_digest = payload.get("execution_identity_sha256")
@@ -3152,6 +3402,25 @@ def _validate_eval_suite_execution_identity(
         raise ValueError(
             f"Cannot resume eval suite: {artifact_name} has an inconsistent "
             "executable toolchain identity digest"
+        )
+    if persisted.get("case_timeout_seconds") != expected_identity.get(
+        "case_timeout_seconds"
+    ):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "generation/retry case timeout execution identity"
+        )
+    if persisted.get("runner_timeouts") != expected_identity.get("runner_timeouts"):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "runner timeout execution identity"
+        )
+    if persisted.get("timeout_retry_policy") != expected_identity.get(
+        "timeout_retry_policy"
+    ):
+        raise ValueError(
+            f"Cannot resume eval suite: {artifact_name} uses a different "
+            "timeout retry execution identity"
         )
     if persisted.get("axiom_encode") != expected_identity.get("axiom_encode"):
         raise ValueError(
@@ -3356,6 +3625,7 @@ def _eval_suite_result_admission_context(
         "name": case.name,
         "kind": case.kind,
         "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+        "oracle": case.oracle,
         "sha256": _canonical_json_sha256(_canonical_eval_suite_case_payload(case)),
     }:
         raise ValueError("Eval manifest case identity is inconsistent")
@@ -3509,6 +3779,11 @@ def _validate_eval_result_policyengine_binding(
             raise ValueError(
                 f"Eval suite case '{case.name}' succeeded without PolicyEngine evidence"
             )
+        if result.output_file or result.generated_output_sha256 is not None:
+            raise ValueError(
+                f"Eval suite case '{case.name}' has a PolicyEngine artifact "
+                "without oracle evidence"
+            )
         return
     if (
         metrics.policyengine_pass is None
@@ -3518,6 +3793,11 @@ def _validate_eval_result_policyengine_binding(
     ):
         raise ValueError(
             f"Eval suite case '{case.name}' has missing or mismatched PolicyEngine evidence"
+        )
+    if result.success and metrics.policyengine_pass is not True:
+        raise ValueError(
+            f"Eval suite case '{case.name}' succeeded although its PolicyEngine "
+            "oracle did not pass"
         )
 
 
@@ -4570,7 +4850,7 @@ def _eval_result_from_payload(
         trace_sha256=payload.get("trace_sha256"),
         context_manifest_sha256=payload.get("context_manifest_sha256"),
         duration_ms=int(payload.get("duration_ms", 0) or 0),
-        success=bool(payload.get("success", False)),
+        success=payload["success"],
         error=payload.get("error"),
         generation_prompt_sha256=payload.get("generation_prompt_sha256"),
         input_tokens=int(payload.get("input_tokens", 0) or 0),
@@ -4583,6 +4863,12 @@ def _eval_result_from_payload(
         retrieved_files=list(payload.get("retrieved_files") or []),
         unexpected_accesses=list(payload.get("unexpected_accesses") or []),
         metrics=metrics,
+        failure_kind=payload.get("failure_kind"),
+        timed_out=bool(payload.get("timed_out", False)),
+        timeout_stage=payload.get("timeout_stage"),
+        timeout_reason=payload.get("timeout_reason"),
+        timeout_seconds=payload.get("timeout_seconds"),
+        timeout_attempts=int(payload.get("timeout_attempts", 0) or 0),
         retry_count=int(payload.get("retry_count", 0) or 0),
         source_attestation=(
             dict(payload["source_attestation"])
@@ -4607,6 +4893,13 @@ def _suite_case_failure_results(
     source_attestation: dict[str, object] | None = None,
 ) -> list[EvalResult]:
     """Convert an exception into explicit failed results for each runner."""
+    timed_out = isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
+    timeout_seconds = (
+        float(exc.timeout)
+        if isinstance(exc, subprocess.TimeoutExpired)
+        and isinstance(exc.timeout, (int, float))
+        else None
+    )
     return [
         EvalResult(
             citation=_eval_suite_case_result_citation(case),
@@ -4634,6 +4927,12 @@ def _suite_case_failure_results(
             retrieved_files=[],
             unexpected_accesses=[],
             metrics=None,
+            failure_kind="timeout" if timed_out else "error",
+            timed_out=timed_out,
+            timeout_stage="case" if timed_out else None,
+            timeout_reason="wall" if timed_out else None,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=1 if timed_out else 0,
             source_attestation=(
                 dict(source_attestation) if source_attestation is not None else None
             ),
@@ -4642,9 +4941,73 @@ def _suite_case_failure_results(
     ]
 
 
+def _accumulate_suite_case_timeout_attempts(
+    case_results: list[EvalResult],
+    timeout_history: dict[
+        str,
+        tuple[int, str | None, str | None, float | None],
+    ],
+) -> None:
+    """Carry timeout evidence across suite retries into the final durable row."""
+
+    for result in case_results:
+        previous = timeout_history.get(result.runner, (0, None, None, None))
+        current_attempts = max(result.timeout_attempts, 0)
+        total_attempts = previous[0] + current_attempts
+        if current_attempts:
+            latest = (
+                result.timeout_stage,
+                result.timeout_reason,
+                result.timeout_seconds,
+            )
+        else:
+            latest = previous[1:]
+
+        result.timeout_attempts = total_attempts
+        result.timeout_stage = latest[0]
+        result.timeout_reason = latest[1]
+        result.timeout_seconds = latest[2]
+        timeout_history[result.runner] = (
+            total_attempts,
+            latest[0],
+            latest[1],
+            latest[2],
+        )
+
+
+def _mark_suite_case_budget_timeout(
+    case_results: list[EvalResult],
+    *,
+    timeout_seconds: int,
+) -> None:
+    """Turn generation failures into terminal generation/retry-budget timeouts.
+
+    Artifact-bearing rows have completed the budgeted generation phase. Their
+    subsequent deterministic validation and optional review are intentionally
+    outside this deadline and retain their artifact outcome.
+    """
+
+    message = f"Eval case budget timed out after {timeout_seconds} seconds"
+    for result in case_results:
+        if result.output_file or result.metrics is not None:
+            continue
+        if result.error and message not in result.error:
+            result.error = f"{message}; last error: {result.error}"
+        else:
+            result.error = message
+        result.failure_kind = "timeout"
+        result.timed_out = True
+        result.timeout_stage = "case_budget"
+        result.timeout_reason = "wall"
+        result.timeout_seconds = float(timeout_seconds)
+        result.timeout_attempts = max(result.timeout_attempts, 1)
+
+
 def _suite_case_results_should_retry(case_results: list[EvalResult]) -> bool:
     """Return True when a suite case likely failed for a transient reason."""
     if _suite_case_results_hit_usage_limit(case_results):
+        return False
+    if any(result.timed_out or result.timeout_attempts for result in case_results):
         return False
     return any(
         result.error is not None
@@ -4694,41 +5057,31 @@ def summarize_readiness(
 ) -> EvalReadinessSummary:
     """Summarize suite readiness for one runner."""
     total_cases = len(results)
+    artifact_results = [result for result in results if result.metrics is not None]
+    artifact_case_count = len(artifact_results)
+    timeout_count = sum(1 for result in results if result.timed_out)
     success_rate = _fraction(
         sum(1 for result in results if result.success), total_cases
     )
-    compile_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.compile_pass
-        ),
-        total_cases,
+    compile_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.compile_pass),
+        artifact_case_count,
     )
-    ci_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.ci_pass
-        ),
-        total_cases,
+    ci_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.ci_pass),
+        artifact_case_count,
     )
-    zero_ungrounded_rate = _fraction(
+    zero_ungrounded_rate = _optional_fraction(
         sum(
             1
-            for result in results
-            if result.metrics is not None
-            and result.metrics.ungrounded_numeric_count == 0
+            for result in artifact_results
+            if result.metrics.ungrounded_numeric_count == 0
         ),
-        total_cases,
+        artifact_case_count,
     )
-    generalist_review_pass_rate = _fraction(
-        sum(
-            1
-            for result in results
-            if result.metrics is not None and result.metrics.generalist_review_pass
-        ),
-        total_cases,
+    generalist_review_pass_rate = _optional_fraction(
+        sum(1 for result in artifact_results if result.metrics.generalist_review_pass),
+        artifact_case_count,
     )
     generalist_scores = [
         result.metrics.generalist_review_score
@@ -4841,6 +5194,8 @@ def summarize_readiness(
 
     return EvalReadinessSummary(
         total_cases=total_cases,
+        artifact_case_count=artifact_case_count,
+        timeout_count=timeout_count,
         success_rate=success_rate,
         compile_pass_rate=compile_pass_rate,
         ci_pass_rate=ci_pass_rate,
@@ -4910,6 +5265,14 @@ def _fraction(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return round(numerator / denominator, 6)
+
+
+def _optional_fraction(numerator: int, denominator: int) -> float | None:
+    """Return a rounded fraction or None when no artifact entered the metric."""
+
+    if denominator <= 0:
+        return None
+    return _fraction(numerator, denominator)
 
 
 def _min_gate(
@@ -6293,6 +6656,7 @@ def _evaluate_artifact_in_scope(
         validation_policy_repo_root = _validation_policy_repo_root(
             validation_file, policy_repo_root
         )
+        validation_staging_root = _RULESPEC_VALIDATION_STAGING_ROOT.get()
         validation_dependency_roots = _validation_rulespec_dependency_roots(
             validation_file=validation_file,
             policy_repo_root=policy_repo_root,
@@ -6310,6 +6674,7 @@ def _evaluate_artifact_in_scope(
             local_corpus_release=local_corpus_release,
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=validation_dependency_roots,
+            validation_staging_root=validation_staging_root,
         )
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
@@ -6325,6 +6690,9 @@ def _evaluate_artifact_in_scope(
                     error=str(exc),
                     issues=[str(exc)],
                 )
+            policyengine_result = pipeline._normalize_validation_staging_result(
+                policyengine_result
+            )
         oracle_context: dict[str, dict[str, object]] = {}
         if policyengine_result is not None:
             oracle_context["policyengine"] = {
@@ -6734,22 +7102,18 @@ def _validation_policy_repo_root(validation_file: Path, policy_repo_root: Path) 
             "Validation requires an exact direct jurisdiction child of a "
             f"canonical rulespec-<country> checkout: {policy_repo_root}"
         )
-    source_root = Path(policy_repo_root).resolve()
-    if _is_under_root(validation_file, source_root):
-        return source_root
+    resolved_validation_file = validation_file.resolve()
+    for candidate in resolved_validation_file.parents:
+        if canonical_rulespec_root_identity(candidate) != source_identity:
+            continue
+        relative = resolved_validation_file.relative_to(candidate)
+        if relative.parts and relative.parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+            return candidate
 
-    relative = _relative_rulespec_source_path(validation_file)
-    if relative is None:
-        raise UnsafeRulespecContextPath(
-            f"Validation file has no canonical RuleSpec source path: {validation_file}"
-        )
-    validation_root = validation_file.resolve().parents[len(relative.parts) - 1]
-    if canonical_rulespec_root_identity(validation_root) != source_identity:
-        raise UnsafeRulespecContextPath(
-            "Validation file is not under the explicitly authorized canonical "
-            f"RuleSpec root {source_identity}: {validation_file}"
-        )
-    return validation_root
+    raise UnsafeRulespecContextPath(
+        "Validation file is not under the explicitly authorized canonical "
+        f"RuleSpec root {source_identity}: {validation_file}"
+    )
 
 
 def _validation_rulespec_dependency_roots(
@@ -6768,7 +7132,10 @@ def _validation_rulespec_dependency_roots(
         policy_repo_root,
     )
     source_root = Path(policy_repo_root).resolve()
-    if source_root == validation_root:
+    if (
+        source_root == validation_root
+        or _RULESPEC_VALIDATION_STAGING_ROOT.get() is None
+    ):
         return normalized
 
     validation_checkout = validation_root.parent
@@ -6939,7 +7306,11 @@ def _rulespec_validation_target(
         )
     policy_root = Path(policy_repo_root).resolve()
     if _is_under_root(rulespec_file, policy_root):
-        yield validate_rulespec_context_file(rulespec_file, policy_root)
+        staging_token = _RULESPEC_VALIDATION_STAGING_ROOT.set(None)
+        try:
+            yield validate_rulespec_context_file(rulespec_file, policy_root)
+        finally:
+            _RULESPEC_VALIDATION_STAGING_ROOT.reset(staging_token)
         return
     relative = _relative_rulespec_source_path(rulespec_file)
     if relative is None:
@@ -7002,7 +7373,11 @@ def _rulespec_validation_target(
                 f"{validation_file.stem}.test.yaml"
             )
             shutil.copy2(companion_test, validation_test)
-        yield validation_file
+        staging_token = _RULESPEC_VALIDATION_STAGING_ROOT.set(overlay_parent)
+        try:
+            yield validation_file
+        finally:
+            _RULESPEC_VALIDATION_STAGING_ROOT.reset(staging_token)
 
 
 def _relative_rulespec_source_path(path: Path) -> Path | None:
@@ -7113,42 +7488,162 @@ def _run_prompt_eval_with_empty_artifact_retry(
     policyengine_rule_hint: str | None = None,
     artifact_root: Path | None = None,
 ) -> tuple[EvalPromptResponse, bool, int, frozenset[Path]]:
-    """Run an eval and retry once if no RuleSpec artifact can be materialized."""
-    materialized_paths: set[Path] = set()
-    response = _run_prompt_eval(runner, workspace, prompt)
-    wrote_artifact = _materialize_eval_artifact(
-        response.text,
-        output_file,
-        source_text=source_text,
-        workspace_root=workspace.root,
-        policyengine_rule_hint=policyengine_rule_hint,
-        artifact_root=artifact_root,
-        materialized_paths=materialized_paths,
-    )
-    if wrote_artifact or not _response_allows_empty_artifact_retry(response):
-        return response, wrote_artifact, 0, frozenset(materialized_paths)
+    """Run an eval within the execution-identity-bound artifact attempt limit."""
 
-    retry_prompt = _build_empty_artifact_retry_prompt(
-        prompt,
-        target_file_name=target_file_name,
-        include_tests=include_tests,
+    _resume_eval_case_budget()
+    try:
+        if (
+            isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, bool)
+            or not isinstance(_EMPTY_ARTIFACT_MAX_ATTEMPTS, int)
+            or _EMPTY_ARTIFACT_MAX_ATTEMPTS <= 0
+        ):
+            raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
+        materialized_paths: set[Path] = set()
+        response = _run_prompt_eval(runner, workspace, prompt)
+        timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
+            response,
+            output_file=output_file,
+            artifact_root=artifact_root,
+            workspace_root=workspace.root,
+            materialized_paths=materialized_paths,
+        )
+        wrote_artifact = False
+        if not timed_out_attempt:
+            wrote_artifact = _materialize_eval_artifact(
+                response.text,
+                output_file,
+                source_text=source_text,
+                workspace_root=workspace.root,
+                policyengine_rule_hint=policyengine_rule_hint,
+                artifact_root=artifact_root,
+                materialized_paths=materialized_paths,
+            )
+        if _discard_artifacts_after_case_budget(
+            response,
+            output_file=output_file,
+            artifact_root=artifact_root,
+            workspace_root=workspace.root,
+            materialized_paths=materialized_paths,
+        ):
+            return response, False, 0, frozenset()
+        if wrote_artifact or not _response_allows_empty_artifact_retry(response):
+            return response, wrote_artifact, 0, frozenset(materialized_paths)
+
+        retry_prompt = _build_empty_artifact_retry_prompt(
+            prompt,
+            target_file_name=target_file_name,
+            include_tests=include_tests,
+        )
+        retry_count = 0
+        for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
+            retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
+            retry_count += 1
+            timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
+                retry_response,
+                output_file=output_file,
+                artifact_root=artifact_root,
+                workspace_root=workspace.root,
+                materialized_paths=materialized_paths,
+            )
+            response = _combine_retry_response(response, retry_response, retry_prompt)
+            wrote_artifact = False
+            if not timed_out_attempt:
+                wrote_artifact = _materialize_eval_artifact(
+                    retry_response.text,
+                    output_file,
+                    source_text=source_text,
+                    workspace_root=workspace.root,
+                    policyengine_rule_hint=policyengine_rule_hint,
+                    artifact_root=artifact_root,
+                    materialized_paths=materialized_paths,
+                )
+            if _discard_artifacts_after_case_budget(
+                response,
+                output_file=output_file,
+                artifact_root=artifact_root,
+                workspace_root=workspace.root,
+                materialized_paths=materialized_paths,
+            ):
+                wrote_artifact = False
+                break
+            if wrote_artifact or not _response_allows_empty_artifact_retry(
+                retry_response
+            ):
+                break
+        return response, wrote_artifact, retry_count, frozenset(materialized_paths)
+    finally:
+        _pause_eval_case_budget()
+
+
+def _discard_artifacts_after_timed_out_attempt(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    workspace_root: Path,
+    materialized_paths: set[Path],
+) -> bool:
+    """Discard incomplete response and workspace artifacts from a timed-out attempt."""
+
+    if response.timed_out is not True:
+        return False
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
     )
-    retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
-    retry_wrote_artifact = _materialize_eval_artifact(
-        retry_response.text,
-        output_file,
-        source_text=source_text,
-        workspace_root=workspace.root,
-        policyengine_rule_hint=policyengine_rule_hint,
-        artifact_root=artifact_root,
-        materialized_paths=materialized_paths,
+    materialized_paths.clear()
+    response.text = ""
+    return True
+
+
+def _discard_artifacts_after_case_budget(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    workspace_root: Path,
+    materialized_paths: set[Path],
+) -> bool:
+    """Discard artifacts whose generation/materialization crossed the deadline."""
+
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is None or remaining > 0:
+        return False
+
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
     )
-    return (
-        _combine_retry_response(response, retry_response, retry_prompt),
-        retry_wrote_artifact,
-        1,
-        frozenset(materialized_paths),
+    materialized_paths.clear()
+    timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+    if timeout_seconds is None:  # pragma: no cover - active deadline invariant
+        raise RuntimeError("Active eval case deadline has no timeout duration")
+    message = f"Eval case budget timed out after {timeout_seconds} seconds"
+    if response.error and message not in response.error:
+        response.error = f"{message}; last error: {response.error}"
+    else:
+        response.error = message
+    response.timed_out = True
+    response.timeout_stage = "case_budget"
+    response.timeout_reason = "wall"
+    response.timeout_seconds = float(timeout_seconds)
+    response.timeout_attempts = max(response.timeout_attempts, 1)
+    trace = dict(response.trace or {})
+    trace.update(
+        {
+            "timed_out": True,
+            "timeout_stage": "case_budget",
+            "timeout_reason": "wall",
+            "timeout_seconds": timeout_seconds,
+            "timeout_attempts": response.timeout_attempts,
+        }
     )
+    response.trace = trace
+    return True
 
 
 def _run_single_eval(
@@ -7279,6 +7774,11 @@ def _run_single_eval(
         metrics,
         require_policyengine=oracle == "policyengine",
     )
+    outcome = _eval_result_outcome(
+        response,
+        wrote_artifact=wrote_artifact,
+        validation_error=validation_error,
+    )
 
     tokens = response.tokens
     generated_output_sha256 = (
@@ -7331,6 +7831,7 @@ def _run_single_eval(
         retrieved_files=[item.source_path for item in workspace.context_files],
         unexpected_accesses=response.unexpected_accesses,
         metrics=metrics,
+        **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
     )
@@ -7349,11 +7850,40 @@ def _eval_artifact_validation_error(
         return "Generated RuleSpec failed compile validation"
     if not metrics.ci_pass:
         return "Generated RuleSpec failed CI validation"
-    if require_policyengine and (
-        metrics.policyengine_pass is not True or metrics.policyengine_score is None
-    ):
+    if require_policyengine and metrics.policyengine_pass is not True:
         return "Generated RuleSpec failed PolicyEngine oracle validation"
     return None
+
+
+def _eval_result_outcome(
+    response: EvalPromptResponse,
+    *,
+    wrote_artifact: bool,
+    validation_error: str | None,
+) -> dict[str, object]:
+    """Return durable row-level outcome and timeout evidence."""
+
+    timeout_attempts, timeout_stage, timeout_reason, timeout_seconds = (
+        _prompt_response_timeout_evidence(response)
+    )
+    terminal_timeout = response.timed_out is True
+    failure_kind: EvalFailureKind | None
+    if terminal_timeout:
+        failure_kind = "timeout"
+    elif validation_error is not None:
+        failure_kind = "validation"
+    elif response.error is not None or not wrote_artifact:
+        failure_kind = "error"
+    else:
+        failure_kind = None
+    return {
+        "failure_kind": failure_kind,
+        "timed_out": terminal_timeout,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
+    }
 
 
 def _run_single_source_eval(
@@ -7464,6 +7994,11 @@ def _run_single_source_eval(
         metrics,
         require_policyengine=oracle == "policyengine",
     )
+    outcome = _eval_result_outcome(
+        response,
+        wrote_artifact=wrote_artifact,
+        validation_error=validation_error,
+    )
 
     tokens = response.tokens
     generated_output_sha256 = (
@@ -7514,6 +8049,7 @@ def _run_single_source_eval(
         retrieved_files=[item.source_path for item in workspace.context_files],
         unexpected_accesses=response.unexpected_accesses,
         metrics=metrics,
+        **outcome,
         retry_count=retry_count,
         source_attestation=_source_metadata_attestation(source_metadata_payload),
     )
@@ -7748,7 +8284,10 @@ def _write_eval_artifact_text(
     _secure_atomic_eval_write(root, relative, content.encode("utf-8"))
 
 
-def _clear_eval_target_artifacts(expected_path: Path, artifact_root: Path) -> None:
+def _clear_eval_target_artifacts(
+    expected_path: Path,
+    artifact_root: Path | None,
+) -> None:
     """Remove stale main and companion artifacts without following symlinks."""
 
     for target_path in (expected_path, _rulespec_test_path(expected_path)):
@@ -11970,6 +12509,31 @@ def _run_prompt_eval(
     prompt: str,
 ) -> EvalPromptResponse:
     """Run one prompt-only eval through the selected local CLI."""
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is not None and remaining <= 0:
+        timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+        return EvalPromptResponse(
+            text="",
+            duration_ms=0,
+            trace={
+                "backend": runner.backend,
+                "model": runner.model,
+                "timed_out": True,
+                "timeout_stage": "case_budget",
+                "timeout_reason": "wall",
+                "timeout_seconds": timeout_seconds,
+            },
+            error=(
+                "Eval case budget timed out"
+                if timeout_seconds is None
+                else f"Eval case budget timed out after {timeout_seconds} seconds"
+            ),
+            timed_out=True,
+            timeout_stage="case_budget",
+            timeout_reason="wall",
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=1,
+        )
     if runner.backend == "claude":
         return _run_claude_prompt_eval(runner, workspace, prompt)
     if runner.backend == "codex":
@@ -12009,18 +12573,72 @@ def _run_claude_prompt_eval(
         prompt,
     ]
 
-    start = time.time()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        cwd=workspace.root,
-        timeout=600,
-        env=scrub_attestation_signing_keys(),
+    configured_timeout_seconds = _claude_encoder_timeout_seconds()
+    timeout_seconds, case_budget_limited = _timeout_bounded_by_eval_case_budget(
+        configured_timeout_seconds
     )
+    timeout_stage = "case_budget" if case_budget_limited else "encoder"
+    trace: dict[str, object] = {
+        "provider": "anthropic",
+        "backend": "claude-print",
+        "model": runner.model,
+        "timed_out": False,
+        "timeout_reason": None,
+        "timeout_seconds": timeout_seconds,
+    }
+    start = time.time()
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=workspace.root,
+            timeout=timeout_seconds,
+            env=scrub_attestation_signing_keys(),
+        )
+    except subprocess.TimeoutExpired:
+        duration_ms = int((time.time() - start) * 1000)
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace={
+                **trace,
+                "timed_out": True,
+                "timeout_reason": "wall",
+            },
+            error=(
+                "Eval case budget timed out"
+                if case_budget_limited
+                else "Claude eval timed out"
+            ),
+            timed_out=True,
+            timeout_stage=timeout_stage,
+            timeout_reason="wall",
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=1,
+        )
     duration_ms = int((time.time() - start) * 1000)
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is not None and remaining <= 0:
+        case_timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            trace={
+                **trace,
+                "timed_out": True,
+                "timeout_stage": "case_budget",
+                "timeout_reason": "wall",
+                "timeout_seconds": case_timeout_seconds,
+            },
+            error="Eval case budget timed out",
+            timed_out=True,
+            timeout_stage="case_budget",
+            timeout_reason="wall",
+            timeout_seconds=case_timeout_seconds,
+            timeout_attempts=1,
+        )
 
-    trace: dict = {}
     text = result.stdout + result.stderr
     tokens = None
     actual_cost = None
@@ -12028,12 +12646,7 @@ def _run_claude_prompt_eval(
 
     try:
         payload = json.loads(text)
-        trace = {
-            "provider": "anthropic",
-            "backend": "claude-print",
-            "model": runner.model,
-            "json_result": payload,
-        }
+        trace["json_result"] = payload
         usage = payload.get("usage", {}) or {}
         tokens = TokenUsage(
             input_tokens=int(usage.get("input_tokens", 0) or 0),
@@ -12046,12 +12659,7 @@ def _run_claude_prompt_eval(
         if payload.get("is_error"):
             error = text or "Claude eval returned an error"
     except json.JSONDecodeError:
-        trace = {
-            "provider": "anthropic",
-            "backend": "claude-print",
-            "model": runner.model,
-            "raw_output": result.stdout + result.stderr,
-        }
+        trace["raw_output"] = result.stdout + result.stderr
         if result.returncode != 0:
             error = (result.stdout + result.stderr).strip() or "Claude eval failed"
 
@@ -12075,8 +12683,15 @@ def _run_codex_prompt_eval(
     prompt: str,
 ) -> EvalPromptResponse:
     """Run prompt-only eval via Codex CLI."""
-    codex_timeout_seconds, codex_idle_timeout_seconds = _codex_prompt_timeouts(
+    configured_timeout_seconds, codex_idle_timeout_seconds = _codex_prompt_timeouts(
         workspace
+    )
+    codex_timeout_seconds, case_budget_limited = _timeout_bounded_by_eval_case_budget(
+        configured_timeout_seconds
+    )
+    codex_idle_timeout_seconds = min(
+        codex_idle_timeout_seconds,
+        codex_timeout_seconds,
     )
     last_message_file = workspace.root / ".codex-last-message.txt"
     if last_message_file.exists():
@@ -12104,7 +12719,9 @@ def _run_codex_prompt_eval(
     start = time.time()
     terminated_after_output = False
     timed_out = False
+    timeout_stage = None
     timeout_reason = None
+    triggering_timeout_seconds: float | None = None
     with (
         tempfile.TemporaryDirectory(prefix="axiom-codex-home-") as codex_home_dir,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
@@ -12134,11 +12751,34 @@ def _run_codex_prompt_eval(
             )
         except subprocess.TimeoutExpired as exc:
             timed_out = True
-            timeout_reason = (
-                "idle" if exc.timeout == codex_idle_timeout_seconds else "wall"
+            backend_timeout_reason = getattr(
+                exc,
+                "timeout_reason",
+                (
+                    "idle"
+                    if exc.timeout == codex_idle_timeout_seconds
+                    and codex_idle_timeout_seconds != codex_timeout_seconds
+                    else "wall"
+                ),
             )
+            case_budget_triggered = (
+                case_budget_limited and backend_timeout_reason == "wall"
+            )
+            timeout_stage = "case_budget" if case_budget_triggered else "encoder"
+            timeout_reason = "wall" if case_budget_triggered else backend_timeout_reason
+            triggering_timeout_seconds = float(exc.timeout)
             process.kill()
             process.wait()
+        else:
+            remaining = _remaining_eval_case_budget_seconds()
+            if remaining is not None and remaining <= 0:
+                timed_out = True
+                timeout_stage = "case_budget"
+                timeout_reason = "wall"
+                triggering_timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
 
     stdout_text = stdout_path.read_text()
     stderr_text = stderr_path.read_text()
@@ -12202,7 +12842,10 @@ def _run_codex_prompt_eval(
         if file_text:
             final_text = file_text
 
-    if timed_out and not error and not final_text:
+    if timeout_stage == "case_budget":
+        final_text = ""
+        error = "Eval case budget timed out"
+    elif timed_out and not error and not final_text:
         error = "Codex eval timed out"
 
     if (
@@ -12222,13 +12865,22 @@ def _run_codex_prompt_eval(
             "backend": "codex-exec",
             "model": runner.model,
             "timed_out": timed_out,
+            "timeout_stage": timeout_stage,
             "timeout_reason": timeout_reason,
-            "timeout_seconds": codex_timeout_seconds,
+            "timeout_seconds": (
+                triggering_timeout_seconds if timed_out else codex_timeout_seconds
+            ),
+            "wall_timeout_seconds": codex_timeout_seconds,
             "idle_timeout_seconds": codex_idle_timeout_seconds,
             "events": events,
         },
         unexpected_accesses=unexpected_accesses,
         error=error,
+        timed_out=timed_out,
+        timeout_stage=timeout_stage,
+        timeout_reason=timeout_reason,
+        timeout_seconds=triggering_timeout_seconds if timed_out else None,
+        timeout_attempts=1 if timed_out else 0,
     )
 
 
@@ -12255,27 +12907,52 @@ def _codex_prompt_timeouts(workspace: EvalWorkspace) -> tuple[int, int]:
         source_length = len(workspace.source_text_file.read_text())
     except OSError:
         source_length = 0
+    policy = _codex_timeout_policy()
     if source_length >= _CODEX_LONG_SOURCE_CHAR_THRESHOLD:
-        return (
-            _positive_int_env(
-                "AXIOM_ENCODE_CODEX_LONG_TIMEOUT_SECONDS",
-                _CODEX_LONG_SOURCE_TIMEOUT_SECONDS,
-            ),
-            _positive_int_env(
-                "AXIOM_ENCODE_CODEX_LONG_IDLE_TIMEOUT_SECONDS",
-                _CODEX_LONG_SOURCE_IDLE_TIMEOUT_SECONDS,
-            ),
-        )
-    return (
-        _positive_int_env(
-            "AXIOM_ENCODE_CODEX_TIMEOUT_SECONDS",
-            _CODEX_DEFAULT_TIMEOUT_SECONDS,
-        ),
+        selected = policy["long_source"]
+    else:
+        selected = policy["short_source"]
+    if not isinstance(selected, dict):  # pragma: no cover - construction invariant
+        raise TypeError("Codex timeout policy branch must be a mapping")
+    return int(selected["wall_seconds"]), int(selected["idle_seconds"])
+
+
+def _codex_timeout_policy() -> dict[str, object]:
+    """Return the complete effective Codex timeout policy."""
+
+    short_wall = _positive_int_env(
+        "AXIOM_ENCODE_CODEX_TIMEOUT_SECONDS",
+        _CODEX_DEFAULT_TIMEOUT_SECONDS,
+    )
+    short_idle = min(
         _positive_int_env(
             "AXIOM_ENCODE_CODEX_IDLE_TIMEOUT_SECONDS",
             _CODEX_DEFAULT_IDLE_TIMEOUT_SECONDS,
         ),
+        short_wall,
     )
+    long_wall = _positive_int_env(
+        "AXIOM_ENCODE_CODEX_LONG_TIMEOUT_SECONDS",
+        _CODEX_LONG_SOURCE_TIMEOUT_SECONDS,
+    )
+    long_idle = min(
+        _positive_int_env(
+            "AXIOM_ENCODE_CODEX_LONG_IDLE_TIMEOUT_SECONDS",
+            _CODEX_LONG_SOURCE_IDLE_TIMEOUT_SECONDS,
+        ),
+        long_wall,
+    )
+    return {
+        "short_source": {
+            "wall_seconds": short_wall,
+            "idle_seconds": short_idle,
+        },
+        "long_source": {
+            "wall_seconds": long_wall,
+            "idle_seconds": long_idle,
+        },
+        "long_source_char_threshold": _CODEX_LONG_SOURCE_CHAR_THRESHOLD,
+    }
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -12287,6 +12964,85 @@ def _positive_int_env(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _eval_case_timeout_seconds() -> int:
+    """Return each case-runner's generation and generation-retry wall budget."""
+
+    return _positive_int_env(
+        "AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS",
+        _EVAL_CASE_DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+@contextlib.contextmanager
+def _active_eval_case_budget(timeout_seconds: int) -> Iterator[None]:
+    """Install one deadline shared by a case-runner's generation and retries."""
+
+    deadline_token = _EVAL_CASE_DEADLINE_MONOTONIC.set(
+        time.monotonic() + timeout_seconds
+    )
+    paused_token = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(None)
+    timeout_token = _EVAL_CASE_TIMEOUT_SECONDS.set(timeout_seconds)
+    try:
+        yield
+    finally:
+        _EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+        _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.reset(paused_token)
+        _EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+
+def _pause_eval_case_budget() -> None:
+    """Freeze the active generation deadline during deterministic evaluation."""
+
+    if (
+        _EVAL_CASE_DEADLINE_MONOTONIC.get() is not None
+        and _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get() is None
+    ):
+        _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(time.monotonic())
+
+
+def _resume_eval_case_budget() -> None:
+    """Resume a frozen generation deadline without charging paused wall time."""
+
+    deadline = _EVAL_CASE_DEADLINE_MONOTONIC.get()
+    paused_at = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get()
+    if deadline is None or paused_at is None:
+        return
+    paused_seconds = max(time.monotonic() - paused_at, 0.0)
+    _EVAL_CASE_DEADLINE_MONOTONIC.set(deadline + paused_seconds)
+    _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.set(None)
+
+
+def _remaining_eval_case_budget_seconds() -> float | None:
+    """Return the active budget, if inside a suite case-runner generation."""
+
+    deadline = _EVAL_CASE_DEADLINE_MONOTONIC.get()
+    if deadline is None:
+        return None
+    paused_at = _EVAL_CASE_BUDGET_PAUSED_AT_MONOTONIC.get()
+    now = paused_at if paused_at is not None else time.monotonic()
+    return deadline - now
+
+
+def _timeout_bounded_by_eval_case_budget(
+    timeout_seconds: int | float,
+) -> tuple[int | float, bool]:
+    """Clamp a backend timeout to the active case deadline."""
+
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is None or remaining >= timeout_seconds:
+        return timeout_seconds, False
+    return max(remaining, 0.001), True
+
+
+def _claude_encoder_timeout_seconds() -> int:
+    """Return the effective Claude wall timeout bound into suite identity."""
+
+    return _positive_int_env(
+        "AXIOM_ENCODE_ENCODER_TIMEOUT_SECONDS",
+        _CLAUDE_DEFAULT_TIMEOUT_SECONDS,
+    )
 
 
 def _wait_for_codex_process(
@@ -12301,7 +13057,7 @@ def _wait_for_codex_process(
     poll_interval: float = 0.5,
 ) -> bool:
     """Wait for Codex CLI, terminating it once output is stable or persistent."""
-    start = time.time()
+    start = time.monotonic()
     last_snapshot: tuple[int, int] | None = None
     stable_since: float | None = None
     output_seen_at: float | None = None
@@ -12324,12 +13080,19 @@ def _wait_for_codex_process(
         return tuple(snapshot)
 
     while True:
-        if process.poll() is not None:
+        now = time.monotonic()
+        if now - start >= timeout:
+            error = subprocess.TimeoutExpired(process.args, timeout)
+            error.timeout_reason = "wall"
+            raise error
+        completed = process.poll() is not None
+        now = time.monotonic()
+        if now - start >= timeout:
+            error = subprocess.TimeoutExpired(process.args, timeout)
+            error.timeout_reason = "wall"
+            raise error
+        if completed:
             return False
-
-        now = time.time()
-        if now - start > timeout:
-            raise subprocess.TimeoutExpired(process.args, timeout)
 
         current_heartbeat_snapshot = _snapshot_activity()
         if current_heartbeat_snapshot != heartbeat_snapshot:
@@ -12342,7 +13105,9 @@ def _wait_for_codex_process(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            raise subprocess.TimeoutExpired(process.args, max_idle_seconds)
+            error = subprocess.TimeoutExpired(process.args, max_idle_seconds)
+            error.timeout_reason = "idle"
+            raise error
 
         if last_message_file.exists():
             try:
@@ -12449,6 +13214,28 @@ def _run_openai_prompt_eval(
         response = _post_openai_eval_request(headers=headers, body=body)
     except requests.RequestException as exc:
         duration_ms = int((time.time() - start) * 1000)
+        timed_out = isinstance(exc, requests.Timeout)
+        (
+            timeout_attempts,
+            timeout_stage,
+            timeout_reason,
+            timeout_seconds,
+        ) = _openai_timeout_history(exc)
+        if timed_out and timeout_attempts == 0:
+            timeout_attempts = 1
+        if timed_out and timeout_stage not in {"case_budget", "encoder"}:
+            timeout_stage = "encoder"
+        if timeout_stage == "case_budget":
+            timeout_reason = timeout_reason or "wall"
+            timeout_seconds = timeout_seconds or _EVAL_CASE_TIMEOUT_SECONDS.get()
+        elif isinstance(exc, requests.ConnectTimeout):
+            timeout_reason = "connect"
+            timeout_seconds = _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS
+        elif isinstance(exc, requests.ReadTimeout):
+            timeout_reason = "read"
+            timeout_seconds = _OPENAI_REQUEST_READ_TIMEOUT_SECONDS
+        elif timed_out:
+            timeout_reason = timeout_reason or "request"
         return EvalPromptResponse(
             text="",
             duration_ms=duration_ms,
@@ -12457,10 +13244,26 @@ def _run_openai_prompt_eval(
                 "backend": "responses",
                 "model": runner.model,
                 "request_body": body,
+                "timed_out": timed_out,
+                "timeout_stage": timeout_stage,
+                "timeout_reason": timeout_reason,
+                "timeout_seconds": timeout_seconds,
+                "timeout_attempts": timeout_attempts,
             },
             error=str(exc),
+            timed_out=timed_out,
+            timeout_stage=timeout_stage,
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=timeout_attempts,
         )
     duration_ms = int((time.time() - start) * 1000)
+    (
+        timeout_attempts,
+        timeout_stage,
+        timeout_reason,
+        timeout_seconds,
+    ) = _openai_timeout_history(response)
 
     request_id = response.headers.get("x-request-id")
     try:
@@ -12480,6 +13283,11 @@ def _run_openai_prompt_eval(
         "request_body": body,
         "json_result": payload,
         "status_code": response.status_code,
+        "timed_out": False,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
     }
 
     if response.status_code >= 400:
@@ -12489,6 +13297,10 @@ def _run_openai_prompt_eval(
             duration_ms=duration_ms,
             trace=trace,
             error=error.get("message") or response.text or "OpenAI eval failed",
+            timeout_stage=timeout_stage,
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=timeout_attempts,
         )
 
     usage = payload.get("usage") or {}
@@ -12508,42 +13320,364 @@ def _run_openai_prompt_eval(
         tokens=tokens,
         estimated_cost_usd=estimate_usage_cost_usd(runner.model, tokens),
         trace=trace,
+        timeout_stage=timeout_stage,
+        timeout_reason=timeout_reason,
+        timeout_seconds=timeout_seconds,
+        timeout_attempts=timeout_attempts,
     )
+
+
+def _post_openai_request_with_wall_deadline(
+    *,
+    headers: dict[str, str],
+    body: dict[str, object],
+    request_timeout: tuple[float, float],
+    wall_seconds: float | None,
+    timeout_attempts: int,
+) -> requests.Response:
+    """Return or raise by the active case wall deadline.
+
+    On the main POSIX thread, an interval timer interrupts the underlying
+    socket call. The daemon-thread fallback still releases the eval caller at
+    the deadline on platforms or embedding threads that cannot own signals;
+    the request retains its independently bounded connect/read timeouts.
+    """
+
+    def post() -> requests.Response:
+        return requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            json=body,
+            timeout=request_timeout,
+        )
+
+    if wall_seconds is None:
+        return post()
+    bounded_wall = max(wall_seconds, 0.001)
+    can_interrupt_socket = (
+        threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "SIGALRM")
+        and hasattr(signal, "ITIMER_REAL")
+        and hasattr(signal, "getitimer")
+        and hasattr(signal, "setitimer")
+        and signal.getitimer(signal.ITIMER_REAL)[0] <= 0
+    )
+    if can_interrupt_socket:
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def expire_request(_signum: int, _frame: object) -> None:
+            raise _openai_case_budget_timeout(
+                timeout_attempts=max(timeout_attempts + 1, 1)
+            )
+
+        signal.signal(signal.SIGALRM, expire_request)
+        signal.setitimer(signal.ITIMER_REAL, bounded_wall)
+        try:
+            return post()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    completed = threading.Event()
+    responses: list[requests.Response] = []
+    errors: list[BaseException] = []
+
+    def post_in_background() -> None:
+        try:
+            responses.append(post())
+        except BaseException as exc:  # pragma: no cover - defensive thread boundary
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    threading.Thread(
+        target=post_in_background,
+        name="axiom-openai-eval-request",
+        daemon=True,
+    ).start()
+    if not completed.wait(timeout=bounded_wall):
+        raise _openai_case_budget_timeout(timeout_attempts=max(timeout_attempts + 1, 1))
+    if errors:
+        raise errors[0]
+    if not responses:  # pragma: no cover - event/list invariant
+        raise requests.RequestException(
+            "OpenAI eval request finished without a response"
+        )
+    return responses[0]
 
 
 def _post_openai_eval_request(
     headers: dict[str, str],
     body: dict[str, object],
-    attempts: int = 6,
+    attempts: int = _OPENAI_REQUEST_MAX_ATTEMPTS,
 ) -> requests.Response:
     """POST a Responses API eval request with transient retry handling."""
     last_response: requests.Response | None = None
     last_error: requests.RequestException | None = None
+    timeout_attempts = 0
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
     for attempt in range(1, attempts + 1):
+        remaining = _remaining_eval_case_budget_seconds()
+        if remaining is not None and remaining <= 0:
+            raise _openai_case_budget_timeout(timeout_attempts=max(timeout_attempts, 1))
+        request_timeout: tuple[float, float] = (
+            _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS,
+            _OPENAI_REQUEST_READ_TIMEOUT_SECONDS,
+        )
+        if remaining is not None:
+            bounded = max(remaining, 0.001)
+            request_timeout = (
+                min(_OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS, bounded),
+                min(_OPENAI_REQUEST_READ_TIMEOUT_SECONDS, bounded),
+            )
         try:
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
+            response = _post_openai_request_with_wall_deadline(
                 headers=headers,
-                json=body,
-                timeout=(30, 180),
+                body=body,
+                request_timeout=request_timeout,
+                wall_seconds=remaining,
+                timeout_attempts=timeout_attempts,
             )
         except requests.RequestException as exc:
             last_error = exc
+            if isinstance(exc, requests.Timeout):
+                timeout_attempts += 1
+                case_budget_timeout = (
+                    getattr(exc, "timeout_stage", None) == "case_budget"
+                )
+                if case_budget_timeout or _openai_timeout_was_case_budget_limited(
+                    exc, request_timeout
+                ):
+                    _bind_openai_case_budget_timeout(
+                        exc,
+                        timeout_attempts=timeout_attempts,
+                    )
+                else:
+                    _bind_openai_encoder_timeout(
+                        exc,
+                        timeout_attempts=timeout_attempts,
+                    )
+                (
+                    _,
+                    timeout_stage,
+                    timeout_reason,
+                    timeout_seconds,
+                ) = _openai_timeout_history(exc)
+                if case_budget_timeout:
+                    raise
+            remaining = _remaining_eval_case_budget_seconds()
+            if remaining is not None and remaining <= 0:
+                if isinstance(exc, requests.Timeout):
+                    _bind_openai_case_budget_timeout(
+                        exc,
+                        timeout_attempts=max(timeout_attempts, 1),
+                    )
+                    raise
+                raise _openai_case_budget_timeout(
+                    timeout_attempts=timeout_attempts + 1
+                ) from exc
             if attempt == attempts:
+                if timeout_attempts:
+                    _bind_openai_timeout_history(
+                        exc,
+                        timeout_attempts=timeout_attempts,
+                        timeout_stage=timeout_stage,
+                        timeout_reason=timeout_reason,
+                        timeout_seconds=timeout_seconds,
+                    )
                 raise
-            time.sleep(min(2 ** (attempt - 1), 10))
+            _sleep_with_eval_case_budget(
+                _OPENAI_REQUEST_BACKOFF_SECONDS[
+                    min(attempt - 1, len(_OPENAI_REQUEST_BACKOFF_SECONDS) - 1)
+                ],
+                timeout_attempts=timeout_attempts,
+            )
             continue
 
+        remaining = _remaining_eval_case_budget_seconds()
+        if remaining is not None and remaining <= 0:
+            raise _openai_case_budget_timeout(timeout_attempts=timeout_attempts + 1)
         last_response = response
         if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts:
+            if timeout_attempts:
+                _bind_openai_timeout_history(
+                    response,
+                    timeout_attempts=timeout_attempts,
+                    timeout_stage=timeout_stage,
+                    timeout_reason=timeout_reason,
+                    timeout_seconds=timeout_seconds,
+                )
             return response
-        time.sleep(min(2 ** (attempt - 1), 10))
+        _sleep_with_eval_case_budget(
+            _OPENAI_REQUEST_BACKOFF_SECONDS[
+                min(attempt - 1, len(_OPENAI_REQUEST_BACKOFF_SECONDS) - 1)
+            ],
+            timeout_attempts=timeout_attempts,
+        )
 
     if last_response is not None:
+        if timeout_attempts:
+            _bind_openai_timeout_history(
+                last_response,
+                timeout_attempts=timeout_attempts,
+                timeout_stage=timeout_stage,
+                timeout_reason=timeout_reason,
+                timeout_seconds=timeout_seconds,
+            )
         return last_response
     if last_error is not None:
+        if timeout_attempts:
+            _bind_openai_timeout_history(
+                last_error,
+                timeout_attempts=timeout_attempts,
+                timeout_stage=timeout_stage,
+                timeout_reason=timeout_reason,
+                timeout_seconds=timeout_seconds,
+            )
         raise last_error
     raise requests.RequestException("OpenAI eval request failed without response")
+
+
+def _openai_timeout_history(
+    value: object,
+) -> tuple[int, str | None, str | None, float | None]:
+    """Return validated timeout history attached to a response or exception."""
+
+    raw_attempts = getattr(value, "timeout_attempts", 0)
+    timeout_attempts = (
+        raw_attempts
+        if not isinstance(raw_attempts, bool)
+        and isinstance(raw_attempts, int)
+        and raw_attempts >= 0
+        else 0
+    )
+    raw_stage = getattr(value, "timeout_stage", None)
+    timeout_stage = raw_stage if isinstance(raw_stage, str) else None
+    raw_reason = getattr(value, "timeout_reason", None)
+    timeout_reason = raw_reason if isinstance(raw_reason, str) else None
+    raw_seconds = getattr(value, "timeout_seconds", None)
+    timeout_seconds = (
+        float(raw_seconds)
+        if not isinstance(raw_seconds, bool)
+        and isinstance(raw_seconds, (int, float))
+        and math.isfinite(raw_seconds)
+        and raw_seconds > 0
+        else None
+    )
+    if timeout_attempts == 0:
+        return 0, None, None, None
+    return timeout_attempts, timeout_stage, timeout_reason, timeout_seconds
+
+
+def _bind_openai_timeout_history(
+    value: object,
+    *,
+    timeout_attempts: int,
+    timeout_stage: str | None,
+    timeout_reason: str | None,
+    timeout_seconds: float | None,
+) -> None:
+    """Attach aggregate timeout evidence to a request result."""
+
+    value.timeout_attempts = max(timeout_attempts, 1)
+    value.timeout_stage = timeout_stage
+    value.timeout_reason = timeout_reason
+    value.timeout_seconds = timeout_seconds
+
+
+def _bind_openai_encoder_timeout(
+    exc: requests.Timeout,
+    *,
+    timeout_attempts: int,
+) -> requests.Timeout:
+    """Attach the configured request timeout class and threshold."""
+
+    timeout_reason: str
+    timeout_seconds: float | None
+    if isinstance(exc, requests.ConnectTimeout):
+        timeout_reason = "connect"
+        timeout_seconds = float(_OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS)
+    elif isinstance(exc, requests.ReadTimeout):
+        timeout_reason = "read"
+        timeout_seconds = float(_OPENAI_REQUEST_READ_TIMEOUT_SECONDS)
+    else:
+        timeout_reason = "request"
+        timeout_seconds = None
+    _bind_openai_timeout_history(
+        exc,
+        timeout_attempts=timeout_attempts,
+        timeout_stage="encoder",
+        timeout_reason=timeout_reason,
+        timeout_seconds=timeout_seconds,
+    )
+    return exc
+
+
+def _openai_timeout_was_case_budget_limited(
+    exc: requests.Timeout,
+    request_timeout: tuple[float, float],
+) -> bool:
+    """Return whether the timeout class hit a request limit clamped by the case."""
+
+    connect_timeout, read_timeout = request_timeout
+    if isinstance(exc, requests.ConnectTimeout):
+        return connect_timeout < _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS
+    if isinstance(exc, requests.ReadTimeout):
+        return read_timeout < _OPENAI_REQUEST_READ_TIMEOUT_SECONDS
+    return (
+        connect_timeout < _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS
+        or read_timeout < _OPENAI_REQUEST_READ_TIMEOUT_SECONDS
+    )
+
+
+def _bind_openai_case_budget_timeout(
+    exc: requests.Timeout,
+    *,
+    timeout_attempts: int,
+) -> requests.Timeout:
+    """Attach durable case-budget evidence to a request timeout."""
+
+    timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+    _bind_openai_timeout_history(
+        exc,
+        timeout_attempts=timeout_attempts,
+        timeout_stage="case_budget",
+        timeout_reason="wall",
+        timeout_seconds=(
+            float(timeout_seconds) if timeout_seconds is not None else None
+        ),
+    )
+    return exc
+
+
+def _openai_case_budget_timeout(*, timeout_attempts: int) -> requests.Timeout:
+    """Construct a request-layer timeout that preserves the suite case policy."""
+
+    timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+    message = (
+        "Eval case budget timed out"
+        if timeout_seconds is None
+        else f"Eval case budget timed out after {timeout_seconds} seconds"
+    )
+    return _bind_openai_case_budget_timeout(
+        requests.Timeout(message),
+        timeout_attempts=timeout_attempts,
+    )
+
+
+def _sleep_with_eval_case_budget(
+    seconds: float,
+    *,
+    timeout_attempts: int = 0,
+) -> None:
+    """Sleep for a retry backoff without knowingly crossing a suite deadline."""
+
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is not None and remaining <= 0:
+        raise _openai_case_budget_timeout(timeout_attempts=max(timeout_attempts, 1))
+    time.sleep(seconds if remaining is None else min(seconds, remaining))
 
 
 def _command_looks_out_of_bounds(command: str, workspace_root: Path) -> bool:

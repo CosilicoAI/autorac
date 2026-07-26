@@ -10,15 +10,15 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, PolicyEngine runtime) — compared after dropping
-location-only fields, so the same toolchain checked out at different paths
-still folds. The manifest content hash may differ (single-runner variants of
-one suite differ byte-wise but share case identities), and runner sets may
-differ — that is the add-a-model path. Duplicate runner names across
-payloads are refused rather than merged: two runs of one runner are two
-boards, not one.
+content/toolchain/waivers, per-case-runner generation/retry budget, backend
+timeout policy, timeout retry policy, PolicyEngine runtime) — compared after
+dropping location-only fields, so the same toolchain checked out at different
+paths still folds. The manifest content hash may differ (single-runner variants
+of one suite differ byte-wise but share case identities), and runner sets may
+differ — that is the add-a-model path. Duplicate runner names across payloads
+are refused rather than merged: two runs of one runner are two boards, not one.
 
-The board consumes canonical v5 suite payloads and refuses anything else:
+The board consumes canonical v6 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
 whose case identity does not match the manifest, coverage claims the result
 matrix contradicts, and malformed metric types are all hard errors rather
@@ -36,57 +36,53 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import datetime
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from statistics import mean, median
 from typing import Literal
 
-BoardCellState = Literal["pass", "fail", "error", "missing"]
+from axiom_encode.harness.policyengine_runtime import (
+    POLICYENGINE_RUNTIME_PIN_SCHEMA,
+    POLICYENGINE_RUNTIME_SCHEMA,
+)
+
+BoardCellState = Literal["pass", "fail", "timeout", "error", "missing"]
 
 _RESULTS_FILE_NAME = "results.json"
 
 # The one producer schema this consumer understands. A new producer version
 # must be reviewed here before boards fold it; test_eval_board locks this to
 # the producer constant in cli.py.
-SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v5"
+SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
-SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v2"
+SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
 SUPPORTED_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
+EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v2"
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
+_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
+
+# These exact scopes are part of the v3 producer contract. Admission keeps
+# independent literals so a producer scope change cannot silently widen or
+# narrow what an existing board consumer accepts.
+_ENCODER_GIT_PATHSPECS = ("src/axiom_encode", "pyproject.toml", "uv.lock")
+_RULESPEC_TOOLCHAIN_PATHSPEC = ".axiom/toolchain.toml"
+_RULESPEC_RUNTIME_PIN_PATHSPEC = ".axiom/policyengine-runtime.toml"
+_RULESPEC_WAIVER_PATHSPEC = "known-validation-gaps.yaml"
+_GITHUB_ORIGIN_REPOSITORY_RE = re.compile(r"github[.]com/[^/\s]+/[^/\s]+")
 
 # Location-only identity fields: where a checkout lives never affects scores,
 # so normalized execution identities drop these before comparison.
 _LOCATION_ONLY_IDENTITY_KEYS = frozenset({"path", "toolchain_root", "repository_root"})
-
-# The PolicyEngine runtime identity additionally embeds its sealed
-# environment's absolute locations (see policyengine_runtime's canonical
-# identity + probe payload). These are dropped only inside the
-# `policyengine_runtime` subtree; every remaining field there — versions,
-# tree digests, locked_versions, probe flags — is score-affecting.
-_POLICYENGINE_LOCATION_ONLY_KEYS = _LOCATION_ONLY_IDENTITY_KEYS | frozenset(
-    {
-        "rulespec_runtime_pin_path",
-        "venv_root",
-        "stdlib_root",
-        "site_packages_root",
-        "python_executable",
-        "python_prefix",
-        "python_base_prefix",
-        "python_exec_prefix",
-        "python_base_exec_prefix",
-        "initial_sys_path",
-        "effective_sys_path",
-        "module_origin",
-        "metadata_root",
-    }
-)
 
 # Identity digests computed over path-bearing structures (the PolicyEngine
 # runtime wrapper digest is the only producer key named exactly `sha256`;
@@ -128,6 +124,8 @@ class BoardRunnerStats:
     model: str
     source: str
     cases_run: int
+    artifact_case_count: int
+    timeout_count: int
     gate_pass_count: int
     compile_pass_count: int
     ci_pass_count: int
@@ -147,16 +145,16 @@ class BoardRunnerStats:
         return _rate(self.gate_pass_count, self.cases_run)
 
     @property
-    def compile_pass_rate(self) -> float:
-        return _rate(self.compile_pass_count, self.cases_run)
+    def compile_pass_rate(self) -> float | None:
+        return _optional_rate(self.compile_pass_count, self.artifact_case_count)
 
     @property
-    def ci_pass_rate(self) -> float:
-        return _rate(self.ci_pass_count, self.cases_run)
+    def ci_pass_rate(self) -> float | None:
+        return _optional_rate(self.ci_pass_count, self.artifact_case_count)
 
     @property
-    def zero_ungrounded_rate(self) -> float:
-        return _rate(self.zero_ungrounded_count, self.cases_run)
+    def zero_ungrounded_rate(self) -> float | None:
+        return _optional_rate(self.zero_ungrounded_count, self.artifact_case_count)
 
     @property
     def source_numeric_coverage_rate(self) -> float | None:
@@ -168,8 +166,11 @@ class BoardRunnerStats:
         )
 
     @property
-    def generalist_review_pass_rate(self) -> float:
-        return _rate(self.generalist_review_pass_count, self.cases_run)
+    def generalist_review_pass_rate(self) -> float | None:
+        return _optional_rate(
+            self.generalist_review_pass_count,
+            self.artifact_case_count,
+        )
 
     @property
     def mean_generalist_review_score(self) -> float | None:
@@ -297,20 +298,18 @@ def normalized_execution_identity(
 
     Checkout paths (and digests computed over structures that embed them)
     differ across machines and directories without affecting scores; every
-    other field — commits, content hashes, waiver digests, versions — is
-    score-affecting and must match exactly. The `policyengine_runtime`
-    subtree uses the extended location-key set because its sealed-runtime
-    identity embeds venv/stdlib/interpreter locations.
+    other field — commits, content hashes, waiver digests, versions, the case
+    budget, and runner timeouts — is score-affecting and must match exactly. The
+    PolicyEngine's sealed-runtime paths are reduced to stable semantic anchors
+    so import order and relative module topology remain score-affecting even
+    when two equivalent runtimes live in different checkout directories.
     """
     if isinstance(identity, dict):
         return {
-            key: normalized_execution_identity(
-                value,
-                location_keys=(
-                    _POLICYENGINE_LOCATION_ONLY_KEYS
-                    if key == "policyengine_runtime"
-                    else location_keys
-                ),
+            key: (
+                _normalized_policyengine_runtime(value)
+                if key == "policyengine_runtime"
+                else normalized_execution_identity(value, location_keys=location_keys)
             )
             for key, value in identity.items()
             if key not in location_keys and key not in _LOCATION_DEPENDENT_DIGEST_KEYS
@@ -321,6 +320,112 @@ def normalized_execution_identity(
             for item in identity
         ]
     return identity
+
+
+def _normalized_policyengine_runtime(value: object) -> object:
+    """Preserve sealed import topology while removing host-specific roots."""
+
+    if value is None or not isinstance(value, dict):
+        return value
+    runtime = value.get("identity")
+    if not isinstance(runtime, dict):
+        return {
+            key: normalized_execution_identity(item)
+            for key, item in value.items()
+            if key not in _LOCATION_DEPENDENT_DIGEST_KEYS
+        }
+
+    repository_root = runtime.get("repository_root")
+    venv_root = runtime.get("venv_root")
+    stdlib_root = runtime.get("stdlib_root")
+    site_packages_root = runtime.get("site_packages_root")
+    anchors = (
+        ("<policyengine-site-packages>", site_packages_root),
+        ("<policyengine-stdlib>", stdlib_root),
+        ("<policyengine-venv>", venv_root),
+        ("<policyengine-checkout>", repository_root),
+    )
+
+    def anchored_path(path: object) -> object:
+        if not isinstance(path, str):
+            return path
+        for label, root in anchors:
+            if not isinstance(root, str):
+                continue
+            relative = _relative_identity_path(path, root)
+            if relative is None:
+                continue
+            return label if relative == "." else f"{label}/{relative}"
+        return "<outside-policyengine-runtime>"
+
+    normalized_runtime: dict[str, object] = {}
+    for key, item in runtime.items():
+        if key == "rulespec_runtime_pin_path":
+            continue
+        if key == "repository_root":
+            normalized_runtime[key] = "<policyengine-checkout>"
+        elif key == "venv_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                repository_root,
+                "<policyengine-checkout>",
+            )
+        elif key == "stdlib_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                venv_root,
+                "<policyengine-venv>",
+            )
+        elif key == "site_packages_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                stdlib_root,
+                "<policyengine-stdlib>",
+            )
+        elif key in {
+            "python_executable",
+            "python_prefix",
+            "python_base_prefix",
+            "python_exec_prefix",
+            "python_base_exec_prefix",
+        }:
+            normalized_runtime[key] = anchored_path(item)
+        elif key in {"initial_sys_path", "effective_sys_path"} and isinstance(
+            item, list
+        ):
+            normalized_runtime[key] = [anchored_path(path) for path in item]
+        elif key == "packages" and isinstance(item, dict):
+            normalized_runtime[key] = {
+                distribution: {
+                    package_key: (
+                        anchored_path(package_value)
+                        if package_key in {"module_origin", "metadata_root"}
+                        else normalized_execution_identity(package_value)
+                    )
+                    for package_key, package_value in package.items()
+                }
+                if isinstance(package, dict)
+                else normalized_execution_identity(package)
+                for distribution, package in item.items()
+            }
+        else:
+            normalized_runtime[key] = normalized_execution_identity(item)
+    return {"identity": normalized_runtime}
+
+
+def _normalized_child_layout(
+    path: object,
+    root: object,
+    root_label: str,
+) -> object:
+    """Return one stable path relative to its declared sealed-runtime parent."""
+
+    if not isinstance(path, str) or not isinstance(root, str):
+        return path
+    relative = _relative_identity_path(path, root)
+    if relative is None:
+        return "<outside-policyengine-runtime>"
+    return root_label if relative == "." else f"{root_label}/{relative}"
 
 
 def _canonical_json_sha256(payload: object) -> str:
@@ -345,13 +450,35 @@ def _rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 6)
 
 
+def _optional_rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return _rate(numerator, denominator)
+
+
 def _payload_case_identities(payload: dict, source: str) -> list[dict]:
     identities = payload["evidence"]["manifest"].get("case_identities")
     if not isinstance(identities, list) or not identities:
         raise EvalBoardError(f"Suite results carry no case identities: {source}")
     for position, identity in enumerate(identities, start=1):
-        if not isinstance(identity, dict) or not (
-            type(identity.get("index")) is int and identity["index"] == position
+        if (
+            not isinstance(identity, dict)
+            or set(identity)
+            != {
+                "index",
+                "name",
+                "kind",
+                "corpus_citation_path",
+                "oracle",
+                "sha256",
+            }
+            or type(identity.get("index")) is not int
+            or identity["index"] != position
+            or not _is_nonempty_string(identity.get("name"))
+            or identity.get("kind") not in {"citation", "source"}
+            or not _is_nonempty_string(identity.get("corpus_citation_path"))
+            or identity.get("oracle") not in {"none", "policyengine"}
+            or not _is_sha256_hex(identity.get("sha256"))
         ):
             raise EvalBoardError(
                 f"Suite results case identities are malformed at position "
@@ -361,10 +488,48 @@ def _payload_case_identities(payload: dict, source: str) -> list[dict]:
 
 
 def _payload_suite_name(payload: dict, source: str) -> str:
-    name = payload["evidence"]["manifest"].get("name")
-    if not isinstance(name, str) or not name:
+    manifest = payload["evidence"]["manifest"]
+    name = manifest.get("name")
+    if (
+        set(manifest) != {"name", "path", "content_sha256", "case_identities"}
+        or not _is_nonempty_string(name)
+        or not _is_nonempty_string(manifest.get("path"))
+        or not _is_sha256_hex(manifest.get("content_sha256"))
+    ):
         raise EvalBoardError(f"Suite results carry no suite name: {source}")
     return name
+
+
+def _payload_run_identity(payload: dict, source: str) -> dict:
+    """Require the immutable producer run identity bound into every row."""
+
+    run = payload["evidence"].get("run")
+    if not isinstance(run, dict) or set(run) != {"id", "started_at"}:
+        raise EvalBoardError(f"Suite results carry a malformed run identity: {source}")
+    run_id = run.get("id")
+    started_at = run.get("started_at")
+    try:
+        parsed_run_id = uuid.UUID(run_id) if isinstance(run_id, str) else None
+    except ValueError:
+        parsed_run_id = None
+    try:
+        parsed_started_at = (
+            datetime.fromisoformat(started_at)
+            if isinstance(started_at, str) and started_at
+            else None
+        )
+    except ValueError:
+        parsed_started_at = None
+    if (
+        parsed_run_id is None
+        or parsed_run_id.version != 4
+        or str(parsed_run_id) != run_id
+        or parsed_started_at is None
+        or parsed_started_at.tzinfo is None
+        or parsed_started_at.utcoffset() is None
+    ):
+        raise EvalBoardError(f"Suite results carry a malformed run identity: {source}")
+    return run
 
 
 _SHA256_HEX = frozenset("0123456789abcdef")
@@ -372,6 +537,525 @@ _SHA256_HEX = frozenset("0123456789abcdef")
 
 def _is_sha256_hex(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _SHA256_HEX
+
+
+def _is_positive_int(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _is_nonnegative_int(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _is_nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_git_object_hex(value: object) -> bool:
+    return (
+        isinstance(value, str) and len(value) in {40, 64} and set(value) <= _SHA256_HEX
+    )
+
+
+def _valid_origin_repository(value: object) -> bool:
+    """Accept only the producer's normalized GitHub repository spelling."""
+
+    return (
+        isinstance(value, str)
+        and _GITHUB_ORIGIN_REPOSITORY_RE.fullmatch(value) is not None
+    )
+
+
+def _valid_checkout_execution_identity(
+    value: object,
+    *,
+    require_version: bool,
+    expected_git_pathspecs: tuple[str, ...] | None,
+) -> bool:
+    """Accept exactly the git/tree identity union emitted by the producer."""
+
+    if not isinstance(value, dict):
+        return False
+    version_keys = {"version"} if require_version else set()
+    if require_version and not _is_nonempty_string(value.get("version")):
+        return False
+    kind = value.get("kind")
+    if kind == "git":
+        required_keys = {
+            "kind",
+            "path",
+            "commit",
+            "origin_repository",
+            "dirty",
+            "working_tree_sha256",
+            *version_keys,
+        }
+        if expected_git_pathspecs is not None:
+            required_keys.add("pathspecs")
+        if set(value) != required_keys:
+            return False
+        origin_repository = value.get("origin_repository")
+        return (
+            _is_nonempty_string(value.get("path"))
+            and _is_git_object_hex(value.get("commit"))
+            and (
+                origin_repository is None or _valid_origin_repository(origin_repository)
+            )
+            and type(value.get("dirty")) is bool
+            and _is_sha256_hex(value.get("working_tree_sha256"))
+            and (
+                expected_git_pathspecs is None
+                or value.get("pathspecs") == list(expected_git_pathspecs)
+            )
+        )
+    if kind == "tree":
+        required_keys = {
+            "kind",
+            "path",
+            "state",
+            "tree_sha256",
+            "file_count",
+            *version_keys,
+        }
+        if set(value) != required_keys:
+            return False
+        state = value.get("state")
+        file_count = value.get("file_count")
+        return (
+            _is_nonempty_string(value.get("path"))
+            and state in {"missing", "file", "directory"}
+            and _is_sha256_hex(value.get("tree_sha256"))
+            and _is_nonnegative_int(file_count)
+            and (state != "missing" or file_count == 0)
+            and (state != "file" or file_count == 1)
+        )
+    return False
+
+
+def _relative_identity_path(path: str, root: str) -> str | None:
+    """Return a lexical child path for either POSIX or Windows identities."""
+
+    path_classes = (
+        (PureWindowsPath, PurePosixPath)
+        if "\\" in path or "\\" in root
+        else (PurePosixPath, PureWindowsPath)
+    )
+    for path_class in path_classes:
+        candidate = path_class(path)
+        parent = path_class(root)
+        try:
+            relative = candidate.relative_to(parent)
+        except ValueError:
+            continue
+        if ".." in relative.parts:
+            continue
+        return relative.as_posix()
+    return None
+
+
+def _rulespec_root_topology(path: object, toolchain_root: object) -> str | None:
+    """Return the jurisdiction for one canonical direct checkout child."""
+
+    if not isinstance(path, str) or not isinstance(toolchain_root, str):
+        return None
+    windows_paths = "\\" in path or "\\" in toolchain_root
+    path_class = PureWindowsPath if windows_paths else PurePosixPath
+    candidate = path_class(path)
+    checkout = path_class(toolchain_root)
+    canonical_candidate = str(candidate) if windows_paths else candidate.as_posix()
+    canonical_checkout = str(checkout) if windows_paths else checkout.as_posix()
+    if (
+        not candidate.is_absolute()
+        or not checkout.is_absolute()
+        or canonical_candidate != path
+        or canonical_checkout != toolchain_root
+        or (
+            not windows_paths
+            and (path.startswith("//") or toolchain_root.startswith("//"))
+        )
+        or ".." in candidate.parts
+        or ".." in checkout.parts
+        or candidate.parent != checkout
+    ):
+        return None
+    checkout_match = re.fullmatch(r"rulespec-([a-z]{2})", checkout.name)
+    if checkout_match is None:
+        return None
+    country = checkout_match.group(1)
+    jurisdiction = candidate.name
+    if re.fullmatch(rf"{re.escape(country)}(?:-[a-z0-9]+)*", jurisdiction) is None:
+        return None
+    return jurisdiction
+
+
+def _valid_rulespec_root_execution_identity(value: object) -> bool:
+    """Validate the complete RuleSpec root identity before path normalization."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "path",
+        "content_state",
+        "content_sha256",
+        "file_count",
+        "toolchain_root",
+        "checkout_identity",
+        "toolchain_contract_sha256",
+        "policyengine_runtime_pin_sha256",
+        "validation_waiver_set_sha256",
+    }:
+        return False
+    file_count = value.get("file_count")
+    path = value.get("path")
+    toolchain_root = value.get("toolchain_root")
+    if not _is_nonempty_string(path) or not _is_nonempty_string(toolchain_root):
+        return False
+    jurisdiction = _rulespec_root_topology(path, toolchain_root)
+    if jurisdiction is None:
+        return False
+    expected_pathspecs = tuple(
+        dict.fromkeys(
+            (
+                jurisdiction,
+                _RULESPEC_TOOLCHAIN_PATHSPEC,
+                _RULESPEC_RUNTIME_PIN_PATHSPEC,
+                _RULESPEC_WAIVER_PATHSPEC,
+            )
+        )
+    )
+    checkout_identity = value.get("checkout_identity")
+    runtime_pin_digest = value.get("policyengine_runtime_pin_sha256")
+    return (
+        value.get("content_state") == "directory"
+        and _is_sha256_hex(value.get("content_sha256"))
+        and _is_nonnegative_int(file_count)
+        and isinstance(checkout_identity, dict)
+        and checkout_identity.get("path") == toolchain_root
+        and _valid_checkout_execution_identity(
+            checkout_identity,
+            require_version=False,
+            expected_git_pathspecs=expected_pathspecs,
+        )
+        and _is_sha256_hex(value.get("toolchain_contract_sha256"))
+        and (runtime_pin_digest is None or _is_sha256_hex(runtime_pin_digest))
+        and _is_sha256_hex(value.get("validation_waiver_set_sha256"))
+    )
+
+
+def _valid_policyengine_package_identity(
+    value: object,
+    *,
+    distribution: str,
+    version: str,
+) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"distribution", "version", "module_origin", "metadata_root"}
+        and value.get("distribution") == distribution
+        and value.get("version") == version
+        and _is_nonempty_string(value.get("module_origin"))
+        and _is_nonempty_string(value.get("metadata_root"))
+    )
+
+
+def _posix_identity_relative(path: object, root: object) -> str | None:
+    """Return a canonical lexical relative path for producer-emitted POSIX paths."""
+
+    if not isinstance(path, str) or not isinstance(root, str):
+        return None
+    candidate = PurePosixPath(path)
+    parent = PurePosixPath(root)
+    if (
+        not candidate.is_absolute()
+        or not parent.is_absolute()
+        or candidate.as_posix() != path
+        or parent.as_posix() != root
+        or ".." in candidate.parts
+        or ".." in parent.parts
+    ):
+        return None
+    try:
+        relative = candidate.relative_to(parent)
+    except ValueError:
+        return None
+    if ".." in relative.parts:
+        return None
+    return relative.as_posix()
+
+
+def _valid_policyengine_runtime_path_topology(
+    value: dict,
+    *,
+    country: str,
+) -> bool:
+    """Mirror the producer's sealed-root and trusted-import-path invariants."""
+
+    repository_root = value.get("repository_root")
+    venv_root = value.get("venv_root")
+    stdlib_root = value.get("stdlib_root")
+    site_packages_root = value.get("site_packages_root")
+    python_executable = value.get("python_executable")
+    python_version = value.get("python_version")
+    pin_path = value.get("rulespec_runtime_pin_path")
+    python_components = (
+        python_version.split(".") if isinstance(python_version, str) else []
+    )
+    expected_stdlib_path = (
+        f"lib/python{python_components[0]}.{python_components[1]}"
+        if len(python_components) == 3
+        else None
+    )
+    pin = PurePosixPath(pin_path) if isinstance(pin_path, str) else None
+    if (
+        not isinstance(repository_root, str)
+        or PurePosixPath(repository_root).name != f"policyengine-{country}"
+        or _posix_identity_relative(venv_root, repository_root) != ".venv"
+        or _posix_identity_relative(stdlib_root, venv_root) != expected_stdlib_path
+        or _posix_identity_relative(site_packages_root, stdlib_root) != "site-packages"
+        or _posix_identity_relative(python_executable, venv_root) != "bin/python"
+        or pin is None
+        or not pin.is_absolute()
+        or pin.parts[-3:]
+        != (
+            f"rulespec-{country}",
+            ".axiom",
+            "policyengine-runtime.toml",
+        )
+    ):
+        return False
+
+    for field_name in (
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+    ):
+        if _posix_identity_relative(value.get(field_name), venv_root) is None:
+            return False
+
+    initial_sys_path = value.get("initial_sys_path")
+    effective_sys_path = value.get("effective_sys_path")
+    if (
+        not isinstance(initial_sys_path, list)
+        or not initial_sys_path
+        or any(
+            _posix_identity_relative(path, venv_root) is None
+            for path in initial_sys_path
+        )
+        or effective_sys_path
+        != [repository_root, site_packages_root, *initial_sys_path]
+    ):
+        return False
+
+    packages = value.get("packages")
+    country_distribution = f"policyengine-{country}"
+    if not isinstance(packages, dict):
+        return False
+    country_package = packages.get(country_distribution)
+    core_package = packages.get("policyengine-core")
+    if not isinstance(country_package, dict) or not isinstance(core_package, dict):
+        return False
+    return (
+        _posix_identity_relative(
+            country_package.get("module_origin"),
+            repository_root,
+        )
+        is not None
+        and _posix_identity_relative(
+            core_package.get("module_origin"),
+            site_packages_root,
+        )
+        is not None
+        and all(
+            _posix_identity_relative(
+                package.get("metadata_root"),
+                site_packages_root,
+            )
+            is not None
+            for package in (country_package, core_package)
+        )
+    )
+
+
+def _valid_policyengine_runtime_identity(value: object) -> bool:
+    """Accept exactly the sealed runtime-v2 identity emitted by the producer."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "country",
+        "official_repository_url",
+        "trusted_git_commit",
+        "official_tree_sha256",
+        "official_tree_file_count",
+        "official_tree_byte_count",
+        "rulespec_runtime_pin_path",
+        "rulespec_runtime_pin_schema",
+        "rulespec_runtime_pin_sha256",
+        "repository_root",
+        "checkout_execution_tree_sha256",
+        "checkout_execution_file_count",
+        "checkout_execution_byte_count",
+        "venv_root",
+        "venv_execution_tree_sha256",
+        "venv_execution_file_count",
+        "venv_execution_byte_count",
+        "stdlib_root",
+        "site_packages_root",
+        "pyproject_sha256",
+        "uv_lock_sha256",
+        "locked_versions",
+        "python_version",
+        "python_implementation",
+        "python_executable",
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+        "initial_sys_path",
+        "effective_sys_path",
+        "isolated",
+        "no_site",
+        "packages",
+    }:
+        return False
+    country = value.get("country")
+    country_package = f"policyengine-{country}"
+    locked_versions = value.get("locked_versions")
+    packages = value.get("packages")
+    python_version = value.get("python_version")
+    initial_sys_path = value.get("initial_sys_path")
+    effective_sys_path = value.get("effective_sys_path")
+    location_fields = (
+        "rulespec_runtime_pin_path",
+        "repository_root",
+        "venv_root",
+        "stdlib_root",
+        "site_packages_root",
+        "python_executable",
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+    )
+    digest_fields = (
+        "official_tree_sha256",
+        "rulespec_runtime_pin_sha256",
+        "checkout_execution_tree_sha256",
+        "venv_execution_tree_sha256",
+        "pyproject_sha256",
+        "uv_lock_sha256",
+    )
+    count_fields = (
+        "official_tree_file_count",
+        "official_tree_byte_count",
+        "checkout_execution_file_count",
+        "checkout_execution_byte_count",
+        "venv_execution_file_count",
+        "venv_execution_byte_count",
+    )
+    if (
+        value.get("schema") != POLICYENGINE_RUNTIME_SCHEMA
+        or country not in {"us", "uk"}
+        or value.get("official_repository_url")
+        != f"https://github.com/PolicyEngine/policyengine-{country}.git"
+        or not (
+            isinstance(value.get("trusted_git_commit"), str)
+            and len(value["trusted_git_commit"]) == 40
+            and set(value["trusted_git_commit"]) <= _SHA256_HEX
+        )
+        or value.get("rulespec_runtime_pin_schema") != POLICYENGINE_RUNTIME_PIN_SCHEMA
+        or any(not _is_sha256_hex(value.get(field)) for field in digest_fields)
+        or any(not _is_positive_int(value.get(field)) for field in count_fields)
+        or value.get("official_tree_file_count")
+        != value.get("checkout_execution_file_count")
+        or value.get("official_tree_byte_count")
+        != value.get("checkout_execution_byte_count")
+        or any(not _is_nonempty_string(value.get(field)) for field in location_fields)
+        or not isinstance(locked_versions, dict)
+        or set(locked_versions) != {"policyengine-core", country_package}
+        or any(not _is_nonempty_string(version) for version in locked_versions.values())
+        or not isinstance(python_version, str)
+        or len(python_version.split(".")) != 3
+        or any(
+            not component or not component.isdigit()
+            for component in python_version.split(".")
+        )
+        or value.get("python_implementation") != "cpython"
+        or type(value.get("isolated")) is not int
+        or value["isolated"] != 1
+        or type(value.get("no_site")) is not int
+        or value["no_site"] != 1
+        or not isinstance(initial_sys_path, list)
+        or not initial_sys_path
+        or any(not _is_nonempty_string(path) for path in initial_sys_path)
+        or not isinstance(effective_sys_path, list)
+        or any(not _is_nonempty_string(path) for path in effective_sys_path)
+        or not isinstance(packages, dict)
+        or set(packages) != {"policyengine-core", country_package}
+        or not _valid_policyengine_runtime_path_topology(value, country=country)
+    ):
+        return False
+    return all(
+        _valid_policyengine_package_identity(
+            packages[distribution],
+            distribution=distribution,
+            version=locked_versions[distribution],
+        )
+        for distribution in ("policyengine-core", country_package)
+    )
+
+
+def _valid_policyengine_runtime_wrapper(value: object) -> bool:
+    """Validate both the wrapper shape and its binding to the runtime identity."""
+
+    if value is None:
+        return True
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"identity", "sha256"}
+        or not _valid_policyengine_runtime_identity(value.get("identity"))
+        or not _is_sha256_hex(value.get("sha256"))
+    ):
+        return False
+    return value["sha256"] == _canonical_json_sha256(value["identity"])
+
+
+def _valid_policyengine_rulespec_binding(
+    runtime_wrapper: object,
+    rulespec_roots: list[object],
+) -> bool:
+    """Bind a sealed runtime pin to an exposed producer-owned RuleSpec checkout."""
+
+    if runtime_wrapper is None:
+        return True
+    if not isinstance(runtime_wrapper, dict):
+        return False
+    runtime = runtime_wrapper.get("identity")
+    if not isinstance(runtime, dict):
+        return False
+    country = runtime.get("country")
+    pin_path = runtime.get("rulespec_runtime_pin_path")
+    if not isinstance(country, str) or not isinstance(pin_path, str):
+        return False
+    for root in rulespec_roots:
+        if not isinstance(root, dict):
+            continue
+        toolchain_root = root.get("toolchain_root")
+        if (
+            not isinstance(toolchain_root, str)
+            or PurePosixPath(toolchain_root).name != f"rulespec-{country}"
+        ):
+            continue
+        expected_pin = (
+            PurePosixPath(toolchain_root) / ".axiom" / "policyengine-runtime.toml"
+        ).as_posix()
+        if (
+            pin_path == expected_pin
+            and root.get("policyengine_runtime_pin_sha256")
+            == runtime.get("rulespec_runtime_pin_sha256")
+            and _posix_identity_relative(pin_path, toolchain_root)
+            == ".axiom/policyengine-runtime.toml"
+        ):
+            return True
+    return False
 
 
 def _payload_corpus_identity(payload: dict, source: str) -> dict:
@@ -400,6 +1084,32 @@ def _payload_runner_identities(payload: dict, source: str) -> list[dict]:
     identities = payload["evidence"].get("effective_runner_identities")
     if not isinstance(identities, list) or not identities:
         raise EvalBoardError(f"Suite results carry no runner identities: {source}")
+    names: set[str] = set()
+    for identity in identities:
+        name = identity.get("name") if isinstance(identity, dict) else None
+        if _is_nonempty_string(name):
+            backend = identity.get("backend")
+            if backend not in {"claude", "codex", "openai"}:
+                raise EvalBoardError(
+                    f"Suite results declare runner {name!r} without a "
+                    f"valid backend: {source}"
+                )
+            if not _is_nonempty_string(identity.get("model")):
+                raise EvalBoardError(
+                    f"Suite results declare runner {name!r} without a "
+                    f"valid model: {source}"
+                )
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != {"name", "backend", "model"}
+            or not _is_nonempty_string(name)
+            or identity["name"] in names
+        ):
+            raise EvalBoardError(
+                "Suite results carry a malformed runner identity without a "
+                f"valid backend, model, or unique name: {source}"
+            )
+        names.add(identity["name"])
     return identities
 
 
@@ -414,6 +1124,125 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"Suite results execution identity carries schema {schema!r}; "
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
+        )
+    axiom_encode = identity.get("axiom_encode")
+    axiom_rules_engine = identity.get("axiom_rules_engine")
+    rulespec_roots = identity.get("rulespec_roots")
+    policyengine_runtime = identity.get("policyengine_runtime")
+    if (
+        "policyengine_runtime" not in identity
+        or not _valid_checkout_execution_identity(
+            axiom_encode,
+            require_version=True,
+            expected_git_pathspecs=_ENCODER_GIT_PATHSPECS,
+        )
+        or not _valid_checkout_execution_identity(
+            axiom_rules_engine,
+            require_version=False,
+            expected_git_pathspecs=None,
+        )
+        or not isinstance(rulespec_roots, list)
+        or not rulespec_roots
+        or any(
+            not _valid_rulespec_root_execution_identity(root) for root in rulespec_roots
+        )
+        or not _valid_policyengine_runtime_wrapper(policyengine_runtime)
+        or not _valid_policyengine_rulespec_binding(
+            policyengine_runtime,
+            rulespec_roots,
+        )
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has missing or malformed core "
+            f"toolchain fields: {source}"
+        )
+    case_timeout_seconds = identity.get("case_timeout_seconds")
+    if not _is_positive_int(case_timeout_seconds):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"generation/retry case timeout: {source}"
+        )
+    runner_timeouts = identity.get("runner_timeouts")
+    claude_timeout = (
+        runner_timeouts.get("claude") if isinstance(runner_timeouts, dict) else None
+    )
+    claude_wall_seconds = (
+        claude_timeout.get("wall_seconds") if isinstance(claude_timeout, dict) else None
+    )
+    codex_timeout = (
+        runner_timeouts.get("codex") if isinstance(runner_timeouts, dict) else None
+    )
+    codex_short = (
+        codex_timeout.get("short_source") if isinstance(codex_timeout, dict) else None
+    )
+    codex_long = (
+        codex_timeout.get("long_source") if isinstance(codex_timeout, dict) else None
+    )
+    openai_timeout = (
+        runner_timeouts.get("openai") if isinstance(runner_timeouts, dict) else None
+    )
+    if (
+        not isinstance(runner_timeouts, dict)
+        or set(runner_timeouts) != {"claude", "codex", "openai"}
+        or not isinstance(claude_timeout, dict)
+        or set(claude_timeout) != {"wall_seconds"}
+        or not _is_positive_int(claude_wall_seconds)
+        or not isinstance(codex_timeout, dict)
+        or set(codex_timeout)
+        != {"short_source", "long_source", "long_source_char_threshold"}
+        or not isinstance(codex_short, dict)
+        or set(codex_short) != {"wall_seconds", "idle_seconds"}
+        or not _is_positive_int(codex_short.get("wall_seconds"))
+        or not _is_positive_int(codex_short.get("idle_seconds"))
+        or codex_short["idle_seconds"] > codex_short["wall_seconds"]
+        or not isinstance(codex_long, dict)
+        or set(codex_long) != {"wall_seconds", "idle_seconds"}
+        or not _is_positive_int(codex_long.get("wall_seconds"))
+        or not _is_positive_int(codex_long.get("idle_seconds"))
+        or codex_long["idle_seconds"] > codex_long["wall_seconds"]
+        or not _is_positive_int(codex_timeout.get("long_source_char_threshold"))
+        or not isinstance(openai_timeout, dict)
+        or set(openai_timeout) != {"request_connect_seconds", "request_read_seconds"}
+        or not _is_positive_int(openai_timeout.get("request_connect_seconds"))
+        or not _is_positive_int(openai_timeout.get("request_read_seconds"))
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"runner timeout policy: {source}"
+        )
+    retry_policy = identity.get("timeout_retry_policy")
+    if (
+        not isinstance(retry_policy, dict)
+        or set(retry_policy)
+        != {
+            "empty_artifact_max_attempts",
+            "suite_max_attempts",
+            "suite_retries_after_timeout",
+            "openai_request_max_attempts",
+            "openai_request_backoff_seconds",
+        }
+        or retry_policy.get("empty_artifact_max_attempts") != 2
+        or not _is_positive_int(retry_policy.get("suite_max_attempts"))
+        or retry_policy.get("suite_retries_after_timeout") is not False
+        or retry_policy.get("openai_request_max_attempts") != 6
+        or retry_policy.get("openai_request_backoff_seconds") != [1, 2, 4, 8, 10]
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"timeout retry policy: {source}"
+        )
+    if set(identity) != {
+        "schema",
+        "case_timeout_seconds",
+        "runner_timeouts",
+        "timeout_retry_policy",
+        "axiom_encode",
+        "axiom_rules_engine",
+        "policyengine_runtime",
+        "rulespec_roots",
+    }:
+        raise EvalBoardError(
+            f"Suite results execution identity has unexpected v3 fields: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -527,9 +1356,69 @@ def _result_metrics(result: dict) -> dict | None:
     return None
 
 
+def _validate_result_artifact_bindings(result: dict, *, context: str) -> None:
+    """Mirror the producer's path/digest and generated-artifact invariants."""
+
+    bound_fields: set[str] = set()
+    for path_field, digest_field, label in (
+        ("output_file", "generated_output_sha256", "generated RuleSpec"),
+        ("trace_file", "trace_sha256", "model trace"),
+        (
+            "context_manifest_file",
+            "context_manifest_sha256",
+            "context manifest",
+        ),
+        (
+            "verdict_file",
+            "verdict_sha256",
+            "validator verdict evidence",
+        ),
+    ):
+        if digest_field not in result:
+            if path_field == "verdict_file" and "verdict_file" not in result:
+                continue
+            raise EvalBoardError(
+                f"{context} is missing immutable {label} digest {digest_field!r}"
+            )
+        raw_path = result.get(path_field)
+        digest = result.get(digest_field)
+        if not isinstance(raw_path, str):
+            raise EvalBoardError(f"{context} has a malformed {label} path")
+        if digest is None:
+            if raw_path:
+                raise EvalBoardError(
+                    f"{context} has a {label} path without its SHA-256 digest"
+                )
+            continue
+        if not _is_sha256_hex(digest):
+            raise EvalBoardError(f"{context} has a malformed {label} SHA-256 digest")
+        if not raw_path:
+            raise EvalBoardError(
+                f"{context} has a {label} SHA-256 digest without its path"
+            )
+        bound_fields.add(path_field)
+
+    if (
+        result.get("success") is True or isinstance(result.get("metrics"), dict)
+    ) and "output_file" not in bound_fields:
+        raise EvalBoardError(f"{context} has no content-bound generated RuleSpec")
+    generation_bound_fields = bound_fields - {"verdict_file"}
+    if generation_bound_fields and not {
+        "trace_file",
+        "context_manifest_file",
+    }.issubset(bound_fields):
+        raise EvalBoardError(
+            f"{context} is missing its content-bound trace or context manifest"
+        )
+
+
 def result_gate_pass(result: dict) -> bool:
     """The deterministic gate battery for one case x runner result."""
-    if result.get("success") is not True or result.get("error"):
+    if (
+        result.get("success") is not True
+        or result.get("error")
+        or result.get("timed_out") is True
+    ):
         return False
     metrics = _result_metrics(result)
     if metrics is None:
@@ -547,6 +1436,45 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     error = result.get("error")
     if error is not None and not isinstance(error, str):
         raise EvalBoardError(f"{context} error must be null or a string, got {error!r}")
+    failure_kind = result.get("failure_kind")
+    if failure_kind not in {None, "timeout", "validation", "error"}:
+        raise EvalBoardError(
+            f"{context} failure_kind must be null, timeout, validation, or error"
+        )
+    timed_out = result.get("timed_out")
+    if not isinstance(timed_out, bool):
+        raise EvalBoardError(f"{context} timed_out must be a boolean")
+    if timed_out is not (failure_kind == "timeout"):
+        raise EvalBoardError(f"{context} has inconsistent timeout classification")
+    timeout_attempts = _require_nonnegative_int(
+        result.get("timeout_attempts"),
+        context=f"{context} timeout_attempts",
+    )
+    timeout_stage = result.get("timeout_stage")
+    timeout_reason = result.get("timeout_reason")
+    if timeout_stage is not None and not isinstance(timeout_stage, str):
+        raise EvalBoardError(
+            f"{context} timeout_stage must be null or a string, got {timeout_stage!r}"
+        )
+    if timeout_reason is not None and not isinstance(timeout_reason, str):
+        raise EvalBoardError(
+            f"{context} timeout_reason must be null or a string, got {timeout_reason!r}"
+        )
+    timeout_seconds = _require_optional_nonnegative_number(
+        result.get("timeout_seconds"),
+        context=f"{context} timeout_seconds",
+    )
+    if timeout_seconds == 0:
+        raise EvalBoardError(f"{context} timeout_seconds must be positive when set")
+    if timeout_attempts == 0 and any(
+        value is not None for value in (timeout_stage, timeout_reason, timeout_seconds)
+    ):
+        raise EvalBoardError(f"{context} has timeout details without timeout attempts")
+    if result.get("success") is True:
+        if failure_kind is not None:
+            raise EvalBoardError(f"{context} marks success with a failure_kind")
+    elif failure_kind is None:
+        raise EvalBoardError(f"{context} failure row has no failure_kind")
     _require_nonnegative_int(
         result.get("duration_ms"), context=f"{context} duration_ms"
     )
@@ -559,7 +1487,20 @@ def _validate_result_types(result: dict, *, context: str) -> None:
         raise EvalBoardError(
             f"{context} metrics must be null or an object, got {raw_metrics!r}"
         )
+    _validate_result_artifact_bindings(result, context=context)
     metrics = _result_metrics(result)
+    if failure_kind == "timeout" and (
+        timeout_attempts == 0
+        or metrics is not None
+        or bool(result.get("output_file"))
+        or result.get("generated_output_sha256") is not None
+    ):
+        raise EvalBoardError(
+            f"{context} timeout row must have attempts and no generated artifact "
+            "or artifact metrics"
+        )
+    if failure_kind == "validation" and metrics is None:
+        raise EvalBoardError(f"{context} validation failure has no artifact metrics")
     if metrics is None:
         return
     _require_bool(metrics.get("compile_pass"), context=f"{context} compile_pass")
@@ -599,6 +1540,249 @@ def _validate_result_types(result: dict, *, context: str) -> None:
     )
 
 
+def _validate_result_execution_admission(
+    result: dict,
+    *,
+    run_identity: dict,
+    suite_name: str,
+    manifest_identity: dict,
+    case_identity: dict,
+    corpus_identity: dict,
+    runner_identities: list[dict],
+    execution_identity: dict,
+    execution_identity_sha256: str,
+    context: str,
+) -> None:
+    """Bind each durable row to its complete producer admission context."""
+
+    admission = result.get("admission")
+    admitted_execution = (
+        admission.get("execution") if isinstance(admission, dict) else None
+    )
+    if (
+        not isinstance(admission, dict)
+        or set(admission)
+        != {
+            "schema",
+            "run",
+            "suite",
+            "case",
+            "corpus",
+            "execution",
+            "rulespec",
+        }
+        or admission.get("schema") != _RESULT_ADMISSION_SCHEMA
+        or not isinstance(admitted_execution, dict)
+        or set(admitted_execution) != {"identity", "sha256"}
+        or admitted_execution.get("identity") != execution_identity
+        or admitted_execution.get("sha256") != execution_identity_sha256
+    ):
+        raise EvalBoardError(
+            f"{context} admission execution identity does not match the suite evidence"
+        )
+    expected_suite = {
+        "name": suite_name,
+        "manifest_path": manifest_identity.get("path"),
+        "manifest_content_sha256": manifest_identity.get("content_sha256"),
+        "manifest_case_identities": manifest_identity.get("case_identities"),
+        "effective_runner_identities": runner_identities,
+    }
+    if (
+        admission.get("run") != run_identity
+        or admission.get("suite") != expected_suite
+        or admission.get("case") != case_identity
+        or admission.get("corpus") != corpus_identity
+    ):
+        raise EvalBoardError(
+            f"{context} admission does not match its run, manifest, case, "
+            "corpus, or runner evidence"
+        )
+
+    rulespec_admission = admission.get("rulespec")
+    if not isinstance(rulespec_admission, dict):
+        raise EvalBoardError(f"{context} admission has malformed RuleSpec evidence")
+    admitted_policy_root = rulespec_admission.get("policy_repo_root")
+    roots = execution_identity.get("rulespec_roots")
+    matching_roots = (
+        [
+            root
+            for root in roots
+            if isinstance(root, dict) and root.get("path") == admitted_policy_root
+        ]
+        if isinstance(roots, list)
+        else []
+    )
+    if len(matching_roots) != 1:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec root is not unique in its execution identity"
+        )
+    root_identity = matching_roots[0]
+    expected_rulespec = {
+        "policy_repo_root": root_identity.get("path"),
+        "root_content_sha256": root_identity.get("content_sha256"),
+        "toolchain_contract_sha256": root_identity.get("toolchain_contract_sha256"),
+        "validation_waiver_set_sha256": root_identity.get(
+            "validation_waiver_set_sha256"
+        ),
+    }
+    if rulespec_admission != expected_rulespec:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec evidence does not match its "
+            "execution identity"
+        )
+    citation_path = case_identity.get("corpus_citation_path")
+    case_jurisdiction = (
+        citation_path.split("/", 1)[0] if isinstance(citation_path, str) else None
+    )
+    root_jurisdiction = _rulespec_root_topology(
+        root_identity.get("path"),
+        root_identity.get("toolchain_root"),
+    )
+    if root_jurisdiction != case_jurisdiction:
+        raise EvalBoardError(
+            f"{context} admission RuleSpec root does not match its case "
+            "citation jurisdiction"
+        )
+    if case_identity.get("oracle") != "policyengine":
+        return
+    runtime_wrapper = execution_identity.get("policyengine_runtime")
+    runtime = (
+        runtime_wrapper.get("identity") if isinstance(runtime_wrapper, dict) else None
+    )
+    if not isinstance(runtime, dict):
+        return
+    toolchain_root = root_identity.get("toolchain_root")
+    expected_pin_path = (
+        (PurePosixPath(toolchain_root) / _RULESPEC_RUNTIME_PIN_PATHSPEC).as_posix()
+        if isinstance(toolchain_root, str) and "\\" not in toolchain_root
+        else None
+    )
+    if (
+        runtime.get("country") != case_jurisdiction.split("-", 1)[0]
+        or runtime.get("rulespec_runtime_pin_path") != expected_pin_path
+        or runtime.get("rulespec_runtime_pin_sha256")
+        != root_identity.get("policyengine_runtime_pin_sha256")
+    ):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime is not bound to its admitted RuleSpec root"
+        )
+
+
+def _validate_result_policyengine_runtime_evidence(
+    result: dict,
+    *,
+    case_identity: dict,
+    execution_identity: dict,
+    context: str,
+) -> None:
+    """Bind oracle metrics to the exact sealed runtime admitted for the suite."""
+
+    metrics = _result_metrics(result)
+    metric_identity = (
+        metrics.get("policyengine_runtime_identity")
+        if isinstance(metrics, dict)
+        else None
+    )
+    metric_digest = (
+        metrics.get("policyengine_runtime_identity_sha256")
+        if isinstance(metrics, dict)
+        else None
+    )
+    has_policyengine_evidence = any(
+        value is not None
+        for value in (
+            metrics.get("policyengine_pass") if isinstance(metrics, dict) else None,
+            metrics.get("policyengine_score") if isinstance(metrics, dict) else None,
+            metric_identity,
+            metric_digest,
+        )
+    )
+    if case_identity.get("oracle") == "none":
+        if has_policyengine_evidence:
+            raise EvalBoardError(
+                f"{context} has undeclared PolicyEngine oracle evidence"
+            )
+        return
+    expected_runtime = execution_identity.get("policyengine_runtime")
+    if not isinstance(expected_runtime, dict):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime is not admitted for this case"
+        )
+    if metrics is None:
+        if result.get("success") is True:
+            raise EvalBoardError(
+                f"{context} PolicyEngine case succeeded without oracle evidence"
+            )
+        if (
+            bool(result.get("output_file"))
+            or result.get("generated_output_sha256") is not None
+        ):
+            raise EvalBoardError(
+                f"{context} PolicyEngine artifact has no oracle evidence"
+            )
+        return
+    if not has_policyengine_evidence or metrics.get("policyengine_pass") is None:
+        raise EvalBoardError(
+            f"{context} PolicyEngine oracle evidence has no pass outcome"
+        )
+    if metric_identity != expected_runtime.get(
+        "identity"
+    ) or metric_digest != expected_runtime.get("sha256"):
+        raise EvalBoardError(
+            f"{context} PolicyEngine runtime evidence does not match the "
+            "suite execution identity"
+        )
+    if result.get("success") is True and metrics.get("policyengine_pass") is not True:
+        raise EvalBoardError(
+            f"{context} succeeded although its PolicyEngine oracle did not pass"
+        )
+
+
+def _validate_result_row_admission(
+    result: dict,
+    *,
+    run_identity: dict,
+    suite_name: str,
+    manifest_identity: dict,
+    case_identity: dict,
+    corpus_identity: dict,
+    runner_identities: list[dict],
+    execution_identity: dict,
+    execution_identity_sha256: str,
+    context: str,
+) -> None:
+    """Apply the complete shared admission policy for one durable result row."""
+
+    canonical_citation = case_identity.get("corpus_citation_path")
+    if (
+        not isinstance(canonical_citation, str)
+        or not canonical_citation
+        or result.get("citation") != canonical_citation
+    ):
+        raise EvalBoardError(
+            f"{context} citation does not match its canonical case path"
+        )
+    _validate_result_execution_admission(
+        result,
+        run_identity=run_identity,
+        suite_name=suite_name,
+        manifest_identity=manifest_identity,
+        case_identity=case_identity,
+        corpus_identity=corpus_identity,
+        runner_identities=runner_identities,
+        execution_identity=execution_identity,
+        execution_identity_sha256=execution_identity_sha256,
+        context=context,
+    )
+    _validate_result_types(result, context=context)
+    _validate_result_policyengine_runtime_evidence(
+        result,
+        case_identity=case_identity,
+        execution_identity=execution_identity,
+        context=context,
+    )
+
+
 def _validate_result_case_binding(
     eval_case: dict,
     reference_cases: list[dict],
@@ -617,7 +1801,7 @@ def _validate_result_case_binding(
             f"1..{len(reference_cases)} cases"
         )
     reference = reference_cases[case_index - 1]
-    for field_name in ("name", "kind", "corpus_citation_path", "sha256"):
+    for field_name in ("name", "kind", "corpus_citation_path", "oracle", "sha256"):
         if eval_case.get(field_name) != reference.get(field_name):
             raise EvalBoardError(
                 f"{context} case identity field {field_name!r} "
@@ -631,11 +1815,41 @@ def _cell_for_result(result: dict) -> BoardCell:
     duration_ms = result.get("duration_ms")
     if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
         duration_ms = None
-    if result.get("success") is not True or result.get("error"):
+    failure_kind = result.get("failure_kind")
+    if failure_kind == "timeout" or result.get("timed_out") is True:
+        error = result.get("error")
+        detail = str(error)[:200] if error else "encoder or case budget timed out"
+        return BoardCell(state="timeout", duration_ms=duration_ms, detail=detail)
+    metrics = _result_metrics(result)
+    failed: list[str] = []
+    if metrics is not None:
+        if metrics.get("compile_pass") is not True:
+            failed.append("compile")
+        if metrics.get("ci_pass") is not True:
+            failed.append("ci")
+        if metrics.get("ungrounded_numeric_count") != 0:
+            failed.append(f"ungrounded={metrics.get('ungrounded_numeric_count')}")
+    if failure_kind == "validation":
+        return BoardCell(
+            state="fail",
+            duration_ms=duration_ms,
+            detail=", ".join(failed)
+            or str(result.get("error") or "validation failure"),
+        )
+    if failed:
+        return BoardCell(
+            state="fail",
+            duration_ms=duration_ms,
+            detail=", ".join(failed),
+        )
+    if (
+        failure_kind == "error"
+        or result.get("success") is not True
+        or result.get("error")
+    ):
         error = result.get("error")
         detail = str(error)[:200] if error else "encode did not succeed"
         return BoardCell(state="error", duration_ms=duration_ms, detail=detail)
-    metrics = _result_metrics(result)
     if metrics is None:
         return BoardCell(
             state="error",
@@ -644,13 +1858,6 @@ def _cell_for_result(result: dict) -> BoardCell:
         )
     if result_gate_pass(result):
         return BoardCell(state="pass", duration_ms=duration_ms)
-    failed: list[str] = []
-    if metrics.get("compile_pass") is not True:
-        failed.append("compile")
-    if metrics.get("ci_pass") is not True:
-        failed.append("ci")
-    if metrics.get("ungrounded_numeric_count") != 0:
-        failed.append(f"ungrounded={metrics.get('ungrounded_numeric_count')}")
     return BoardCell(
         state="fail",
         duration_ms=duration_ms,
@@ -687,7 +1894,10 @@ def fold_eval_board(
         payload = load_eval_suite_results(resolved)
         suite_name = _payload_suite_name(payload, source)
         case_identities = _payload_case_identities(payload, source)
+        manifest_identity = payload["evidence"]["manifest"]
+        run_identity = _payload_run_identity(payload, source)
         corpus_identity = _payload_corpus_identity(payload, source)
+        payload_runner_identities = _payload_runner_identities(payload, source)
         execution_identity, execution_digest = _payload_execution_identity(
             payload, source
         )
@@ -724,31 +1934,19 @@ def fold_eval_board(
                         "Suite results are not comparable: score-affecting "
                         f"execution identity in {source} does not match "
                         f"{reference_source} (encoder, rules engine, RuleSpec "
-                        "content/toolchain/waivers, or PolicyEngine runtime "
-                        "differ; checkout locations are ignored). Re-run on "
+                        "content/toolchain/waivers, generation/retry case "
+                        "budget, runner "
+                        "timeouts/retries, or PolicyEngine runtime differ; "
+                        "checkout locations are ignored). Re-run on "
                         "one toolchain, or pass --allow-mixed-toolchains to "
                         "fold anyway with the mismatch recorded."
                     )
                 mixed_toolchain_sources.append(source)
 
         payload_runner_names: set[str] = set()
-        for identity in _payload_runner_identities(payload, source):
-            if not isinstance(identity, dict):
-                raise EvalBoardError(
-                    f"Suite results carry a malformed runner identity: {source}"
-                )
+        for identity in payload_runner_identities:
             name = identity.get("name")
-            if not isinstance(name, str) or not name:
-                raise EvalBoardError(
-                    f"Suite results carry a malformed runner identity: {source}"
-                )
-            for identity_field in ("backend", "model"):
-                declared_value = identity.get(identity_field)
-                if not isinstance(declared_value, str) or not declared_value:
-                    raise EvalBoardError(
-                        f"Suite results declare runner {name!r} without a "
-                        f"valid {identity_field}: {source}"
-                    )
+            assert isinstance(name, str)
             if name in runner_sources:
                 raise EvalBoardError(
                     f"Runner {name!r} appears in both {runner_sources[name]} "
@@ -776,6 +1974,7 @@ def fold_eval_board(
                     f"Result row #{position} in {source} is missing its "
                     f"{_RESULT_SHA256_FIELD} binding or does not match it"
                 )
+            context = f"Result row #{position} in {source}"
             runner = result.get("runner")
             if not isinstance(runner, str) or runner not in payload_runner_names:
                 raise EvalBoardError(
@@ -796,10 +1995,21 @@ def fold_eval_board(
                 raise EvalBoardError(
                     f"Result row #{position} in {source} carries no case identity"
                 )
-            context = f"Result row #{position} in {source}"
             case_index = _validate_result_case_binding(
                 eval_case,
                 case_identities,
+                context=context,
+            )
+            _validate_result_row_admission(
+                result,
+                run_identity=run_identity,
+                suite_name=suite_name,
+                manifest_identity=manifest_identity,
+                case_identity=case_identities[case_index - 1],
+                corpus_identity=corpus_identity,
+                runner_identities=payload_runner_identities,
+                execution_identity=execution_identity,
+                execution_identity_sha256=execution_digest,
                 context=context,
             )
             if case_index in runner_results[runner]:
@@ -807,7 +2017,6 @@ def fold_eval_board(
                     f"Duplicate result for runner {runner!r} case "
                     f"#{case_index} in {source}"
                 )
-            _validate_result_types(result, context=context)
             runner_results[runner][case_index] = result
 
         complete = _payload_completeness(
@@ -872,6 +2081,8 @@ def fold_eval_board(
             model=identity["model"],
             source=runner_sources[name],
             cases_run=0,
+            artifact_case_count=0,
+            timeout_count=0,
             gate_pass_count=0,
             compile_pass_count=0,
             ci_pass_count=0,
@@ -898,9 +2109,12 @@ def fold_eval_board(
                 stats.success_count += 1
             if cell.state == "pass":
                 stats.gate_pass_count += 1
+            if cell.state == "timeout":
+                stats.timeout_count += 1
             metrics = _result_metrics(result)
             if metrics is None:
                 continue
+            stats.artifact_case_count += 1
             if metrics.get("compile_pass") is True:
                 stats.compile_pass_count += 1
             if metrics.get("ci_pass") is True:
@@ -941,6 +2155,7 @@ def fold_eval_board(
 _CELL_GLYPHS: dict[BoardCellState, str] = {
     "pass": "P",
     "fail": "F",
+    "timeout": "T",
     "error": "E",
     "missing": "·",
 }
@@ -961,7 +2176,7 @@ def _format_optional(value: float | None, template: str) -> str:
 def eval_board_to_json(board: EvalBoard) -> dict:
     """A machine-readable board payload."""
     return {
-        "schema": "axiom-encode/eval-board/v1",
+        "schema": EVAL_BOARD_SCHEMA,
         "suite": board.suite_name,
         "corpus": board.corpus_identity,
         "sources": board.sources,
@@ -985,6 +2200,8 @@ def eval_board_to_json(board: EvalBoard) -> dict:
                 "model": stats.model,
                 "source": stats.source,
                 "cases_run": stats.cases_run,
+                "artifact_case_count": stats.artifact_case_count,
+                "timeout_count": stats.timeout_count,
                 "gate_pass_count": stats.gate_pass_count,
                 "gate_pass_rate": stats.gate_pass_rate,
                 "success_count": stats.success_count,
@@ -1066,15 +2283,16 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
         lines.append("")
     lines.append(
         "Gate pass = encode success + compile + CI + zero ungrounded "
-        "numerics, per case. Reviewer and oracle columns are advisory."
+        "numerics, per case. Compile/CI/grounded rates cover produced "
+        "artifacts only; reviewer and oracle columns are advisory."
     )
     lines.append("")
     header = (
-        "| runner | model | gate pass | compile | ci | grounded | "
+        "| runner | model | gate pass | timeouts | artifacts | compile | ci | grounded | "
         "src coverage | review | review score | oracle | median s | mean $ |"
     )
     lines.append(header)
-    lines.append("|" + "---|" * 12)
+    lines.append("|" + "---|" * 14)
     for stats in ordered:
         oracle = (
             f"{stats.policyengine_pass_count}/{stats.policyengine_case_count}"
@@ -1082,13 +2300,16 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
             else "—"
         )
         lines.append(
-            "| {runner} | {model} | {gate} | {compile} | {ci} | {grounded} | "
+            "| {runner} | {model} | {gate} | {timeouts} | {artifacts} | "
+            "{compile} | {ci} | {grounded} | "
             "{coverage} | {review} | {review_score} | {oracle} | {median} | "
             "{cost} |".format(
                 runner=stats.runner,
                 model=stats.model,
                 gate=f"{stats.gate_pass_count}/{stats.cases_run} "
                 f"({_format_percent(stats.gate_pass_rate)})",
+                timeouts=stats.timeout_count,
+                artifacts=stats.artifact_case_count,
                 compile=_format_percent(stats.compile_pass_rate),
                 ci=_format_percent(stats.ci_pass_rate),
                 grounded=_format_percent(stats.zero_ungrounded_rate),
@@ -1105,7 +2326,10 @@ def render_eval_board_markdown(board: EvalBoard) -> str:
     lines.append("")
     lines.append("## Per-case grid")
     lines.append("")
-    lines.append("P = gate pass, F = gate fail, E = encode error, · = not run.")
+    lines.append(
+        "P = gate pass, F = validation/gate fail, T = encoder/case timeout, "
+        "E = encode error, · = not run."
+    )
     lines.append("")
     grid_header = "| case | " + " | ".join(stats.runner for stats in ordered) + " |"
     lines.append(grid_header)
@@ -1145,13 +2369,15 @@ def render_eval_board_text(board: EvalBoard) -> str:
             f"{stats.runner:<{name_width}}  "
             f"gate {stats.gate_pass_count}/{stats.cases_run} "
             f"({_format_percent(stats.gate_pass_rate)})  "
+            f"T timeout {stats.timeout_count}  "
+            f"artifacts {stats.artifact_case_count}  "
             f"compile {_format_percent(stats.compile_pass_rate)}  "
             f"ci {_format_percent(stats.ci_pass_rate)}  "
             f"grounded {_format_percent(stats.zero_ungrounded_rate)}  "
             f"median {_format_optional(stats.median_duration_seconds, '{:.0f}s')}"
         )
     lines.append("")
-    lines.append("Grid (P pass / F fail / E error / · not run):")
+    lines.append("Grid (P pass / F fail / T timeout / E error / · not run):")
     for case in board.cases:
         cells = " ".join(
             _CELL_GLYPHS[board.cells[(case.index, stats.runner)].state]

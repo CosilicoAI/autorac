@@ -280,6 +280,12 @@ def emit_eval_result(result: Any, trace_payload: Mapping[str, Any] | None) -> No
             "axiom_encode.runner": getattr(result, "runner", None),
             "axiom_encode.mode": getattr(result, "mode", None),
             "axiom_encode.success": getattr(result, "success", None),
+            "axiom_encode.failure_kind": getattr(result, "failure_kind", None),
+            "axiom_encode.timed_out": getattr(result, "timed_out", False),
+            "axiom_encode.timeout_stage": getattr(result, "timeout_stage", None),
+            "axiom_encode.timeout_reason": getattr(result, "timeout_reason", None),
+            "axiom_encode.timeout_seconds": getattr(result, "timeout_seconds", None),
+            "axiom_encode.timeout_attempts": getattr(result, "timeout_attempts", 0),
             "axiom_encode.output_file": getattr(result, "output_file", None),
             "axiom_encode.trace_file": getattr(result, "trace_file", None),
             "axiom_encode.retrieved_files_count": len(

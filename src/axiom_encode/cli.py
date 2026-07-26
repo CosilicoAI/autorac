@@ -158,9 +158,15 @@ from .harness.eval_board import (
     render_eval_board_markdown,
     render_eval_board_text,
 )
+from .harness.eval_board import (
+    _payload_execution_identity as _eval_board_payload_execution_identity,
+)
+from .harness.eval_board import (
+    _validate_result_row_admission as _eval_board_validate_result_row_admission,
+)
 from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
-    _EVAL_RESULT_ADMISSION_SCHEMA,
+    _DEFAULT_SUITE_RETRY_ATTEMPTS,
     _EVAL_RESULT_ARTIFACT_SPECS,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
@@ -178,6 +184,7 @@ from .harness.evals import (
     _rulespec_root_execution_identity,
     _source_metadata_citation_path,
     _source_metadata_with_attestation,
+    _suite_retry_attempts_from_execution_identity,
     _validate_eval_result_artifact_binding,
     _validate_eval_result_artifacts,
     _validate_eval_suite_run_identity,
@@ -46807,6 +46814,12 @@ def _serialize_eval_result(result) -> dict:
             "duration_ms": getattr(result, "duration_ms", None),
             "success": getattr(result, "success", None),
             "error": getattr(result, "error", None),
+            "failure_kind": getattr(result, "failure_kind", None),
+            "timed_out": getattr(result, "timed_out", False),
+            "timeout_stage": getattr(result, "timeout_stage", None),
+            "timeout_reason": getattr(result, "timeout_reason", None),
+            "timeout_seconds": getattr(result, "timeout_seconds", None),
+            "timeout_attempts": getattr(result, "timeout_attempts", 0),
             "generation_prompt_sha256": getattr(
                 result, "generation_prompt_sha256", None
             ),
@@ -46842,6 +46855,8 @@ def _serialize_readiness_summary(summary) -> dict:
         return summary
     return {
         "total_cases": getattr(summary, "total_cases", None),
+        "artifact_case_count": getattr(summary, "artifact_case_count", None),
+        "timeout_count": getattr(summary, "timeout_count", None),
         "success_rate": getattr(summary, "success_rate", None),
         "compile_pass_rate": getattr(summary, "compile_pass_rate", None),
         "ci_pass_rate": getattr(summary, "ci_pass_rate", None),
@@ -46865,8 +46880,8 @@ def _serialize_readiness_summary(summary) -> dict:
 
 
 _EVAL_SUITE_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
-_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v5"
-_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v5"
+_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
+_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v6"
 _EVAL_SUITE_REVALIDATION_MARKER = ".eval-suite-revalidation.json"
 
 
@@ -46939,6 +46954,7 @@ def _load_verified_eval_suite_artifacts(
     require_complete: bool,
     policyengine_runtime: PolicyEngineRuntime | None = None,
     revalidate_persisted_results: bool = True,
+    suite_retry_attempts: int | None = None,
 ) -> dict[str, object]:
     """Load one suite output only after the harness validates every identity."""
 
@@ -46963,6 +46979,33 @@ def _load_verified_eval_suite_artifacts(
         max_bytes=256 * 1024 * 1024,
         required=False,
     )
+    if suite_retry_attempts is None:
+        try:
+            persisted_run_state = json.loads((state_raw_before or b"").decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("suite-run.json is malformed") from exc
+        if not isinstance(persisted_run_state, dict):
+            raise ValueError("suite-run.json must contain a JSON object")
+        if persisted_run_state.get("status") != "completed":
+            raise ValueError(
+                "Incomplete eval-suite verification requires the current "
+                "suite_retry_attempts"
+            )
+        persisted_identity = persisted_run_state.get("execution_identity")
+        persisted_identity_sha256 = persisted_run_state.get("execution_identity_sha256")
+        if (
+            not isinstance(persisted_identity, dict)
+            or not isinstance(persisted_identity_sha256, str)
+            or persisted_identity_sha256
+            != _eval_suite_execution_identity_sha256(persisted_identity)
+        ):
+            raise ValueError(
+                "suite-run.json has an inconsistent execution identity digest"
+            )
+        suite_retry_attempts = _suite_retry_attempts_from_execution_identity(
+            persisted_identity,
+            artifact_name="suite-run.json execution identity",
+        )
     manifest_identity = _build_eval_suite_manifest_identity(manifest)
     rulespec_roots = _eval_suite_rulespec_roots(manifest, policy_repo_path)
     policyengine_cases = [
@@ -46984,6 +47027,7 @@ def _load_verified_eval_suite_artifacts(
         axiom_rules_path,
         rulespec_roots,
         policyengine_runtime=policyengine_runtime if policyengine_cases else None,
+        suite_retry_attempts=suite_retry_attempts,
     )
     _run_id, _started_at, results, completed_case_indexes = (
         _load_eval_suite_resume_state(
@@ -47158,6 +47202,7 @@ def _build_eval_suite_payload(
                 "name": case.name,
                 "kind": case.kind,
                 "corpus_citation_path": _eval_suite_case_corpus_citation_path(case),
+                "oracle": case_identity.get("oracle"),
                 "sha256": case_identity.get("sha256"),
             }
             serialized_results.append(_bind_eval_result_payload(result_payload))
@@ -47600,6 +47645,7 @@ def cmd_eval_suite(args):
             corpus_release=corpus_release,
             policyengine_runtime=policyengine_runtime,
             require_complete=False,
+            suite_retry_attempts=_DEFAULT_SUITE_RETRY_ATTEMPTS,
         )
     except ValueError as exc:
         print(str(exc))
@@ -47654,10 +47700,15 @@ def cmd_eval_suite(args):
     for runner, summary in readiness.items():
         print(f"{runner}: {'READY' if summary.ready else 'NOT READY'}")
         print(
-            f"  cases={summary.total_cases} success={summary.success_rate:.1%} "
-            f"compile={summary.compile_pass_rate:.1%} ci={summary.ci_pass_rate:.1%} "
-            f"zero_ungrounded={summary.zero_ungrounded_rate:.1%} "
-            f"generalist_review={summary.generalist_review_pass_rate:.1%}"
+            f"  cases={summary.total_cases} "
+            f"artifacts={summary.artifact_case_count} "
+            f"timeouts={summary.timeout_count} "
+            f"success={_format_percent(summary.success_rate)} "
+            f"compile={_format_percent(summary.compile_pass_rate)} "
+            f"ci={_format_percent(summary.ci_pass_rate)} "
+            f"zero_ungrounded={_format_percent(summary.zero_ungrounded_rate)} "
+            "generalist_review="
+            f"{_format_percent(summary.generalist_review_pass_rate)}"
         )
         if summary.mean_generalist_review_score is not None:
             print(
@@ -47839,6 +47890,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
         )
         result.success = validation_error is None
         result.error = validation_error
+        result.failure_kind = None if result.success else "validation"
         if not isinstance(result.admission, dict):  # verified admission invariant
             raise ValueError(
                 f"Result for case '{case.name}' is missing its signed admission"
@@ -47919,10 +47971,15 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
     for runner, summary in readiness.items():
         print(f"{runner}: {'READY' if summary.ready else 'NOT READY'}")
         print(
-            f"  cases={summary.total_cases} success={summary.success_rate:.1%} "
-            f"compile={summary.compile_pass_rate:.1%} ci={summary.ci_pass_rate:.1%} "
-            f"zero_ungrounded={summary.zero_ungrounded_rate:.1%} "
-            f"generalist_review={summary.generalist_review_pass_rate:.1%}"
+            f"  cases={summary.total_cases} "
+            f"artifacts={summary.artifact_case_count} "
+            f"timeouts={summary.timeout_count} "
+            f"success={_format_percent(summary.success_rate)} "
+            f"compile={_format_percent(summary.compile_pass_rate)} "
+            f"ci={_format_percent(summary.ci_pass_rate)} "
+            f"zero_ungrounded={_format_percent(summary.zero_ungrounded_rate)} "
+            "generalist_review="
+            f"{_format_percent(summary.generalist_review_pass_rate)}"
         )
         if summary.mean_generalist_review_score is not None:
             print(
@@ -48971,6 +49028,22 @@ def _validated_eval_suite_report_payload(
         != _eval_suite_execution_identity_sha256(execution_identity)
     ):
         raise ValueError("Eval suite execution identity digest is inconsistent")
+    try:
+        board_execution_identity, board_execution_identity_sha256 = (
+            _eval_board_payload_execution_identity(
+                payload,
+                "Eval suite report payload",
+            )
+        )
+    except EvalBoardError as exc:
+        raise ValueError(
+            f"Eval suite execution identity is not board-admissible: {exc}"
+        ) from exc
+    if (
+        board_execution_identity != execution_identity
+        or board_execution_identity_sha256 != execution_identity_sha256
+    ):  # pragma: no cover - helper return invariant
+        raise ValueError("Eval suite board execution identity changed during admission")
 
     run_identity = evidence.get("run")
     if not isinstance(run_identity, dict) or set(run_identity) != {"id", "started_at"}:
@@ -49019,6 +49092,7 @@ def _validated_eval_suite_report_payload(
             or case_identity.get("kind") not in {"citation", "source"}
             or not isinstance(case_identity.get("corpus_citation_path"), str)
             or not case_identity.get("corpus_citation_path")
+            or case_identity.get("oracle") not in {"none", "policyengine"}
             or not isinstance(case_identity.get("sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", case_identity["sha256"])
         ):
@@ -49131,18 +49205,10 @@ def _validated_eval_suite_report_payload(
             "name": canonical_case["name"],
             "kind": canonical_case["kind"],
             "corpus_citation_path": canonical_case["corpus_citation_path"],
+            "oracle": canonical_case["oracle"],
             "sha256": canonical_case["sha256"],
         }:
             raise ValueError("Eval suite result uses a different case identity")
-        corpus_citation_path = case_marker.get("corpus_citation_path")
-        if (
-            not isinstance(corpus_citation_path, str)
-            or not corpus_citation_path
-            or result.get("citation") != corpus_citation_path
-        ):
-            raise ValueError(
-                "Eval suite result citation does not match its canonical case path"
-            )
         runner_name = result.get("runner")
         if not isinstance(runner_name, str) or runner_name not in runners_by_name:
             raise ValueError("Eval suite result uses an unknown runner")
@@ -49152,60 +49218,23 @@ def _validated_eval_suite_report_payload(
             or result.get("model") != runner_identity["model"]
         ):
             raise ValueError("Eval suite result uses a different runner identity")
-        admission = result.get("admission")
-        if not isinstance(admission, dict):
-            raise ValueError("Eval suite result is missing its signed admission")
-        expected_admission_common = {
-            "schema": _EVAL_RESULT_ADMISSION_SCHEMA,
-            "run": run_identity,
-            "suite": {
-                "name": manifest_identity.get("name"),
-                "manifest_path": manifest_identity.get("path"),
-                "manifest_content_sha256": manifest_identity.get("content_sha256"),
-                "manifest_case_identities": canonical_cases,
-                "effective_runner_identities": runner_identities,
-            },
-            "case": canonical_case,
-            "corpus": corpus_identity,
-            "execution": {
-                "identity": execution_identity,
-                "sha256": execution_identity_sha256,
-            },
-        }
-        if {
-            key: admission.get(key) for key in expected_admission_common
-        } != expected_admission_common:
-            raise ValueError(
-                "Eval suite result admission does not match its run, manifest, case, "
-                "corpus, runner, or execution evidence"
+        try:
+            _eval_board_validate_result_row_admission(
+                result,
+                run_identity=run_identity,
+                suite_name=str(manifest_identity.get("name")),
+                manifest_identity=manifest_identity,
+                case_identity=canonical_case,
+                corpus_identity=corpus_identity,
+                runner_identities=runner_identities,
+                execution_identity=execution_identity,
+                execution_identity_sha256=execution_identity_sha256,
+                context="Eval suite report result",
             )
-        rulespec_admission = admission.get("rulespec")
-        if not isinstance(rulespec_admission, dict):
-            raise ValueError("Eval suite result has malformed RuleSpec admission")
-        admitted_policy_root = rulespec_admission.get("policy_repo_root")
-        matching_roots = [
-            root
-            for root in execution_identity.get("rulespec_roots", [])
-            if isinstance(root, dict) and root.get("path") == admitted_policy_root
-        ]
-        if len(matching_roots) != 1:
+        except EvalBoardError as exc:
             raise ValueError(
-                "Eval suite result RuleSpec admission is not in its execution identity"
-            )
-        root_identity = matching_roots[0]
-        expected_rulespec_admission = {
-            "policy_repo_root": root_identity.get("path"),
-            "root_content_sha256": root_identity.get("content_sha256"),
-            "toolchain_contract_sha256": root_identity.get("toolchain_contract_sha256"),
-            "validation_waiver_set_sha256": root_identity.get(
-                "validation_waiver_set_sha256"
-            ),
-        }
-        if rulespec_admission != expected_rulespec_admission:
-            raise ValueError(
-                "Eval suite result RuleSpec admission does not match its execution "
-                "identity"
-            )
+                f"Eval suite result is not board-admissible: {exc}"
+            ) from exc
         verified_results_by_runner[runner_name].append(verified_result)
         observed_pairs.append((case_index, runner_name))
     if observed_pairs != expected_pairs:

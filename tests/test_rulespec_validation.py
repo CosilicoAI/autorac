@@ -3,7 +3,9 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 from decimal import Decimal
@@ -40,6 +42,7 @@ from axiom_encode.harness.validator_pipeline import (
     _extract_json_object,
     _infer_us_state_code_from_rulespec_path,
     _normalize_us_tax_filing_status,
+    _normalize_validation_staging_text,
     _policyengine_expected_float,
     _policyengine_period_string,
     _policyengine_us_snap_input_aliases,
@@ -207,6 +210,167 @@ def test_claude_reviewer_disables_tools_and_scrubs_signing_capabilities(
     assert mock_run.call_args.kwargs["cwd"] == tmp_path
     assert output == '{"passed": true}'
     assert returncode == 0
+
+
+def test_validator_subprocess_capture_read_errors_are_reproducible():
+    captured_paths: list[Path] = []
+
+    def fail_capture_read(path: Path, *_args, **_kwargs):
+        captured_paths.append(path)
+        raise OSError(5, "synthetic capture read failure", str(path))
+
+    errors: list[str] = []
+    with patch.object(Path, "read_text", autospec=True, side_effect=fail_capture_read):
+        for _ in range(2):
+            with pytest.raises(RuntimeError) as exc_info:
+                validator_pipeline._run_subprocess_with_idle_timeout(
+                    [sys.executable, "-c", "pass"],
+                    timeout=10,
+                    idle_timeout=10,
+                    poll_interval=0.001,
+                )
+            errors.append(str(exc_info.value))
+
+    assert captured_paths[0].parent != captured_paths[1].parent
+    assert errors[0] == errors[1]
+    assert "<validator-subprocess-capture>/stdout.log" in errors[0]
+    assert all(str(path.parent) not in errors[0] for path in captured_paths)
+
+
+def test_validator_subprocess_capture_output_paths_are_reproducible():
+    captured_paths: list[Path] = []
+
+    def expose_capture_path(path: Path, *_args, **_kwargs):
+        captured_paths.append(path)
+        return f"capture={path}\n"
+
+    outputs: list[str] = []
+    with patch.object(
+        Path,
+        "read_text",
+        autospec=True,
+        side_effect=expose_capture_path,
+    ):
+        for _ in range(2):
+            result = validator_pipeline._run_subprocess_with_idle_timeout(
+                [sys.executable, "-c", "pass"],
+                timeout=10,
+                idle_timeout=10,
+                poll_interval=0.001,
+            )
+            outputs.append(result.output)
+
+    assert captured_paths[0].parent == captured_paths[1].parent
+    assert captured_paths[2].parent == captured_paths[3].parent
+    assert captured_paths[0].parent != captured_paths[2].parent
+    assert (
+        outputs
+        == [
+            (
+                "capture=<validator-subprocess-capture>/stdout.log\n"
+                "capture=<validator-subprocess-capture>/stderr.log\n"
+            )
+        ]
+        * 2
+    )
+
+
+def test_validator_subprocess_cleanup_error_cannot_mask_timeout():
+    class NeverCompletes:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self):
+            return self.returncode
+
+    real_rmtree = shutil.rmtree
+    cleanup_failures: list[str] = []
+
+    def rmtree_with_cleanup_failure(path, *args, onexc=None, **kwargs):
+        assert onexc is not None
+        failing_path = str(Path(path) / "stdout.log")
+        cleanup_failures.append(failing_path)
+        onexc(
+            os.unlink,
+            failing_path,
+            OSError(5, "synthetic cleanup failure", failing_path),
+        )
+        return real_rmtree(path)
+
+    with (
+        patch.object(
+            validator_pipeline.subprocess,
+            "Popen",
+            return_value=NeverCompletes(),
+        ),
+        patch.object(validator_pipeline.time, "time", side_effect=[0.0, 2.0]),
+        patch.object(shutil, "rmtree", side_effect=rmtree_with_cleanup_failure),
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        validator_pipeline._run_subprocess_with_idle_timeout(
+            ["unused"],
+            timeout=1,
+            idle_timeout=10,
+            poll_interval=0,
+        )
+
+    assert len(cleanup_failures) == 1
+    assert cleanup_failures[0].endswith("/stdout.log")
+
+
+def test_rulespec_run_compiled_timeout_is_reproducible_across_temp_roots(
+    tmp_path,
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+    )
+
+    def timeout_with_command_path(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    issue_sets: list[list[str]] = []
+    with patch.object(
+        validator_pipeline.subprocess,
+        "run",
+        side_effect=timeout_with_command_path,
+    ):
+        for staging_name in ("tmpABC123", "tmpXYZ789"):
+            outputs, issues = pipeline._run_rulespec_derived_test_case(
+                binary=tmp_path / "axiom-rules-engine",
+                compiled_path=tmp_path / staging_name / "compiled.json",
+                case={"input": {}},
+                case_name="timeout_case",
+                case_index=1,
+                period={
+                    "period_kind": "month",
+                    "start": "2026-01-01",
+                    "end": "2026-01-31",
+                },
+                output_names=["benefit"],
+                derived_by_key={"benefit": {"entity": "Household"}},
+                require_legal_input_keys=False,
+                legal_ids_by_friendly_name={},
+                declared_relation_names=set(),
+                module_target=None,
+            )
+            assert outputs is None
+            issue_sets.append(issues)
+
+    assert issue_sets == [
+        ["Test case `timeout_case` execution timed out after 60 seconds."],
+        ["Test case `timeout_case` execution timed out after 60 seconds."],
+    ]
+    assert all(
+        "tmpABC123" not in issue and "tmpXYZ789" not in issue for issue in issues
+    )
 
 
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:
@@ -1779,6 +1943,61 @@ def test_rulespec_companion_runner_uses_rows_for_absolute_list_outputs(
     assert outputs is not None
     assert captured_request is not None
     assert captured_request["queries"][0]["entity_id"] == "payment-1"
+
+
+def test_rulespec_row_output_length_issue_order_is_deterministic(tmp_path):
+    class StableHashName(str):
+        def __new__(cls, value: str, hash_value: int):
+            instance = super().__new__(cls, value)
+            instance.hash_value = hash_value
+            return instance
+
+        def __hash__(self):
+            return self.hash_value
+
+    policy_repo = _canonical_rulespec_content_root(tmp_path / "repos", "us")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+    )
+    z_output = StableHashName("z_output", 0)
+    a_output = StableHashName("a_output", 1)
+
+    outputs, issues = pipeline._run_rulespec_derived_test_case(
+        binary=tmp_path / "engine",
+        compiled_path=tmp_path / "compiled.json",
+        case={
+            "input": {},
+            "tables": {"Payment": [{"payment_amount": 300}]},
+            "output": {
+                z_output: [300, 400],
+                a_output: [300, 400],
+            },
+        },
+        case_name="ordered_failure",
+        case_index=1,
+        period={
+            "period_kind": "tax_year",
+            "start": "2026-01-01",
+            "end": "2026-12-31",
+        },
+        output_names=[z_output, a_output],
+        derived_by_key={
+            z_output: {"entity": "Payment"},
+            a_output: {"entity": "Payment"},
+        },
+        require_legal_input_keys=False,
+        legal_ids_by_friendly_name={},
+        declared_relation_names=set(),
+        module_target=None,
+    )
+
+    assert outputs is None
+    assert issues == [
+        "Test case `ordered_failure` output `a_output` expected 2 row value(s), "
+        "but `tables.Payment` has 1 row(s)."
+    ]
 
 
 def test_cross_statute_definition_import_check_uses_cited_title_and_existing_targets(
@@ -14965,6 +15184,100 @@ rules:
     assert len(issues) == 1
     assert "Rule name includes citation suffix" in issues[0]
     assert "_2_c" in issues[0]
+
+
+def test_rule_name_path_suffix_prefers_deterministic_most_specific_suffix(tmp_path):
+    class AdversarialSuffixes(set):
+        def __iter__(self):
+            return iter(("b", "a_b"))
+
+    repo = tmp_path / "rulespec-us"
+    rules_file = repo / "statutes" / "7" / "2015" / "a" / "b.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = """format: rulespec/v1
+rules:
+  - name: person_exempt_a_b
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Month
+"""
+
+    with patch.object(
+        validator_pipeline,
+        "_path_suffix_tokens_for_rule_name",
+        return_value=AdversarialSuffixes({"b", "a_b"}),
+    ):
+        issues = find_rule_name_path_suffix_issues(
+            content,
+            rules_file=rules_file,
+            policy_repo_path=repo,
+        )
+
+    assert len(issues) == 1
+    assert "ends with `_a_b`" in issues[0]
+
+
+def test_validation_staging_normalization_requires_a_left_path_boundary(tmp_path):
+    staging_root = tmp_path / "stage"
+    embedded = f"token{staging_root}/compiled.json"
+    standalone = f"{staging_root}/compiled.json"
+
+    assert (
+        _normalize_validation_staging_text(
+            f"{embedded} {standalone}",
+            staging_root,
+        )
+        == f"{embedded} <rulespec-validation-root>/compiled.json"
+    )
+
+
+def test_validation_staging_normalization_accepts_right_delimiters_without_matching_prefix_tokens(
+    tmp_path,
+):
+    staging_root = tmp_path / "stage"
+    text = (
+        f"quoted='{staging_root}' comma={staging_root}, "
+        f"paren=({staging_root}) child={staging_root}/compiled.json "
+        f"prefix={staging_root}-extra extension={staging_root}.bak "
+        f"embedded=token{staging_root}"
+    )
+
+    assert _normalize_validation_staging_text(text, staging_root) == (
+        "quoted='<rulespec-validation-root>' "
+        "comma=<rulespec-validation-root>, "
+        "paren=(<rulespec-validation-root>) "
+        "child=<rulespec-validation-root>/compiled.json "
+        f"prefix={staging_root}-extra extension={staging_root}.bak "
+        f"embedded=token{staging_root}"
+    )
+
+
+def test_validation_staging_normalization_respects_unicode_token_boundaries(tmp_path):
+    staging_root = tmp_path / "stage"
+    prefixed = f"café{staging_root}/compiled.json"
+    suffixed = f"{staging_root}é"
+    standalone = f"({staging_root}/compiled.json)"
+
+    assert _normalize_validation_staging_text(
+        f"{prefixed} {suffixed} {standalone}",
+        staging_root,
+    ) == (f"{prefixed} {suffixed} (<rulespec-validation-root>/compiled.json)")
+
+
+def test_validation_staging_normalization_respects_decomposed_unicode_boundaries(
+    tmp_path,
+):
+    staging_root = tmp_path / "stage"
+    combining_mark = "\N{COMBINING ACUTE ACCENT}"
+    prefixed = f"cafe{combining_mark}{staging_root}/compiled.json"
+    suffixed = f"{staging_root}{combining_mark}"
+    standalone = f"({staging_root}/compiled.json)"
+
+    assert _normalize_validation_staging_text(
+        f"{prefixed} {suffixed} {standalone}",
+        staging_root,
+    ) == (f"{prefixed} {suffixed} (<rulespec-validation-root>/compiled.json)")
 
 
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):
