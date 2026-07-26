@@ -1162,7 +1162,7 @@ def _deferred_coverage(
                     for blocker in blocker_targets
                 )
                 and all(
-                    _reason_identifies_blocker(
+                    _source_scope_identifies_blocker(
                         source_scope_text,
                         blocker,
                         corpus_citation_path=corpus_citation_path,
@@ -1266,6 +1266,55 @@ def _reason_identifies_blocker(
     )
 
 
+def _source_scope_identifies_blocker(
+    source_scope_text: str,
+    blocker: str,
+    *,
+    corpus_citation_path: str,
+) -> bool:
+    """Reject citations expressly described as unrelated to the source rule."""
+
+    if not _reason_identifies_blocker(
+        source_scope_text,
+        blocker,
+        corpus_citation_path=corpus_citation_path,
+    ):
+        return False
+    target_path = blocker.partition("#")[0]
+    section = target_path.rstrip("/").rsplit("/", 1)[-1]
+    references = tuple(
+        match
+        for match in _EXPLICIT_LEGAL_SECTION_REFERENCE.finditer(source_scope_text)
+        if match.group("section").lower() == section.lower()
+    )
+    if not references:
+        return True
+    for reference in references:
+        clause_start = max(
+            source_scope_text.rfind(separator, 0, reference.start())
+            for separator in (".", ";", "\n")
+        ) + 1
+        following_stops = [
+            position
+            for separator in (".", ";", "\n")
+            if (position := source_scope_text.find(separator, reference.end())) >= 0
+        ]
+        clause_end = min(following_stops, default=len(source_scope_text))
+        clause = source_scope_text[clause_start:clause_end]
+        if re.search(
+            r"\b(?:"
+            r"unberührt\s+bleib\w*|bleib\w*\s+unberührt|"
+            r"without\s+prejudice\s+to|remain\w*\s+unaffected|"
+            r"does\s+not\s+affect"
+            r")\b",
+            clause,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
 def _citation_instrument_identity(
     citation: str,
 ) -> tuple[str, str, str] | None:
@@ -1327,7 +1376,7 @@ def _reason_dependency_is_source_bound(
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
         dependency = match.group(0).strip()
         if "#" in dependency and ":" in dependency:
-            if _reason_identifies_blocker(
+            if _source_scope_identifies_blocker(
                 source_scope_text,
                 dependency,
                 corpus_citation_path=corpus_citation_path,
@@ -1337,7 +1386,7 @@ def _reason_dependency_is_source_bound(
         section_match = re.search(r"\d+[a-z]?", dependency, flags=re.IGNORECASE)
         corpus_target = _rulespec_target_base(corpus_citation_path)
         corpus_instrument_target = corpus_target.rsplit("/", 1)[0]
-        if section_match and _reason_identifies_blocker(
+        if section_match and _source_scope_identifies_blocker(
             source_scope_text,
             f"{corpus_instrument_target}/{section_match.group(0)}#dependency",
             corpus_citation_path=corpus_citation_path,
@@ -1682,16 +1731,12 @@ def _companion_test_issues(
             "test evidence."
         )
 
-    boundary_branches = active_branches or [
-        SourceStructureBranch(
-            (),
-            "source-unit",
-            "source unit",
-            source_text,
-            0,
-            len(source_text),
-        )
-    ]
+    boundary_branches = _active_or_root_source_branches(
+        source_text,
+        branches=branches,
+        active_branches=active_branches,
+        deferred_paths=deferred_paths,
+    )
     boundary_obligations = _source_boundary_obligations(
         boundary_branches,
         narrative_formula_branches=formula_branches,
@@ -1915,15 +1960,11 @@ def _source_control_branches(
 ) -> tuple[SourceStructureBranch, ...]:
     """Return active boundary, exception, and applicability control clauses."""
 
-    boundary_branches = active_branches or (
-        SourceStructureBranch(
-            (),
-            "source-unit",
-            "source unit",
-            source_text,
-            0,
-            len(source_text),
-        ),
+    boundary_branches = _active_or_root_source_branches(
+        source_text,
+        branches=branches,
+        active_branches=active_branches,
+        deferred_paths=deferred_paths,
     )
     controlled = [
         branch
@@ -1947,6 +1988,31 @@ def _source_control_branches(
             (branch.path, branch.start, branch.end): branch
             for branch in controlled
         }.values()
+    )
+
+
+def _active_or_root_source_branches(
+    source_text: str,
+    *,
+    branches: Sequence[SourceStructureBranch],
+    active_branches: Sequence[SourceStructureBranch],
+    deferred_paths: set[tuple[str, ...]],
+) -> tuple[SourceStructureBranch, ...]:
+    """Use a synthetic root only when an unstructured root remains active."""
+
+    if active_branches:
+        return tuple(active_branches)
+    if branches or _path_is_deferred((), deferred_paths):
+        return ()
+    return (
+        SourceStructureBranch(
+            (),
+            "source-unit",
+            "source unit",
+            source_text,
+            0,
+            len(source_text),
+        ),
     )
 
 
