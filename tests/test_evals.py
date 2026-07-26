@@ -755,6 +755,194 @@ def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
     assert "openai" not in environments
 
 
+def _write_fake_eval_executable(path: Path, payload: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    path.chmod(0o755)
+    return path
+
+
+def _successful_eval_cli_probe(command, **_kwargs):
+    if command[-1] == "--version":
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="receiver-cli 9.9.9\n",
+            stderr="",
+        )
+    return subprocess.CompletedProcess(
+        command,
+        0,
+        stdout=" ".join(
+            (
+                "--print",
+                "--output-format",
+                "--permission-mode",
+                "--safe-mode",
+                "--no-session-persistence",
+                "--disable-slash-commands",
+                "--no-chrome",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "--tools",
+                "--allowed-tools",
+                "--model",
+                "--effort",
+                "--json",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--strict-config",
+                "--output-last-message",
+                "--cd",
+                "--sandbox",
+                "--config",
+            )
+        ),
+        stderr="",
+    )
+
+
+def test_eval_cli_preflight_hashes_codex_launcher_and_vendor_receiver(
+    monkeypatch,
+    tmp_path,
+):
+    package_root = tmp_path / "node_modules" / "@openai" / "codex"
+    wrapper = _write_fake_eval_executable(
+        package_root / "bin" / "codex.js",
+        b"#!/usr/bin/env node\n// fake codex launcher\n",
+    )
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "@openai/codex"})
+    )
+    native = _write_fake_eval_executable(
+        package_root.parent
+        / "codex-test-platform"
+        / "vendor"
+        / "test-target"
+        / "bin"
+        / "codex",
+        b"fake-native-codex-receiver",
+    )
+    monkeypatch.setattr(
+        evals_module,
+        "_codex_vendor_layout",
+        lambda: ("codex-test-platform", "test-target"),
+        raising=False,
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=str(wrapper),
+        ),
+        patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=_successful_eval_cli_probe,
+        ),
+    ):
+        environment = evals_module._preflight_eval_cli_runners(
+            [parse_runner_spec("codex:gpt-5.4")]
+        )["codex"]
+
+    assert environment.executable == str(wrapper.resolve())
+    assert environment.launcher_sha256 == hashlib.sha256(wrapper.read_bytes()).hexdigest()
+    assert environment.native_executable == str(native.resolve())
+    assert environment.native_sha256 == hashlib.sha256(native.read_bytes()).hexdigest()
+
+
+def test_eval_cli_preflight_fails_closed_for_codex_wrapper_without_vendor_receiver(
+    monkeypatch,
+    tmp_path,
+):
+    package_root = tmp_path / "node_modules" / "@openai" / "codex"
+    wrapper = _write_fake_eval_executable(
+        package_root / "bin" / "codex.js",
+        b"#!/usr/bin/env node\n// fake codex launcher\n",
+    )
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "@openai/codex"})
+    )
+    monkeypatch.setattr(
+        evals_module,
+        "_codex_vendor_layout",
+        lambda: ("codex-test-platform", "test-target"),
+        raising=False,
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=str(wrapper),
+        ),
+        patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=_successful_eval_cli_probe,
+        ),
+        pytest.raises(RuntimeError, match="native receiver"),
+    ):
+        evals_module._preflight_eval_cli_runners(
+            [parse_runner_spec("codex:gpt-5.4")]
+        )
+
+
+def test_eval_cli_preflight_accepts_direct_codex_native_binary(monkeypatch, tmp_path):
+    native = _write_fake_eval_executable(
+        tmp_path / "bin" / "codex",
+        b"direct-native-codex-receiver",
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=str(native),
+        ),
+        patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=_successful_eval_cli_probe,
+        ),
+    ):
+        environment = evals_module._preflight_eval_cli_runners(
+            [parse_runner_spec("codex:gpt-5.4")]
+        )["codex"]
+
+    expected_digest = hashlib.sha256(native.read_bytes()).hexdigest()
+    assert environment.launcher_sha256 == expected_digest
+    assert environment.native_executable == str(native.resolve())
+    assert environment.native_sha256 == expected_digest
+
+
+def test_eval_cli_preflight_resolves_claude_symlink_to_native_receiver(
+    monkeypatch,
+    tmp_path,
+):
+    native = _write_fake_eval_executable(
+        tmp_path / "versions" / "claude",
+        b"native-claude-receiver",
+    )
+    launcher = tmp_path / "bin" / "claude"
+    launcher.parent.mkdir()
+    launcher.symlink_to(native)
+    monkeypatch.setattr(
+        evals_module.shutil,
+        "which",
+        lambda name: str(launcher) if name == "claude" else None,
+    )
+
+    with patch(
+        "axiom_encode.harness.evals.subprocess.run",
+        side_effect=_successful_eval_cli_probe,
+    ):
+        environment = evals_module._preflight_eval_cli_runners(
+            [parse_runner_spec("claude:opus")]
+        )["claude"]
+
+    expected_digest = hashlib.sha256(native.read_bytes()).hexdigest()
+    assert environment.executable == str(native.resolve())
+    assert environment.launcher_sha256 == expected_digest
+    assert environment.native_executable == str(native.resolve())
+    assert environment.native_sha256 == expected_digest
+
+
 def test_eval_cli_preflight_canonicalizes_relative_executables_before_use(
     monkeypatch,
     tmp_path,
