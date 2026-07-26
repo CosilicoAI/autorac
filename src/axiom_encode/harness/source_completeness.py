@@ -162,7 +162,8 @@ _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)(?=[A-ZÄÖÜ])"
 )
 _EXPLICIT_SENTENCE_MARKER = re.compile(
-    r"(?:(?<=^)|(?<=[.;]))[ \t]*Satz[ \t]+(?P<label>[1-9]\d?)(?=[ \t]+[A-ZÄÖÜ])",
+    r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
+    r"(?P<label>[1-9]\d?)(?=[ \t]+[A-ZÄÖÜ])",
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _EDITORIAL_OMISSION_ONLY = re.compile(
