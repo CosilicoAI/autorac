@@ -12987,16 +12987,14 @@ def _run_openai_prompt_eval(
     except requests.RequestException as exc:
         duration_ms = int((time.time() - start) * 1000)
         timed_out = isinstance(exc, requests.Timeout)
-        timeout_attempts = getattr(exc, "timeout_attempts", None)
-        if (
-            isinstance(timeout_attempts, bool)
-            or not isinstance(timeout_attempts, int)
-            or timeout_attempts < 0
-        ):
-            timeout_attempts = 1 if timed_out else 0
-        timeout_stage = getattr(exc, "timeout_stage", None)
-        timeout_reason = getattr(exc, "timeout_reason", None)
-        timeout_seconds = getattr(exc, "timeout_seconds", None)
+        (
+            timeout_attempts,
+            timeout_stage,
+            timeout_reason,
+            timeout_seconds,
+        ) = _openai_timeout_history(exc)
+        if timed_out and timeout_attempts == 0:
+            timeout_attempts = 1
         if timed_out and timeout_stage not in {"case_budget", "encoder"}:
             timeout_stage = "encoder"
         if timeout_stage == "case_budget":
@@ -13019,19 +13017,25 @@ def _run_openai_prompt_eval(
                 "model": runner.model,
                 "request_body": body,
                 "timed_out": timed_out,
-                "timeout_stage": timeout_stage if timed_out else None,
+                "timeout_stage": timeout_stage,
                 "timeout_reason": timeout_reason,
                 "timeout_seconds": timeout_seconds,
                 "timeout_attempts": timeout_attempts,
             },
             error=str(exc),
             timed_out=timed_out,
-            timeout_stage=timeout_stage if timed_out else None,
+            timeout_stage=timeout_stage,
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
             timeout_attempts=timeout_attempts,
         )
     duration_ms = int((time.time() - start) * 1000)
+    (
+        timeout_attempts,
+        timeout_stage,
+        timeout_reason,
+        timeout_seconds,
+    ) = _openai_timeout_history(response)
 
     request_id = response.headers.get("x-request-id")
     try:
@@ -13051,6 +13055,11 @@ def _run_openai_prompt_eval(
         "request_body": body,
         "json_result": payload,
         "status_code": response.status_code,
+        "timed_out": False,
+        "timeout_stage": timeout_stage,
+        "timeout_reason": timeout_reason,
+        "timeout_seconds": timeout_seconds,
+        "timeout_attempts": timeout_attempts,
     }
 
     if response.status_code >= 400:
@@ -13060,6 +13069,10 @@ def _run_openai_prompt_eval(
             duration_ms=duration_ms,
             trace=trace,
             error=error.get("message") or response.text or "OpenAI eval failed",
+            timeout_stage=timeout_stage,
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=timeout_attempts,
         )
 
     usage = payload.get("usage") or {}
@@ -13079,6 +13092,10 @@ def _run_openai_prompt_eval(
         tokens=tokens,
         estimated_cost_usd=estimate_usage_cost_usd(runner.model, tokens),
         trace=trace,
+        timeout_stage=timeout_stage,
+        timeout_reason=timeout_reason,
+        timeout_seconds=timeout_seconds,
+        timeout_attempts=timeout_attempts,
     )
 
 
@@ -13091,6 +13108,9 @@ def _post_openai_eval_request(
     last_response: requests.Response | None = None
     last_error: requests.RequestException | None = None
     timeout_attempts = 0
+    timeout_stage: str | None = None
+    timeout_reason: str | None = None
+    timeout_seconds: float | None = None
     for attempt in range(1, attempts + 1):
         remaining = _remaining_eval_case_budget_seconds()
         if remaining is not None and remaining <= 0:
@@ -13121,6 +13141,17 @@ def _post_openai_eval_request(
                         exc,
                         timeout_attempts=timeout_attempts,
                     )
+                else:
+                    _bind_openai_encoder_timeout(
+                        exc,
+                        timeout_attempts=timeout_attempts,
+                    )
+                (
+                    _,
+                    timeout_stage,
+                    timeout_reason,
+                    timeout_seconds,
+                ) = _openai_timeout_history(exc)
             remaining = _remaining_eval_case_budget_seconds()
             if remaining is not None and remaining <= 0:
                 if isinstance(exc, requests.Timeout):
@@ -13134,7 +13165,13 @@ def _post_openai_eval_request(
                 ) from exc
             if attempt == attempts:
                 if timeout_attempts:
-                    exc.timeout_attempts = timeout_attempts
+                    _bind_openai_timeout_history(
+                        exc,
+                        timeout_attempts=timeout_attempts,
+                        timeout_stage=timeout_stage,
+                        timeout_reason=timeout_reason,
+                        timeout_seconds=timeout_seconds,
+                    )
                 raise
             _sleep_with_eval_case_budget(
                 _OPENAI_REQUEST_BACKOFF_SECONDS[
@@ -13146,6 +13183,14 @@ def _post_openai_eval_request(
 
         last_response = response
         if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts:
+            if timeout_attempts:
+                _bind_openai_timeout_history(
+                    response,
+                    timeout_attempts=timeout_attempts,
+                    timeout_stage=timeout_stage,
+                    timeout_reason=timeout_reason,
+                    timeout_seconds=timeout_seconds,
+                )
             return response
         _sleep_with_eval_case_budget(
             _OPENAI_REQUEST_BACKOFF_SECONDS[
@@ -13155,10 +13200,101 @@ def _post_openai_eval_request(
         )
 
     if last_response is not None:
+        if timeout_attempts:
+            _bind_openai_timeout_history(
+                last_response,
+                timeout_attempts=timeout_attempts,
+                timeout_stage=timeout_stage,
+                timeout_reason=timeout_reason,
+                timeout_seconds=timeout_seconds,
+            )
         return last_response
     if last_error is not None:
+        if timeout_attempts:
+            _bind_openai_timeout_history(
+                last_error,
+                timeout_attempts=timeout_attempts,
+                timeout_stage=timeout_stage,
+                timeout_reason=timeout_reason,
+                timeout_seconds=timeout_seconds,
+            )
         raise last_error
     raise requests.RequestException("OpenAI eval request failed without response")
+
+
+def _openai_timeout_history(
+    value: object,
+) -> tuple[int, str | None, str | None, float | None]:
+    """Return validated timeout history attached to a response or exception."""
+
+    raw_attempts = getattr(value, "timeout_attempts", 0)
+    timeout_attempts = (
+        raw_attempts
+        if not isinstance(raw_attempts, bool)
+        and isinstance(raw_attempts, int)
+        and raw_attempts >= 0
+        else 0
+    )
+    raw_stage = getattr(value, "timeout_stage", None)
+    timeout_stage = raw_stage if isinstance(raw_stage, str) else None
+    raw_reason = getattr(value, "timeout_reason", None)
+    timeout_reason = raw_reason if isinstance(raw_reason, str) else None
+    raw_seconds = getattr(value, "timeout_seconds", None)
+    timeout_seconds = (
+        float(raw_seconds)
+        if not isinstance(raw_seconds, bool)
+        and isinstance(raw_seconds, (int, float))
+        and math.isfinite(raw_seconds)
+        and raw_seconds > 0
+        else None
+    )
+    if timeout_attempts == 0:
+        return 0, None, None, None
+    return timeout_attempts, timeout_stage, timeout_reason, timeout_seconds
+
+
+def _bind_openai_timeout_history(
+    value: object,
+    *,
+    timeout_attempts: int,
+    timeout_stage: str | None,
+    timeout_reason: str | None,
+    timeout_seconds: float | None,
+) -> None:
+    """Attach aggregate timeout evidence to a request result."""
+
+    value.timeout_attempts = max(timeout_attempts, 1)
+    value.timeout_stage = timeout_stage
+    value.timeout_reason = timeout_reason
+    value.timeout_seconds = timeout_seconds
+
+
+def _bind_openai_encoder_timeout(
+    exc: requests.Timeout,
+    *,
+    timeout_attempts: int,
+) -> requests.Timeout:
+    """Attach the configured request timeout class and threshold."""
+
+    timeout_reason: str
+    timeout_seconds: float | None
+    if isinstance(exc, requests.ConnectTimeout):
+        timeout_reason = "connect"
+        timeout_seconds = float(_OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS)
+    elif isinstance(exc, requests.ReadTimeout):
+        timeout_reason = "read"
+        timeout_seconds = float(_OPENAI_REQUEST_READ_TIMEOUT_SECONDS)
+    else:
+        timeout_reason = "request"
+        timeout_seconds = None
+    _bind_openai_timeout_history(
+        exc,
+        timeout_attempts=timeout_attempts,
+        timeout_stage="encoder",
+        timeout_reason=timeout_reason,
+        timeout_seconds=timeout_seconds,
+    )
+    return exc
 
 
 def _openai_timeout_was_case_budget_limited(
@@ -13185,10 +13321,16 @@ def _bind_openai_case_budget_timeout(
 ) -> requests.Timeout:
     """Attach durable case-budget evidence to a request timeout."""
 
-    exc.timeout_stage = "case_budget"
-    exc.timeout_reason = "wall"
-    exc.timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
-    exc.timeout_attempts = max(timeout_attempts, 1)
+    timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+    _bind_openai_timeout_history(
+        exc,
+        timeout_attempts=timeout_attempts,
+        timeout_stage="case_budget",
+        timeout_reason="wall",
+        timeout_seconds=(
+            float(timeout_seconds) if timeout_seconds is not None else None
+        ),
+    )
     return exc
 
 
