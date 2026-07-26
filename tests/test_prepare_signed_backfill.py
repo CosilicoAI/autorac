@@ -280,7 +280,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
 @pytest.mark.parametrize(
     ("country", "reviewed_ref"),
     [
-        ("us", "8f224620540f9e285428ec839d094835396f7d99"),
+        ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
 )
@@ -293,7 +293,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
     repo = tmp_path / f"rulespec-{country}"
     assert REVIEWED_RULESPEC_REFS == frozenset(
         {
-            ("us", "8f224620540f9e285428ec839d094835396f7d99"),
+            ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }
     )
@@ -323,7 +323,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_protected_branch_tip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "rulespec-us"
-    reviewed_ref = "8f224620540f9e285428ec839d094835396f7d99"
+    reviewed_ref = "b61918da93fe8a1a29b35b9330aef2085291a5d0"
     git_calls: list[tuple[str, ...]] = []
 
     def fake_git(_repo: Path, *args: str) -> bytes:
@@ -357,7 +357,7 @@ def test_validate_rulespec_base_rejects_stale_reviewed_protected_branch_tip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "rulespec-us"
-    reviewed_ref = "8f224620540f9e285428ec839d094835396f7d99"
+    reviewed_ref = "b61918da93fe8a1a29b35b9330aef2085291a5d0"
 
     def fake_git(_repo: Path, *args: str) -> bytes:
         if args[-1] == "refs/remotes/origin/hard-cut/canonical-layout-us":
@@ -385,7 +385,7 @@ def test_validate_rulespec_base_rejects_unapproved_reviewed_pr_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "rulespec-us"
-    reviewed_ref = "8f224620540f9e285428ec839d094835396f7d99"
+    reviewed_ref = "b61918da93fe8a1a29b35b9330aef2085291a5d0"
     monkeypatch.setattr(
         "scripts.prepare_signed_backfill._git",
         lambda _repo, *_args: f"{reviewed_ref}\n".encode(),
