@@ -20,4 +20,7 @@ Board artifact denominators now require producer-shaped, content-bound output,
 trace, and context-manifest path/digest pairs. Successful PolicyEngine rows
 must carry a passing oracle outcome, passing outcomes may omit an advisory
 score, and artifact-bearing failures cannot evade oracle denominators by
-dropping their metrics.
+dropping their metrics. Board admission also requires the producer's core
+artifact digest fields and validates optional validator-verdict path/digest
+pairs without treating verdict-only failure evidence as a generated artifact;
+the producer applies the same PolicyEngine outcome invariants before persistence.
