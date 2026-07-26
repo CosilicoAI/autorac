@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import uuid
 from dataclasses import replace
 from datetime import date
@@ -12171,6 +12172,34 @@ class TestOpenAIEvalRequest:
         assert exc_info.value.timeout_seconds == 5
         assert exc_info.value.timeout_attempts == 1
 
+    def test_post_openai_eval_request_returns_at_case_wall_deadline(self):
+        release_request = threading.Event()
+
+        def block_beyond_deadline(*_args, **_kwargs):
+            release_request.wait(timeout=1)
+            return Mock(status_code=200)
+
+        started = evals_module.time.monotonic()
+        try:
+            with (
+                evals_module._active_eval_case_budget(0.05),
+                patch(
+                    "axiom_encode.harness.evals.requests.post",
+                    side_effect=block_beyond_deadline,
+                ),
+                pytest.raises(requests.Timeout) as exc_info,
+            ):
+                _post_openai_eval_request(
+                    headers={"Authorization": "Bearer test"},
+                    body={"model": "gpt-5.4", "input": "hi"},
+                    attempts=1,
+                )
+        finally:
+            release_request.set()
+
+        assert evals_module.time.monotonic() - started < 0.5
+        assert exc_info.value.timeout_stage == "case_budget"
+
     def test_post_openai_eval_request_rejects_response_after_case_deadline(
         self,
         monkeypatch,
@@ -13610,6 +13639,70 @@ cases:
         assert result.metrics is not None
         assert result.failure_kind is None
         assert result.timed_out is False
+
+    def test_each_runner_case_gets_an_independent_generation_budget(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manifest = EvalSuiteManifest(
+            name="Independent runner budgets",
+            path=tmp_path / "suite.yaml",
+            runners=[
+                "alpha=openai:gpt-5.4",
+                "beta=codex:gpt-5.4",
+            ],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        clock = [0.0]
+        observed_remaining: list[tuple[str, float | None]] = []
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def run_one_runner(**kwargs):
+            [runner_spec] = kwargs["runner_specs"]
+            runner = parse_runner_spec(runner_spec)
+            observed_remaining.append(
+                (
+                    runner.name,
+                    evals_module._remaining_eval_case_budget_seconds(),
+                )
+            )
+            result = _fake_eval_result(runner.name, "case-one")
+            result.backend = runner.backend
+            result.model = runner.model
+            if runner.name == "alpha":
+                clock[0] = 11.0
+            return _bind_fake_source_results([result], kwargs)
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=run_one_runner,
+        ) as mock_source:
+            results = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+            )
+
+        assert [result.runner for result in results] == ["alpha", "beta"]
+        assert mock_source.call_count == 2
+        assert observed_remaining == [
+            ("alpha", pytest.approx(10.0)),
+            ("beta", pytest.approx(10.0)),
+        ]
 
     def test_suite_timeout_history_does_not_promote_later_error_to_timeout(
         self,
