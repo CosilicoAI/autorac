@@ -269,7 +269,8 @@ _COMPUTATION_LANGUAGE = re.compile(
 _ROUNDING_LANGUAGE = re.compile(
     r"\b(?:"
     r"abgerundet(?:e|en|er|es)?|abzurunden|aufgerundet(?:e|en|er|es)?|"
-    r"aufzurunden|kaufmännisch(?:\s+zu)?\s+runden|"
+    r"aufzurunden|gerundet(?:e|en|er|es)?|zu\s+runden|"
+    r"kaufmännisch(?:\s+zu)?\s+runden|"
     r"round(?:ed|ing)?(?:\s+(?:down|up|to\s+the\s+nearest))?"
     r")\b",
     flags=re.IGNORECASE,
@@ -283,7 +284,9 @@ _UP_ROUNDING_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _NEAREST_ROUNDING_LANGUAGE = re.compile(
-    r"\b(?:kaufmännisch(?:\s+zu)?\s+runden|round(?:ed|ing)?\s+to\s+the\s+nearest)\b",
+    r"\b(?:gerundet(?:e|en|er|es)?|zu\s+runden|"
+    r"kaufmännisch(?:\s+zu)?\s+runden|"
+    r"round(?:ed|ing)?\s+to\s+the\s+nearest)\b",
     flags=re.IGNORECASE,
 )
 _EXCEPTION_LANGUAGE = re.compile(
