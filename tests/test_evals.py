@@ -6845,6 +6845,35 @@ def test_result_binding_rejects_failed_row_without_failure_kind():
         evals_module._validate_eval_result_artifact_binding(payload)
 
 
+@pytest.mark.parametrize(
+    ("backend", "required_field", "invalid_value"),
+    [
+        ("claude", "claude_cli_version", None),
+        ("claude", "claude_cli_version", ""),
+        ("claude", "claude_cli_version", " \t"),
+        ("codex", "codex_cli_version", None),
+        ("codex", "codex_cli_version", ""),
+        ("codex", "codex_cli_version", " \t"),
+        ("codex", "codex_cli_sha256", None),
+    ],
+)
+def test_result_binding_requires_local_cli_evidence(
+    backend, required_field, invalid_value
+):
+    payload = _fake_eval_result(f"{backend}-runner", "sample").to_dict()
+    payload["backend"] = backend
+    payload["model"] = "claude-fable-5" if backend == "claude" else "gpt-5.6-terra"
+    payload["claude_cli_version"] = (
+        "Claude Code 2.test" if backend == "claude" else None
+    )
+    payload["codex_cli_version"] = "codex-cli 0.test" if backend == "codex" else None
+    payload["codex_cli_sha256"] = "d" * 64 if backend == "codex" else None
+    payload[required_field] = invalid_value
+
+    with pytest.raises(ValueError, match=rf"requires {required_field}$"):
+        evals_module._validate_eval_result_artifact_binding(payload)
+
+
 def test_result_binding_rejects_terminal_infra_failure_with_artifact():
     payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
     payload["success"] = False

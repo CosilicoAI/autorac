@@ -1573,8 +1573,11 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
         result.get("claude_cli_version")
     ):
         raise EvalBoardError(f"{context} requires claude_cli_version")
-    if backend == "codex" and not _is_nonempty_string(result.get("codex_cli_version")):
-        raise EvalBoardError(f"{context} requires codex_cli_version")
+    if backend == "codex":
+        if not _is_nonempty_string(result.get("codex_cli_version")):
+            raise EvalBoardError(f"{context} requires codex_cli_version")
+        if not _is_sha256_hex(result.get("codex_cli_sha256")):
+            raise EvalBoardError(f"{context} requires codex_cli_sha256")
     if backend == "openai":
         if not _is_nonempty_string(result.get("openai_endpoint")):
             raise EvalBoardError(f"{context} requires openai_endpoint")

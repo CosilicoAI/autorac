@@ -1071,6 +1071,7 @@ def test_fold_refuses_infra_failure_that_claims_a_generated_artifact(
     [
         ("claude", "claude-fable-5", "claude_cli_version"),
         ("codex", "gpt-5.6-terra", "codex_cli_version"),
+        ("codex", "gpt-5.6-terra", "codex_cli_sha256"),
         ("openai", "gpt-5.4", "openai_endpoint"),
         ("openai", "gpt-5.4", "openai_response_model_id"),
         ("openai", "gpt-5.4", "openai_max_output_tokens"),
@@ -1091,6 +1092,33 @@ def test_fold_requires_backend_effective_environment_field(
     )
 
     with pytest.raises(EvalBoardError, match=required_field):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "field_name", "invalid_value"),
+    [
+        ("claude", "claude-fable-5", "claude_cli_version", ""),
+        ("claude", "claude-fable-5", "claude_cli_version", " \t"),
+        ("codex", "gpt-5.6-terra", "codex_cli_version", ""),
+        ("codex", "gpt-5.6-terra", "codex_cli_version", " \t"),
+    ],
+)
+def test_fold_requires_nonempty_local_cli_version(
+    tmp_path, backend, model, field_name, invalid_value
+):
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    results[0][field_name] = invalid_value
+    path = _write_payload(
+        tmp_path,
+        f"invalid-{field_name}.json",
+        _payload([("runner", backend, model)], results),
+    )
+
+    with pytest.raises(EvalBoardError, match=field_name):
         fold_eval_board([path])
 
 
@@ -1189,7 +1217,7 @@ def test_fold_refuses_effective_environment_field_for_another_backend(
         fold_eval_board([path])
 
 
-def test_fold_allows_nullable_codex_sha_and_pre_response_openai_metadata(tmp_path):
+def test_fold_refuses_nullable_codex_cli_sha256(tmp_path):
     codex_results = [
         _result(
             "terra",
@@ -1203,6 +1231,12 @@ def test_fold_allows_nullable_codex_sha_and_pre_response_openai_metadata(tmp_pat
         "codex-unreadable-executable.json",
         _payload([("terra", "codex", "gpt-5.6-terra")], codex_results),
     )
+
+    with pytest.raises(EvalBoardError, match="codex_cli_sha256"):
+        fold_eval_board([codex_path])
+
+
+def test_fold_allows_pre_response_openai_metadata(tmp_path):
     openai_results = [
         _result(
             "openai",
@@ -1227,7 +1261,6 @@ def test_fold_allows_nullable_codex_sha_and_pre_response_openai_metadata(tmp_pat
         _payload([("openai", "openai", "gpt-5.4")], openai_results),
     )
 
-    assert fold_eval_board([codex_path]).cells[(1, "terra")].state == "pass"
     assert fold_eval_board([openai_path]).cells[(1, "openai")].state == "error"
 
 

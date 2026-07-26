@@ -1172,6 +1172,20 @@ def _validate_eval_result_artifact_binding(
                 f"{artifact_name} has invalid nonnegative finite cost field "
                 f"'{field_name}'"
             )
+    backend = payload.get("backend")
+    if backend == "claude":
+        claude_cli_version = payload.get("claude_cli_version")
+        if not isinstance(claude_cli_version, str) or not claude_cli_version.strip():
+            raise ValueError(f"{artifact_name} requires claude_cli_version")
+    if backend == "codex":
+        codex_cli_version = payload.get("codex_cli_version")
+        if not isinstance(codex_cli_version, str) or not codex_cli_version.strip():
+            raise ValueError(f"{artifact_name} requires codex_cli_version")
+        if (
+            not isinstance(payload.get("codex_cli_sha256"), str)
+            or _SHA256_HEX_PATTERN.fullmatch(payload["codex_cli_sha256"]) is None
+        ):
+            raise ValueError(f"{artifact_name} requires codex_cli_sha256")
     for field_name in (
         "claude_cli_version",
         "codex_cli_version",
@@ -1198,7 +1212,6 @@ def _validate_eval_result_artifact_binding(
         or openai_max_output_tokens <= 0
     ):
         raise ValueError(f"{artifact_name} has invalid openai_max_output_tokens")
-    backend = payload.get("backend")
     claude_fields_present = payload.get("claude_cli_version") is not None
     codex_fields_present = any(
         payload.get(field_name) is not None
