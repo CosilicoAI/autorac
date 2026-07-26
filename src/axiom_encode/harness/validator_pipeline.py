@@ -1710,11 +1710,13 @@ _GERMAN_MONTH_NAME_BODY = (
 )
 _GERMAN_DAY_MONTH_YEAR_PATTERN = re.compile(
     rf"(?<!\w)(?P<day>0?[1-9]|[12]\d|3[01])\.\s*"
-    rf"{_GERMAN_MONTH_NAME_BODY}\s+(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"{_GERMAN_MONTH_NAME_BODY}\s+(?:des\s+Jahres\s+)?"
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
     re.IGNORECASE,
 )
 _GERMAN_MONTH_YEAR_PATTERN = re.compile(
-    rf"\b{_GERMAN_MONTH_NAME_BODY}\s+(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
+    rf"\b{_GERMAN_MONTH_NAME_BODY}\s+(?:des\s+Jahres\s+)?"
+    rf"(?P<year>{_TEMPORAL_YEAR_BODY})(?!\d)",
     re.IGNORECASE,
 )
 _ENGLISH_MONTH_DAY_YEAR_PATTERN = re.compile(
@@ -1738,9 +1740,16 @@ _TEMPORAL_YEAR_CUE_PATTERN = re.compile(
     rf"veranlagungszeitraum(?:s|es)?|besteuerungszeitraum(?:s|es)?|"
     rf"steuerjahr(?:es|e|en)?|"
     rf"years?|calendar\s+years?|tax(?:able)?\s+years?|assessment\s+years?"
-    rf")\s+(?P<years>{_TEMPORAL_YEAR_BODY}"
-    rf"(?:\s*(?:bis|to|through|thru|[-–—]|,|und|and|or)\s*"
+    rf")\b\s*(?:[:=]\s*)?(?P<years>{_TEMPORAL_YEAR_BODY}"
+    rf"(?:\s*(?:bis|to|through|thru|[-–—/]|,|und|and|or)\s*"
     rf"{_TEMPORAL_YEAR_BODY})*)",
+    re.IGNORECASE,
+)
+_TEMPORAL_YEAR_RANGE_PATTERN = re.compile(
+    rf"(?<!\d)(?P<start>{_TEMPORAL_YEAR_BODY})(?!\d)\s*"
+    rf"(?:bis(?:\s+(?:einschließlich|einschl\.?))?|to|through|thru|"
+    rf"[-\u2010-\u2015])\s*"
+    rf"(?P<end>{_TEMPORAL_YEAR_BODY})(?!\d)",
     re.IGNORECASE,
 )
 _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
@@ -1750,7 +1759,7 @@ _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
-    r"(?:[$£€¥₹]|(?:eur|usd|gbp|cad|aud|chf)\b)\s*$",
+    r"(?:[$£€¥₹]|(?:euros?|eur|usd|gbp|cad|aud|chf)\b)\s*$",
     re.IGNORECASE,
 )
 _CURRENCY_MARKER_AFTER_NUMBER_PATTERN = re.compile(
@@ -5722,15 +5731,47 @@ class _LegacyNumericCollector:
     grounding: list[NumericOccurrence] = field(default_factory=list)
     inventory: list[NumericOccurrence] = field(default_factory=list)
     rate_table_cell_spans: tuple[tuple[int, int], ...] = field(init=False)
+    shared_rate_spans: tuple[tuple[int, int], ...] = field(init=False)
     temporal_component_spans: tuple[tuple[int, int], ...] = field(init=False)
     money_spans: tuple[tuple[int, int], ...] = field(init=False)
 
     def __post_init__(self) -> None:
         self.rate_table_cell_spans = _pipe_table_rate_cell_spans(self.source)
         self.temporal_component_spans = _temporal_numeric_component_spans(self.source)
-        self.money_spans = tuple(
+        money_spans = {
             span for span, _value in _iter_raw_european_money_value_matches(self.source)
-        )
+        }
+        shared_rate_spans: set[tuple[int, int]] = set()
+        for match in _TEMPORAL_YEAR_RANGE_PATTERN.finditer(self.source):
+            endpoint_spans = (match.span("start"), match.span("end"))
+            has_money_context = (
+                any(
+                    endpoint_start >= money_start and endpoint_end <= money_end
+                    for endpoint_start, endpoint_end in endpoint_spans
+                    for money_start, money_end in money_spans
+                )
+                or bool(
+                    _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN.search(
+                        self.source[max(0, match.start() - 16) : match.start()]
+                    )
+                )
+                or bool(
+                    _CURRENCY_MARKER_AFTER_NUMBER_PATTERN.match(
+                        self.source[
+                            match.end() : min(len(self.source), match.end() + 16)
+                        ]
+                    )
+                )
+            )
+            if has_money_context:
+                money_spans.update(endpoint_spans)
+            if _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(
+                self.source,
+                match.end(),
+            ):
+                shared_rate_spans.update(endpoint_spans)
+        self.money_spans = tuple(sorted(money_spans))
+        self.shared_rate_spans = tuple(sorted(shared_rate_spans))
 
     def occurrence(
         self,
@@ -5752,6 +5793,10 @@ class _LegacyNumericCollector:
             force_rate_context
             or bool(_LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(self.source, end))
             or has_table_rate_context
+            or any(
+                start >= rate_start and end <= rate_end
+                for rate_start, rate_end in self.shared_rate_spans
+            )
         )
         has_money_context = (
             any(
@@ -6099,6 +6144,9 @@ def _temporal_numeric_component_spans(
         _TEMPORAL_PREPOSITION_YEAR_PATTERN,
     ):
         spans.update(match.span("year") for match in pattern.finditer(text))
+    for match in _TEMPORAL_YEAR_RANGE_PATTERN.finditer(text):
+        spans.add(match.span("start"))
+        spans.add(match.span("end"))
     for match in _TEMPORAL_YEAR_CUE_PATTERN.finditer(text):
         years_start = match.start("years")
         spans.update(
@@ -6140,6 +6188,60 @@ def _non_temporal_numeric_inventory(
     )
 
 
+def _complete_typed_year_occurrences(
+    collector: _LegacyNumericCollector,
+    occurrences: Iterable[NumericOccurrence],
+) -> tuple[NumericOccurrence, ...]:
+    """Normalize and recover typed year tokens removed by structural cleaning."""
+    typed_year_spans = {
+        span
+        for span in collector.temporal_component_spans
+        if _TEMPORAL_YEAR_TOKEN_PATTERN.fullmatch(
+            collector.source[span[0] : span[1]]
+        )
+    }
+    normalized = [
+        occurrence
+        for occurrence in occurrences
+        if not any(
+            occurrence.span != year_span
+            and occurrence.start < year_span[0]
+            and occurrence.end == year_span[1]
+            and collector.source[occurrence.start : year_span[0]] == "-"
+            for year_span in typed_year_spans
+        )
+    ]
+    existing_spans = {occurrence.span for occurrence in normalized}
+    source_view = _NumericTextView.identity(collector.source)
+    for span in sorted(typed_year_spans):
+        if span in existing_spans:
+            continue
+        raw = collector.source[span[0] : span[1]]
+        occurrence = collector.occurrence(source_view, span, float(raw))
+        insertion_index = next(
+            (
+                index
+                for index, existing in enumerate(normalized)
+                if existing.start > occurrence.start
+            ),
+            len(normalized),
+        )
+        normalized.insert(insertion_index, occurrence)
+        existing_spans.add(span)
+    typed_indices = [
+        index
+        for index, occurrence in enumerate(normalized)
+        if occurrence.span in typed_year_spans
+    ]
+    typed_occurrences = sorted(
+        (normalized[index] for index in typed_indices),
+        key=lambda occurrence: occurrence.span,
+    )
+    for index, occurrence in zip(typed_indices, typed_occurrences, strict=True):
+        normalized[index] = occurrence
+    return tuple(normalized)
+
+
 def _tokenize_profiled_numeric_occurrences(
     text: str,
     *,
@@ -6150,18 +6252,6 @@ def _tokenize_profiled_numeric_occurrences(
     view = _NumericTextView.aligned(text, cleaned)
     collector = _LegacyNumericCollector(text)
     occurrences: list[NumericOccurrence] = []
-
-    if profile == "de-DE":
-        source_view = _NumericTextView.identity(text)
-        for match in _DOTTED_DATE_PATTERN.finditer(text):
-            with contextlib.suppress(ValueError):
-                occurrences.append(
-                    collector.occurrence(
-                        source_view,
-                        match.span("year"),
-                        float(match.group("year")),
-                    )
-                )
 
     for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
         if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
@@ -6179,6 +6269,7 @@ def _tokenize_profiled_numeric_occurrences(
             if value is not None:
                 occurrences.append(collector.occurrence(view, match.span(), value))
 
+    occurrences = list(_complete_typed_year_occurrences(collector, occurrences))
     occurrences.sort(key=lambda occurrence: (occurrence.start, occurrence.end))
     return _NumericTokenization(
         grounding=tuple(occurrences),
@@ -6341,13 +6432,6 @@ def _tokenize_numeric_occurrences_from_text(
         if value is not None:
             year_matches.append((match.span(), value * 12))
     for span, value in unique_matches(year_matches):
-        add_both(raw_view, span, value)
-
-    dotted_year_matches: list[tuple[tuple[int, int], float]] = []
-    for match in _DOTTED_DATE_PATTERN.finditer(raw_text):
-        with contextlib.suppress(ValueError):
-            dotted_year_matches.append((match.span("year"), float(match.group("year"))))
-    for span, value in unique_matches(dotted_year_matches):
         add_both(raw_view, span, value)
 
     centime_match = _CENTIME_UNIT_PATTERN.search(raw_text)
@@ -6799,6 +6883,12 @@ def _tokenize_numeric_occurrences_from_text(
         )
         grounding_spans.append(match.span(1))
 
+    collector.grounding = list(
+        _complete_typed_year_occurrences(collector, collector.grounding)
+    )
+    collector.inventory = list(
+        _complete_typed_year_occurrences(collector, collector.inventory)
+    )
     occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
     normalized_inventory = _non_temporal_numeric_inventory(
         occurrence
