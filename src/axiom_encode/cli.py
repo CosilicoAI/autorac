@@ -29169,7 +29169,10 @@ def _closest_exact_source_excerpt(
         return matches[0] if len(matches) == 1 else None
 
     candidates = _exact_source_excerpt_candidate_spans(source)
-    direct_match = re.search(whitespace_pattern, source, flags=re.IGNORECASE)
+    direct_matches = list(re.finditer(whitespace_pattern, source, flags=re.IGNORECASE))
+    if len(direct_matches) > 1:
+        return None
+    direct_match = direct_matches[0] if direct_matches else None
     if direct_match is not None:
         enclosing = [
             candidate
@@ -48178,6 +48181,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=manifest.rulespec_dependency_roots,
             require_complete_source_unit=case.require_complete_source_unit,
+            amendment_documents=source_unit.amendment_documents,
         )
         validation_error = _eval_artifact_validation_error(
             result.metrics,

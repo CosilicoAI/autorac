@@ -4160,6 +4160,7 @@ class TestCmdEvalSuiteRevalidate:
                     body="authoritative source text",
                     citation_path="us/statute/7/2014/e/6/A",
                     requested="us/statute/7/2014/e/6/A",
+                    amendment_documents=("attached-amendment",),
                     source_attestation=_complete_source_attestation(
                         "us/statute/7/2014/e/6/A"
                     ),
@@ -4194,6 +4195,9 @@ class TestCmdEvalSuiteRevalidate:
             dependency_root
         ]
         assert mock_eval.call_args.kwargs["require_complete_source_unit"] is True
+        assert mock_eval.call_args.kwargs["amendment_documents"] == (
+            "attached-amendment",
+        )
         ledger = json.loads((source_output / "suite-results.jsonl").read_text())
         assert ledger["result"]["metrics"]["compile_pass"] is compile_pass
         assert ledger["result"]["metrics"]["ci_pass"] is ci_pass
@@ -7861,6 +7865,17 @@ def test_closest_exact_source_excerpt_rejects_identical_cross_record_matches():
     excerpt = "Der Wert beträgt 25 Euro."
     repaired = _closest_exact_source_excerpt(
         source_text=(excerpt + PROOF_EVIDENCE_SEGMENT_SEPARATOR + excerpt),
+        excerpt=excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_repeated_direct_match():
+    excerpt = "Der Wert beträgt 25 Euro."
+    repaired = _closest_exact_source_excerpt(
+        source_text=f"{excerpt} Eine Ausnahme gilt. {excerpt}",
         excerpt=excerpt,
         numeric_profile="de-DE",
     )
