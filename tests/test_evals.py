@@ -5295,6 +5295,65 @@ def test_workspace_artifact_crossing_case_budget_is_discarded(
     assert result.timeout_stage == "case_budget"
 
 
+def test_encoder_timeout_discards_response_and_direct_workspace_artifacts(tmp_path):
+    artifact_root = tmp_path / "out"
+    artifact_root.mkdir()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    output_file = artifact_root / "sample.yaml"
+    workspace_file = workspace_root / "sample.yaml"
+    workspace_test_file = workspace_root / "sample.test.yaml"
+    bundle = (
+        "=== FILE: sample.yaml ===\n"
+        "format: rulespec/v1\n"
+        "rules: []\n"
+        "=== FILE: sample.test.yaml ===\n"
+        "[]\n"
+    )
+
+    def timed_out_generation(*_args, **_kwargs):
+        workspace_file.write_text("format: rulespec/v1\nrules: []\n")
+        workspace_test_file.write_text("[]\n")
+        return EvalPromptResponse(
+            text=bundle,
+            duration_ms=600_000,
+            error="Codex eval timed out",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
+        )
+
+    with patch(
+        "axiom_encode.harness.evals._run_prompt_eval",
+        side_effect=timed_out_generation,
+    ) as mock_prompt_eval:
+        response, wrote_artifact, retry_count, materialized_paths = (
+            evals_module._run_prompt_eval_with_empty_artifact_retry(
+                parse_runner_spec("codex:gpt-5.4"),
+                SimpleNamespace(root=workspace_root),
+                "prompt",
+                output_file,
+                "source",
+                "sample.yaml",
+                True,
+                artifact_root=artifact_root,
+            )
+        )
+
+    assert response.timed_out is True
+    assert response.text == ""
+    assert wrote_artifact is False
+    assert retry_count == 1
+    assert materialized_paths == frozenset()
+    assert not output_file.exists()
+    assert not output_file.with_suffix(".test.yaml").exists()
+    assert not workspace_file.exists()
+    assert not workspace_test_file.exists()
+    assert mock_prompt_eval.call_count == 2
+
+
 def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
     policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
     corpus_release, source_unit = _write_test_source_unit(
@@ -5395,6 +5454,113 @@ def test_exhausted_encoder_timeout_classification_survives_result_round_trip(
     assert restored.timeout_attempts == 2
     assert restored.metrics is None
     assert restored.output_file == ""
+
+
+def test_timed_out_truncated_artifact_is_never_scored_as_validation_failure(
+    tmp_path,
+):
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path, "source states 451."
+    )
+    truncated_bundle = (
+        "=== FILE: sample.yaml ===\n"
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  summary: truncated timeout output\n"
+        "rules: []\n"
+        "=== FILE: sample.test.yaml ===\n"
+        "[]\n"
+    )
+    timed_out_responses = [
+        EvalPromptResponse(
+            text=truncated_bundle,
+            duration_ms=600_000,
+            trace={
+                "timed_out": True,
+                "timeout_stage": "encoder",
+                "timeout_reason": "wall",
+                "timeout_seconds": 600,
+            },
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
+        )
+        for _ in range(2)
+    ]
+    failed_metrics = EvalArtifactMetrics(
+        compile_pass=False,
+        compile_issues=["truncated artifact"],
+        ci_pass=False,
+        ci_issues=[],
+        embedded_source_present=False,
+        grounded_numeric_count=0,
+        ungrounded_numeric_count=0,
+        grounding=[],
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            side_effect=timed_out_responses,
+        ) as mock_prompt_eval,
+        patch(
+            "axiom_encode.harness.evals.evaluate_artifact",
+            return_value=failed_metrics,
+        ) as mock_evaluate,
+    ):
+        [result] = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["codex:gpt-5.4"],
+            output_root=tmp_path / "out",
+            policy_path=policy_repo_root,
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+            mode="cold",
+        )
+
+    restored = _eval_result_from_payload(result.to_dict())
+    assert restored.success is False
+    assert restored.failure_kind == "timeout"
+    assert restored.timed_out is True
+    assert restored.timeout_stage == "encoder"
+    assert restored.timeout_reason == "wall"
+    assert restored.timeout_seconds == 600
+    assert restored.timeout_attempts == 2
+    assert restored.metrics is None
+    assert restored.output_file == ""
+    assert restored.generated_output_sha256 is None
+    assert mock_prompt_eval.call_count == 2
+    mock_evaluate.assert_not_called()
+
+
+def test_timed_out_response_outcome_prioritizes_timeout_over_artifact_validation():
+    response = EvalPromptResponse(
+        text="truncated",
+        duration_ms=600_000,
+        timed_out=True,
+        timeout_stage="encoder",
+        timeout_reason="wall",
+        timeout_seconds=600,
+        timeout_attempts=1,
+    )
+
+    outcome = evals_module._eval_result_outcome(
+        response,
+        wrote_artifact=True,
+        validation_error="Generated RuleSpec failed compile validation",
+    )
+
+    assert outcome == {
+        "failure_kind": "timeout",
+        "timed_out": True,
+        "timeout_stage": "encoder",
+        "timeout_reason": "wall",
+        "timeout_seconds": 600,
+        "timeout_attempts": 1,
+    }
 
 
 def test_timeout_then_plain_error_keeps_terminal_error_classification():
@@ -12772,8 +12938,7 @@ class TestEvalSuiteManifest:
         identity = evals_module._build_eval_suite_manifest_identity(manifest)
 
         assert [
-            case_identity["oracle"]
-            for case_identity in identity["case_identities"]
+            case_identity["oracle"] for case_identity in identity["case_identities"]
         ] == ["policyengine", "none"]
 
     def test_rejects_removed_source_id_field(self, tmp_path):
