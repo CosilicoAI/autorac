@@ -717,9 +717,37 @@ def _fake_verified_eval_suite_artifacts(
     result_index = 0
     for case_index in sorted(completed_case_indexes):
         case = manifest.cases[case_index - 1]
-        for _runner in runner_identities:
+        for runner_identity in runner_identities:
             result = results[result_index]
             result_index += 1
+            backend = runner_identity["backend"]
+            if isinstance(result, dict):
+                if backend == "claude":
+                    result.setdefault(
+                        "claude_cli_version",
+                        "2.1.test (Claude Code)",
+                    )
+                elif backend == "codex":
+                    result.setdefault("codex_cli_version", "codex-cli 0.test")
+                    result.setdefault("codex_cli_sha256", "d" * 64)
+                elif backend == "openai":
+                    result.setdefault(
+                        "openai_endpoint",
+                        "https://api.openai.com/v1/responses",
+                    )
+                    result.setdefault("openai_response_model_id", result.get("model"))
+                    result.setdefault("openai_service_tier", "default")
+                    result.setdefault("openai_max_output_tokens", 128_000)
+            elif backend == "claude":
+                result.claude_cli_version = "2.1.test (Claude Code)"
+            elif backend == "codex":
+                result.codex_cli_version = "codex-cli 0.test"
+                result.codex_cli_sha256 = "d" * 64
+            elif backend == "openai":
+                result.openai_endpoint = "https://api.openai.com/v1/responses"
+                result.openai_response_model_id = result.model
+                result.openai_service_tier = "default"
+                result.openai_max_output_tokens = 128_000
             admission = {
                 "schema": "axiom-encode/eval-result-admission/v2",
                 "run": {
