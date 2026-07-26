@@ -165,7 +165,8 @@ ABSATZ_5 = (
 )
 ABSATZ_6 = (
     "(6) Das Splittingverfahren gilt für verwitwete Personen, wenn die "
-    "Voraussetzungen vorliegen, es sei denn, sie haben wieder geheiratet."
+    "Voraussetzungen nach § 26 und § 32 vorliegen, es sei denn, sie haben "
+    "wieder geheiratet."
 )
 
 ABSATZ_1_RULES = """\
@@ -684,6 +685,45 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
+def test_deferral_cannot_invent_source_unstated_section():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: Cannot be computed because section 9999 is missing.
+      blocked_by:
+        - de:statutes/estg/9999#fictional_amount
+rules: []
+"""
+    source = "(6) Das Einkommen wird mit 2 multipliziert."
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
+def test_invalid_present_blocker_cannot_fall_back_to_prose_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#splitting_rule
+      reason: Cannot be computed until the conditions under section 26 exist.
+      blocked_by:
+        - de:statutes/estg/32a#same_unit
+rules: []
+"""
+
+    result = _analyze(content, ABSATZ_6, test_cases=[])
+
+    assert _has_issue(result, "(6)", "deferral", "dependency")
+
+
 def test_root_deferral_does_not_blanket_structured_source_unit():
     content = """\
 format: rulespec/v1
@@ -717,7 +757,11 @@ module:
         - de:statutes/estg/26#assessment_base
 rules: []
 """
-    source = "(1) Es gelten:\n1. Zweig eins;\n2. Zweig zwei."
+    source = (
+        "(1) Für die Bemessungsgrundlage nach § 26 gelten:\n"
+        "1. Zweig eins;\n"
+        "2. Zweig zwei."
+    )
 
     result = _analyze(content, source, test_cases=[])
 
@@ -1432,7 +1476,8 @@ rules:
 
 def test_unstructured_formula_requires_unit_level_deferral():
     source = (
-        "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
+        "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert "
+        "nach § 26."
     )
     child_deferral = """\
 format: rulespec/v1

@@ -422,6 +422,8 @@ def _analyze_rulespec_payload(
     deferred_paths, imprecise_deferrals = _deferred_coverage(
         payload,
         corpus_citation_path=corpus_citation_path,
+        source_text=source_text,
+        branches=branches,
     )
     issues: list[str] = []
     issues.extend(imprecise_deferrals)
@@ -883,6 +885,8 @@ def _deferred_coverage(
     payload: dict[str, Any],
     *,
     corpus_citation_path: str,
+    source_text: str,
+    branches: Sequence[SourceStructureBranch],
 ) -> tuple[set[tuple[str, ...]], list[str]]:
     module = payload.get("module")
     records = module.get("deferred_outputs") if isinstance(module, dict) else None
@@ -940,17 +944,29 @@ def _deferred_coverage(
             reason,
             corpus_citation_path=corpus_citation_path,
         )
-        precise = (
-            (
+        source_scope_text = _deferred_source_scope_text(
+            path,
+            source_text=source_text,
+            branches=branches,
+        )
+        if "blocked_by" in record:
+            precise = (
                 exact_blockers
                 and bool(_MISSING_DEPENDENCY_LANGUAGE.search(reason))
                 and all(
                     _reason_identifies_blocker(reason, blocker)
                     for blocker in blocker_targets
                 )
+                and all(
+                    _reason_identifies_blocker(source_scope_text, blocker)
+                    for blocker in blocker_targets
+                )
             )
-            or reason_identifies_dependency
-        )
+        else:
+            precise = (
+                reason_identifies_dependency
+                and _reason_dependency_is_source_bound(reason, source_scope_text)
+            )
         if precise:
             covered.add(path)
         else:
@@ -964,6 +980,18 @@ def _deferred_coverage(
                 "dependency/citation."
             )
     return covered, issues
+
+
+def _deferred_source_scope_text(
+    path: tuple[str, ...],
+    *,
+    source_text: str,
+    branches: Sequence[SourceStructureBranch],
+) -> str:
+    if not path:
+        return source_text
+    candidates = [branch.text for branch in branches if branch.path == path]
+    return max(candidates, key=len, default="")
 
 
 def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
@@ -988,6 +1016,36 @@ def _reason_identifies_blocker(reason: str, blocker: str) -> bool:
             normalized_reason,
         )
     )
+
+
+def _reason_dependency_is_source_bound(reason: str, source_scope_text: str) -> bool:
+    """Require a prose-only dependency citation to occur in the deferred source."""
+
+    for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
+        dependency = match.group(0).strip()
+        if "#" in dependency and ":" in dependency:
+            if _reason_identifies_blocker(source_scope_text, dependency):
+                return True
+            continue
+        section_match = re.search(r"\d+[a-z]?", dependency, flags=re.IGNORECASE)
+        if section_match and _reason_identifies_blocker(
+            source_scope_text,
+            f"xx:statutes/source/{section_match.group(0)}#dependency",
+        ):
+            return True
+        normalized_dependency = re.sub(
+            r"[^a-z0-9äöüß]+",
+            " ",
+            dependency.lower(),
+        ).strip()
+        normalized_source = re.sub(
+            r"[^a-z0-9äöüß]+",
+            " ",
+            source_scope_text.lower(),
+        ).strip()
+        if normalized_dependency and normalized_dependency in normalized_source:
+            return True
+    return False
 
 
 def _reason_names_external_dependency(
