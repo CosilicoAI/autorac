@@ -1594,10 +1594,15 @@ def _companion_test_issues(
     )
     missing_rounding_formula: list[tuple[SourceStructureBranch, str]] = []
     rounding_witnesses: dict[
-        tuple[SourceStructureBranch, str], set[tuple[str, int]]
+        tuple[SourceStructureBranch, str], set[tuple[str, int, str]]
     ] = {}
+    require_rounding_clause_binding = len(rounding_obligations) > 1
     for obligation in rounding_obligations:
         branch, direction = obligation
+        source_formula_branch = _rounding_source_formula_branch(
+            branch,
+            formula_branches=formula_branches,
+        )
         rule_names = {
             name
             for name in _rules_covering_branch(branch, principal_rule_paths)
@@ -1614,6 +1619,10 @@ def _companion_test_issues(
                     asserted_by_rule=asserted_by_rule,
                     direction=direction,
                     formula_environment=formula_environment,
+                    source_formula_branch=source_formula_branch,
+                    require_clause_binding=require_rounding_clause_binding,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
                 )
                 for name in rule_names
             )
@@ -2443,6 +2452,26 @@ def _case_formula_execution(
         case,
     )
     environment: dict[str, Any] = dict(constant_environment)
+    input_environment = _case_input_formula_environment(case)
+    if input_environment is None:
+        return None
+    environment.update(input_environment)
+    formula_text = _rule_formula_text_for_case(rule, case)
+    if formula_text is None:
+        return None
+    return _execute_formula_text(
+        formula_text,
+        environment=environment,
+        constant_environment=constant_environment,
+    )
+
+
+def _case_input_formula_environment(
+    case: dict[str, Any],
+) -> dict[str, Any] | None:
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return None
     input_environment: dict[str, Any] = {}
     for key, value in inputs.items():
         boolean_value = _boolean_value(value)
@@ -2456,15 +2485,7 @@ def _case_formula_execution(
             ):
                 return None
             input_environment[name] = normalized_value
-    environment.update(input_environment)
-    formula_text = _rule_formula_text_for_case(rule, case)
-    if formula_text is None:
-        return None
-    return _execute_formula_text(
-        formula_text,
-        environment=environment,
-        constant_environment=constant_environment,
-    )
+    return input_environment
 
 
 def _execute_formula_text(
@@ -3003,7 +3024,7 @@ def _evaluate_formula_selector(
     environment: dict[str, Any],
 ) -> Any:
     try:
-        expression = ast.parse(selector, mode="eval").body
+        expression = ast.parse(selector.strip(), mode="eval").body
     except SyntaxError:
         return _UNRESOLVED_CONDITION_VALUE
     return _evaluate_condition_expression(expression, environment)
@@ -3976,6 +3997,38 @@ def _source_rounding_obligations(
     return tuple(obligations)
 
 
+def _rounding_source_formula_branch(
+    rounding_branch: SourceStructureBranch,
+    *,
+    formula_branches: Sequence[SourceStructureBranch],
+) -> SourceStructureBranch | None:
+    containing = [
+        branch
+        for branch in formula_branches
+        if branch.path == rounding_branch.path
+        and branch.start <= rounding_branch.start
+        and rounding_branch.end <= branch.end
+    ]
+    if containing:
+        return min(
+            containing,
+            key=lambda branch: branch.end - branch.start,
+        )
+    same_path = [
+        branch
+        for branch in formula_branches
+        if branch.path == rounding_branch.path
+    ]
+    return min(
+        same_path,
+        key=lambda branch: min(
+            abs(branch.start - rounding_branch.end),
+            abs(rounding_branch.start - branch.end),
+        ),
+        default=None,
+    )
+
+
 def _unwitnessed_exception_branches(
     exception_branches: Sequence[SourceStructureBranch],
     *,
@@ -4257,8 +4310,12 @@ def _fractional_rounding_case_witnesses(
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     direction: str,
     formula_environment: dict[str, Any],
-) -> set[tuple[str, int]]:
-    evidence: set[tuple[str, int]] = set()
+    source_formula_branch: SourceStructureBranch | None,
+    require_clause_binding: bool,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> set[tuple[str, int, str]]:
+    evidence: set[tuple[str, int, str]] = set()
     functions = {
         "nearest" if direction == "nearest" else (
             "ceil" if direction == "upward" else "floor"
@@ -4278,19 +4335,63 @@ def _fractional_rounding_case_witnesses(
             direction,
         ):
             continue
-        rounded_operand_identifiers = _rounding_operand_identifier_names(
+        operative_leaf = _simplified_formula_text(
             execution.leaf,
-            functions=functions,
+            environment=execution.constant_environment,
         )
-        if any(
-            _input_key_names(key) & rounded_operand_identifiers
-            and any(
-                not float(value).is_integer()
-                for value in _numeric_test_input_values(input_value)
-            )
-            for key, input_value in inputs.items()
+        input_environment = _case_input_formula_environment(case)
+        if input_environment is None:
+            continue
+        evaluation_environment = dict(execution.constant_environment)
+        evaluation_environment.update(input_environment)
+        for function_name, operand in _rounding_call_operands(
+            operative_leaf,
+            functions=functions,
         ):
-            evidence.add((rule_name, id(case)))
+            effective_operand = _rounding_demonstrated_operand(
+                operand,
+                direction=direction,
+            )
+            if effective_operand is None:
+                continue
+            operand_value = _evaluate_formula_selector(
+                effective_operand,
+                evaluation_environment,
+            )
+            if (
+                not isinstance(operand_value, (int, float))
+                or isinstance(operand_value, bool)
+                or float(operand_value).is_integer()
+                or not _fractional_input_materially_affects_operand(
+                    case,
+                    effective_operand,
+                    evaluation_environment=evaluation_environment,
+                    operand_value=float(operand_value),
+                )
+            ):
+                continue
+            if (
+                source_formula_branch is not None
+                and not _rounding_call_binds_source_clause(
+                    effective_operand,
+                    operand_value=float(operand_value),
+                    execution=execution,
+                    source_formula_branch=source_formula_branch,
+                    formula_environment=formula_environment,
+                    require_clause_binding=require_clause_binding,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
+                )
+            ):
+                continue
+            call_key = (
+                f"{function_name}:"
+                + _formula_leaf_semantic_key(
+                    effective_operand,
+                    formula_environment=execution.constant_environment,
+                )
+            )
+            evidence.add((rule_name, id(case), call_key))
     return evidence
 
 
@@ -4310,12 +4411,12 @@ def _formula_execution_implements_rounding(
     ) is not None
 
 
-def _rounding_operand_identifier_names(
+def _rounding_call_operands(
     formula_text: str,
     *,
     functions: set[str],
-) -> set[str]:
-    names: set[str] = set()
+) -> tuple[tuple[str, str], ...]:
+    calls: list[tuple[str, str]] = []
     function_names = {"floor", "ceil"} & functions
     if "nearest" in functions:
         function_names.add("floor")
@@ -4326,27 +4427,207 @@ def _rounding_operand_identifier_names(
                 and not re.search(r"\+\s*0?\.5\b", operand)
             ):
                 continue
-            names.update(
-                identifier
-                for identifier in _FORMULA_IDENTIFIER.findall(operand)
-                if identifier.lower()
-                not in {
-                    "if",
-                    "else",
-                    "and",
-                    "or",
-                    "not",
-                    "floor",
-                    "ceil",
-                    "min",
-                    "max",
-                    "true",
-                    "false",
-                    "holds",
-                    "not_holds",
-                }
-            )
-    return names
+            calls.append((function_name, operand))
+    return tuple(calls)
+
+
+def _rounding_demonstrated_operand(
+    operand: str,
+    *,
+    direction: str,
+) -> str | None:
+    if direction != "nearest":
+        return operand
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(operand.strip(), mode="eval").body
+        if isinstance(expression, ast.BinOp) and isinstance(
+            expression.op,
+            ast.Add,
+        ):
+            left_value = _known_numeric_formula_value(expression.left, {})
+            right_value = _known_numeric_formula_value(expression.right, {})
+            if left_value is not None and math.isclose(float(left_value), 0.5):
+                return ast.unparse(expression.right)
+            if right_value is not None and math.isclose(float(right_value), 0.5):
+                return ast.unparse(expression.left)
+    return None
+
+
+def _fractional_input_materially_affects_operand(
+    case: dict[str, Any],
+    operand: str,
+    *,
+    evaluation_environment: dict[str, Any],
+    operand_value: float,
+) -> bool:
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return False
+    operand_names = set(_FORMULA_IDENTIFIER.findall(operand))
+    for key, value in inputs.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or float(value).is_integer()
+        ):
+            continue
+        aliases = _input_key_names(key) & operand_names
+        if not aliases:
+            continue
+        replacement = float(math.floor(float(value)))
+        changed_environment = dict(evaluation_environment)
+        for alias in aliases:
+            changed_environment[alias] = replacement
+        changed_value = _evaluate_formula_selector(
+            operand,
+            changed_environment,
+        )
+        if (
+            isinstance(changed_value, (int, float))
+            and not isinstance(changed_value, bool)
+            and not math.isclose(float(changed_value), operand_value)
+        ):
+            return True
+    return False
+
+
+def _rounding_call_matches_source_formula(
+    operand: str,
+    *,
+    operand_value: float,
+    execution: _FormulaExecution,
+    source_formula_branch: SourceStructureBranch,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    interval = _formula_branch_interval(
+        source_formula_branch,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
+    operand_execution = _FormulaExecution(
+        (),
+        operand,
+        (type(operand_value).__name__, repr(operand_value)),
+        operand_value == 0,
+        execution.constant_environment,
+    )
+    return _formula_execution_matches_source_branch(
+        operand_execution,
+        source_formula_branch,
+        interval=interval,
+        formula_environment=formula_environment,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def _rounding_call_binds_source_clause(
+    operand: str,
+    *,
+    operand_value: float,
+    execution: _FormulaExecution,
+    source_formula_branch: SourceStructureBranch,
+    formula_environment: dict[str, Any],
+    require_clause_binding: bool,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    formula_match = _rounding_call_matches_source_formula(
+        operand,
+        operand_value=operand_value,
+        execution=execution,
+        source_formula_branch=source_formula_branch,
+        formula_environment=formula_environment,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    if not require_clause_binding:
+        return formula_match
+    source_has_distinguishing_computation = bool(
+        _formula_operation_kinds(source_formula_branch.text)
+        or extract_numeric_occurrences(
+            authoritative_numeric_recall_text(source_formula_branch.text)
+        )
+    )
+    if source_has_distinguishing_computation:
+        return formula_match
+    return _rounding_call_matches_clause_tokens(
+        operand,
+        source_formula_branch,
+    )
+
+
+def _rounding_call_matches_clause_tokens(
+    operand: str,
+    branch: SourceStructureBranch,
+) -> bool:
+    operand_tokens = _rounding_semantic_tokens(operand)
+    source_tokens = _rounding_semantic_tokens(branch.text)
+    ordinal_by_path = {
+        "1": "first",
+        "2": "second",
+        "3": "third",
+        "4": "fourth",
+        "5": "fifth",
+    }
+    source_tokens.update(
+        ordinal_by_path[item]
+        for item in branch.path
+        if item in ordinal_by_path
+    )
+    return bool(operand_tokens & source_tokens)
+
+
+def _rounding_semantic_tokens(text: str) -> set[str]:
+    normalized = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    tokens = {
+        token.lower()
+        for token in re.findall(r"[A-Za-zÄÖÜäöüß]+", normalized)
+    }
+    translations = {
+        "erste": "first",
+        "erster": "first",
+        "erstes": "first",
+        "zweite": "second",
+        "zweiter": "second",
+        "zweites": "second",
+        "dritte": "third",
+        "dritter": "third",
+        "drittes": "third",
+    }
+    tokens.update(
+        translations[token]
+        for token in tuple(tokens)
+        if token in translations
+    )
+    return tokens - {
+        "amount",
+        "betrag",
+        "der",
+        "die",
+        "das",
+        "ein",
+        "eine",
+        "einkommen",
+        "income",
+        "ergebnis",
+        "result",
+        "steuer",
+        "tax",
+        "wird",
+        "ist",
+        "und",
+        "and",
+        "auf",
+        "volle",
+        "euro",
+        "round",
+        "rounded",
+        "rounding",
+        "abzurunden",
+        "aufzurunden",
+    }
 
 
 def _balanced_call_operands(text: str, function_name: str) -> Iterable[str]:

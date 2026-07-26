@@ -4235,3 +4235,166 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert _has_issue(result, "formula branch")
+
+
+def _single_rounding_content(formula: str) -> str:
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: {formula}
+"""
+
+
+def test_neutralized_fractional_input_cannot_witness_rounding():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
+        "auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content(
+        "floor(income * multiplier + fractional_probe * 0)",
+    )
+    case = {
+        "name": "neutral fractional probe",
+        "period": "2026",
+        "input": {"income": 10, "fractional_probe": 0.5},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+def test_fractional_input_must_leave_the_rounded_operand_fractional():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
+        "auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content("floor(income * multiplier)")
+    case = {
+        "name": "integral computed operand",
+        "period": "2026",
+        "input": {"income": 10.5},
+        "output": {"amount": 21},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+def test_dead_rounding_call_cannot_witness_source_rounding():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet. "
+        "Das Ergebnis ist auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content(
+        "floor(income * multiplier) + 0 * floor(dummy_amount)",
+    )
+    case = {
+        "name": "dead fractional call",
+        "period": "2026",
+        "input": {"income": 10, "dummy_amount": 10.5},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+MULTI_ROUNDING_SOURCE = """\
+(1) Der erste Betrag ist auf volle Euro abzurunden.
+(2) Der zweite Betrag ist auf volle Euro abzurunden.
+"""
+
+MULTI_ROUNDING_CONTENT = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: total_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: floor(first_amount) + floor(second_amount)
+"""
+
+
+def _multi_rounding_case(
+    name: str,
+    *,
+    first_amount: float,
+    second_amount: float,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "period": "2026",
+        "input": {
+            "first_amount": first_amount,
+            "second_amount": second_amount,
+        },
+        "output": {
+            "total_amount": int(first_amount // 1 + second_amount // 1),
+        },
+    }
+
+
+def test_each_source_rounding_clause_needs_its_own_affected_call():
+    first_only = [
+        _multi_rounding_case(
+            "first fractional one",
+            first_amount=10.5,
+            second_amount=20,
+        ),
+        _multi_rounding_case(
+            "first fractional two",
+            first_amount=11.5,
+            second_amount=20,
+        ),
+    ]
+    complete = [
+        _multi_rounding_case(
+            "first fractional",
+            first_amount=10.5,
+            second_amount=20,
+        ),
+        _multi_rounding_case(
+            "second fractional",
+            first_amount=10,
+            second_amount=20.5,
+        ),
+    ]
+
+    missing_second = _analyze(
+        MULTI_ROUNDING_CONTENT,
+        MULTI_ROUNDING_SOURCE,
+        test_cases=first_only,
+    )
+    both_calls = _analyze(
+        MULTI_ROUNDING_CONTENT,
+        MULTI_ROUNDING_SOURCE,
+        test_cases=complete,
+    )
+
+    assert _has_issue(missing_second, "rounding", "fractional")
+    assert not both_calls.issues
