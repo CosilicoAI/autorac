@@ -549,7 +549,15 @@ def _analyze_rulespec_payload(
     issues.extend(imprecise_deferrals)
 
     for branch in branches:
-        if _path_covered(branch.path, all_covered_paths, deferred_paths):
+        if _path_covered(
+            branch.path,
+            all_covered_paths,
+            deferred_paths,
+        ) or _is_marker_only_container(
+            branch,
+            branches=branches,
+            source_text=source_text,
+        ):
             continue
         issues.append(
             "[complete-source-unit:structure] "
@@ -709,12 +717,12 @@ def _rule_coverage(
             elif not branches:
                 paths.add(())
         for path in paths:
-            all_paths.update(_path_prefixes(path))
+            all_paths.add(path)
         if kind in {"derived", "derived_relation"} and name:
             principal_rules[name] = rule
             principal_rule_paths.setdefault(name, set()).update(paths)
             for path in paths:
-                principal_paths.update(_path_prefixes(path))
+                principal_paths.add(path)
     return all_paths, principal_paths, principal_rules, principal_rule_paths
 
 
@@ -1352,10 +1360,25 @@ def _rulespec_target_base(corpus_citation_path: str) -> str:
     return f"{jurisdiction}:{plural}/{'/'.join(tail)}"
 
 
-def _path_prefixes(path: tuple[str, ...]) -> set[tuple[str, ...]]:
-    if not path:
-        return {()}
-    return {path[:index] for index in range(1, len(path) + 1)}
+def _is_marker_only_container(
+    branch: SourceStructureBranch,
+    *,
+    branches: Sequence[SourceStructureBranch],
+    source_text: str,
+) -> bool:
+    """Ignore a parent wrapper only when it has no operative chapeau text."""
+
+    direct_child_starts = [
+        candidate.start
+        for candidate in branches
+        if len(candidate.path) == len(branch.path) + 1
+        and candidate.path[: len(branch.path)] == branch.path
+        and branch.start <= candidate.start < branch.end
+    ]
+    if not direct_child_starts:
+        return False
+    chapeau = source_text[branch.start : min(direct_child_starts)]
+    return re.search(r"\w", _strip_source_clause_marker(chapeau)) is None
 
 
 def _path_covered(
