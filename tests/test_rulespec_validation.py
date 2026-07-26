@@ -8323,7 +8323,15 @@ def test_typed_temporal_occurrences_stay_grounding_only(
 
 
 @pytest.mark.parametrize("profile", ("legacy", "de-DE"))
-@pytest.mark.parametrize("source_text", ("Jahr 2025a", "year 2025_code"))
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Jahr 2025a",
+        "year 2025_code",
+        "Jahr 2025.1",
+        "Jahr 2025,00a",
+    ),
+)
 def test_temporal_year_recovery_respects_numeric_token_boundaries(
     profile,
     source_text,
@@ -8337,8 +8345,14 @@ def test_temporal_year_recovery_respects_numeric_token_boundaries(
         profile=profile,
     )
 
-    assert all(occurrence.value != 2025 for occurrence in grounding)
-    assert all(occurrence.value != 2025 for occurrence in inventory)
+    assert all(
+        occurrence.raw != "2025" and not occurrence.has_temporal_context
+        for occurrence in grounding
+    )
+    assert all(
+        occurrence.raw != "2025" and not occurrence.has_temporal_context
+        for occurrence in inventory
+    )
 
 
 @pytest.mark.parametrize("profile", ("legacy", "de-DE"))
