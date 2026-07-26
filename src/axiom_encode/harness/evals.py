@@ -9308,8 +9308,10 @@ Complete-source-unit mode is enabled for this request:
   Satz enumerations. If a branch cannot be encoded, use a precise typed
   deferral that names the exact branch and its missing dependency or citation;
   never omit it silently. Put the structural branch in the deferred output
-  path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`) and list
-  exact missing RuleSpec targets under `blocked_by`.
+  path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`). Include
+  `blocked_by` only for known exact RuleSpec targets with a `#rule_fragment`;
+  otherwise omit `blocked_by` and name the exact missing legal dependency or
+  citation in `reason`. Never guess a blocker target.
 - Companion tests must execute every source-stated formula branch, boundary,
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
