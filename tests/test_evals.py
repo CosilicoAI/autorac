@@ -2070,6 +2070,97 @@ def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
         assert expected_url in prompt
 
 
+def test_build_eval_prompt_redacts_invalid_policyengine_hint_host_path(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("Legal source.")
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+    )
+    hostile_hint = "/Users/private/receiver/policyengine-rule.json"
+
+    prompt = _build_eval_prompt(
+        "us/statute/example/section-1",
+        "cold",
+        workspace,
+        [],
+        target_file_name="target.yaml",
+        include_tests=True,
+        runner_backend="codex",
+        policyengine_rule_hint=hostile_hint,
+    )
+
+    assert hostile_hint not in prompt
+    assert "<opaque-host-path>" in prompt
+    assert "not a valid local RuleSpec identifier" in prompt
+
+
+@pytest.mark.parametrize(
+    "host_path",
+    [
+        "/Users/private/corpus/source.json",
+        r"C:\Users\private\corpus\source.json",
+        "file:///Users/private/corpus/source.json",
+        "//server/share/private/source.json",
+        r"\\server\share\private\source.json",
+    ],
+    ids=["posix", "windows", "file-uri", "posix-unc", "windows-unc"],
+)
+def test_build_eval_prompt_rejects_host_paths_in_authoritative_source(
+    tmp_path,
+    host_path,
+):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text(f"Legal source copied from {host_path}.")
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+    )
+
+    with pytest.raises(ValueError, match="authoritative source text.*host path"):
+        _build_eval_prompt(
+            "us/statute/example/section-1",
+            "cold",
+            workspace,
+            [],
+            target_file_name="target.yaml",
+        )
+
+
+def test_build_eval_prompt_rejects_host_paths_in_authoritative_context(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    context_path = workspace_root / "context" / "allowed.yaml"
+    context_path.parent.mkdir(parents=True)
+    source_file = workspace_root / "source.txt"
+    source_file.write_text("Legal source.")
+    hostile_path = "/Users/private/receiver/context-cache.json"
+    context_path.write_text(
+        f"format: rulespec/v1\n# copied from {hostile_path}\nrules: []\n"
+    )
+    workspace = EvalWorkspace(
+        root=workspace_root,
+        source_text_file=source_file,
+        manifest_file=workspace_root / "context-manifest.json",
+    )
+    context_file = EvalContextFile(
+        source_path=str(context_path),
+        workspace_path="context/allowed.yaml",
+        import_path="us:statutes/example/allowed",
+        kind="allowed_context",
+    )
+
+    with pytest.raises(ValueError, match="authoritative context.*host path"):
+        _build_eval_prompt(
+            "us/statute/example/section-1",
+            "repo-augmented",
+            workspace,
+            [context_file],
+            target_file_name="target.yaml",
+        )
+
+
 def test_provision_metadata_rendering_preserves_full_content(tmp_path):
     workspace = prepare_eval_workspace(
         citation="dk/statute/benefit/section-1",
@@ -3996,6 +4087,37 @@ class TestClaudePromptEval:
         assert response.text == ""
         assert expected_error in response.error
 
+    @pytest.mark.parametrize("field", ["type", "subtype", "is_error"])
+    def test_prompt_eval_redacts_malformed_envelope_discriminators(
+        self,
+        tmp_path,
+        field,
+    ):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        hostile_value = "/Users/private/receiver/diagnostic.json"
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_claude_result_stdout(**{field: hostile_value}),
+            stderr="",
+        )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            return_value=completed,
+        ):
+            response = _run_claude_prompt_eval(runner, workspace, "review this")
+
+        assert response.text == ""
+        assert response.error is not None
+        assert hostile_value not in json.dumps(response.trace)
+        assert response.trace["result_envelope"][field] == "<invalid str>"
+
     def test_prompt_eval_discards_is_error_result_text(self, tmp_path):
         runner = parse_runner_spec("claude:opus")
         workspace = EvalWorkspace(
@@ -4619,6 +4741,123 @@ class TestCodexPromptEval:
         assert response.error == expected_error
         assert response.failure_kind == expected_failure_kind
         assert secret not in json.dumps(response.trace)
+
+    def test_prompt_eval_redacts_generic_error_event_before_persistence(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        hostile_message = (
+            "receiver failed at /Users/private/receiver/error-diagnostic.json"
+        )
+        event_lines = "\n".join(
+            [
+                json.dumps({"type": "error", "message": hostile_message}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "format: rulespec/v1\nrules: []\n",
+                        },
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.error == "Codex eval error"
+        assert response.failure_kind == "error"
+        assert hostile_message not in json.dumps(response.trace)
+        assert response.trace["events"][0] == {
+            "type": "error",
+            "failure_kind": "error",
+        }
+
+    def test_prompt_eval_redacts_hostile_item_type_from_integrity_evidence(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        hostile_item_type = "/Users/private/receiver/tool-diagnostic.json"
+        event_line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": hostile_item_type,
+                    "result": "private receiver result",
+                },
+            }
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_line + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        verdict_payload = {
+            "trace": response.trace,
+            "unexpected_accesses": response.unexpected_accesses,
+            "error": response.error,
+        }
+        assert response.failure_kind == "integrity"
+        assert hostile_item_type not in json.dumps(verdict_payload)
+        assert response.unexpected_accesses == ["<invalid item type>"]
 
     def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
         runner = parse_runner_spec("codex:gpt-5.4")
