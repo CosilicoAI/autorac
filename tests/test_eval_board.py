@@ -355,7 +355,7 @@ def _result(
     if eval_case_overrides:
         eval_case.update(eval_case_overrides)
     return {
-        "citation": case["name"],
+        "citation": case["corpus_citation_path"],
         "runner": runner,
         "backend": backend,
         "model": model,
@@ -2434,6 +2434,22 @@ def test_fold_refuses_case_identity_mismatch_in_result(tmp_path, mutation):
         ),
     )
     with pytest.raises(EvalBoardError, match="does not match the manifest"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_result_citation_mismatch_with_canonical_case(tmp_path):
+    rows = [_result("terra", case) for case in CASE_IDENTITIES]
+    rows[0]["citation"] = CASE_IDENTITIES[1]["corpus_citation_path"]
+    path = _write_payload(
+        tmp_path,
+        "wrong-citation.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], rows),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match="citation does not match its canonical case path",
+    ):
         fold_eval_board([path])
 
 

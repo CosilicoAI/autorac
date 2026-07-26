@@ -953,6 +953,30 @@ def test_cli_report_validator_rejects_board_malformed_result_types(tmp_path):
         _validated_eval_suite_report_payload(payload)
 
 
+def test_board_and_cli_reject_result_citation_outside_canonical_case(tmp_path):
+    from axiom_encode.harness.eval_board import EvalBoardError, fold_eval_board
+
+    payload = _test_eval_suite_report_payload(tmp_path)
+    payload["results"][0]["citation"] = "us/statute/7/2018"
+    _rebind_test_eval_suite_report_payload(payload, tmp_path)
+    results_file = tmp_path / "wrong-citation-results.json"
+    results_file.write_text(json.dumps(payload) + "\n")
+
+    with pytest.raises(
+        EvalBoardError,
+        match="citation does not match its canonical case path",
+    ):
+        fold_eval_board([results_file])
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "not board-admissible.*citation does not match its canonical case path"
+        ),
+    ):
+        _validated_eval_suite_report_payload(payload)
+
+
 TEST_CORPUS_RELEASE_NAME = "rulespec-test-release"
 TEST_CORPUS_VERSION = "2026-rulespec-test"
 TEST_VALIDATION_WAIVER_TEXT = "validate_failures: {}\n"
