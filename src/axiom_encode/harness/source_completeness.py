@@ -163,7 +163,7 @@ _GLUED_SENTENCE_MARKER = re.compile(
 )
 _EXPLICIT_SENTENCE_MARKER = re.compile(
     r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
-    r"(?P<label>[1-9]\d?)(?=[ \t]+[A-ZÄÖÜ])",
+    r"(?P<label>[1-9]\d?)(?:[ \t]*:[ \t]*|[ \t]+)(?=[A-ZÄÖÜ])",
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _EDITORIAL_OMISSION_ONLY = re.compile(
@@ -205,6 +205,12 @@ _SYMBOLIC_ARITHMETIC_OPERAND = (
     r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|"
     r"\d+(?:[.,]\d+)?"
     r")"
+)
+_WORDED_ARITHMETIC_EXPRESSION = re.compile(
+    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}\s+(?:plus|minus|mal)\s+"
+    r"(?!(?:beträgt|gilt|ist|sind|wird|werden|equals?|applies?)\b)"
+    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}",
+    flags=re.IGNORECASE,
 )
 _EXPLICIT_SYMBOLIC_ARITHMETIC_CHAIN = re.compile(
     rf"(?P<expression>{_SYMBOLIC_ARITHMETIC_OPERAND}"
@@ -248,7 +254,7 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"\d+(?:[.,]\d+)?\s*-?fach(?:e[nsrm]?)?|"
     r"(?:vermindert|erhöht|gekürzt|vermehrt)\s+um|"
     r"(?:erhöht|mindert|vermindert|kürzt|vermehrt)\s+sich\s+um|"
-    r"(?:abzüglich|zuzüglich|plus|minus)|"
+    r"(?:abzüglich|zuzüglich)|"
     r"(?:prozent|\d+(?:[.,]\d+)?\s*%)\s+(?:des|der|von|of)|"
     r"\d+(?:[.,]\d+)?\s+(?:vom\s+hundert|v\.?\s*h\.?)\s+"
     r"(?:des|der|von)|"
@@ -292,7 +298,13 @@ _EXCEPTION_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _APPLICABILITY_LANGUAGE = re.compile(
-    r"\b(?:wenn|falls|sofern|when|if)\b",
+    r"\b(?:"
+    r"vorausgesetzt\s*,?\s+dass|"
+    r"unter\s+der\s+voraussetzung\s*,?\s+dass|"
+    r"wenn|falls|sofern|soweit|when|if|"
+    r"bei\s+(?:(?:vorliegen|bestehen)\b|"
+    r"(?:(?:einer?|bestehender)\s+)?(?:anspruchsberechtigung|berechtigung)\b)"
+    r")\b",
     flags=re.IGNORECASE,
 )
 _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
@@ -480,6 +492,8 @@ def source_states_explicit_computation(source_text: str) -> bool:
 def _has_substantive_arithmetic_expression(source_text: str) -> bool:
     """Ignore slash-separated year spans while recognizing actual arithmetic."""
 
+    if _WORDED_ARITHMETIC_EXPRESSION.search(source_text):
+        return True
     for match in _ARITHMETIC_EXPRESSION.finditer(source_text):
         expression = re.sub(r"\s+", "", match.group(0))
         if re.fullmatch(r"(?:19|20)\d{2}/(?:19|20)\d{2}", expression):
@@ -1941,23 +1955,62 @@ def _source_boundary_is_temporal(
 
     if not 1800 <= float(boundary.value) <= 2200:
         return False
-    relative_start = max(0, boundary.start)
-    relative_end = max(relative_start, boundary.end)
-    context = branch.text[
-        max(0, relative_start - 80) : min(len(branch.text), relative_end + 80)
-    ]
-    return re.search(
-        r"\b(?:"
-        r"veranlagungszeitraum|besteuerungszeitraum|kalenderjahr|steuerjahr|"
-        r"tax\s+year|calendar\s+year|effective|effective_from|"
-        r"zeitraum|jahr|january|february|march|april|may|june|july|"
-        r"august|september|october|november|december|"
+    relative_start, relative_end = _boundary_span_in_branch(branch, boundary)
+    before = branch.text[max(0, relative_start - 100) : relative_start]
+    after = branch.text[relative_end : min(len(branch.text), relative_end + 80)]
+    substantive_unit = (
+        r"(?:€|eur\b|euro\b|dollar\b|prozent\b|%\b|"
+        r"einkommen\b|betrag\b|grenze\b|income\b|amount\b|threshold\b)"
+    )
+    if re.search(rf"{substantive_unit}\s*$", before, flags=re.IGNORECASE):
+        return False
+    if re.match(rf"\s*{substantive_unit}", after, flags=re.IGNORECASE):
+        return False
+    period_cue = (
+        r"(?:veranlagungszeitraum|besteuerungszeitraum|kalenderjahr|"
+        r"steuerjahr|tax\s+year|calendar\s+year|effective(?:_from)?|"
+        r"january|february|march|april|may|june|july|august|september|"
+        r"october|november|december|"
         r"januar|februar|märz|april|mai|juni|juli|august|september|"
-        r"oktober|november|dezember"
-        r")\b",
-        context,
-        flags=re.IGNORECASE,
-    ) is not None
+        r"oktober|november|dezember)"
+    )
+    return bool(
+        re.search(
+            rf"\b{period_cue}\s*$",
+            before,
+            flags=re.IGNORECASE,
+        )
+        or re.match(
+            rf"\s*{period_cue}\b",
+            after,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:ab|seit|effective\s+from)\s*$",
+            before,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _boundary_span_in_branch(
+    branch: SourceStructureBranch,
+    boundary: NumericOccurrenceLike,
+) -> tuple[int, int]:
+    """Realign offsets after structural ordinals were removed for extraction."""
+
+    raw = str(getattr(boundary, "raw", "") or "").strip()
+    if raw:
+        candidates = tuple(re.finditer(re.escape(raw), branch.text))
+        if candidates:
+            closest = min(
+                candidates,
+                key=lambda match: abs(match.start() - boundary.start),
+            )
+            return closest.start(), closest.end()
+    start = max(0, min(len(branch.text), boundary.start))
+    end = max(start, min(len(branch.text), boundary.end))
+    return start, end
 
 
 def _rounding_clause_refers_to_previous_result(
@@ -4733,9 +4786,23 @@ def _formula_interval_from_text(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> _NumericInterval | None:
     lowered = text.lower()
+    clause = _strip_source_clause_marker(text).lower()
+    if re.match(
+        r"\s*ab\s+(?:(?:dem\s+)?\d{1,2}\.\s+)?(?:"
+        r"januar|februar|märz|april|mai|juni|juli|august|september|"
+        r"oktober|november|dezember|"
+        r"january|february|march|april|may|june|july|august|"
+        r"september|october|november|december"
+        r")\b",
+        clause,
+        flags=re.IGNORECASE,
+    ):
+        return None
     keyword = re.search(
-        r"\b(?:zwischen|between|von\s+mehr\s+als|"
-        r"von(?!\s+(?:höchstens|mindestens))|"
+        r"\b(?:zwischen|between|von\s+(?:mehr|weniger)\s+als|"
+        r"mehr\s+als|weniger\s+als|"
+        r"von(?!\s+(?:mehr\s+als|weniger\s+als|höchstens|mindestens|"
+        r"nicht\s+mehr\s+als|über|unter))|"
         r"from|unter|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
         r"at\s+most|über|more\s+than|above|ab|at\s+least|mindestens)\b",
@@ -4757,6 +4824,17 @@ def _formula_interval_from_text(
     )
     if not occurrences:
         return None
+    first_gap = text[keyword.end() : occurrences[0].start]
+    if not re.fullmatch(
+        r"\s*(?:(?:zu|bis)\s+)?"
+        r"(?:(?:einem?|einer|dem|der|das)\s+)?"
+        r"(?:(?:zu\s+versteuernd\w*|maßgeblich\w*)\s+)?"
+        r"(?:(?:einkommen|betrag|wert|income|amount)\s+)?"
+        r"(?:(?:von|of)\s+)?",
+        first_gap,
+        flags=re.IGNORECASE,
+    ):
+        return None
     lowered_range = range_text.lower()
     if re.match(r"(?:zwischen|between)\b", lowered_range) and re.search(
         r"\b(?:und|and)\b",
@@ -4772,7 +4850,10 @@ def _formula_interval_from_text(
         if len(occurrences) < 2:
             return None
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
-    if re.match(r"(?:unter|less\s+than|below)\b", lowered_range):
+    if re.match(
+        r"(?:unter|less\s+than|below|(?:von\s+)?weniger\s+als)\b",
+        lowered_range,
+    ):
         return _NumericInterval(None, False, occurrences[0], False)
     if re.match(
         r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most)\b",
@@ -4780,7 +4861,7 @@ def _formula_interval_from_text(
     ):
         return _NumericInterval(None, False, occurrences[0], True)
     if re.match(
-        r"(?:über|more\s+than|above|von\s+mehr\s+als)\b",
+        r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|above)\b",
         lowered_range,
     ):
         return _NumericInterval(occurrences[0], False, None, False)
@@ -5004,9 +5085,13 @@ def _source_exception_or_applicability_matches(
 ) -> tuple[re.Match[str], ...]:
     """Return ordered, de-duplicated negative and positive condition cues."""
 
-    matches = (
+    matches = tuple(
+        match
+        for match in (
         *_EXCEPTION_LANGUAGE.finditer(source_text),
         *_APPLICABILITY_LANGUAGE.finditer(source_text),
+        )
+        if not _is_concessive_condition_cue(source_text, match)
     )
     return tuple(
         {
@@ -5014,6 +5099,22 @@ def _source_exception_or_applicability_matches(
             for match in sorted(matches, key=lambda item: (item.start(), item.end()))
         }.values()
     )
+
+
+def _is_concessive_condition_cue(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Exclude ``auch wenn`` / ``even if`` clauses that preserve the rule."""
+
+    if match.group(0).strip().lower() not in {"wenn", "if"}:
+        return False
+    prefix = source_text[max(0, match.start() - 16) : match.start()]
+    return re.search(
+        r"\b(?:auch|selbst|even)\s+$",
+        prefix,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _exception_cues_have_distinct_conditions(between: str) -> bool:
@@ -5205,7 +5306,9 @@ def _source_exception_condition_text(text: str) -> str:
         return clause
     suffix = clause[marker.start() :]
     condition_cue = re.search(
-        r"\b(?:wenn|falls|sofern|when|if|bei|ohne|mangels)\b",
+        r"\b(?:vorausgesetzt\s*,?\s+dass|"
+        r"unter\s+der\s+voraussetzung\s*,?\s+dass|"
+        r"wenn|falls|sofern|soweit|when|if|bei|ohne|mangels)\b",
         suffix,
         flags=re.IGNORECASE,
     )
@@ -5214,7 +5317,9 @@ def _source_exception_condition_text(text: str) -> str:
     prefix = clause[: marker.start()]
     preposed = re.match(
         r"\s*(?P<condition>(?:"
-        r"(?:wenn|falls|sofern|when|if)\b[^,;]*|"
+        r"(?:vorausgesetzt\s*,?\s+dass|"
+        r"unter\s+der\s+voraussetzung\s*,?\s+dass|"
+        r"wenn|falls|sofern|soweit|when|if)\b[^,;]*|"
         r"(?:bei|ohne|mangels)\b[^,;]*|"
         r"im\s+falle\b[^,;]*"
         r"))\s*,?\s*$",
@@ -6612,7 +6717,8 @@ def _source_boundary_obligations(
         for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
             if not re.search(
-                r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|"
+                r"\b(?:zwischen|between|bis|von|ab|unter|über|"
+                r"mehr\s+als|weniger\s+als|from|to|"
                 r"through|less\s+than|more\s+than|at\s+least|up\s+to|"
                 r"at\s+most|above|below|höchstens|mindestens|"
                 r"nicht\s+mehr\s+als)\b",

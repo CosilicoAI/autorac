@@ -5448,7 +5448,7 @@ def test_statutory_result_rounding_attaches_to_preceding_computation(
 ):
     source = f"(1) Der Steuerbetrag ist Einkommen * 2. {result_clause}"
     content = _single_rounding_content("floor(income * multiplier)")
-    if result_clause.startswith(("6", "Satz 2 ")):
+    if result_clause.startswith(("6", "Satz 2 ", "Satz 6:")):
         content = content.replace(
             """\
   - name: amount
