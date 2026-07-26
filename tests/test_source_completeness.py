@@ -3545,8 +3545,18 @@ rules:
         "(1) Das Einkommen ist durch Multiplikation mit dem Faktor 2 zu ermitteln.",
         "(1) Der Betrag ist unter Anwendung des Faktors 2 zu ermitteln.",
         "(1) Das Einkommen ist zu verdoppeln.",
+        "(1) Das Einkommen ist zu verfünffachen.",
+        "(1) Das Einkommen ist zu versechsfachen.",
+        "(1) Das Einkommen ist zu versiebenfachen.",
+        "(1) Das Einkommen ist zu verachtfachen.",
+        "(1) Das Einkommen ist zu verneunfachen.",
+        "(1) Das Einkommen ist zu verzehnfachen.",
+        "(1) Das Einkommen ist zu halbieren.",
+        "(1) Das Einkommen ist durch Halbierung zu ermitteln.",
+        "(1) Das Einkommen ist in zwei gleiche Teile zu teilen.",
         "(1) Der Betrag ist durch zwei zu teilen.",
         "(1) Der Betrag ist um 2 zu erhöhen.",
+        "(1) Der Betrag ist um zwei zu erhöhen.",
         "(1) Der Betrag ist um 2 zu vermindern.",
         "(1) Der Betrag ist aus Einkommen und Zuschlag zu summieren.",
     ],
@@ -3679,6 +3689,322 @@ rules:
 
     assert not correct.issues
     assert _has_issue(wrong, "formula branch")
+
+
+@pytest.mark.parametrize(
+    ("word", "factor"),
+    [
+        ("verfünffachen", 5),
+        ("versechsfachen", 6),
+        ("versiebenfachen", 7),
+        ("verachtfachen", 8),
+        ("verneunfachen", 9),
+        ("verzehnfachen", 10),
+    ],
+)
+def test_german_infinitive_multiplier_binds_exact_factor(
+    word: str,
+    factor: int,
+):
+    source = f"(1) Das Einkommen ist zu {word}."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: factor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: {factor}
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+"""
+
+    correct = _analyze(
+        content.replace("FORMULA", "income * factor"),
+        source,
+        test_cases=[
+            {
+                "name": "exact multiplier",
+                "input": {"income": 12},
+                "output": {"amount": 12 * factor},
+            }
+        ],
+    )
+    wrong = _analyze(
+        content.replace("FORMULA", "income * 2"),
+        source,
+        test_cases=[
+            {
+                "name": "wrong multiplier",
+                "input": {"income": 12},
+                "output": {"amount": 24},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Der Betrag ist zu halbieren.",
+        "(1) Der Betrag ist durch Halbierung zu ermitteln.",
+        "(1) Der Betrag ist in zwei gleiche Teile zu teilen.",
+    ],
+)
+def test_german_half_wording_binds_exact_division(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: divisor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 2
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+"""
+
+    divided = _analyze(
+        content.replace("FORMULA", "income / divisor"),
+        source,
+        test_cases=[
+            {
+                "name": "divide by two",
+                "input": {"income": 12},
+                "output": {"amount": 6},
+            }
+        ],
+    )
+    multiplied = _analyze(
+        content.replace("FORMULA", "income * 0.5"),
+        source,
+        test_cases=[
+            {
+                "name": "multiply by half",
+                "input": {"income": 12},
+                "output": {"amount": 6},
+            }
+        ],
+    )
+    wrong = _analyze(
+        content.replace("FORMULA", "income / 3"),
+        source,
+        test_cases=[
+            {
+                "name": "wrong divisor",
+                "input": {"income": 12},
+                "output": {"amount": 4},
+            }
+        ],
+    )
+
+    assert not divided.issues
+    assert not multiplied.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+@pytest.mark.parametrize(
+    ("source", "delta", "correct_formula", "wrong_formula", "correct_output"),
+    [
+        (
+            "(1) Der Betrag ist um zwei zu erhöhen.",
+            2,
+            "income + delta",
+            "income + 3",
+            14,
+        ),
+        (
+            "(1) Der Betrag ist um vier zu vermehren.",
+            4,
+            "income + delta",
+            "income + 2",
+            16,
+        ),
+        (
+            "(1) Der Betrag ist um drei zu vermindern.",
+            3,
+            "income - delta",
+            "income - 2",
+            9,
+        ),
+        (
+            "(1) Der Betrag ist um fünf zu kürzen.",
+            5,
+            "income - delta",
+            "income - 2",
+            7,
+        ),
+    ],
+)
+def test_german_word_delta_binds_exact_signed_value(
+    source: str,
+    delta: int,
+    correct_formula: str,
+    wrong_formula: str,
+    correct_output: int,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: delta
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: {delta}
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+"""
+
+    correct = _analyze(
+        content.replace("FORMULA", correct_formula),
+        source,
+        test_cases=[
+            {
+                "name": "exact delta",
+                "input": {"income": 12},
+                "output": {"amount": correct_output},
+            }
+        ],
+    )
+    wrong = _analyze(
+        content.replace("FORMULA", wrong_formula),
+        source,
+        test_cases=[
+            {
+                "name": "wrong delta",
+                "input": {"income": 12},
+                "output": {"amount": 15},
+            }
+        ],
+    )
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+def test_unknown_german_word_operand_fails_closed():
+    source = "(1) Der Betrag ist um elf zu erhöhen."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: delta
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 11
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: income + delta
+"""
+    case = {
+        "name": "unsupported word numeral",
+        "input": {"income": 12},
+        "output": {"amount": 23},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch")
+
+
+def test_symbolic_german_factor_is_not_treated_as_unknown_number_word():
+    source = "(1) Das Einkommen ist mit dem Faktor F zu multiplizieren."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: factor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 0.5
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: income * factor
+"""
+    case = {
+        "name": "symbolic factor",
+        "input": {"income": 10},
+        "output": {"amount": 5},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_word_delta_binding_survives_result_rounding_wrapper():
+    source = """\
+(1) Der Betrag ist um zwei zu erhöhen und auf volle Euro abzurunden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: delta
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 2
+  - name: amount
+    kind: derived
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: floor(income + delta)
+"""
+    case = {
+        "name": "fractional result",
+        "input": {"income": 10.5},
+        "output": {"amount": 12},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
 
 
 def test_nonbranching_formula_must_execute_the_source_computation():

@@ -139,6 +139,13 @@ class _ExceptionWitness:
     numeric_transition: tuple[float, float] | None
 
 
+@dataclass(frozen=True)
+class _NamedSourceNumber:
+    """A matched source number whose word value may be unsupported."""
+
+    value: float | None
+
+
 _PARAGRAPH_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>\((?P<label>\d+[a-z]?|[a-z])\))(?=\s|bis\b)",
     flags=re.IGNORECASE,
@@ -168,6 +175,24 @@ _EDITORIAL_OMISSION_ONLY = re.compile(
     r"\s*[.;]?\s*$",
     flags=re.IGNORECASE,
 )
+_GERMAN_CARDINAL_VALUES = {
+    "ein": 1.0,
+    "eins": 1.0,
+    "eine": 1.0,
+    "einen": 1.0,
+    "einem": 1.0,
+    "einer": 1.0,
+    "eines": 1.0,
+    "zwei": 2.0,
+    "drei": 3.0,
+    "vier": 4.0,
+    "fünf": 5.0,
+    "sechs": 6.0,
+    "sieben": 7.0,
+    "acht": 8.0,
+    "neun": 9.0,
+    "zehn": 10.0,
+}
 _ARITHMETIC_EXPRESSION = re.compile(
     r"(?:\d+(?:[.,]\d+)?|[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß]*)"
     r"[ \t]*(?:[+*/=×·•∗∙]|(?<!\w)[−–-](?!\w))[ \t]*"
@@ -195,7 +220,12 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+ermitteln|"
     r"unter\s+anwendung\s+(?:des|eines)\s+faktors?\s+"
     r"(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+ermitteln|"
-    r"(?:ist|sind)\s+zu\s+(?:verdoppeln|verdreifachen|vervierfachen)|"
+    r"(?:ist|sind)\s+zu\s+(?:"
+    r"verdoppeln|verdreifachen|vervierfachen|verfünffachen|"
+    r"versechsfachen|versiebenfachen|verachtfachen|verneunfachen|"
+    r"verzehnfachen|halbieren)|"
+    r"durch\s+halbierung\s+zu\s+ermitteln|"
+    r"in\s+(?:2|zwei)\s+gleiche\s+teile\s+zu\s+teilen|"
     r"durch\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+teilen|"
     r"um\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
     r"(?:erhöhen|vermindern|kürzen|vermehren)|"
@@ -2067,25 +2097,50 @@ def _formula_execution_matches_source_branch(
     ):
         return False
     source_multiplier = _source_named_multiplier(branch.text)
-    if source_multiplier is not None and not (
+    if source_multiplier is not None and (
+        source_multiplier.value is None
+        or not (
         _formula_has_numeric_factor(
             operative_leaf,
             binding_environment,
-            source_multiplier,
+            source_multiplier.value,
         )
         or (
-            math.isclose(source_multiplier, 2.0)
+            math.isclose(source_multiplier.value, 2.0)
             and _formula_is_duplicate_addition(operative_leaf)
+        )
         )
     ):
         return False
     source_divisor = _source_named_divisor(branch.text)
-    if source_divisor is not None and not _formula_has_numeric_divisor(
-        operative_leaf,
-        binding_environment,
-        source_divisor,
-    ):
-        return False
+    if source_divisor is not None:
+        if source_divisor.value is None:
+            return False
+        has_source_divisor = _formula_has_numeric_divisor(
+            operative_leaf,
+            binding_environment,
+            source_divisor.value,
+        )
+        has_equivalent_half_factor = (
+            math.isclose(source_divisor.value, 2.0)
+            and _source_describes_half(branch.text)
+            and _formula_has_numeric_factor(
+                operative_leaf,
+                binding_environment,
+                0.5,
+            )
+        )
+        if not (has_source_divisor or has_equivalent_half_factor):
+            return False
+    source_delta = _source_named_delta(branch.text)
+    if source_delta is not None:
+        if source_delta[1].value is None or not _formula_has_numeric_delta(
+            operative_leaf,
+            binding_environment,
+            operation=source_delta[0],
+            expected=source_delta[1].value,
+        ):
+            return False
     if _source_describes_half(branch.text):
         if not (
             _formula_has_numeric_factor(
@@ -2182,11 +2237,13 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"(?:[*×·•∗∙]|\bprodukt\b|\bproduct\s+of\b|"
             r"\b(?:multiplied|multiply|multiplication|multipliziert|"
             r"multiplizieren|multiplikation)\b|\bvervielfach\w*\b|\bmal\b|"
+            r"\b(?:verfünf|versechs|versieben|veracht|verneun|verzehn)"
+            r"fach\w*\b|"
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
             r"(?:/|\bgeteilt\b|\bteilen\b|\bdivided\b|"
-            r"\bhälfte\b|\bhalf\s+of\b)"
+            r"\bhälfte\b|\bhalbier\w*\b|\bhalbierung\b|\bhalf\s+of\b)"
         ),
     }
     operations.update(
@@ -2259,10 +2316,14 @@ def _formula_operations_are_compatible(
 
 def _source_describes_doubling(text: str) -> bool:
     multiplier = _source_named_multiplier(text)
-    return multiplier is not None and math.isclose(multiplier, 2.0)
+    return (
+        multiplier is not None
+        and multiplier.value is not None
+        and math.isclose(multiplier.value, 2.0)
+    )
 
 
-def _source_named_multiplier(text: str) -> float | None:
+def _source_named_multiplier(text: str) -> _NamedSourceNumber | None:
     patterns = (
         (
             2.0,
@@ -2295,8 +2356,8 @@ def _source_named_multiplier(text: str) -> float | None:
         None,
     )
     if named_multiplier is not None:
-        return named_multiplier
-    contextual_word = _source_contextual_number_word(
+        return _NamedSourceNumber(named_multiplier)
+    return _source_contextual_number_word(
         text,
         patterns=(
             r"\bmal\s+(?P<number>[a-zäöüß]+)\b",
@@ -2310,17 +2371,77 @@ def _source_named_multiplier(text: str) -> float | None:
             r"(?P<number>[a-zäöüß]+)\b",
         ),
     )
-    return contextual_word
 
 
-def _source_named_divisor(text: str) -> float | None:
+def _source_named_divisor(text: str) -> _NamedSourceNumber | None:
     return _source_contextual_number_word(
         text,
         patterns=(
             r"\bdurch\s+(?P<number>[a-zäöüß]+)\s+zu\s+teilen\b",
             r"\bgeteilt\s+durch\s+(?P<number>[a-zäöüß]+)\b",
             r"\bdurch\s+(?P<number>[a-zäöüß]+)\s+geteilt\b",
+            r"\bin\s+(?P<number>[a-zäöüß]+)\s+gleiche\s+teile\s+"
+            r"zu\s+teilen\b",
         ),
+    )
+
+
+def _source_named_delta(
+    text: str,
+) -> tuple[str, _NamedSourceNumber] | None:
+    number = r"(?P<number>\d+(?:[.,]\d+)?|[a-zäöüß]+)"
+    patterns = (
+        (
+            "add",
+            rf"\bum\s+{number}\s+zu\s+(?:erhöhen|vermehren)\b",
+        ),
+        (
+            "add",
+            rf"\b(?:erhöht|vermehrt)\w*\s+(?:sich\s+)?um\s+{number}\b",
+        ),
+        (
+            "add",
+            rf"\bwird\s+um\s+{number}\s+(?:erhöht|vermehrt)\b",
+        ),
+        (
+            "subtract",
+            rf"\bum\s+{number}\s+zu\s+(?:vermindern|kürzen)\b",
+        ),
+        (
+            "subtract",
+            rf"\b(?:vermindert|gekürzt|mindert|kürzt)\w*\s+"
+            rf"(?:sich\s+)?um\s+{number}\b",
+        ),
+        (
+            "subtract",
+            rf"\bwird\s+um\s+{number}\s+(?:vermindert|gekürzt)\b",
+        ),
+    )
+    for operation, pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        token = match.group("number")
+        value = _source_number_token_value(token)
+        if value is None and _source_number_token_is_symbolic(token):
+            return None
+        return operation, _NamedSourceNumber(value)
+    return None
+
+
+def _source_number_token_value(token: str) -> float | None:
+    normalized = token.lower()
+    if normalized in _GERMAN_CARDINAL_VALUES:
+        return _GERMAN_CARDINAL_VALUES[normalized]
+    with contextlib.suppress(ValueError):
+        return float(normalized.replace(",", "."))
+    return None
+
+
+def _source_number_token_is_symbolic(token: str) -> bool:
+    return (
+        token.isalpha()
+        and (len(token) == 1 or token.isupper())
     )
 
 
@@ -2328,36 +2449,24 @@ def _source_contextual_number_word(
     text: str,
     *,
     patterns: Sequence[str],
-) -> float | None:
-    values = {
-        "ein": 1.0,
-        "eins": 1.0,
-        "eine": 1.0,
-        "einen": 1.0,
-        "einem": 1.0,
-        "einer": 1.0,
-        "eines": 1.0,
-        "zwei": 2.0,
-        "drei": 3.0,
-        "vier": 4.0,
-        "fünf": 5.0,
-        "sechs": 6.0,
-        "sieben": 7.0,
-        "acht": 8.0,
-        "neun": 9.0,
-        "zehn": 10.0,
-    }
+) -> _NamedSourceNumber | None:
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match is not None:
-            return values.get(match.group("number").lower())
+            token = match.group("number")
+            if _source_number_token_is_symbolic(token):
+                return None
+            return _NamedSourceNumber(
+                _GERMAN_CARDINAL_VALUES.get(token.lower())
+            )
     return None
 
 
 def _source_describes_half(text: str) -> bool:
     return bool(
         re.search(
-            r"\b(?:hälfte|halb(?:e[nsrm]?)?|half)\b",
+            r"\b(?:hälfte|halb(?:e[nsrm]?)?|halbier\w*|halbierung|half)\b|"
+            r"\bin\s+(?:2|zwei)\s+gleiche\s+teile\s+zu\s+teilen\b",
             text,
             flags=re.IGNORECASE,
         )
@@ -2401,6 +2510,77 @@ def _formula_has_numeric_divisor(
             if value is not None and math.isclose(float(value), expected):
                 return True
     return False
+
+
+def _formula_has_numeric_delta(
+    text: str,
+    environment: dict[str, Any],
+    *,
+    operation: str,
+    expected: float,
+) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        expression = _unwrap_formula_result_wrapper(expression)
+        if not isinstance(expression, ast.BinOp) or not isinstance(
+            expression.op,
+            (ast.Add, ast.Sub),
+        ):
+            return False
+        constant, has_dynamic_operand = _formula_additive_constant(
+            expression,
+            environment,
+        )
+        signed_expected = expected if operation == "add" else -expected
+        return has_dynamic_operand and math.isclose(
+            constant,
+            signed_expected,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+    return False
+
+
+def _unwrap_formula_result_wrapper(expression: ast.expr) -> ast.expr:
+    while (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id in {"ceil", "floor"}
+        and len(expression.args) == 1
+        and not expression.keywords
+    ):
+        expression = expression.args[0]
+    return expression
+
+
+def _formula_additive_constant(
+    expression: ast.expr,
+    environment: dict[str, Any],
+) -> tuple[float, bool]:
+    known = _known_numeric_formula_value(expression, environment)
+    if known is not None:
+        return float(known), False
+    if isinstance(expression, ast.BinOp) and isinstance(
+        expression.op,
+        (ast.Add, ast.Sub),
+    ):
+        left_constant, left_dynamic = _formula_additive_constant(
+            expression.left,
+            environment,
+        )
+        right_constant, right_dynamic = _formula_additive_constant(
+            expression.right,
+            environment,
+        )
+        return (
+            (
+                left_constant + right_constant
+                if isinstance(expression.op, ast.Add)
+                else left_constant - right_constant
+            ),
+            left_dynamic or right_dynamic,
+        )
+    return 0.0, True
 
 
 def _formula_is_duplicate_addition(text: str) -> bool:
