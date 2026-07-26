@@ -1316,8 +1316,54 @@ def _source_scope_identifies_blocker(
             flags=re.IGNORECASE,
         ):
             continue
-        return True
+        if _source_clause_links_dependency(
+            clause,
+            reference_start=reference.start() - clause_start,
+            reference_end=reference.end() - clause_start,
+        ):
+            return True
     return False
+
+
+def _source_clause_links_dependency(
+    clause: str,
+    *,
+    reference_start: int,
+    reference_end: int,
+) -> bool:
+    """Require syntax that makes the cited provision operative or required."""
+
+    before = clause[:reference_start]
+    after = clause[reference_end:]
+    if re.search(
+        r"\b(?:"
+        r"nach|gemäß|laut|entsprechend|under|according\s+to|pursuant\s+to|"
+        r"abhängig\s+von|depends?\s+on|setzt|requires?|benötigt"
+        r")\s*$",
+        before,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:voraussetzung\w*|bedingung\w*|conditions?)"
+        r"[^.;]{0,100}\b(?:des|der|nach|under)\s*$",
+        before,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"\s*(?:ist|sind|wird|werden|is|are)?\s*"
+        r"(?:erforderlich|maßgeblich|vorausgesetzt|benötigt|required|needed)\b",
+        after,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return re.search(
+        r"\b(?:voraussetzung\w*|bedingung\w*|conditions?)"
+        r"[^.;]{0,160}\b(?:vorliegen|erfüllt|bestehen|apply|hold)\b",
+        clause,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _citation_instrument_identity(
@@ -1391,12 +1437,14 @@ def _reason_dependency_is_source_bound(
         section_match = re.search(r"\d+[a-z]?", dependency, flags=re.IGNORECASE)
         corpus_target = _rulespec_target_base(corpus_citation_path)
         corpus_instrument_target = corpus_target.rsplit("/", 1)[0]
-        if section_match and _source_scope_identifies_blocker(
-            source_scope_text,
-            f"{corpus_instrument_target}/{section_match.group(0)}#dependency",
-            corpus_citation_path=corpus_citation_path,
-        ):
-            return True
+        if section_match:
+            if _source_scope_identifies_blocker(
+                source_scope_text,
+                f"{corpus_instrument_target}/{section_match.group(0)}#dependency",
+                corpus_citation_path=corpus_citation_path,
+            ):
+                return True
+            continue
         normalized_dependency = re.sub(
             r"[^a-z0-9äöüß]+",
             " ",
@@ -5004,10 +5052,12 @@ def _formula_interval_from_text(
     first_gap = text[keyword.end() : occurrences[0].start]
     if not re.fullmatch(
         r"\s*(?:(?:zu|bis)\s+)?"
+        r"(?:(?:einschließlich|maximal|inklusive|including|maximum)\s+)?"
         r"(?:(?:einem?|einer|dem|der|das)\s+)?"
         r"(?:(?:zu\s+versteuernd\w*|maßgeblich\w*)\s+)?"
         r"(?:(?:einkommen|betrag|wert|income|amount)\s+)?"
-        r"(?:(?:von|of)\s+)?",
+        r"(?:(?:von|of)\s+)?"
+        r"(?:(?:einschließlich|maximal|inklusive|including|maximum)\s+)?",
         first_gap,
         flags=re.IGNORECASE,
     ):
