@@ -22648,8 +22648,8 @@ def _normalize_validation_staging_text(
         root_variants.update({str(resolved_root), resolved_root.as_posix()})
     for root_text in sorted(root_variants, key=len, reverse=True):
         normalized = re.sub(
-            rf"(?<![A-Za-z0-9_./\\-]){re.escape(root_text)}"
-            rf"(?=$|[\\/]|[^A-Za-z0-9_./\\-])",
+            rf"(?<![\w./\\-]){re.escape(root_text)}"
+            rf"(?=$|[\\/]|[^\w./\\-])",
             placeholder,
             normalized,
         )
@@ -24469,17 +24469,40 @@ class ValidatorPipeline:
                 for entity_id in query_entity_ids
             ],
         }
-        result = subprocess.run(
-            [str(binary), "run-compiled", "--artifact", str(compiled_path)],
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(self.axiom_rules_path) if self.axiom_rules_path.exists() else None,
-            env=self._rulespec_engine_env(),
-        )
+        command = [str(binary), "run-compiled", "--artifact", str(compiled_path)]
+        try:
+            result = subprocess.run(
+                command,
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=(
+                    str(self.axiom_rules_path)
+                    if self.axiom_rules_path.exists()
+                    else None
+                ),
+                env=self._rulespec_engine_env(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return None, [
+                f"Test case `{case_name}` execution timed out after "
+                f"{exc.timeout} seconds."
+            ]
+        except (OSError, subprocess.SubprocessError) as exc:
+            detail = _normalize_validation_staging_text(
+                str(exc),
+                compiled_path.parent,
+                placeholder=_VALIDATION_TEMP_ROOT_PLACEHOLDER,
+            )
+            return None, [f"Test case `{case_name}` execution failed: {detail}"]
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
+            detail = _normalize_validation_staging_text(
+                detail,
+                compiled_path.parent,
+                placeholder=_VALIDATION_TEMP_ROOT_PLACEHOLDER,
+            )
             return None, [f"Test case `{case_name}` execution failed: {detail}"]
         try:
             response = json.loads(result.stdout)

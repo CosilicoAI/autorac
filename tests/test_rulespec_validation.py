@@ -368,7 +368,9 @@ def test_rulespec_run_compiled_timeout_is_reproducible_across_temp_roots(
         ["Test case `timeout_case` execution timed out after 60 seconds."],
         ["Test case `timeout_case` execution timed out after 60 seconds."],
     ]
-    assert all("tmpABC123" not in issue and "tmpXYZ789" not in issue for issue in issues)
+    assert all(
+        "tmpABC123" not in issue and "tmpXYZ789" not in issue for issue in issues
+    )
 
 
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:
@@ -15260,10 +15262,7 @@ def test_validation_staging_normalization_respects_unicode_token_boundaries(tmp_
     assert _normalize_validation_staging_text(
         f"{prefixed} {suffixed} {standalone}",
         staging_root,
-    ) == (
-        f"{prefixed} {suffixed} "
-        "(<rulespec-validation-root>/compiled.json)"
-    )
+    ) == (f"{prefixed} {suffixed} (<rulespec-validation-root>/compiled.json)")
 
 
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):
