@@ -6511,6 +6511,7 @@ def _fractional_rounding_case_witnesses(
                     source_binding_operand,
                     original_operand=effective_operand,
                     operand_value=float(operand_value),
+                    direction=direction,
                     rule_name=rule_name,
                     execution=execution,
                     source_formula_branch=source_formula_branch,
@@ -6767,6 +6768,7 @@ def _rounding_call_binds_source_clause(
     *,
     original_operand: str,
     operand_value: float,
+    direction: str,
     rule_name: str,
     execution: _FormulaExecution,
     source_formula_branch: SourceStructureBranch,
@@ -6787,8 +6789,12 @@ def _rounding_call_binds_source_clause(
     )
     source_operations = _formula_operation_kinds(source_formula_branch.text)
     if (
-        not source_operations
-        and _formula_ast_operation_kinds(original_operand)
+        direction == "nearest"
+        and (
+            _formula_ast_operation_kinds(original_operand)
+            & {"add", "subtract"}
+        )
+        - source_operations
     ):
         return False
     if rounding_refers_to_result:
