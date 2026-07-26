@@ -7800,6 +7800,82 @@ def test_closest_exact_source_excerpt_rejects_malformed_de_span_with_valid_numbe
     assert repaired is None
 
 
+@pytest.mark.parametrize(
+    ("citation_path", "source_text", "generated_excerpt"),
+    [
+        (
+            "de/statute/estg/32a",
+            (
+                "5. von 277 826 Euro an:0,45 • x – 19 470,38.3Die Größe „y“ "
+                "ist ein Zehntausendstel"
+            ),
+            (
+                '5. von 277 826 Euro an: 0,45 * x - 19 470,38. 3 Die Grosse "y" '
+                "ist ein Zehntausendstel"
+            ),
+        ),
+        (
+            "de/statute/estg/9a",
+            (
+                "3. von den Einnahmen im Sinne des § 22 Nummer 1, 1a und 5:ein "
+                "Pauschbetrag von insgesamt 102 Euro.2Der Pauschbetrag nach Satz 1 "
+                "Nummer 1 Buchstabe b"
+            ),
+            (
+                "3. von den Einnahmen im Sinne des § 22 Nummer 1, 1a und 5: ein "
+                "Pauschbetrag von insgesamt 102 Euro. 2 Der Pauschbetrag nach Satz "
+                "1 Nummer 1 Buchstabe b"
+            ),
+        ),
+        (
+            "de/statute/sgb-2/20",
+            "monatlich ein Betrag in Höhe der Regelbedarfsstufe 1 anerkannt.",
+            "monatlich ein Betrag in Ho\u0308he der Regelbedarfsstufe1 anerkannt.",
+        ),
+    ],
+)
+def test_closest_exact_source_excerpt_reanchors_live_german_glue_variants(
+    citation_path, source_text, generated_excerpt
+):
+    # Exact slices from the 2026-07-16 German wave corpus release.
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt=generated_excerpt,
+        numeric_profile="de-DE",
+    )
+
+    assert repaired == source_text, citation_path
+
+
+def test_closest_exact_source_excerpt_rejects_ambiguous_canonical_span():
+    repaired = _closest_exact_source_excerpt(
+        source_text="Der Wert:25 Euro gilt.\n\nDer Wert :25 Euro gilt.",
+        excerpt="Der Wert: 25 Euro gilt.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_changed_number_in_near_match():
+    source_text = (
+        "In § 6a Absatz 2 Satz 4 werden die Wörter „ab 1. Juli 2022“ gestrichen "
+        "und wird die Angabe „20 Euro“ durch die Angabe „25 Euro“ ersetzt."
+    )
+
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt=(
+            'In § 6a Absatz 2 Satz 4 werden die Wörter "ab 1. Juli 2022" '
+            'gestrichen und wird die Angabe "20 Euro" durch die Angabe '
+            '"26 Euro" ersetzt.'
+        ),
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
 def test_repair_generated_undeclared_money_unit(tmp_path):
     output_root = tmp_path / "out"
     rules_file = output_root / "model" / "policies" / "benefit.yaml"
@@ -8190,6 +8266,75 @@ rules:
         payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"]["excerpt"]
         == "The maximum amount for age is $6,100."
     )
+
+
+def test_repair_generated_nonexact_proof_excerpt_reanchors_amendment_document(
+    tmp_path, monkeypatch
+):
+    citation_path = "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    source_text = (
+        "In § 6a Absatz 2 Satz 4 werden die Wörter „ab 1. Juli 2022“ gestrichen "
+        "und wird die Angabe „20 Euro“ durch die Angabe „25 Euro“ ersetzt."
+    )
+    generated_excerpt = (
+        'In § 6a Absatz 2 Satz 4 werden die Wörter "ab 1. Juli 2022" gestrichen '
+        'und wird die Angabe "20 Euro" durch die Angabe "25 Euro" ersetzt.'
+    )
+    output_root = tmp_path / "out"
+    rules_file = output_root / "model" / "statutes" / "bkgg" / "6a.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(
+        f"""format: rulespec/v1
+module:
+  summary: Current consolidated BKGG source.
+rules:
+- name: child_supplement_immediate_supplement
+  kind: parameter
+  dtype: Money
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: {citation_path}
+          excerpt: {generated_excerpt!r}
+  versions:
+  - effective_from: '2025-01-01'
+    formula: 25
+"""
+    )
+    requested_paths = []
+
+    def source_for_citation(requested_path, *, corpus_release):
+        requested_paths.append((requested_path, corpus_release))
+        return source_text
+
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_source_text_for_corpus_path",
+        source_for_citation,
+    )
+    corpus_release = SimpleNamespace(name="german-wave-release")
+
+    repaired = _try_repair_generated_nonexact_proof_excerpts_for_apply(
+        SimpleNamespace(output_file=str(rules_file)),
+        output_root=output_root,
+        corpus_release=corpus_release,
+        issues=[
+            "Proof source evidence not found: rule "
+            "`child_supplement_immediate_supplement` proof atom 0 "
+            "`source.excerpt` does not appear in "
+            f"`{citation_path}`."
+        ],
+    )
+
+    payload = yaml.safe_load(rules_file.read_text())
+    repaired_source = payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"]
+    assert repaired == ["child_supplement_immediate_supplement[0]"]
+    assert requested_paths == [(citation_path, corpus_release)]
+    assert repaired_source["corpus_citation_path"] == citation_path
+    assert repaired_source["excerpt"] == source_text
+    assert repaired_source["excerpt"] in source_text
 
 
 def test_closest_exact_source_excerpt_reflows_wrapped_regulatory_paragraph():

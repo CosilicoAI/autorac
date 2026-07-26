@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from base64 import b64decode, b64encode
 from binascii import Error as BinasciiError
 from calendar import monthrange
@@ -28859,6 +28860,92 @@ def _source_excerpt_preserving_whitespace(
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+_PROOF_EXCERPT_CANONICAL_PUNCTUATION = {
+    "'": "'",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201a": "'",
+    "\u201b": "'",
+    '"': '"',
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u201e": '"',
+    "\u201f": '"',
+    "-": "-",
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2015": "-",
+    "\u2212": "-",
+    "*": "*",
+    "\u00b7": "*",
+    "\u2022": "*",
+    "\u2219": "*",
+    "\u22c5": "*",
+    "\u00d7": "*",
+}
+
+
+def _canonical_proof_excerpt_with_raw_coordinates(
+    value: str,
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Build a matching-only view while retaining exact source coordinates."""
+    canonical: list[str] = []
+    raw_coordinates: list[tuple[int, int]] = []
+    for raw_index, raw_character in enumerate(str(value)):
+        if raw_character.isspace() or unicodedata.category(raw_character) == "Cf":
+            continue
+        character = _PROOF_EXCERPT_CANONICAL_PUNCTUATION.get(
+            raw_character,
+            raw_character,
+        )
+        for normalized_character in unicodedata.normalize(
+            "NFD",
+            character.casefold(),
+        ):
+            if normalized_character.isspace() or unicodedata.category(
+                normalized_character
+            ) in {"Cf", "Mn"}:
+                continue
+            canonical.append(
+                _PROOF_EXCERPT_CANONICAL_PUNCTUATION.get(
+                    normalized_character,
+                    normalized_character,
+                )
+            )
+            raw_coordinates.append((raw_index, raw_index + 1))
+    return "".join(canonical), tuple(raw_coordinates)
+
+
+def _canonical_source_excerpt_matches(
+    *,
+    source_text: str,
+    excerpt: str,
+) -> tuple[str, ...]:
+    """Return every source span equivalent under narrow display normalization."""
+    canonical_query, _ = _canonical_proof_excerpt_with_raw_coordinates(excerpt)
+    if not canonical_query:
+        return ()
+    matches: list[str] = []
+    for segment in split_proof_evidence_text(source_text):
+        canonical_source, coordinates = _canonical_proof_excerpt_with_raw_coordinates(
+            segment
+        )
+        search_from = 0
+        while True:
+            match_start = canonical_source.find(canonical_query, search_from)
+            if match_start < 0:
+                break
+            match_end = match_start + len(canonical_query)
+            raw_start = coordinates[match_start][0]
+            raw_end = coordinates[match_end - 1][1]
+            matches.append(segment[raw_start:raw_end])
+            search_from = match_start + 1
+    return tuple(matches)
+
+
 def _try_repair_generated_nonexact_proof_excerpts_for_apply(
     result,
     *,
@@ -29055,6 +29142,18 @@ def _closest_exact_source_excerpt(
     if not source or not query:
         return None
     segments = split_proof_evidence_text(source)
+    whitespace_pattern = r"\s+".join(re.escape(part) for part in query.split())
+    has_whitespace_match = any(
+        re.search(whitespace_pattern, segment, flags=re.IGNORECASE) is not None
+        for segment in segments
+    )
+    if not has_whitespace_match:
+        canonical_matches = _canonical_source_excerpt_matches(
+            source_text=source,
+            excerpt=query,
+        )
+        if canonical_matches:
+            return canonical_matches[0] if len(canonical_matches) == 1 else None
     if len(segments) > 1:
         matches = {
             candidate
@@ -29070,7 +29169,6 @@ def _closest_exact_source_excerpt(
         return next(iter(matches)) if len(matches) == 1 else None
 
     candidates = _exact_source_excerpt_candidate_spans(source)
-    whitespace_pattern = r"\s+".join(re.escape(part) for part in query.split())
     direct_match = re.search(whitespace_pattern, source, flags=re.IGNORECASE)
     if direct_match is not None:
         enclosing = [
@@ -29121,7 +29219,7 @@ def _closest_exact_source_excerpt(
             )
         )
         shared_numbers = query_numbers & candidate_numbers
-        if query_numbers and not shared_numbers:
+        if query_numbers and not query_numbers.issubset(candidate_numbers):
             continue
         if len(shared_tokens) < 2 and not (shared_numbers and shared_tokens):
             continue
