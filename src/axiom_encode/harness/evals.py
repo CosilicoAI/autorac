@@ -2526,6 +2526,11 @@ def _run_eval_suite_with_signer(
                         tuple[int, str | None, str | None, float | None],
                     ] = {}
                     for attempt_index in range(attempts):
+                        # Only deterministic validation/review work is outside
+                        # the generation budget. Resume before every suite
+                        # attempt so source resolution, workspace/prompt setup,
+                        # and failures before provider invocation are charged.
+                        _resume_eval_case_budget()
                         try:
                             if case.kind == "citation":
                                 runner_case_results = run_model_eval(
@@ -7480,6 +7485,13 @@ def _run_prompt_eval_with_empty_artifact_retry(
             artifact_root=artifact_root,
             materialized_paths=materialized_paths,
         )
+        if _discard_artifacts_after_case_budget(
+            response,
+            output_file=output_file,
+            artifact_root=artifact_root,
+            materialized_paths=materialized_paths,
+        ):
+            return response, False, 0, frozenset()
         if wrote_artifact or not _response_allows_empty_artifact_retry(response):
             return response, wrote_artifact, 0, frozenset(materialized_paths)
 
@@ -7502,6 +7514,14 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 artifact_root=artifact_root,
                 materialized_paths=materialized_paths,
             )
+            if _discard_artifacts_after_case_budget(
+                response,
+                output_file=output_file,
+                artifact_root=artifact_root,
+                materialized_paths=materialized_paths,
+            ):
+                wrote_artifact = False
+                break
             if wrote_artifact or not _response_allows_empty_artifact_retry(
                 retry_response
             ):
@@ -7509,6 +7529,48 @@ def _run_prompt_eval_with_empty_artifact_retry(
         return response, wrote_artifact, retry_count, frozenset(materialized_paths)
     finally:
         _pause_eval_case_budget()
+
+
+def _discard_artifacts_after_case_budget(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    materialized_paths: set[Path],
+) -> bool:
+    """Discard artifacts whose generation/materialization crossed the deadline."""
+
+    remaining = _remaining_eval_case_budget_seconds()
+    if remaining is None or remaining > 0:
+        return False
+
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    materialized_paths.clear()
+    timeout_seconds = _EVAL_CASE_TIMEOUT_SECONDS.get()
+    if timeout_seconds is None:  # pragma: no cover - active deadline invariant
+        raise RuntimeError("Active eval case deadline has no timeout duration")
+    message = f"Eval case budget timed out after {timeout_seconds} seconds"
+    if response.error and message not in response.error:
+        response.error = f"{message}; last error: {response.error}"
+    else:
+        response.error = message
+    response.timed_out = True
+    response.timeout_stage = "case_budget"
+    response.timeout_reason = "wall"
+    response.timeout_seconds = float(timeout_seconds)
+    response.timeout_attempts = max(response.timeout_attempts, 1)
+    trace = dict(response.trace or {})
+    trace.update(
+        {
+            "timed_out": True,
+            "timeout_stage": "case_budget",
+            "timeout_reason": "wall",
+            "timeout_seconds": timeout_seconds,
+            "timeout_attempts": response.timeout_attempts,
+        }
+    )
+    response.trace = trace
+    return True
 
 
 def _run_single_eval(
@@ -8151,7 +8213,10 @@ def _write_eval_artifact_text(
     _secure_atomic_eval_write(root, relative, content.encode("utf-8"))
 
 
-def _clear_eval_target_artifacts(expected_path: Path, artifact_root: Path) -> None:
+def _clear_eval_target_artifacts(
+    expected_path: Path,
+    artifact_root: Path | None,
+) -> None:
     """Remove stale main and companion artifacts without following symlinks."""
 
     for target_path in (expected_path, _rulespec_test_path(expected_path)):
