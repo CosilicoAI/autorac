@@ -3821,6 +3821,8 @@ rules:
     dtype: Decimal
     source: de/statute/estg/32a(1)
     versions:
+      - effective_from: '2025-01-01'
+        formula: 1.5
       - effective_from: '2026-01-01'
         formula: 2
   - name: amount
@@ -3841,8 +3843,19 @@ rules:
     }
 
     result = _analyze(content, source, test_cases=[case])
+    pipeline_shaped = _analyze(
+        content,
+        source,
+        test_cases=[case],
+        artifact_numeric_values=(1.5, 2.0),
+        artifact_numeric_bindings=(
+            ("multiplier", 1.5),
+            ("multiplier", 2.0),
+        ),
+    )
 
     assert not result.issues
+    assert not pipeline_shaped.issues
 
 
 def _boundary_control_content(
@@ -3987,8 +4000,19 @@ def test_monthly_case_period_resolves_versioned_boundary_constant():
     }
 
     result = _analyze(content, source, test_cases=[case])
+    pipeline_shaped = _analyze(
+        content,
+        source,
+        test_cases=[case],
+        artifact_numeric_values=(90.0, 100.0),
+        artifact_numeric_bindings=(
+            ("income_limit", 90.0),
+            ("income_limit", 100.0),
+        ),
+    )
 
     assert not result.issues
+    assert not pipeline_shaped.issues
 
 
 def test_equal_asserted_exception_effects_do_not_count_as_toggle():

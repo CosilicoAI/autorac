@@ -1417,12 +1417,38 @@ def _merge_unambiguous_numeric_bindings(
 
     merged = dict(environment)
     for name, values in values_by_name.items():
+        temporal = environment.get(name)
+        if isinstance(temporal, _TemporalFormulaValue):
+            temporal_values = [
+                float(value)
+                for _start, _end, value in temporal.versions
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            ]
+            if _numeric_binding_sequences_match(values, temporal_values):
+                continue
+            merged.pop(name, None)
+            continue
         first = values[0]
         if all(math.isclose(float(value), float(first)) for value in values[1:]):
             merged[name] = first
         else:
             merged.pop(name, None)
     return merged
+
+
+def _numeric_binding_sequences_match(
+    left: Sequence[int | float],
+    right: Sequence[int | float],
+) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(
+        math.isclose(float(left_value), float(right_value))
+        for left_value, right_value in zip(
+            sorted(left, key=float),
+            sorted(right, key=float),
+        )
+    )
 
 
 def _companion_test_issues(
