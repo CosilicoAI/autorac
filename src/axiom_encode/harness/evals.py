@@ -12534,6 +12534,7 @@ def _run_codex_prompt_eval(
     start = time.time()
     terminated_after_output = False
     timed_out = False
+    timeout_stage = None
     timeout_reason = None
     triggering_timeout_seconds: float | None = None
     with (
@@ -12575,7 +12576,11 @@ def _run_codex_prompt_eval(
                     else "wall"
                 ),
             )
-            timeout_reason = "wall" if case_budget_limited else backend_timeout_reason
+            case_budget_triggered = (
+                case_budget_limited and backend_timeout_reason == "wall"
+            )
+            timeout_stage = "case_budget" if case_budget_triggered else "encoder"
+            timeout_reason = "wall" if case_budget_triggered else backend_timeout_reason
             triggering_timeout_seconds = float(exc.timeout)
             process.kill()
             process.wait()
@@ -12645,7 +12650,7 @@ def _run_codex_prompt_eval(
     if timed_out and not error and not final_text:
         error = (
             "Eval case budget timed out"
-            if case_budget_limited
+            if timeout_stage == "case_budget"
             else "Codex eval timed out"
         )
 
@@ -12666,7 +12671,7 @@ def _run_codex_prompt_eval(
             "backend": "codex-exec",
             "model": runner.model,
             "timed_out": timed_out,
-            "timeout_stage": ("case_budget" if case_budget_limited else "encoder"),
+            "timeout_stage": timeout_stage,
             "timeout_reason": timeout_reason,
             "timeout_seconds": (
                 triggering_timeout_seconds if timed_out else codex_timeout_seconds
@@ -12678,9 +12683,7 @@ def _run_codex_prompt_eval(
         unexpected_accesses=unexpected_accesses,
         error=error,
         timed_out=timed_out,
-        timeout_stage=("case_budget" if case_budget_limited else "encoder")
-        if timed_out
-        else None,
+        timeout_stage=timeout_stage,
         timeout_reason=timeout_reason,
         timeout_seconds=triggering_timeout_seconds if timed_out else None,
         timeout_attempts=1 if timed_out else 0,
