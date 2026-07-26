@@ -12131,6 +12131,45 @@ class TestOpenAIEvalRequest:
         assert response.timeout_attempts == 2
         assert response.trace["timeout_stage"] == "case_budget"
 
+    def test_openai_prompt_eval_preserves_timeout_history_before_success(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        ok_response = Mock(
+            status_code=200,
+            headers={},
+            text="",
+        )
+        ok_response.json.return_value = {
+            "output_text": "format: rulespec/v1\nrules: []\n",
+            "usage": {},
+        }
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.requests.post",
+                side_effect=[
+                    requests.exceptions.ReadTimeout("read timed out"),
+                    ok_response,
+                ],
+            ),
+            patch("axiom_encode.harness.evals.time.sleep"),
+        ):
+            response = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert response.error is None
+        assert response.timed_out is False
+        assert response.timeout_attempts == 1
+        assert response.timeout_stage == "encoder"
+        assert response.timeout_reason == "read"
+        assert response.timeout_seconds == 180
+        assert response.trace["timeout_attempts"] == 1
+
 
 def test_repeated_openai_timeouts_reach_durable_result_attempt_count(
     tmp_path,
@@ -12172,6 +12211,58 @@ def test_repeated_openai_timeouts_reach_durable_result_attempt_count(
     assert restored.timeout_reason == "connect"
     assert restored.timeout_seconds == 30
     assert restored.timeout_attempts == 12
+
+
+def test_openai_timeouts_before_http_error_reach_durable_result(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "source states 451.",
+    )
+    unavailable_response = Mock(
+        status_code=503,
+        headers={},
+        text="unavailable",
+    )
+    unavailable_response.json.return_value = {
+        "error": {"message": "unavailable"},
+    }
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.requests.post",
+            side_effect=[
+                *[
+                    requests.exceptions.ConnectTimeout("connection timed out")
+                    for _attempt in range(5)
+                ],
+                unavailable_response,
+            ],
+        ) as mock_post,
+        patch("axiom_encode.harness.evals.time.sleep"),
+    ):
+        [result] = run_source_eval(
+            source_unit=source_unit,
+            runner_specs=["openai:gpt-5.4"],
+            output_root=tmp_path / "out",
+            policy_path=policy_repo_root,
+            local_corpus_release=corpus_release,
+            runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+            mode="cold",
+        )
+
+    restored = _eval_result_from_payload(result.to_dict())
+    assert mock_post.call_count == 6
+    assert restored.failure_kind == "error"
+    assert restored.timed_out is False
+    assert restored.timeout_stage == "encoder"
+    assert restored.timeout_reason == "connect"
+    assert restored.timeout_seconds == 30
+    assert restored.timeout_attempts == 5
 
 
 class TestEvalSuiteManifest:
