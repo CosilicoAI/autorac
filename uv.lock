@@ -53,7 +53,7 @@ wheels = [
 
 [[package]]
 name = "axiom-encode"
-version = "0.2.1382"
+version = "0.2.1383"
 source = { editable = "." }
 dependencies = [
     { name = "axiom-oracles" },
@@ -101,7 +101,7 @@ observability = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.40.0" },
     { name = "axiom-encode", extras = ["api", "dev", "observability"], marker = "extra == 'all'" },
-    { name = "axiom-oracles", git = "https://github.com/TheAxiomFoundation/axiom-oracles?rev=3033eed72c451f15f6df92c93073e39f5c921a03" },
+    { name = "axiom-oracles", git = "https://github.com/TheAxiomFoundation/axiom-oracles?rev=343e9fae8a76e02c55c4e072c500b72a80656ef4" },
     { name = "claude-agent-sdk", marker = "extra == 'api'", specifier = ">=0.1.0" },
     { name = "cryptography", specifier = ">=46.0" },
     { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.28.0" },
@@ -125,7 +125,7 @@ provides-extras = ["api", "observability", "dev", "all"]
 [[package]]
 name = "axiom-oracles"
 version = "0.2.1"
-source = { git = "https://github.com/TheAxiomFoundation/axiom-oracles?rev=3033eed72c451f15f6df92c93073e39f5c921a03#3033eed72c451f15f6df92c93073e39f5c921a03" }
+source = { git = "https://github.com/TheAxiomFoundation/axiom-oracles?rev=343e9fae8a76e02c55c4e072c500b72a80656ef4#343e9fae8a76e02c55c4e072c500b72a80656ef4" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
