@@ -12338,6 +12338,46 @@ class TestOpenAIEvalRequest:
         assert exc_info.value.timeout_seconds == 5
         assert exc_info.value.timeout_attempts == 1
 
+    def test_wrapped_openai_wall_timeout_counts_the_terminal_request(
+        self,
+        monkeypatch,
+    ):
+        clock = [100.0]
+        request_count = 0
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def request_then_expire(**_kwargs):
+            nonlocal request_count
+            request_count += 1
+            if request_count < 3:
+                raise requests.exceptions.ReadTimeout("read timed out")
+            clock[0] = 106.0
+            raise requests.exceptions.ConnectionError("wrapped alarm timeout")
+
+        deadline_token = evals_module._EVAL_CASE_DEADLINE_MONOTONIC.set(105.0)
+        timeout_token = evals_module._EVAL_CASE_TIMEOUT_SECONDS.set(5)
+        try:
+            with (
+                patch(
+                    "axiom_encode.harness.evals._post_openai_request_with_wall_deadline",
+                    side_effect=request_then_expire,
+                ),
+                patch("axiom_encode.harness.evals.time.sleep"),
+                pytest.raises(requests.Timeout) as exc_info,
+            ):
+                _post_openai_eval_request(
+                    headers={"Authorization": "Bearer test"},
+                    body={"model": "gpt-5.4", "input": "hi"},
+                    attempts=3,
+                )
+        finally:
+            evals_module._EVAL_CASE_TIMEOUT_SECONDS.reset(timeout_token)
+            evals_module._EVAL_CASE_DEADLINE_MONOTONIC.reset(deadline_token)
+
+        assert request_count == 3
+        assert exc_info.value.timeout_stage == "case_budget"
+        assert exc_info.value.timeout_attempts == 3
+
     @pytest.mark.parametrize(
         ("error", "expected_reason", "expected_seconds"),
         [

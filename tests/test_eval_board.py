@@ -1592,6 +1592,9 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
                 ),
                 _result("terra", CASE_IDENTITIES[2]),
             ],
+            execution_identity=_execution_identity(
+                policyengine_runtime=_policyengine_runtime_identity(),
+            ),
         ),
     )
     board = fold_eval_board([path])
@@ -1599,6 +1602,28 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
     assert stats.policyengine_case_count == 2
     assert stats.policyengine_pass_count == 1
     assert stats.policyengine_pass_rate == pytest.approx(0.5)
+
+
+def test_fold_refuses_oracle_evidence_without_bound_policyengine_runtime(tmp_path):
+    path = _write_payload(
+        tmp_path,
+        "unbound-oracle.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result(
+                    "terra",
+                    CASE_IDENTITIES[0],
+                    metrics=_metrics(policyengine_pass=True, policyengine_score=1.0),
+                ),
+                _result("terra", CASE_IDENTITIES[1]),
+                _result("terra", CASE_IDENTITIES[2]),
+            ],
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine runtime"):
+        fold_eval_board([path])
 
 
 def test_fold_allows_honest_partial_run(tmp_path):
