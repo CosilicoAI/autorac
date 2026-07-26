@@ -1,5 +1,6 @@
 """Tests for the N-runner eval board fold and its capability manifest."""
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -333,6 +334,39 @@ def _payload(
         execution_identity = _execution_identity()
     if execution_identity_sha256 is None:
         execution_identity_sha256 = evals_canonical_json_sha256(execution_identity)
+    bound_results = []
+    for original_row in results:
+        if not isinstance(original_row, dict):
+            bound_results.append(original_row)
+            continue
+        row = copy.deepcopy(original_row)
+        if "admission" not in row:
+            row["admission"] = {
+                "schema": "axiom-encode/eval-result-admission/v2",
+                "execution": {
+                    "identity": copy.deepcopy(execution_identity),
+                    "sha256": execution_identity_sha256,
+                },
+            }
+        metrics = row.get("metrics")
+        runtime = execution_identity.get("policyengine_runtime")
+        if (
+            isinstance(metrics, dict)
+            and isinstance(runtime, dict)
+            and (
+                metrics.get("policyengine_pass") is not None
+                or metrics.get("policyengine_score") is not None
+            )
+        ):
+            metrics.setdefault(
+                "policyengine_runtime_identity",
+                copy.deepcopy(runtime["identity"]),
+            )
+            metrics.setdefault(
+                "policyengine_runtime_identity_sha256",
+                runtime["sha256"],
+            )
+        bound_results.append(row)
     # Bind rows exactly like the producer: every persisted row carries a
     # digest over itself minus the digest field.
     results = [
@@ -341,7 +375,7 @@ def _payload(
             if isinstance(row, dict) and "result_sha256" not in row
             else row
         )
-        for row in results
+        for row in bound_results
     ]
     if results_sha256 is None:
         results_sha256 = cli._eval_suite_json_sha256(results)
@@ -1149,6 +1183,47 @@ def test_fold_refuses_tampered_result_row_binding(tmp_path):
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize("mutation", ["missing", "identity", "digest"])
+def test_fold_refuses_result_without_matching_execution_admission(
+    tmp_path,
+    mutation,
+):
+    execution_identity = _execution_identity()
+    row = _result("terra", CASE_IDENTITIES[0])
+    if mutation == "missing":
+        row["admission"] = None
+    else:
+        admitted_identity = copy.deepcopy(execution_identity)
+        if mutation == "identity":
+            admitted_identity["axiom_encode"]["commit"] = "8" * 40
+        admitted_digest = evals_canonical_json_sha256(admitted_identity)
+        if mutation == "digest":
+            admitted_digest = "8" * 64
+        row["admission"] = {
+            "schema": "axiom-encode/eval-result-admission/v2",
+            "execution": {
+                "identity": admitted_identity,
+                "sha256": admitted_digest,
+            },
+        }
+    path = _write_payload(
+        tmp_path,
+        f"row-{mutation}-execution-admission.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                row,
+                _result("terra", CASE_IDENTITIES[1]),
+                _result("terra", CASE_IDENTITIES[2]),
+            ],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="admission execution identity"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_tampered_results_digest(tmp_path):
     path = _write_payload(
         tmp_path,
@@ -1857,6 +1932,32 @@ def test_oracle_failures_without_scores_stay_in_denominator(tmp_path):
     assert stats.policyengine_case_count == 2
     assert stats.policyengine_pass_count == 1
     assert stats.policyengine_pass_rate == pytest.approx(0.5)
+
+
+def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
+    expected_runtime = _policyengine_runtime_identity()
+    foreign_runtime = _policyengine_runtime_identity(pe_version="1.10.0")
+    metrics = _metrics(policyengine_pass=True, policyengine_score=1.0)
+    metrics["policyengine_runtime_identity"] = foreign_runtime["identity"]
+    metrics["policyengine_runtime_identity_sha256"] = foreign_runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "foreign-oracle-runtime.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", CASE_IDENTITIES[0], metrics=metrics),
+                _result("terra", CASE_IDENTITIES[1]),
+                _result("terra", CASE_IDENTITIES[2]),
+            ],
+            execution_identity=_execution_identity(
+                policyengine_runtime=expected_runtime,
+            ),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine runtime evidence"):
+        fold_eval_board([path])
 
 
 def test_fold_refuses_oracle_evidence_without_bound_policyengine_runtime(tmp_path):
