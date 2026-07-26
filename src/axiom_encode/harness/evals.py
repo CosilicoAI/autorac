@@ -1137,6 +1137,22 @@ def _validate_eval_result_artifact_binding(
         raise ValueError(f"{artifact_name} has a failed result without a failure_kind")
     if payload.get("success") is True and failure_kind is not None:
         raise ValueError(f"{artifact_name} marks success with a failure_kind")
+    unexpected_accesses = payload.get("unexpected_accesses")
+    if not isinstance(unexpected_accesses, list) or any(
+        not isinstance(access, str) or not access.strip()
+        for access in unexpected_accesses
+    ):
+        raise ValueError(
+            f"{artifact_name} unexpected_accesses must be a list of nonempty strings"
+        )
+    if unexpected_accesses and failure_kind != "integrity":
+        raise ValueError(
+            f"{artifact_name} has unexpected_accesses without an integrity failure"
+        )
+    if failure_kind == "integrity" and not unexpected_accesses:
+        raise ValueError(
+            f"{artifact_name} integrity failure must record unexpected_accesses"
+        )
     for field_name in ("estimated_cost_usd", "actual_cost_usd"):
         value = payload.get(field_name)
         if value is not None and (
@@ -1198,6 +1214,25 @@ def _validate_eval_result_artifact_binding(
         raise ValueError(
             f"{artifact_name} effective-environment fields do not match its backend"
         )
+    if backend == "openai":
+        if not isinstance(payload.get("openai_endpoint"), str):
+            raise ValueError(f"{artifact_name} requires openai_endpoint")
+        if (
+            isinstance(payload.get("openai_max_output_tokens"), bool)
+            or not isinstance(payload.get("openai_max_output_tokens"), int)
+            or payload["openai_max_output_tokens"] <= 0
+        ):
+            raise ValueError(f"{artifact_name} requires openai_max_output_tokens")
+        has_generated_artifact = bool(payload.get("output_file")) or isinstance(
+            payload.get("metrics"), dict
+        )
+        if has_generated_artifact and not isinstance(
+            payload.get("openai_response_model_id"), str
+        ):
+            raise ValueError(
+                f"{artifact_name} generated OpenAI artifact requires "
+                "openai_response_model_id"
+            )
 
     bound_fields: set[str] = set()
     for path_field, digest_field, label, _max_bytes in _EVAL_RESULT_ARTIFACT_SPECS:
@@ -14178,6 +14213,28 @@ def _run_openai_prompt_eval(
             timeout_attempts=timeout_attempts,
             openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
             openai_response_model_id=response_model_id,
+            openai_service_tier=service_tier,
+            openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
+        )
+
+    if response_model_id is None:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            tokens=tokens,
+            estimated_cost_usd=estimate_usage_cost_usd(runner.model, tokens),
+            trace=trace,
+            error=(
+                "OpenAI eval response omitted the response model ID; "
+                "refusing unidentifiable output"
+            ),
+            failure_kind="error",
+            timeout_stage=timeout_stage,
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=timeout_attempts,
+            openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+            openai_response_model_id=None,
             openai_service_tier=service_tier,
             openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )

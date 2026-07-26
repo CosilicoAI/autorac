@@ -6297,6 +6297,44 @@ def test_result_binding_rejects_terminal_infra_failure_with_artifact():
         evals_module._validate_eval_result_artifact_binding(payload)
 
 
+@pytest.mark.parametrize(
+    "unexpected_accesses",
+    [None, "cat /etc/passwd", [17], [""], ["   "]],
+)
+def test_result_binding_rejects_malformed_unexpected_accesses(unexpected_accesses):
+    payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
+    payload["unexpected_accesses"] = unexpected_accesses
+
+    with pytest.raises(ValueError, match="unexpected_accesses"):
+        evals_module._validate_eval_result_artifact_binding(payload)
+
+
+def test_result_binding_rejects_success_with_unexpected_accesses():
+    payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
+    payload["unexpected_accesses"] = ["cat $HOME/.ssh/id_rsa"]
+
+    with pytest.raises(ValueError, match="unexpected_accesses.*integrity"):
+        evals_module._validate_eval_result_artifact_binding(payload)
+
+
+def test_result_binding_rejects_integrity_without_unexpected_accesses():
+    payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
+    payload.update(
+        {
+            "success": False,
+            "error": "integrity failure",
+            "failure_kind": "integrity",
+            "output_file": "",
+            "generated_output_sha256": None,
+            "metrics": None,
+            "unexpected_accesses": [],
+        }
+    )
+
+    with pytest.raises(ValueError, match="integrity.*unexpected_accesses"):
+        evals_module._validate_eval_result_artifact_binding(payload)
+
+
 def test_suite_context_overflow_is_recorded_as_distinct_infra_failure():
     case = EvalSuiteCase(
         kind="source",
@@ -13804,7 +13842,18 @@ class TestOpenAIEvalRequest:
             "status": "completed",
             "model": "gpt-5.4-2026-06-01",
             "service_tier": "priority",
-            "output_text": "format: rulespec/v1\nrules: []\n",
+            "output": [
+                {
+                    "type": "message",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "format: rulespec/v1\nrules: []\n",
+                        }
+                    ],
+                }
+            ],
             "usage": {},
         }
 
@@ -13823,6 +13872,34 @@ class TestOpenAIEvalRequest:
         assert result.openai_response_model_id == "gpt-5.4-2026-06-01"
         assert result.openai_service_tier == "priority"
         assert result.openai_max_output_tokens == 128_000
+        assert result.text == "format: rulespec/v1\nrules: []"
+
+    def test_openai_prompt_eval_rejects_completed_response_without_model_id(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        response = Mock(status_code=200, headers={}, text="")
+        response.json.return_value = {
+            "status": "completed",
+            "output_text": "format: rulespec/v1\nrules: []\n",
+            "usage": {},
+        }
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            return_value=response,
+        ):
+            result = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert result.text == ""
+        assert result.failure_kind == "error"
+        assert result.openai_response_model_id is None
+        assert "response model" in (result.error or "").lower()
 
     def test_post_openai_eval_request_retries_transient_status(self):
         error_response = Mock()
@@ -14109,6 +14186,7 @@ class TestOpenAIEvalRequest:
         )
         ok_response.json.return_value = {
             "status": "completed",
+            "model": "gpt-5.4-2026-06-01",
             "output_text": "format: rulespec/v1\nrules: []\n",
             "usage": {},
         }

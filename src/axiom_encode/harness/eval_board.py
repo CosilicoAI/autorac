@@ -1557,6 +1557,13 @@ def _validate_result_effective_environment(result: dict, *, context: str) -> Non
             raise EvalBoardError(f"{context} requires openai_endpoint")
         if not _is_positive_int(result.get("openai_max_output_tokens")):
             raise EvalBoardError(f"{context} requires openai_max_output_tokens")
+        has_generated_artifact = bool(result.get("output_file")) or isinstance(
+            result.get("metrics"), dict
+        )
+        if has_generated_artifact and not _is_nonempty_string(
+            result.get("openai_response_model_id")
+        ):
+            raise EvalBoardError(f"{context} requires openai_response_model_id")
 
 
 def _validate_result_types(result: dict, *, context: str) -> None:
@@ -1611,6 +1618,22 @@ def _validate_result_types(result: dict, *, context: str) -> None:
             raise EvalBoardError(f"{context} marks success with a failure_kind")
     elif failure_kind is None:
         raise EvalBoardError(f"{context} failure row has no failure_kind")
+    unexpected_accesses = result.get("unexpected_accesses")
+    if not isinstance(unexpected_accesses, list) or any(
+        not isinstance(access, str) or not access.strip()
+        for access in unexpected_accesses
+    ):
+        raise EvalBoardError(
+            f"{context} unexpected_accesses must be a list of nonempty strings"
+        )
+    if unexpected_accesses and failure_kind != "integrity":
+        raise EvalBoardError(
+            f"{context} has unexpected_accesses without an integrity failure"
+        )
+    if failure_kind == "integrity" and not unexpected_accesses:
+        raise EvalBoardError(
+            f"{context} integrity failure must record unexpected_accesses"
+        )
     _require_nonnegative_int(
         result.get("duration_ms"), context=f"{context} duration_ms"
     )

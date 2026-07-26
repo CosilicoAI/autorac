@@ -361,6 +361,7 @@ def _result(
     openai_response_model_id=_UNSET,
     openai_service_tier=_UNSET,
     openai_max_output_tokens=_UNSET,
+    unexpected_accesses=_UNSET,
 ):
     if metrics == "default":
         metrics = _metrics()
@@ -380,6 +381,10 @@ def _result(
         openai_service_tier = "default" if backend == "openai" else None
     if openai_max_output_tokens is _UNSET:
         openai_max_output_tokens = 128_000 if backend == "openai" else None
+    if unexpected_accesses is _UNSET:
+        unexpected_accesses = (
+            ["prompt-only tool invocation"] if failure_kind == "integrity" else []
+        )
     has_generated_artifact = success is True or isinstance(metrics, dict)
     eval_case = {
         "index": case["index"],
@@ -412,6 +417,7 @@ def _result(
         "openai_response_model_id": openai_response_model_id,
         "openai_service_tier": openai_service_tier,
         "openai_max_output_tokens": openai_max_output_tokens,
+        "unexpected_accesses": unexpected_accesses,
         "duration_ms": duration_ms,
         "estimated_cost_usd": cost,
         "output_file": (
@@ -1066,6 +1072,7 @@ def test_fold_refuses_infra_failure_that_claims_a_generated_artifact(
         ("claude", "claude-fable-5", "claude_cli_version"),
         ("codex", "gpt-5.6-terra", "codex_cli_version"),
         ("openai", "gpt-5.4", "openai_endpoint"),
+        ("openai", "gpt-5.4", "openai_response_model_id"),
         ("openai", "gpt-5.4", "openai_max_output_tokens"),
     ],
 )
@@ -1222,6 +1229,57 @@ def test_fold_allows_nullable_codex_sha_and_pre_response_openai_metadata(tmp_pat
 
     assert fold_eval_board([codex_path]).cells[(1, "terra")].state == "pass"
     assert fold_eval_board([openai_path]).cells[(1, "openai")].state == "error"
+
+
+@pytest.mark.parametrize(
+    "unexpected_accesses",
+    [None, "cat /etc/passwd", [17], [""], ["   "]],
+)
+def test_fold_refuses_malformed_unexpected_accesses(tmp_path, unexpected_accesses):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0]["unexpected_accesses"] = unexpected_accesses
+    path = _write_payload(
+        tmp_path,
+        "malformed-unexpected-accesses.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="unexpected_accesses"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_success_with_unexpected_accesses(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0]["unexpected_accesses"] = ["cat $HOME/.ssh/id_rsa"]
+    path = _write_payload(
+        tmp_path,
+        "successful-unexpected-access.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="unexpected_accesses.*integrity"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_integrity_without_unexpected_accesses(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0] = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error="integrity failure",
+        metrics=None,
+        failure_kind="integrity",
+        unexpected_accesses=[],
+    )
+    path = _write_payload(
+        tmp_path,
+        "integrity-without-unexpected-access.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="integrity.*unexpected_accesses"):
+        fold_eval_board([path])
 
 
 def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
