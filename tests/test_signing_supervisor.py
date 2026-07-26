@@ -1821,6 +1821,34 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     trigger = workflow.get("on", workflow.get(True))
     assert set(trigger) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"actions": "read", "contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": (
+            "targeted-signed-reencode-${{ "
+            "github.actor == 'github-actions[bot]' && inputs.queue_id && "
+            "inputs.queue_item_generation_sha256 || github.run_id }}"
+        ),
+        "cancel-in-progress": False,
+    }
+
+    def concurrency_suffix(
+        actor: str, queue_id: str, generation_sha: str, run_id: str
+    ) -> str:
+        return (
+            generation_sha
+            if actor == "github-actions[bot]" and queue_id and generation_sha
+            else run_id
+        )
+
+    assert (
+        concurrency_suffix("github-actions[bot]", "snap", "queue-generation", "run-1")
+        == "queue-generation"
+    )
+    assert (
+        concurrency_suffix("manual-user", "snap", "queue-generation", "run-2")
+        == "run-2"
+    )
+    assert concurrency_suffix("manual-user", "", "queue-generation", "run-3") == "run-3"
+    assert concurrency_suffix("github-actions[bot]", "snap", "", "run-4") == "run-4"
     inputs = trigger["workflow_dispatch"]["inputs"]
     assert "allowlisted reviewed SHA" in inputs["rulespec_ref"]["description"]
     assert "artifact-only" in inputs["rulespec_ref"]["description"]
