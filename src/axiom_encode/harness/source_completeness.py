@@ -15,6 +15,7 @@ import re
 import textwrap
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 import yaml
@@ -1594,7 +1595,7 @@ def _companion_test_issues(
     )
     missing_rounding_formula: list[tuple[SourceStructureBranch, str]] = []
     rounding_witnesses: dict[
-        tuple[SourceStructureBranch, str], set[tuple[str, int, str]]
+        tuple[SourceStructureBranch, str], set[tuple[str, str, str]]
     ] = {}
     require_rounding_clause_binding = len(rounding_obligations) > 1
     for obligation in rounding_obligations:
@@ -1616,10 +1617,14 @@ def _companion_test_issues(
                 _fractional_rounding_case_witnesses(
                     name,
                     principal_rules[name],
+                    principal_rules=principal_rules,
                     asserted_by_rule=asserted_by_rule,
                     direction=direction,
                     formula_environment=formula_environment,
                     source_formula_branch=source_formula_branch,
+                    rounding_refers_to_result=(
+                        _rounding_text_refers_to_result(branch.text)
+                    ),
                     require_clause_binding=require_rounding_clause_binding,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
@@ -1696,17 +1701,49 @@ def _source_formula_branches(
                 0,
                 len(source_text),
             )
-        obligations.append(
-            SourceStructureBranch(
-                owner.path,
-                "formula-clause",
-                f"{owner.label} formula clause {clause_index}",
-                clause,
-                start,
-                end,
-            )
+        obligation = SourceStructureBranch(
+            owner.path,
+            "formula-clause",
+            f"{owner.label} formula clause {clause_index}",
+            clause,
+            start,
+            end,
         )
+        if _rounding_clause_refers_to_previous_result(
+            obligation,
+            previous=obligations[-1] if obligations else None,
+            source_text=source_text,
+        ):
+            continue
+        obligations.append(obligation)
     return tuple(obligations)
+
+
+def _rounding_clause_refers_to_previous_result(
+    clause: SourceStructureBranch,
+    *,
+    previous: SourceStructureBranch | None,
+    source_text: str,
+) -> bool:
+    """Attach a standalone rounding modifier to its preceding computation."""
+
+    return bool(
+        previous is not None
+        and previous.path == clause.path
+        and _rounding_only_direction(clause.text) is not None
+        and _rounding_text_refers_to_result(clause.text)
+        and not re.search(r"\w", source_text[previous.end : clause.start])
+    )
+
+
+def _rounding_text_refers_to_result(text: str) -> bool:
+    return bool(
+        re.match(
+            r"\s*(?:das\s+ergebnis|the\s+result)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _source_clause_spans(
@@ -1851,10 +1888,16 @@ def _formula_branch_test_witnesses(
         selector_names = _rule_numeric_selector_names(rule)
         has_branching_formula = _rule_has_branching_formula(rule)
         for case in asserted_by_rule.get(rule_name, ()):
+            dependency_environment = _case_asserted_dependency_environment(
+                principal_rules,
+                case,
+                formula_environment=formula_environment,
+            )
             execution = _case_formula_execution(
                 rule,
                 case,
                 formula_environment=formula_environment,
+                dependency_environment=dependency_environment,
             )
             if (
                 execution is None
@@ -2441,6 +2484,7 @@ def _case_formula_execution(
     case: dict[str, Any],
     *,
     formula_environment: dict[str, Any] | None = None,
+    dependency_environment: dict[str, Any] | None = None,
 ) -> _FormulaExecution | None:
     """Resolve the reachable RuleSpec formula for one asserted test case."""
 
@@ -2452,10 +2496,23 @@ def _case_formula_execution(
         case,
     )
     environment: dict[str, Any] = dict(constant_environment)
+    for name, value in (dependency_environment or {}).items():
+        if name in environment and not _formula_runtime_values_equal(
+            environment[name],
+            value,
+        ):
+            return None
+        environment[name] = value
     input_environment = _case_input_formula_environment(case)
     if input_environment is None:
         return None
-    environment.update(input_environment)
+    for name, value in input_environment.items():
+        if name in environment and not _formula_runtime_values_equal(
+            environment[name],
+            value,
+        ):
+            return None
+        environment[name] = value
     formula_text = _rule_formula_text_for_case(rule, case)
     if formula_text is None:
         return None
@@ -2486,6 +2543,106 @@ def _case_input_formula_environment(
                 return None
             input_environment[name] = normalized_value
     return input_environment
+
+
+def _case_asserted_dependency_environment(
+    principal_rules: dict[str, dict[str, Any]],
+    case: dict[str, Any],
+    *,
+    formula_environment: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve only derived values corroborated by this case's assertions."""
+
+    return _case_dependency_environment(
+        principal_rules,
+        case,
+        formula_environment=formula_environment,
+        require_asserted_value=True,
+    )
+
+
+def _case_dependency_environment(
+    principal_rules: dict[str, dict[str, Any]],
+    case: dict[str, Any],
+    *,
+    formula_environment: dict[str, Any],
+    require_asserted_value: bool,
+    allowed_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate an acyclic reached subset of local principal outputs."""
+
+    constants = _formula_environment_for_case(formula_environment, case)
+    inputs = _case_input_formula_environment(case)
+    if inputs is None:
+        return {}
+    environment = dict(constants)
+    for name, value in inputs.items():
+        if name in environment and not _formula_runtime_values_equal(
+            environment[name],
+            value,
+        ):
+            return {}
+        environment[name] = value
+
+    candidates = {
+        name: rule
+        for name, rule in principal_rules.items()
+        if allowed_names is None or name in allowed_names
+    }
+    resolved: dict[str, Any] = {}
+    for _ in range(len(candidates) + 1):
+        changed = False
+        for name, rule in candidates.items():
+            if name in resolved or name in environment:
+                continue
+            formula_text = _rule_formula_text_for_case(rule, case)
+            if formula_text is None:
+                continue
+            execution = _execute_formula_text(
+                formula_text,
+                environment=environment,
+                constant_environment=constants,
+            )
+            if execution is None:
+                continue
+            value = _evaluate_formula_selector(execution.leaf, environment)
+            if value is _UNRESOLVED_CONDITION_VALUE:
+                continue
+            if require_asserted_value:
+                asserted = _test_case_asserted_output_value(case, name)
+                if (
+                    asserted is _UNRESOLVED_CONDITION_VALUE
+                    or not _formula_runtime_values_equal(value, asserted)
+                ):
+                    continue
+            resolved[name] = value
+            environment[name] = value
+            changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def _formula_runtime_values_equal(left: Any, right: Any) -> bool:
+    """Mirror RuleSpec scalar equality for evidence-bearing runtime values."""
+
+    left_boolean = _boolean_value(left)
+    right_boolean = _boolean_value(right)
+    if left_boolean is not None or right_boolean is not None:
+        return left_boolean is not None and left_boolean == right_boolean
+    if (
+        isinstance(left, (int, float))
+        and not isinstance(left, bool)
+        and isinstance(right, (int, float))
+        and not isinstance(right, bool)
+    ):
+        with contextlib.suppress(InvalidOperation):
+            return (
+                abs(Decimal(str(left)) - Decimal(str(right)))
+                <= Decimal("1e-18")
+            )
+        return False
+    return type(left) is type(right) and left == right
 
 
 def _execute_formula_text(
@@ -3146,7 +3303,7 @@ def _match_arm_value(
     with contextlib.suppress(SyntaxError, ValueError):
         return ast.literal_eval(value)
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-        return environment.get(value, value)
+        return environment.get(value, _UNRESOLVED_CONDITION_VALUE)
     return _UNRESOLVED_CONDITION_VALUE
 
 
@@ -3328,10 +3485,16 @@ def _branch_boundary_has_test_evidence(
         if not selector_names:
             continue
         for case in asserted_by_rule.get(rule_name, ()):
+            dependency_environment = _case_asserted_dependency_environment(
+                principal_rules,
+                case,
+                formula_environment=formula_environment or {},
+            )
             execution = _case_formula_execution(
                 rule,
                 case,
                 formula_environment=formula_environment,
+                dependency_environment=dependency_environment,
             )
             if (
                 execution is not None
@@ -3358,14 +3521,18 @@ def _branch_boundary_has_test_evidence(
                         rule,
                         case,
                         input_key=input_key,
+                        selector_names=input_names,
                         boundary_value=value,
                         execution=execution,
+                        principal_rules=principal_rules,
+                        dependency_names=set(dependency_environment),
                         formula_environment=formula_environment or {},
                     )
                     for input_key, input_names, value in (
                         _case_numeric_selector_evidence(
                             case,
                             selector_names,
+                            dependency_environment=dependency_environment,
                         )
                     )
                 )
@@ -3396,15 +3563,19 @@ def _formula_execution_binds_boundary(
     }
     if input_names & boundary_names:
         return False
-    texts = [
-        selector
-        for step in execution.trace
-        for selector in step.selectors
-    ]
-    texts.append(execution.leaf)
+    checks: list[tuple[str, bool]] = []
+    for step in execution.trace:
+        if step.kind != "if":
+            continue
+        checks.extend(
+            (selector, True)
+            for selector in step.selectors
+        )
+    checks.append((execution.leaf, False))
     return any(
         _formula_text_has_boundary_comparison(
             text,
+            allow_complement_relation=allow_complement_relation,
             input_names=input_names,
             boundary_names=boundary_names,
             boundary=boundary,
@@ -3413,13 +3584,14 @@ def _formula_execution_binds_boundary(
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
-        for text in texts
+        for text, allow_complement_relation in checks
     )
 
 
 def _formula_text_has_boundary_comparison(
     text: str,
     *,
+    allow_complement_relation: bool,
     input_names: set[str],
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
@@ -3473,6 +3645,7 @@ def _formula_text_has_boundary_comparison(
                         boundary=boundary,
                         numeric_value_is_grounded=numeric_value_is_grounded,
                         source_interval=source_interval,
+                        allow_complement_relation=allow_complement_relation,
                     )
                 ):
                     return True
@@ -3568,12 +3741,15 @@ def _comparison_matches_source_interval(
     boundary: NumericOccurrenceLike,
     numeric_value_is_grounded: NumericGroundingPredicate,
     source_interval: _NumericInterval,
+    allow_complement_relation: bool,
 ) -> bool:
     del boundary_names
     relation = _input_comparison_relation(operator, input_on_left=input_on_left)
     if relation is None:
         return False
-    relations = {relation, _complement_comparison_relation(relation)}
+    relations = {relation}
+    if allow_complement_relation:
+        relations.add(_complement_comparison_relation(relation))
     is_exact = numeric_value_is_grounded(
         compared_boundary_value,
         (boundary,),
@@ -3681,43 +3857,80 @@ def _boundary_case_changes_formula_effect(
     case: dict[str, Any],
     *,
     input_key: object,
+    selector_names: set[str],
     boundary_value: float,
     execution: _FormulaExecution,
+    principal_rules: dict[str, dict[str, Any]],
+    dependency_names: set[str],
     formula_environment: dict[str, Any],
 ) -> bool:
     inputs = case.get("input")
-    if (
-        not isinstance(inputs, dict)
-        or input_key not in inputs
-        or isinstance(inputs[input_key], bool)
-        or not isinstance(inputs[input_key], (int, float))
-    ):
+    if not isinstance(inputs, dict):
         return False
-    step = (
+    boundary_step = (
         1.0
         if float(boundary_value).is_integer()
         else max(abs(boundary_value) * 1e-6, 1e-9)
     )
     signature = _formula_execution_effect_signature(execution)
-    for candidate_value in (
-        boundary_value - step,
-        boundary_value + step,
-    ):
-        candidate_inputs = dict(inputs)
-        candidate_inputs[input_key] = candidate_value
-        candidate_case = dict(case)
-        candidate_case["input"] = candidate_inputs
-        candidate_execution = _case_formula_execution(
-            rule,
-            candidate_case,
-            formula_environment=formula_environment,
-        )
+    for raw_key, raw_value in inputs.items():
         if (
-            candidate_execution is not None
-            and _formula_execution_effect_signature(candidate_execution)
-            != signature
+            isinstance(raw_value, bool)
+            or not isinstance(raw_value, (int, float))
         ):
-            return True
+            continue
+        directly_controls_selector = (
+            raw_key == input_key
+            and bool(_input_key_names(raw_key) & selector_names)
+        )
+        raw_step = (
+            boundary_step
+            if directly_controls_selector
+            else (
+                1.0
+                if float(raw_value).is_integer()
+                else max(abs(float(raw_value)) * 1e-6, 1e-9)
+            )
+        )
+        base_value = boundary_value if directly_controls_selector else float(raw_value)
+        for candidate_value in (
+            base_value - raw_step,
+            base_value + raw_step,
+        ):
+            candidate_inputs = dict(inputs)
+            candidate_inputs[raw_key] = candidate_value
+            candidate_case = dict(case)
+            candidate_case["input"] = candidate_inputs
+            candidate_dependencies = _case_dependency_environment(
+                principal_rules,
+                candidate_case,
+                formula_environment=formula_environment,
+                require_asserted_value=False,
+                allowed_names=dependency_names,
+            )
+            selector_changed = any(
+                names & selector_names
+                and not math.isclose(value, float(boundary_value))
+                for _key, names, value in _case_numeric_selector_evidence(
+                    candidate_case,
+                    selector_names,
+                    dependency_environment=candidate_dependencies,
+                )
+            )
+            if not selector_changed:
+                continue
+            candidate_execution = _case_formula_execution(
+                rule,
+                candidate_case,
+                formula_environment=formula_environment,
+                dependency_environment=candidate_dependencies,
+            )
+            if (
+                candidate_execution is not None
+                and _formula_execution_effect_signature(candidate_execution)
+                != signature
+            ):
+                return True
     return False
 
 
@@ -3888,6 +4101,8 @@ def _case_numeric_selector_values(
 def _case_numeric_selector_evidence(
     case: dict[str, Any],
     selector_names: set[str],
+    *,
+    dependency_environment: dict[str, Any] | None = None,
 ) -> tuple[tuple[object, set[str], float], ...]:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
@@ -3899,6 +4114,16 @@ def _case_numeric_selector_evidence(
             continue
         evidence.extend(
             (key, matched_names, numeric_value)
+            for numeric_value in _numeric_test_input_values(value)
+        )
+    directly_matched_names = set().union(
+        *(names for _key, names, _value in evidence),
+    ) if evidence else set()
+    for name, value in (dependency_environment or {}).items():
+        if name not in selector_names or name in directly_matched_names:
+            continue
+        evidence.extend(
+            (name, {name}, numeric_value)
             for numeric_value in _numeric_test_input_values(value)
         )
     return tuple(evidence)
@@ -3958,6 +4183,9 @@ def _source_rounding_obligations(
     deferred_paths: set[tuple[str, ...]],
 ) -> tuple[tuple[SourceStructureBranch, str], ...]:
     obligations: list[tuple[SourceStructureBranch, str]] = []
+    source_clauses = tuple(
+        _source_clause_spans(source_text, branches=branches)
+    )
     for match in _ROUNDING_LANGUAGE.finditer(source_text):
         if _span_is_deferred(
             match.start(),
@@ -3978,10 +4206,18 @@ def _source_rounding_obligations(
             0,
             len(source_text),
         )
-        matched_text = match.group(0)
-        if _NEAREST_ROUNDING_LANGUAGE.search(matched_text):
+        matched_language = match.group(0)
+        clause_start, clause_end, clause_text = next(
+            (
+                (start, end, text)
+                for start, end, text in source_clauses
+                if start <= match.start() and match.end() <= end
+            ),
+            (match.start(), match.end(), matched_language),
+        )
+        if _NEAREST_ROUNDING_LANGUAGE.search(matched_language):
             direction = "nearest"
-        elif _UP_ROUNDING_LANGUAGE.search(matched_text):
+        elif _UP_ROUNDING_LANGUAGE.search(matched_language):
             direction = "upward"
         else:
             direction = "downward"
@@ -3989,9 +4225,9 @@ def _source_rounding_obligations(
             owner.path,
             "rounding-clause",
             owner.label,
-            matched_text,
-            match.start(),
-            match.end(),
+            clause_text,
+            clause_start,
+            clause_end,
         )
         obligations.append((obligation_branch, direction))
     return tuple(obligations)
@@ -4014,19 +4250,7 @@ def _rounding_source_formula_branch(
             containing,
             key=lambda branch: branch.end - branch.start,
         )
-    same_path = [
-        branch
-        for branch in formula_branches
-        if branch.path == rounding_branch.path
-    ]
-    return min(
-        same_path,
-        key=lambda branch: min(
-            abs(branch.start - rounding_branch.end),
-            abs(rounding_branch.start - branch.end),
-        ),
-        default=None,
-    )
+    return None
 
 
 def _unwitnessed_exception_branches(
@@ -4091,45 +4315,83 @@ def _toggled_formula_boolean_selectors(
         selector_names = _rule_exception_selector_names(rule)
         if not selector_names:
             continue
-        cases = asserted_by_rule.get(rule_name, ())
-        for key, left_case, right_case in _paired_boolean_toggle_case_pairs(cases):
-            matched_names = _input_key_names(key) & selector_names
-            if not matched_names:
-                continue
-            left_execution = _case_formula_execution(
-                rule,
-                left_case,
-                formula_environment=formula_environment,
-            )
-            right_execution = _case_formula_execution(
-                rule,
-                right_case,
-                formula_environment=formula_environment,
-            )
-            if left_execution is None or right_execution is None:
-                continue
-            left_asserted = _test_case_asserted_output_value(
-                left_case,
-                rule_name,
-            )
-            right_asserted = _test_case_asserted_output_value(
-                right_case,
-                rule_name,
-            )
-            if (
-                left_asserted is not _UNRESOLVED_CONDITION_VALUE
-                and right_asserted is not _UNRESOLVED_CONDITION_VALUE
-                and _same_formula_value(left_asserted, right_asserted)
-            ) or (
+        records = [
+            (
+                case,
                 (
-                    left_asserted is _UNRESOLVED_CONDITION_VALUE
-                    or right_asserted is _UNRESOLVED_CONDITION_VALUE
+                    dependency_environment
+                    := _case_asserted_dependency_environment(
+                        principal_rules,
+                        case,
+                        formula_environment=formula_environment,
+                    )
+                ),
+                _case_boolean_selector_environment(
+                    case,
+                    selector_names,
+                    dependency_environment=dependency_environment,
+                ),
+            )
+            for case in asserted_by_rule.get(rule_name, ())
+        ]
+        for left_index, (
+            left_case,
+            left_dependencies,
+            left_selectors,
+        ) in enumerate(records):
+            for (
+                right_case,
+                right_dependencies,
+                right_selectors,
+            ) in records[left_index + 1 :]:
+                if set(left_selectors) != set(right_selectors):
+                    continue
+                changed_names = {
+                    name
+                    for name in left_selectors
+                    if left_selectors[name] != right_selectors[name]
+                }
+                if len(changed_names) != 1:
+                    continue
+                selector_name = next(iter(changed_names))
+                left_execution = _case_formula_execution(
+                    rule,
+                    left_case,
+                    formula_environment=formula_environment,
+                    dependency_environment=left_dependencies,
                 )
-                and _formula_execution_effect_signature(left_execution)
-                == _formula_execution_effect_signature(right_execution)
-            ):
-                continue
-            for selector_name in matched_names:
+                right_execution = _case_formula_execution(
+                    rule,
+                    right_case,
+                    formula_environment=formula_environment,
+                    dependency_environment=right_dependencies,
+                )
+                if left_execution is None or right_execution is None:
+                    continue
+                left_asserted = _test_case_asserted_output_value(
+                    left_case,
+                    rule_name,
+                )
+                right_asserted = _test_case_asserted_output_value(
+                    right_case,
+                    rule_name,
+                )
+                if (
+                    left_asserted is not _UNRESOLVED_CONDITION_VALUE
+                    and right_asserted is not _UNRESOLVED_CONDITION_VALUE
+                    and _formula_runtime_values_equal(
+                        left_asserted,
+                        right_asserted,
+                    )
+                ) or (
+                    (
+                        left_asserted is _UNRESOLVED_CONDITION_VALUE
+                        or right_asserted is _UNRESOLVED_CONDITION_VALUE
+                    )
+                    and _formula_execution_effect_signature(left_execution)
+                    == _formula_execution_effect_signature(right_execution)
+                ):
+                    continue
                 if all(
                     _formula_execution_reaches_selector(
                         execution,
@@ -4141,10 +4403,44 @@ def _toggled_formula_boolean_selectors(
     return toggled
 
 
+def _case_boolean_selector_environment(
+    case: dict[str, Any],
+    selector_names: set[str],
+    *,
+    dependency_environment: dict[str, Any],
+) -> dict[str, bool]:
+    values: dict[str, bool] = {}
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return values
+    for key, value in inputs.items():
+        boolean = _boolean_value(value)
+        if boolean is None:
+            continue
+        for name in _input_key_names(key) & selector_names:
+            if name in values and values[name] != boolean:
+                return {}
+            values[name] = boolean
+    for name, value in dependency_environment.items():
+        if name not in selector_names:
+            continue
+        boolean = _boolean_value(value)
+        if boolean is None:
+            continue
+        if name in values and values[name] != boolean:
+            return {}
+        values[name] = boolean
+    return values
+
+
 def _formula_execution_effect_signature(
     execution: _FormulaExecution,
 ) -> tuple[str, Any]:
     if execution.evaluated_value is not None:
+        value_type, raw_value = execution.evaluated_value
+        if value_type in {"int", "float"}:
+            with contextlib.suppress(InvalidOperation):
+                return "evaluated-number", Decimal(raw_value)
         return "evaluated", execution.evaluated_value
     return "leaf", _collapse_text(execution.leaf).lower()
 
@@ -4307,15 +4603,17 @@ def _fractional_rounding_case_witnesses(
     rule_name: str,
     rule: dict[str, Any],
     *,
+    principal_rules: dict[str, dict[str, Any]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     direction: str,
     formula_environment: dict[str, Any],
     source_formula_branch: SourceStructureBranch | None,
+    rounding_refers_to_result: bool,
     require_clause_binding: bool,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
-) -> set[tuple[str, int, str]]:
-    evidence: set[tuple[str, int, str]] = set()
+) -> set[tuple[str, str, str]]:
+    evidence: set[tuple[str, str, str]] = set()
     functions = {
         "nearest" if direction == "nearest" else (
             "ceil" if direction == "upward" else "floor"
@@ -4325,10 +4623,16 @@ def _fractional_rounding_case_witnesses(
         inputs = case.get("input")
         if not isinstance(inputs, dict):
             continue
+        dependency_environment = _case_asserted_dependency_environment(
+            principal_rules,
+            case,
+            formula_environment=formula_environment,
+        )
         execution = _case_formula_execution(
             rule,
             case,
             formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
         )
         if execution is None or not _formula_execution_implements_rounding(
             execution,
@@ -4343,6 +4647,7 @@ def _fractional_rounding_case_witnesses(
         if input_environment is None:
             continue
         evaluation_environment = dict(execution.constant_environment)
+        evaluation_environment.update(dependency_environment)
         evaluation_environment.update(input_environment)
         for function_name, operand in _rounding_call_operands(
             operative_leaf,
@@ -4354,6 +4659,13 @@ def _fractional_rounding_case_witnesses(
             )
             if effective_operand is None:
                 continue
+            source_binding_operand = _expand_reached_formula_dependencies(
+                effective_operand,
+                principal_rules=principal_rules,
+                case=case,
+                formula_environment=formula_environment,
+                dependency_environment=dependency_environment,
+            )
             operand_value = _evaluate_formula_selector(
                 effective_operand,
                 evaluation_environment,
@@ -4367,17 +4679,23 @@ def _fractional_rounding_case_witnesses(
                     effective_operand,
                     evaluation_environment=evaluation_environment,
                     operand_value=float(operand_value),
+                    principal_rules=principal_rules,
+                    formula_environment=formula_environment,
+                    dependency_names=set(dependency_environment),
                 )
             ):
                 continue
             if (
                 source_formula_branch is not None
                 and not _rounding_call_binds_source_clause(
-                    effective_operand,
+                    source_binding_operand,
+                    original_operand=effective_operand,
                     operand_value=float(operand_value),
+                    rule_name=rule_name,
                     execution=execution,
                     source_formula_branch=source_formula_branch,
                     formula_environment=formula_environment,
+                    rounding_refers_to_result=rounding_refers_to_result,
                     require_clause_binding=require_clause_binding,
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
@@ -4391,7 +4709,13 @@ def _fractional_rounding_case_witnesses(
                     formula_environment=execution.constant_environment,
                 )
             )
-            evidence.add((rule_name, id(case), call_key))
+            evidence.add(
+                (
+                    rule_name,
+                    _formula_execution_outcome(execution),
+                    call_key,
+                )
+            )
     return evidence
 
 
@@ -4453,17 +4777,73 @@ def _rounding_demonstrated_operand(
     return None
 
 
+def _expand_reached_formula_dependencies(
+    expression_text: str,
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    case: dict[str, Any],
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+) -> str:
+    """Inline reached, assertion-corroborated intermediates for source matching."""
+
+    try:
+        expression = ast.parse(expression_text.strip(), mode="eval").body
+    except SyntaxError:
+        return expression_text
+
+    resolving: set[str] = set()
+
+    class DependencyExpander(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            name = node.id
+            rule = principal_rules.get(name)
+            if (
+                rule is None
+                or name not in dependency_environment
+                or name in resolving
+            ):
+                return node
+            execution = _case_formula_execution(
+                rule,
+                case,
+                formula_environment=formula_environment,
+                dependency_environment=dependency_environment,
+            )
+            if execution is None:
+                return node
+            try:
+                replacement = ast.parse(
+                    execution.leaf.strip(),
+                    mode="eval",
+                ).body
+            except SyntaxError:
+                return node
+            resolving.add(name)
+            expanded = self.visit(replacement)
+            resolving.remove(name)
+            return ast.copy_location(expanded, node)
+
+    expanded = DependencyExpander().visit(expression)
+    ast.fix_missing_locations(expanded)
+    return ast.unparse(expanded)
+
+
 def _fractional_input_materially_affects_operand(
     case: dict[str, Any],
     operand: str,
     *,
     evaluation_environment: dict[str, Any],
     operand_value: float,
+    principal_rules: dict[str, dict[str, Any]],
+    formula_environment: dict[str, Any],
+    dependency_names: set[str],
 ) -> bool:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
         return False
     operand_names = set(_FORMULA_IDENTIFIER.findall(operand))
+    uses_derived_operand = bool(operand_names & dependency_names)
     for key, value in inputs.items():
         if (
             isinstance(value, bool)
@@ -4472,12 +4852,29 @@ def _fractional_input_materially_affects_operand(
         ):
             continue
         aliases = _input_key_names(key) & operand_names
-        if not aliases:
+        if not aliases and not uses_derived_operand:
             continue
         replacement = float(math.floor(float(value)))
-        changed_environment = dict(evaluation_environment)
-        for alias in aliases:
-            changed_environment[alias] = replacement
+        candidate_inputs = dict(inputs)
+        candidate_inputs[key] = replacement
+        candidate_case = dict(case)
+        candidate_case["input"] = candidate_inputs
+        candidate_dependencies = _case_dependency_environment(
+            principal_rules,
+            candidate_case,
+            formula_environment=formula_environment,
+            require_asserted_value=False,
+            allowed_names=dependency_names,
+        )
+        changed_environment = _formula_environment_for_case(
+            formula_environment,
+            candidate_case,
+        )
+        changed_environment.update(candidate_dependencies)
+        changed_inputs = _case_input_formula_environment(candidate_case)
+        if changed_inputs is None:
+            continue
+        changed_environment.update(changed_inputs)
         changed_value = _evaluate_formula_selector(
             operand,
             changed_environment,
@@ -4525,10 +4922,13 @@ def _rounding_call_matches_source_formula(
 def _rounding_call_binds_source_clause(
     operand: str,
     *,
+    original_operand: str,
     operand_value: float,
+    rule_name: str,
     execution: _FormulaExecution,
     source_formula_branch: SourceStructureBranch,
     formula_environment: dict[str, Any],
+    rounding_refers_to_result: bool,
     require_clause_binding: bool,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
@@ -4542,8 +4942,8 @@ def _rounding_call_binds_source_clause(
         extract_numeric_occurrences=extract_numeric_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
-    if not require_clause_binding:
-        return formula_match
+    if rounding_refers_to_result:
+        return True
     source_has_distinguishing_computation = bool(
         _formula_operation_kinds(source_formula_branch.text)
         or extract_numeric_occurrences(
@@ -4552,82 +4952,54 @@ def _rounding_call_binds_source_clause(
     )
     if source_has_distinguishing_computation:
         return formula_match
-    return _rounding_call_matches_clause_tokens(
-        operand,
-        source_formula_branch,
+    if require_clause_binding:
+        return True
+    return _rounding_operand_is_output_stage(
+        original_operand,
+        rule_name=rule_name,
     )
 
 
-def _rounding_call_matches_clause_tokens(
+def _rounding_operand_is_output_stage(
     operand: str,
-    branch: SourceStructureBranch,
+    *,
+    rule_name: str,
 ) -> bool:
-    operand_tokens = _rounding_semantic_tokens(operand)
-    source_tokens = _rounding_semantic_tokens(branch.text)
-    ordinal_by_path = {
-        "1": "first",
-        "2": "second",
-        "3": "third",
-        "4": "fourth",
-        "5": "fifth",
-    }
-    source_tokens.update(
-        ordinal_by_path[item]
-        for item in branch.path
-        if item in ordinal_by_path
+    output_subject = _rounding_stage_subject(rule_name)
+    return bool(output_subject) and any(
+        _rounding_stage_subject(identifier) == output_subject
+        for identifier in _FORMULA_IDENTIFIER.findall(operand)
     )
-    return bool(operand_tokens & source_tokens)
 
 
-def _rounding_semantic_tokens(text: str) -> set[str]:
-    normalized = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
-    tokens = {
-        token.lower()
-        for token in re.findall(r"[A-Za-zÄÖÜäöüß]+", normalized)
-    }
-    translations = {
-        "erste": "first",
-        "erster": "first",
-        "erstes": "first",
-        "zweite": "second",
-        "zweiter": "second",
-        "zweites": "second",
-        "dritte": "third",
-        "dritter": "third",
-        "drittes": "third",
-    }
-    tokens.update(
-        translations[token]
-        for token in tuple(tokens)
-        if token in translations
-    )
-    return tokens - {
-        "amount",
-        "betrag",
-        "der",
-        "die",
-        "das",
-        "ein",
-        "eine",
-        "einkommen",
-        "income",
-        "ergebnis",
-        "result",
-        "steuer",
-        "tax",
-        "wird",
-        "ist",
-        "und",
-        "and",
-        "auf",
-        "volle",
-        "euro",
+def _rounding_stage_subject(identifier: str) -> tuple[str, ...]:
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", identifier)
+    stage_tokens = {
         "round",
         "rounded",
         "rounding",
-        "abzurunden",
-        "aufzurunden",
+        "unrounded",
+        "raw",
+        "pre",
+        "post",
+        "before",
+        "after",
+        "floor",
+        "floored",
+        "ceil",
+        "ceiled",
+        "down",
+        "downward",
+        "up",
+        "upward",
+        "nearest",
+        "final",
     }
+    return tuple(
+        token
+        for token in re.findall(r"[A-Za-z0-9]+", normalized.lower())
+        if token not in stage_tokens
+    )
 
 
 def _balanced_call_operands(text: str, function_name: str) -> Iterable[str]:

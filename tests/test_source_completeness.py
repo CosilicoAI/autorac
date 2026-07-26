@@ -3676,15 +3676,16 @@ rules:
     assert _has_issue(result, "formula branch", "distinct")
 
 
-def test_bare_enum_match_patterns_remain_literal_values():
+def test_quoted_enum_match_patterns_are_literal_values():
     rule = {
         "versions": [
             {
                 "effective_from": "2026-01-01",
-                "formula": (
-                    "match status: married => income * 2; "
-                    "single => income * 3"
-                ),
+                "formula": """\
+match status:
+  "married" => income * 2
+  "single" => income * 3
+""",
             }
         ]
     }
@@ -4398,3 +4399,371 @@ def test_each_source_rounding_clause_needs_its_own_affected_call():
 
     assert _has_issue(missing_second, "rounding", "fractional")
     assert not both_calls.issues
+
+
+def test_standalone_result_rounding_modifies_preceding_computation():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet. "
+        "Das Ergebnis ist auf volle Euro abzurunden."
+    )
+    content = _single_rounding_content("floor(income * multiplier)")
+    case = {
+        "name": "split rounding sentence",
+        "period": "2026",
+        "input": {"income": 10.25},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_rounding_accepts_asserted_reached_intermediate_output():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
+        "auf volle Euro abgerundet."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: unrounded_amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'income * multiplier'}]
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'floor(unrounded_amount)'}]
+"""
+    case = {
+        "name": "derived rounding operand",
+        "input": {"income": 10.25},
+        "output": {"unrounded_amount": 20.5, "amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_mismatched_asserted_intermediate_cannot_witness_rounding():
+    source = (
+        "(1) Der Betrag wird als Einkommen * 2 berechnet und "
+        "auf volle Euro abgerundet."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: unrounded_amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'income * multiplier'}]
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'floor(unrounded_amount)'}]
+"""
+    case = {
+        "name": "false intermediate assertion",
+        "input": {"income": 10},
+        "output": {"unrounded_amount": 20.5, "amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    ("formula", "expected_issue"),
+    [
+        ("floor(unrounded_basic_allowance)", False),
+        ("floor(child_allowance)", True),
+    ],
+)
+def test_single_rounding_binds_to_affected_output_stage(
+    formula: str,
+    expected_issue: bool,
+):
+    source = "(1) Der Grundfreibetrag ist auf volle Euro abzurunden."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: basic_allowance
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: FORMULA
+""".replace("FORMULA", formula)
+    operand_name = (
+        "child_allowance"
+        if "child_allowance" in formula
+        else "unrounded_basic_allowance"
+    )
+    case = {
+        "name": "single pure rounding",
+        "input": {operand_name: 10.5},
+        "output": {"basic_allowance": 10},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "rounding", "fractional") is expected_issue
+
+
+def test_translated_multi_rounding_uses_distinct_operative_calls():
+    source = """\
+(1) Der Grundfreibetrag ist auf volle Euro abzurunden.
+(2) Der Kinderfreibetrag ist auf volle Euro abzurunden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: total_amount
+    kind: derived
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - formula: floor(basic_allowance) + floor(child_allowance)
+"""
+    cases = [
+        {
+            "name": "basic fractional",
+            "input": {"basic_allowance": 10.5, "child_allowance": 20},
+            "output": {"total_amount": 30},
+        },
+        {
+            "name": "child fractional",
+            "input": {"basic_allowance": 10, "child_allowance": 20.5},
+            "output": {"total_amount": 30},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_one_ambiguous_rounding_call_cannot_cover_two_source_clauses():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: total_amount
+    kind: derived
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - formula: floor(first_second_amount)
+"""
+    cases = [
+        {
+            "name": "fractional one",
+            "input": {"first_second_amount": 10.5},
+            "output": {"total_amount": 10},
+        },
+        {
+            "name": "fractional two",
+            "input": {"first_second_amount": 11.5},
+            "output": {"total_amount": 11},
+        },
+    ]
+
+    result = _analyze(content, MULTI_ROUNDING_SOURCE, test_cases=cases)
+
+    assert _has_issue(result, "rounding", "fractional")
+
+
+def test_boundary_accepts_asserted_reached_derived_selector():
+    source = (
+        "(1) Der Anspruch gilt bis 100 Euro zu versteuerndes Einkommen."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: income_limit
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 100}]
+  - name: taxable_income
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'gross_income - deduction'}]
+  - name: eligible
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'taxable_income <= income_limit'}]
+"""
+    case = {
+        "name": "derived boundary selector",
+        "input": {"gross_income": 120, "deduction": 20},
+        "output": {"taxable_income": 100, "eligible": True},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_exception_accepts_asserted_reached_derived_selector_toggle():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: exemption_applies
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'has_certificate'}]
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 'if exemption_applies: false else: true'}]
+"""
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"has_certificate": False},
+            "output": {"exemption_applies": False, "eligible": True},
+        },
+        {
+            "name": "exempt",
+            "input": {"has_certificate": True},
+            "output": {"exemption_applies": True, "eligible": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_derived_match_pattern_cannot_fall_back_to_identifier_text():
+    source = """\
+(1) Bei Status A ist der Betrag Einkommen * 2.
+(2) Bei Status B ist der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: special_status
+    kind: derived
+    dtype: String
+    versions:
+      - formula: 'if flag: "married" else: "joint"'
+  - name: first_multiplier
+    kind: parameter
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+  - name: second_multiplier
+    kind: parameter
+    source: de/statute/estg/32a(2)
+    versions: [{formula: 3}]
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - formula: |-
+          match status:
+            special_status => income * first_multiplier
+            "single" => income * second_multiplier
+"""
+    cases = [
+        {
+            "name": "identifier text falls through",
+            "input": {"flag": True, "status": "special_status", "income": 10},
+            "output": {"special_status": "married", "amount": 30},
+        },
+        {
+            "name": "ordinary fallback",
+            "input": {"flag": True, "status": "other", "income": 10},
+            "output": {"special_status": "married", "amount": 30},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_exception_numeric_representations_do_not_fake_changed_effect():
+    source = "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: amount
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: 'if exemption_applies: 0 else: 0.0'
+"""
+    cases = [
+        {
+            "name": "ordinary",
+            "input": {"exemption_applies": False},
+            "output": {"amount": 0},
+        },
+        {
+            "name": "exempt",
+            "input": {"exemption_applies": True},
+            "output": {"amount": 0.0},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
+def test_opposite_bare_boolean_predicate_cannot_witness_boundary():
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    content = _boundary_control_content(
+        formula="income > income_limit",
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "opposite endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "boundary", "100")
