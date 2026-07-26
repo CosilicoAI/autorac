@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - data/encoding-queues/us-snap-or-ut-2026-07.json
+      - data/encoding-queues/us-snap-all-states-2026-07.json
       - scripts/prepare_signed_queue.py
       - .github/workflows/finalize-signed-snap-queue.yml
+      - .github/workflows/merge-snap-queue-activation.yml
+      - .github/workflows/dispatch-signed-snap-queue.yml
+      - .github/workflows/prepare-all-state-snap-queue.yml
       - .github/workflows/validate-snap-queue-activation.yml
 
 permissions:
@@ -33,7 +37,20 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
-          queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          mapfile -t changed_queues < <(
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+              data/encoding-queues/us-snap-or-ut-2026-07.json \
+              data/encoding-queues/us-snap-all-states-2026-07.json
+          )
+          if [ "${#changed_queues[@]}" -eq 1 ]; then
+            queue="${changed_queues[0]}"
+          elif [ "${#changed_queues[@]}" -eq 0 ]; then
+            queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          else
+            echo "activation PR must modify at most one SNAP queue" >&2
+            exit 1
+          fi
+          echo "queue_path=$queue" >> "$GITHUB_OUTPUT"
           python3 scripts/prepare_signed_queue.py validate "$queue"
           previous_queue="$RUNNER_TEMP/previous-snap-queue.json"
           initial=false
@@ -47,8 +64,23 @@ jobs:
           else
             initial=true
           fi
+          queue_id="$(jq -r '.queue_id' "$queue")"
+          if [ "$(jq -r '.state' "$queue")" = "active" ]; then
+            legacy_queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+            all_state_queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+            if [ "$queue_id" = "us-snap-all-states-2026-07" ]; then
+              if git cat-file -e "$BASE_SHA:$legacy_queue" 2> /dev/null; then
+                test "$(git show "$BASE_SHA:$legacy_queue" | jq -r '.state')" != \
+                  "active"
+              fi
+            elif git cat-file -e "$BASE_SHA:$all_state_queue" 2> /dev/null; then
+              echo "legacy SNAP queue is permanently superseded" >&2
+              exit 1
+            fi
+          fi
           echo "initial=$initial" >> "$GITHUB_OUTPUT"
           if [ "$initial" = "true" ]; then
+            printf 'queue_id=%s\n' "$queue_id" >> "$GITHUB_OUTPUT"
             for field in corpus_ref rules_engine_ref rulespec_ref; do
               printf '%s=%s\n' "$field" \
                 "$(jq -r --arg field "$field" '.dispatch[$field]' "$queue")" \
@@ -172,6 +204,7 @@ jobs:
         if: ${{ steps.transition.outputs.initial == 'true' }}
         env:
           CORPUS_RELEASE_PUBLIC_KEY: ${{ vars.AXIOM_CORPUS_RELEASE_PUBLIC_KEY }}
+          QUEUE_PATH: ${{ steps.transition.outputs.queue_path }}
           RELEASE_NAME: ${{ steps.transition.outputs.release_name }}
           RELEASE_SHA: ${{ steps.transition.outputs.release_sha }}
           SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
@@ -204,8 +237,17 @@ jobs:
             "$response" > "$release_object"
           printf '%s\n' "$CORPUS_RELEASE_PUBLIC_KEY" > "$release_public_key"
 
+          queue_id="${{ steps.transition.outputs.queue_id }}"
+          if [ "$queue_id" = "us-snap-all-states-2026-07" ]; then
+            build_command=build-snap-all-states
+          elif [ "$queue_id" = "us-snap-or-ut-2026-07" ]; then
+            build_command=build-snap
+          else
+            echo "unsupported initial SNAP queue: $queue_id" >&2
+            exit 1
+          fi
           uv run --frozen --python 3.13 python scripts/prepare_signed_queue.py \
-            build-snap initial-axiom-corpus initial-rulespec-us \
+            "$build_command" initial-axiom-corpus initial-rulespec-us \
             --corpus-ref "${{ steps.transition.outputs.corpus_ref }}" \
             --rulespec-ref "${{ steps.transition.outputs.rulespec_ref }}" \
             --rules-engine-ref "${{ steps.transition.outputs.rules_engine_ref }}" \
@@ -218,4 +260,4 @@ jobs:
               "Awaiting a green, independently reviewed exact RuleSpec protected-branch tip." \
             > "$generated_queue"
           cmp --silent \
-            data/encoding-queues/us-snap-or-ut-2026-07.json "$generated_queue"
+            "$QUEUE_PATH" "$generated_queue"

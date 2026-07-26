@@ -1,9 +1,17 @@
 name: Finalize protected SNAP queue tranche
-run-name: "Finalize SNAP queue at ${{ inputs.new_rulespec_ref }}"
+run-name: "Finalize SNAP queue=${{ inputs.queue_id }} at ${{ inputs.new_rulespec_ref }}"
 
 on:
   workflow_dispatch:
     inputs:
+      queue_id:
+        description: Durable protected SNAP queue identifier
+        required: true
+        default: us-snap-or-ut-2026-07
+        type: choice
+        options:
+          - us-snap-or-ut-2026-07
+          - us-snap-all-states-2026-07
       new_rulespec_ref:
         description: Independently reviewed and allowlisted current RuleSpec branch tip
         required: true
@@ -54,6 +62,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_RULESPEC_REF: ${{ inputs.new_rulespec_ref }}
+          QUEUE_ID: ${{ inputs.queue_id }}
         run: |
           set -euo pipefail
           test "$GITHUB_RUN_ATTEMPT" = "1"
@@ -63,9 +72,18 @@ jobs:
           fi
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C rulespec-us rev-parse HEAD)" = "$NEW_RULESPEC_REF"
-          queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          queue="data/encoding-queues/${QUEUE_ID}.json"
+          test -f "$queue"
           python3 scripts/prepare_signed_queue.py validate "$queue"
           test "$(jq -r '.state' "$queue")" = "paused"
+          legacy_queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          all_state_queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+          if [ "$QUEUE_ID" = "us-snap-all-states-2026-07" ]; then
+            test "$(jq -r '.state' "$legacy_queue")" != "active"
+          elif [ -f "$all_state_queue" ]; then
+            echo "legacy SNAP queue is permanently superseded" >&2
+            exit 1
+          fi
 
           api_version="2026-03-10"
           branch_ref="repos/TheAxiomFoundation/rulespec-us/git/ref/heads/hard-cut/canonical-layout-us"
@@ -186,9 +204,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_RULESPEC_REF: ${{ inputs.new_rulespec_ref }}
+          QUEUE_ID: ${{ inputs.queue_id }}
         run: |
           set -euo pipefail
-          queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          queue="data/encoding-queues/${QUEUE_ID}.json"
           cp "$RUNNER_TEMP/finalized-snap-queue.json" "$queue"
           old_version="$(uv version --short)"
           new_version="$(uv version --bump patch --short --no-sync)"
@@ -224,9 +243,9 @@ jobs:
           git diff --name-only "$GITHUB_SHA" "$head_sha" \
             | jq -R -s 'split("\n") | map(select(length > 0))' \
             > "$RUNNER_TEMP/activation-changed-files.json"
-          jq -e '
+          jq -e --arg queue "$queue" '
             . == [
-              "data/encoding-queues/us-snap-or-ut-2026-07.json",
+              $queue,
               "pyproject.toml",
               "src/axiom_encode/__init__.py",
               "uv.lock"
@@ -236,6 +255,7 @@ jobs:
           jq -n \
             --arg base_sha "$GITHUB_SHA" \
             --arg head_sha "$head_sha" \
+            --arg queue_path "$queue" \
             --arg queue_sha256 "$queue_sha256" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tree_sha "$tree_sha" \
@@ -246,7 +266,7 @@ jobs:
               base_sha: $base_sha,
               head_sha: $head_sha,
               tree_sha: $tree_sha,
-              queue_path: "data/encoding-queues/us-snap-or-ut-2026-07.json",
+              queue_path: $queue_path,
               queue_sha256: $queue_sha256,
               changed_files: $changed_files[0]
             }' > "$RUNNER_TEMP/activation-commit.json"

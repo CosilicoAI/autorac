@@ -1,9 +1,17 @@
 name: Merge reviewed SNAP queue activation
-run-name: "Merge SNAP queue activation PR #${{ inputs.pull_request_number }}"
+run-name: "Merge SNAP queue=${{ inputs.queue_id }} activation PR #${{ inputs.pull_request_number }}"
 
 on:
   workflow_dispatch:
     inputs:
+      queue_id:
+        description: Durable protected SNAP queue identifier
+        required: true
+        default: us-snap-or-ut-2026-07
+        type: choice
+        options:
+          - us-snap-or-ut-2026-07
+          - us-snap-all-states-2026-07
       pull_request_number:
         description: Reviewed, ready, green SNAP queue activation pull request
         required: true
@@ -72,16 +80,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.pull.outputs.head_sha }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          QUEUE_ID: ${{ inputs.queue_id }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$BASE_SHA"
           git fetch --no-tags origin "$HEAD_SHA"
           test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
           test "$(git rev-parse "${HEAD_SHA}^")" = "$BASE_SHA"
-          queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          queue="data/encoding-queues/${QUEUE_ID}.json"
           candidate_queue="$RUNNER_TEMP/candidate-snap-queue.json"
           git show "$HEAD_SHA:$queue" > "$candidate_queue"
           python3 scripts/prepare_signed_queue.py validate "$candidate_queue"
+          legacy_queue="data/encoding-queues/us-snap-or-ut-2026-07.json"
+          all_state_queue="data/encoding-queues/us-snap-all-states-2026-07.json"
+          if [ "$QUEUE_ID" = "us-snap-all-states-2026-07" ]; then
+            test "$(git show "$BASE_SHA:$legacy_queue" | jq -r '.state')" != \
+              "active"
+          elif git cat-file -e "$BASE_SHA:$all_state_queue" 2> /dev/null; then
+            echo "legacy SNAP queue is permanently superseded" >&2
+            exit 1
+          fi
           test "$(jq -r '.state' "$candidate_queue")" = "active"
 
           run_url="$(jq -r '.activation.finalizer_run_url' "$candidate_queue")"
@@ -210,6 +228,7 @@ jobs:
           jq -n \
             --arg head_sha "$HEAD_SHA" \
             --arg merge_commit "$merge_commit" \
+            --arg queue_path "$queue" \
             --arg queue_sha256 "$queue_sha256" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -218,7 +237,7 @@ jobs:
             '{
               schema: "axiom-encode/snap-queue-merge-authorization/v1",
               repository: $repository,
-              queue_path: "data/encoding-queues/us-snap-or-ut-2026-07.json",
+              queue_path: $queue_path,
               queue_sha256: $queue_sha256,
               activation_pr_number: $pr_number,
               activation_pr_head_sha: $head_sha,

@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 SCHEMA = "axiom-encode/signed-encoding-queue/v1"
 ACTIVATION_CHANGED_FILES = (
     "data/encoding-queues/us-snap-or-ut-2026-07.json",
@@ -21,7 +23,7 @@ ACTIVATION_CHANGED_FILES = (
     "uv.lock",
 )
 QUEUE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-ITEM_ID_PATTERN = re.compile(r"^(?:or|ut)-[0-9]{4}$")
+ITEM_ID_PATTERN = re.compile(r"^[a-z]{2}-[0-9]{4,5}$")
 RELEASE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -40,12 +42,62 @@ SELECTABLE_STATUSES = frozenset({"pending", "retryable"})
 TERMINAL_STATUSES = frozenset({"blocked", "completed", "no-executable-rule"})
 MAX_BATCH_SIZE = 4
 EXPECTED_COUNTS = {"total": 831, "us-or": 530, "us-ut": 301}
+ALL_STATE_EXPECTED_COUNTS = {
+    "total": 17784,
+    "us-ak": 239,
+    "us-al": 17,
+    "us-ar": 8,
+    "us-az": 7,
+    "us-ca": 15,
+    "us-co": 302,
+    "us-ct": 279,
+    "us-dc": 349,
+    "us-de": 264,
+    "us-fl": 48,
+    "us-ga": 100,
+    "us-hi": 20,
+    "us-ia": 12,
+    "us-id": 70,
+    "us-il": 4750,
+    "us-in": 483,
+    "us-ks": 255,
+    "us-ky": 2,
+    "us-la": 346,
+    "us-ma": 9,
+    "us-md": 51,
+    "us-me": 2,
+    "us-mi": 196,
+    "us-mn": 1353,
+    "us-mo": 515,
+    "us-ms": 384,
+    "us-mt": 83,
+    "us-nc": 79,
+    "us-nd": 67,
+    "us-ne": 5,
+    "us-nh": 1,
+    "us-nj": 265,
+    "us-nm": 28,
+    "us-nv": 51,
+    "us-ny": 17,
+    "us-oh": 82,
+    "us-ok": 87,
+    "us-or": 1322,
+    "us-pa": 297,
+    "us-ri": 272,
+    "us-sc": 459,
+    "us-sd": 339,
+    "us-tn": 27,
+    "us-tx": 11,
+    "us-ut": 655,
+    "us-va": 677,
+    "us-vt": 32,
+    "us-wa": 200,
+    "us-wi": 372,
+    "us-wv": 2276,
+    "us-wy": 4,
+}
 RULESPEC_PR_PATTERN = re.compile(
     r"^https://github\.com/TheAxiomFoundation/rulespec-us/pull/[0-9]+$"
-)
-QUEUE_ISSUE_COMMENT_PATTERN = re.compile(
-    r"^https://github\.com/TheAxiomFoundation/axiom-encode/issues/"
-    r"1257#issuecomment-[0-9]+$"
 )
 FINALIZER_RUN_PATTERN = re.compile(
     r"^https://github\.com/TheAxiomFoundation/axiom-encode/actions/runs/[0-9]+$"
@@ -63,6 +115,51 @@ PRIORITY_CITATIONS = (
     "us-or/manual/odhs/open/page-273",
     "us-or/manual/odhs/open/page-274",
 )
+ALL_STATE_QUEUE_ID = "us-snap-all-states-2026-07"
+ALL_STATE_QUEUE_ISSUE = 1287
+ALL_STATE_INVENTORY_PATH = "manifests/state-snap-manual-agent-queue.yaml"
+ALL_STATE_INVENTORY_SHA256 = (
+    "23b32cef7957d56b171abe51ed63de6cf22c6c29475ba7a2190b3da4692422b6"
+)
+ALL_STATE_SCOPE_ALIASES = {
+    (
+        "us-ma",
+        "regulation",
+        "2026-07-17-ma-dta-snap-regulations",
+    ): (
+        "us-ma",
+        "regulation",
+        "2026-07-24-ma-dta-regulations-snap-current-union",
+    ),
+}
+
+
+def _queue_profile(queue_id: str) -> dict[str, Any]:
+    if queue_id == "us-snap-or-ut-2026-07":
+        return {
+            "activation_path": "data/encoding-queues/us-snap-or-ut-2026-07.json",
+            "expected_counts": EXPECTED_COUNTS,
+            "issue": 1257,
+            "inventory": None,
+            "item_width": 4,
+            "priority_citations": PRIORITY_CITATIONS,
+            "supersedes": None,
+        }
+    if queue_id == ALL_STATE_QUEUE_ID:
+        return {
+            "activation_path": f"data/encoding-queues/{ALL_STATE_QUEUE_ID}.json",
+            "expected_counts": ALL_STATE_EXPECTED_COUNTS,
+            "issue": ALL_STATE_QUEUE_ISSUE,
+            "inventory": {
+                "jurisdictions": 51,
+                "path": ALL_STATE_INVENTORY_PATH,
+                "sha256": ALL_STATE_INVENTORY_SHA256,
+            },
+            "item_width": 5,
+            "priority_citations": (),
+            "supersedes": ["us-snap-or-ut-2026-07"],
+        }
+    raise ValueError(f"unsupported protected SNAP queue: {queue_id}")
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -104,6 +201,66 @@ def _record_label(record: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     raise ValueError("corpus record has no usable label")
+
+
+def _logical_source_units(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select one stable encoder target per logical source unit."""
+
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        kind = record.get("kind")
+        citation = record.get("citation_path")
+        if not isinstance(kind, str) or not isinstance(citation, str):
+            raise ValueError("SNAP scope record lacks kind or citation_path")
+        by_kind.setdefault(kind, []).append(record)
+
+    documents = by_kind.get("document", [])
+    if len(documents) > 1:
+        selected = documents
+    else:
+        selected = []
+        for kind in ("page", "section", "rule", "sheet"):
+            if by_kind.get(kind):
+                selected = by_kind[kind]
+                break
+        if not selected and documents:
+            selected = documents
+        if not selected:
+            citations = {
+                record["citation_path"]
+                for record in records
+                if isinstance(record.get("citation_path"), str)
+            }
+            selected = [
+                record
+                for record in records
+                if not any(
+                    other.startswith(f"{record['citation_path']}/")
+                    for other in citations
+                    if other != record["citation_path"]
+                )
+            ]
+
+    if any(
+        any(character.isspace() for character in record["citation_path"])
+        for record in selected
+    ):
+        if not documents:
+            raise ValueError(
+                "logical source-unit citations contain whitespace and have no "
+                "document fallback"
+            )
+        selected = documents
+
+    return sorted(
+        selected,
+        key=lambda record: (
+            record.get("ordinal")
+            if isinstance(record.get("ordinal"), int)
+            else sys.maxsize,
+            record["citation_path"],
+        ),
+    )
 
 
 def _require_sha(value: object, label: str) -> str:
@@ -416,6 +573,197 @@ def build_snap_queue(
     return payload
 
 
+def build_all_state_snap_queue(
+    corpus_root: Path,
+    rulespec_root: Path,
+    *,
+    corpus_ref: str,
+    rulespec_ref: str,
+    rules_engine_ref: str,
+    release_name: str,
+    release_content_sha256: str,
+    release_object_path: Path,
+    release_public_key_path: Path,
+    state: str,
+    pause_reason: str | None,
+) -> dict[str, Any]:
+    """Build the signed all-state SNAP logical source-unit inventory."""
+
+    _require_sha(corpus_ref, "corpus_ref")
+    _require_sha(rulespec_ref, "rulespec_ref")
+    _require_sha(rules_engine_ref, "rules_engine_ref")
+    _require_digest(release_content_sha256, "release_content_sha256")
+
+    inventory_path = corpus_root / ALL_STATE_INVENTORY_PATH
+    try:
+        inventory = yaml.safe_load(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError("state SNAP source inventory is unavailable") from exc
+    if not isinstance(inventory, dict) or inventory.get("program") != "SNAP":
+        raise ValueError("state SNAP source inventory has the wrong program")
+    states = inventory.get("states")
+    if not isinstance(states, list) or len(states) != 51:
+        raise ValueError("state SNAP source inventory must contain 51 jurisdictions")
+
+    release_path = (
+        corpus_root / "manifests/releases" / f"{release_name}.json"
+    )
+    release = _load_json(release_path)
+    release_scopes = release.get("scopes")
+    if not isinstance(release_scopes, list):
+        raise ValueError("corpus release manifest scopes are missing")
+    available_scopes = {
+        (
+            scope.get("jurisdiction"),
+            scope.get("document_class"),
+            scope.get("version"),
+        )
+        for scope in release_scopes
+        if isinstance(scope, dict)
+    }
+
+    provisions = corpus_root / "data/corpus/provisions"
+    source_paths: list[Path] = []
+    state_sources: list[tuple[str, Path]] = []
+    seen_jurisdictions: set[str] = set()
+    for entry in states:
+        if not isinstance(entry, dict):
+            raise ValueError("state SNAP source inventory entry is malformed")
+        jurisdiction = entry.get("jurisdiction")
+        if (
+            not isinstance(jurisdiction, str)
+            or re.fullmatch(r"us-[a-z]{2}", jurisdiction) is None
+            or jurisdiction in seen_jurisdictions
+        ):
+            raise ValueError("state SNAP source inventory jurisdiction is invalid")
+        seen_jurisdictions.add(jurisdiction)
+        if entry.get("queue_status") != "published_current":
+            raise ValueError(
+                f"state SNAP source is not published_current: {jurisdiction}"
+            )
+        for scope_field in ("target_scope", "supporting_scope"):
+            scope = entry.get(scope_field)
+            if scope is None:
+                continue
+            if not isinstance(scope, dict):
+                raise ValueError(
+                    f"{jurisdiction} {scope_field} is malformed"
+                )
+            scope_key = (
+                scope.get("jurisdiction"),
+                scope.get("document_class"),
+                scope.get("version"),
+            )
+            resolved_scope = ALL_STATE_SCOPE_ALIASES.get(scope_key, scope_key)
+            if resolved_scope not in available_scopes:
+                raise ValueError(
+                    "state SNAP scope is absent from signed release: "
+                    + "/".join(str(value) for value in scope_key)
+                )
+            path = (
+                provisions
+                / str(resolved_scope[0])
+                / str(resolved_scope[1])
+                / f"{resolved_scope[2]}.jsonl"
+            )
+            source_paths.append(path)
+            state_sources.append((jurisdiction, path))
+
+    if len(seen_jurisdictions) != 51:
+        raise ValueError("state SNAP source inventory has duplicate jurisdictions")
+
+    release_manifest_sha256 = _verify_corpus_provenance(
+        corpus_root,
+        corpus_ref=corpus_ref,
+        release_name=release_name,
+        source_paths=source_paths,
+    )
+    _verify_signed_release_binding(
+        corpus_root,
+        rulespec_root,
+        corpus_ref=corpus_ref,
+        rulespec_ref=rulespec_ref,
+        release_name=release_name,
+        release_content_sha256=release_content_sha256,
+        release_object_path=release_object_path,
+        release_public_key_path=release_public_key_path,
+        source_paths=source_paths,
+    )
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    seen_citations: set[str] = set()
+    for jurisdiction, source_path in state_sources:
+        records = _load_jsonl([source_path])
+        for record in _logical_source_units(records):
+            citation = record["citation_path"]
+            if citation in seen_citations:
+                raise ValueError(f"duplicate all-state SNAP citation: {citation}")
+            seen_citations.add(citation)
+            candidates.append((jurisdiction, record))
+
+    candidates.sort(key=lambda candidate: (candidate[0], candidate[1]["citation_path"]))
+    counters = {jurisdiction: 0 for jurisdiction in sorted(seen_jurisdictions)}
+    items: list[dict[str, Any]] = []
+    for sequence, (jurisdiction, record) in enumerate(candidates, start=1):
+        counters[jurisdiction] += 1
+        items.append(
+            {
+                "attempt": 1,
+                "citation": record["citation_path"],
+                "id": f"{jurisdiction[3:]}-{counters[jurisdiction]:05d}",
+                "jurisdiction": jurisdiction,
+                "label": _record_label(record),
+                "sequence": sequence,
+                "source_kind": record["kind"],
+                "status": "pending",
+            }
+        )
+
+    counts = {"total": len(items), **counters}
+    if counts != ALL_STATE_EXPECTED_COUNTS:
+        raise ValueError(
+            "all-state SNAP inventory drifted: "
+            f"expected {ALL_STATE_EXPECTED_COUNTS}, got {counts}"
+        )
+
+    payload = {
+        "schema": SCHEMA,
+        "queue_id": ALL_STATE_QUEUE_ID,
+        "state": state,
+        "description": (
+            "All-state SNAP logical source-unit inventory for the 50 states and "
+            "District of Columbia. Every item requires an encoder disposition."
+        ),
+        "issue": ALL_STATE_QUEUE_ISSUE,
+        "supersedes": ["us-snap-or-ut-2026-07"],
+        "inventory": {
+            "jurisdictions": 51,
+            "path": ALL_STATE_INVENTORY_PATH,
+            "sha256": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+        },
+        "release": {
+            "content_sha256": release_content_sha256,
+            "manifest_sha256": release_manifest_sha256,
+            "name": release_name,
+        },
+        "dispatch": {
+            "corpus_ref": corpus_ref,
+            "country": "us",
+            "max_batch_size": MAX_BATCH_SIZE,
+            "open_pr": True,
+            "pr_base_branch": "hard-cut/canonical-layout-us",
+            "rules_engine_ref": rules_engine_ref,
+            "rulespec_ref": rulespec_ref,
+        },
+        "expected_counts": ALL_STATE_EXPECTED_COUNTS,
+        "items": items,
+    }
+    if pause_reason is not None:
+        payload["pause_reason"] = pause_reason
+    validate_queue(payload)
+    return payload
+
+
 def validate_queue(payload: dict[str, Any]) -> None:
     """Validate the complete queue and immutable dispatch trust boundary."""
 
@@ -424,9 +772,22 @@ def validate_queue(payload: dict[str, Any]) -> None:
     queue_id = payload.get("queue_id")
     if not isinstance(queue_id, str) or QUEUE_ID_PATTERN.fullmatch(queue_id) is None:
         raise ValueError("queue_id is malformed")
+    profile = _queue_profile(queue_id)
     issue = payload.get("issue")
     if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
         raise ValueError("queue issue must be a positive integer")
+    if issue != profile["issue"]:
+        raise ValueError(f"queue issue must be {profile['issue']}")
+    if payload.get("supersedes") != profile["supersedes"]:
+        if profile["supersedes"] is None and "supersedes" not in payload:
+            pass
+        else:
+            raise ValueError("queue supersession binding is invalid")
+    if payload.get("inventory") != profile["inventory"]:
+        if profile["inventory"] is None and "inventory" not in payload:
+            pass
+        else:
+            raise ValueError("queue inventory binding is invalid")
     state = payload.get("state")
     if state not in {"active", "paused"}:
         raise ValueError("queue state must be active or paused")
@@ -517,33 +878,40 @@ def validate_queue(payload: dict[str, Any]) -> None:
         _require_sha(dispatch.get(key), key)
 
     expected_counts = payload.get("expected_counts")
-    if expected_counts != EXPECTED_COUNTS:
-        raise ValueError(f"SNAP queue expected_counts must be {EXPECTED_COUNTS}")
+    profile_counts = profile["expected_counts"]
+    if expected_counts != profile_counts:
+        raise ValueError(f"SNAP queue expected_counts must be {profile_counts}")
     items = payload.get("items")
     if not isinstance(items, list):
         raise ValueError("queue items must be a list")
-    if len(items) != EXPECTED_COUNTS["total"]:
+    if len(items) != profile_counts["total"]:
         raise ValueError("queue item count does not match expected_counts")
 
     seen_ids: set[str] = set()
     seen_citations: set[str] = set()
-    counts = {"total": len(items), "us-or": 0, "us-ut": 0}
+    jurisdictions = set(profile_counts) - {"total"}
+    counts = {"total": len(items), **dict.fromkeys(sorted(jurisdictions), 0)}
     for expected_sequence, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             raise ValueError("queue item must be an object")
         item_id = item.get("id")
         if not isinstance(item_id, str) or ITEM_ID_PATTERN.fullmatch(item_id) is None:
             raise ValueError("queue item id is malformed")
+        jurisdiction = item.get("jurisdiction")
+        expected_item_pattern = re.compile(
+            rf"^{str(jurisdiction)[3:]}-[0-9]{{{profile['item_width']}}}$"
+        )
+        if expected_item_pattern.fullmatch(item_id) is None:
+            raise ValueError(f"queue item id does not match jurisdiction: {item_id}")
         if item_id in seen_ids:
             raise ValueError(f"duplicate queue item id: {item_id}")
         seen_ids.add(item_id)
         citation = item.get("citation")
-        jurisdiction = item.get("jurisdiction")
-        if jurisdiction not in ("us-or", "us-ut"):
+        if jurisdiction not in jurisdictions:
             raise ValueError(f"queue item jurisdiction is invalid: {item_id}")
         if (
             not isinstance(citation, str)
-            or not citation.startswith(f"{jurisdiction}/manual/")
+            or not citation.startswith(f"{jurisdiction}/")
             or any(character.isspace() for character in citation)
         ):
             raise ValueError(f"queue item citation is invalid: {item_id}")
@@ -622,10 +990,14 @@ def validate_queue(payload: dict[str, Any]) -> None:
                     )
             else:
                 note = evidence.get("note")
+                issue_comment_pattern = re.compile(
+                    r"^https://github\.com/TheAxiomFoundation/axiom-encode/issues/"
+                    rf"{issue}#issuecomment-[0-9]+$"
+                )
                 if (
                     evidence.get("type") != "issue-comment"
                     or not isinstance(url, str)
-                    or QUEUE_ISSUE_COMMENT_PATTERN.fullmatch(url) is None
+                    or issue_comment_pattern.fullmatch(url) is None
                     or not isinstance(note, str)
                     or not note.strip()
                 ):
@@ -633,16 +1005,24 @@ def validate_queue(payload: dict[str, Any]) -> None:
                         f"{status} queue item requires an issue comment and note: "
                         f"{item_id}"
                     )
-        if item.get("source_kind") not in {"block", "document", "page", "topic"}:
+        if (
+            not isinstance(item.get("source_kind"), str)
+            or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", item["source_kind"]) is None
+        ):
             raise ValueError(f"queue item source_kind is invalid: {item_id}")
         if not isinstance(item.get("label"), str) or not item["label"].strip():
             raise ValueError(f"queue item label is missing: {item_id}")
-    if counts != EXPECTED_COUNTS:
+    if counts != profile_counts:
         raise ValueError(
-            f"queue jurisdiction counts drifted: expected {EXPECTED_COUNTS}, "
+            f"queue jurisdiction counts drifted: expected {profile_counts}, "
             f"got {counts}"
         )
-    if tuple(item["citation"] for item in items[:4]) != PRIORITY_CITATIONS:
+    priority_citations = profile["priority_citations"]
+    if (
+        priority_citations
+        and tuple(item["citation"] for item in items[: len(priority_citations)])
+        != priority_citations
+    ):
         raise ValueError("queue priority tranche has drifted")
 
 
@@ -931,6 +1311,14 @@ def verify_activation_commit(
     _require_sha(current_base_sha, "current_base_sha")
     _require_sha(current_head_sha, "current_head_sha")
     _require_sha(current_tree_sha, "current_tree_sha")
+    queue = _load_json(queue_path)
+    profile = _queue_profile(queue["queue_id"])
+    activation_changed_files = (
+        profile["activation_path"],
+        "pyproject.toml",
+        "src/axiom_encode/__init__.py",
+        "uv.lock",
+    )
     if not isinstance(provenance, dict):
         raise ValueError("activation commit provenance must be an object")
     expected_fields = {
@@ -948,13 +1336,13 @@ def verify_activation_commit(
         or provenance.get("schema")
         != "axiom-encode/snap-queue-activation-commit/v1"
         or provenance.get("repository") != "TheAxiomFoundation/axiom-encode"
-        or provenance.get("queue_path") != ACTIVATION_CHANGED_FILES[0]
+        or provenance.get("queue_path") != activation_changed_files[0]
         or provenance.get("queue_sha256") != queue_file_sha256(queue_path)
         or provenance.get("base_sha") != current_base_sha
         or provenance.get("head_sha") != current_head_sha
         or provenance.get("tree_sha") != current_tree_sha
-        or provenance.get("changed_files") != list(ACTIVATION_CHANGED_FILES)
-        or current_changed_files != list(ACTIVATION_CHANGED_FILES)
+        or provenance.get("changed_files") != list(activation_changed_files)
+        or current_changed_files != list(activation_changed_files)
     ):
         raise ValueError("activation commit or changed-file inventory does not match")
     if not isinstance(pull_request, dict):
@@ -989,6 +1377,7 @@ def verify_merge_authorization(
 
     queue = _load_json(queue_path)
     validate_queue(queue)
+    profile = _queue_profile(queue["queue_id"])
     if queue["state"] != "active":
         raise ValueError("merge authorization is only valid for an active queue")
     _require_sha(current_head_sha, "current_head_sha")
@@ -1012,8 +1401,7 @@ def verify_merge_authorization(
         or authorization.get("schema")
         != "axiom-encode/snap-queue-merge-authorization/v1"
         or authorization.get("repository") != "TheAxiomFoundation/axiom-encode"
-        or authorization.get("queue_path")
-        != "data/encoding-queues/us-snap-or-ut-2026-07.json"
+        or authorization.get("queue_path") != profile["activation_path"]
         or authorization.get("queue_sha256") != queue_file_sha256(queue_path)
         or authorization.get("merge_workflow_run_attempt") != 1
     ):
@@ -1986,6 +2374,19 @@ def main() -> None:
     build.add_argument("--state", choices=("active", "paused"), required=True)
     build.add_argument("--pause-reason")
 
+    build_all = subparsers.add_parser("build-snap-all-states")
+    build_all.add_argument("corpus_root", type=Path)
+    build_all.add_argument("rulespec_root", type=Path)
+    build_all.add_argument("--corpus-ref", required=True)
+    build_all.add_argument("--rulespec-ref", required=True)
+    build_all.add_argument("--rules-engine-ref", required=True)
+    build_all.add_argument("--release-name", required=True)
+    build_all.add_argument("--release-content-sha256", required=True)
+    build_all.add_argument("--release-object", type=Path, required=True)
+    build_all.add_argument("--release-public-key", type=Path, required=True)
+    build_all.add_argument("--state", choices=("active", "paused"), required=True)
+    build_all.add_argument("--pause-reason")
+
     validate = subparsers.add_parser("validate")
     validate.add_argument("queue", type=Path)
 
@@ -2098,6 +2499,22 @@ def main() -> None:
         if args.command == "build-snap":
             _write_json(
                 build_snap_queue(
+                    args.corpus_root,
+                    args.rulespec_root,
+                    corpus_ref=args.corpus_ref,
+                    rulespec_ref=args.rulespec_ref,
+                    rules_engine_ref=args.rules_engine_ref,
+                    release_name=args.release_name,
+                    release_content_sha256=args.release_content_sha256,
+                    release_object_path=args.release_object,
+                    release_public_key_path=args.release_public_key,
+                    state=args.state,
+                    pause_reason=args.pause_reason,
+                )
+            )
+        elif args.command == "build-snap-all-states":
+            _write_json(
+                build_all_state_snap_queue(
                     args.corpus_root,
                     args.rulespec_root,
                     corpus_ref=args.corpus_ref,
