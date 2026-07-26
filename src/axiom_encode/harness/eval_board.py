@@ -391,6 +391,138 @@ def _is_positive_int(value: object) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value > 0
 
 
+def _is_nonnegative_int(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _is_nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_git_object_hex(value: object) -> bool:
+    return (
+        isinstance(value, str) and len(value) in {40, 64} and set(value) <= _SHA256_HEX
+    )
+
+
+def _valid_checkout_execution_identity(
+    value: object,
+    *,
+    require_version: bool,
+) -> bool:
+    """Accept exactly the git/tree identity union emitted by the producer."""
+
+    if not isinstance(value, dict):
+        return False
+    version_keys = {"version"} if require_version else set()
+    if require_version and not _is_nonempty_string(value.get("version")):
+        return False
+    kind = value.get("kind")
+    if kind == "git":
+        required_keys = {
+            "kind",
+            "path",
+            "commit",
+            "origin_repository",
+            "dirty",
+            "working_tree_sha256",
+            *version_keys,
+        }
+        if frozenset(value) not in {
+            frozenset(required_keys),
+            frozenset(required_keys | {"pathspecs"}),
+        }:
+            return False
+        origin_repository = value.get("origin_repository")
+        pathspecs = value.get("pathspecs")
+        return (
+            _is_nonempty_string(value.get("path"))
+            and _is_git_object_hex(value.get("commit"))
+            and (origin_repository is None or _is_nonempty_string(origin_repository))
+            and type(value.get("dirty")) is bool
+            and _is_sha256_hex(value.get("working_tree_sha256"))
+            and (
+                "pathspecs" not in value
+                or (
+                    isinstance(pathspecs, list)
+                    and bool(pathspecs)
+                    and all(_is_nonempty_string(pathspec) for pathspec in pathspecs)
+                )
+            )
+        )
+    if kind == "tree":
+        required_keys = {
+            "kind",
+            "path",
+            "state",
+            "tree_sha256",
+            "file_count",
+            *version_keys,
+        }
+        if set(value) != required_keys:
+            return False
+        state = value.get("state")
+        file_count = value.get("file_count")
+        return (
+            _is_nonempty_string(value.get("path"))
+            and state in {"missing", "file", "directory"}
+            and _is_sha256_hex(value.get("tree_sha256"))
+            and _is_nonnegative_int(file_count)
+            and (state != "missing" or file_count == 0)
+            and (state != "file" or file_count == 1)
+        )
+    return False
+
+
+def _valid_rulespec_root_execution_identity(value: object) -> bool:
+    """Validate the complete RuleSpec root identity before path normalization."""
+
+    if not isinstance(value, dict) or set(value) != {
+        "path",
+        "content_state",
+        "content_sha256",
+        "file_count",
+        "toolchain_root",
+        "checkout_identity",
+        "toolchain_contract_sha256",
+        "validation_waiver_set_sha256",
+    }:
+        return False
+    content_state = value.get("content_state")
+    file_count = value.get("file_count")
+    return (
+        _is_nonempty_string(value.get("path"))
+        and content_state in {"missing", "file", "directory"}
+        and _is_sha256_hex(value.get("content_sha256"))
+        and _is_nonnegative_int(file_count)
+        and (content_state != "missing" or file_count == 0)
+        and (content_state != "file" or file_count == 1)
+        and _is_nonempty_string(value.get("toolchain_root"))
+        and _valid_checkout_execution_identity(
+            value.get("checkout_identity"),
+            require_version=False,
+        )
+        and _is_sha256_hex(value.get("toolchain_contract_sha256"))
+        and _is_sha256_hex(value.get("validation_waiver_set_sha256"))
+    )
+
+
+def _valid_policyengine_runtime_wrapper(value: object) -> bool:
+    """Validate both the wrapper shape and its binding to the runtime identity."""
+
+    if value is None:
+        return True
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"identity", "sha256"}
+        or not isinstance(value.get("identity"), dict)
+        or not value["identity"]
+        or not _is_sha256_hex(value.get("sha256"))
+    ):
+        return False
+    return value["sha256"] == _canonical_json_sha256(value["identity"])
+
+
 def _payload_corpus_identity(payload: dict, source: str) -> dict:
     corpus = payload["evidence"].get("corpus")
     if (
@@ -436,24 +568,21 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
     axiom_rules_engine = identity.get("axiom_rules_engine")
     rulespec_roots = identity.get("rulespec_roots")
     policyengine_runtime = identity.get("policyengine_runtime")
-    valid_policyengine_runtime = policyengine_runtime is None or (
-        isinstance(policyengine_runtime, dict)
-        and set(policyengine_runtime) == {"identity", "sha256"}
-        and isinstance(policyengine_runtime.get("identity"), dict)
-        and bool(policyengine_runtime["identity"])
-        and _is_sha256_hex(policyengine_runtime.get("sha256"))
-    )
     if (
         "policyengine_runtime" not in identity
-        or not isinstance(axiom_encode, dict)
-        or not axiom_encode
-        or not isinstance(axiom_encode.get("version"), str)
-        or not axiom_encode["version"]
-        or not isinstance(axiom_rules_engine, dict)
-        or not axiom_rules_engine
+        or not _valid_checkout_execution_identity(
+            axiom_encode,
+            require_version=True,
+        )
+        or not _valid_checkout_execution_identity(
+            axiom_rules_engine,
+            require_version=False,
+        )
         or not isinstance(rulespec_roots, list)
-        or any(not isinstance(root, dict) or not root for root in rulespec_roots)
-        or not valid_policyengine_runtime
+        or any(
+            not _valid_rulespec_root_execution_identity(root) for root in rulespec_roots
+        )
+        or not _valid_policyengine_runtime_wrapper(policyengine_runtime)
     ):
         raise EvalBoardError(
             "Suite results execution identity has missing or malformed core "
