@@ -14326,51 +14326,107 @@ class TestOpenAIEvalRequest:
         assert result.error is None
 
     @pytest.mark.parametrize(
-        "payload",
+        ("payload", "expected_failure_kind"),
         [
-            {
-                "output_text": "format: rulespec/v1\nrules: []\n",
-                "usage": {},
-            },
-            {
-                "status": "in_progress",
-                "output_text": "format: rulespec/v1\nrules: []\n",
-                "usage": {},
-            },
-            {
-                "status": "completed",
-                "incomplete_details": {"reason": "max_output_tokens"},
-                "output_text": "format: rulespec/v1\nrules: []\n",
-                "usage": {},
-            },
-            {
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "status": "incomplete",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": "format: rulespec/v1\nrules: []\n",
-                            }
-                        ],
-                    }
-                ],
-                "usage": {},
-            },
+            (
+                {
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "error",
+            ),
+            (
+                {
+                    "status": "in_progress",
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "error",
+            ),
+            (
+                {
+                    "status": "failed",
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "error",
+            ),
+            (
+                {
+                    "status": 17,
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "error",
+            ),
+            (
+                {
+                    "status": "incomplete",
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "output_truncated",
+            ),
+            (
+                {
+                    "status": "completed",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output_text": "format: rulespec/v1\nrules: []\n",
+                    "usage": {},
+                },
+                "output_truncated",
+            ),
+            (
+                {
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "status": "incomplete",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": "format: rulespec/v1\nrules: []\n",
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {},
+                },
+                "output_truncated",
+            ),
+            (
+                {
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "status": "completed",
+                            "stop_reason": "max_tokens",
+                            "content": [],
+                        }
+                    ],
+                    "usage": {},
+                },
+                "output_truncated",
+            ),
         ],
         ids=[
             "missing-status",
-            "noncompleted-status",
+            "in-progress-status",
+            "failed-status",
+            "malformed-status",
+            "incomplete-status",
             "incomplete-details",
             "incomplete-message",
+            "max-token-stop",
         ],
     )
     def test_openai_prompt_eval_rejects_every_incomplete_response(
         self,
         monkeypatch,
         payload,
+        expected_failure_kind,
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         response = Mock(status_code=200, headers={}, text="")
@@ -14387,8 +14443,40 @@ class TestOpenAIEvalRequest:
             )
 
         assert result.text == ""
-        assert result.failure_kind == "output_truncated"
-        assert "incomplete" in (result.error or "").lower()
+        assert result.failure_kind == expected_failure_kind
+        assert result.error
+
+    def test_pre_dispatch_case_timeout_records_openai_request_envelope(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+        corpus_release, source_unit = _write_test_source_unit(
+            tmp_path, "source states 451."
+        )
+        clock = [0.0]
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        with evals_module._active_eval_case_budget(5):
+            clock[0] = 6.0
+            [result] = run_source_eval(
+                source_unit=source_unit,
+                runner_specs=["openai:gpt-5.4"],
+                output_root=tmp_path / "out",
+                policy_path=policy_repo_root,
+                local_corpus_release=corpus_release,
+                runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
+                mode="cold",
+            )
+
+        payload = result.to_dict()
+        evals_module._validate_eval_result_artifact_binding(payload)
+        assert result.failure_kind == "timeout"
+        assert result.openai_endpoint == "https://api.openai.com/v1/responses"
+        assert result.openai_max_output_tokens == 128_000
+        assert result.openai_response_model_id is None
+        assert result.openai_service_tier is None
 
     def test_openai_prompt_eval_uses_model_max_output_ceiling(
         self,

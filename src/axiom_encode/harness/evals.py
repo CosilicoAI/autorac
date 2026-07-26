@@ -13476,6 +13476,12 @@ def _run_prompt_eval(
             timeout_reason="wall",
             timeout_seconds=timeout_seconds,
             timeout_attempts=1,
+            openai_endpoint=(
+                _OPENAI_RESPONSES_ENDPOINT if runner.backend == "openai" else None
+            ),
+            openai_max_output_tokens=(
+                _OPENAI_MAX_OUTPUT_TOKENS if runner.backend == "openai" else None
+            ),
         )
     if runner.backend == "claude":
         return _run_claude_prompt_eval(
@@ -14539,16 +14545,17 @@ def _run_openai_prompt_eval(
         ((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0)
     )
 
-    incomplete_error = _openai_incomplete_response_error(payload)
-    if incomplete_error is not None:
+    envelope_error = _openai_response_envelope_error(payload)
+    if envelope_error is not None:
+        error_message, failure_kind = envelope_error
         return EvalPromptResponse(
             text="",
             duration_ms=duration_ms,
             tokens=tokens,
             estimated_cost_usd=estimate_usage_cost_usd(runner.model, tokens),
             trace=trace,
-            error=incomplete_error,
-            failure_kind="output_truncated",
+            error=error_message,
+            failure_kind=failure_kind,
             timeout_stage=timeout_stage,
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
@@ -14598,38 +14605,68 @@ def _run_openai_prompt_eval(
     )
 
 
-def _openai_incomplete_response_error(payload: object) -> str | None:
-    """Return a terminal error for every incomplete Responses API payload."""
+def _openai_response_envelope_error(
+    payload: object,
+) -> tuple[str, EvalFailureKind] | None:
+    """Classify every non-completed or receiver-truncated response envelope."""
 
     if not isinstance(payload, dict):
-        return "OpenAI eval response was incomplete: response payload is not an object"
+        return (
+            "OpenAI eval response is invalid: response payload is not an object",
+            "error",
+        )
     status = payload.get("status")
     if status != "completed":
+        failure_kind: EvalFailureKind = (
+            "output_truncated" if status == "incomplete" else "error"
+        )
         return (
-            "OpenAI eval response was incomplete: "
-            f"response status is {status!r}, expected 'completed'"
+            (
+                "OpenAI eval response was not completed: "
+                f"response status is {status!r}, expected 'completed'"
+            ),
+            failure_kind,
         )
     incomplete_details = payload.get("incomplete_details")
     if incomplete_details:
         return (
-            "OpenAI eval response was incomplete: "
-            f"incomplete_details={incomplete_details!r}"
+            (
+                "OpenAI eval response was incomplete: "
+                f"incomplete_details={incomplete_details!r}"
+            ),
+            "output_truncated",
         )
+    for field_name in ("finish_reason", "stop_reason"):
+        reason = payload.get(field_name)
+        if reason in {"max_tokens", "max_output_tokens", "length"}:
+            return (
+                (f"OpenAI eval response was incomplete: {field_name}={reason!r}"),
+                "output_truncated",
+            )
     for index, item in enumerate(payload.get("output") or []):
         if not isinstance(item, dict):
             continue
         item_status = item.get("status")
         if item_status is not None and item_status != "completed":
+            failure_kind = (
+                "output_truncated" if item_status == "incomplete" else "error"
+            )
             return (
-                "OpenAI eval response was incomplete: "
-                f"output[{index}] status is {item_status!r}"
+                (
+                    "OpenAI eval response output was not completed: "
+                    f"output[{index}] status is {item_status!r}"
+                ),
+                failure_kind,
             )
         for field_name in ("finish_reason", "stop_reason"):
             reason = item.get(field_name)
             if reason in {"max_tokens", "max_output_tokens", "length"}:
                 return (
-                    "OpenAI eval response was incomplete: "
-                    f"output[{index}] {field_name}={reason!r}"
+                    (
+                        "OpenAI eval response was incomplete: "
+                        f"output[{index}] {field_name}={reason!r}"
+                    ),
+                    "output_truncated",
                 )
     return None
 
