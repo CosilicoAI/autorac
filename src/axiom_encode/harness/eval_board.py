@@ -1492,6 +1492,73 @@ def result_gate_pass(result: dict) -> bool:
     )
 
 
+def _validate_result_effective_environment(result: dict, *, context: str) -> None:
+    """Bind receiver metadata to the backend that produced this v7 row."""
+
+    string_fields = (
+        "claude_cli_version",
+        "codex_cli_version",
+        "openai_endpoint",
+        "openai_response_model_id",
+        "openai_service_tier",
+    )
+    for field_name in string_fields:
+        value = result.get(field_name)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise EvalBoardError(
+                f"{context} {field_name} must be null or a nonempty string"
+            )
+
+    codex_cli_sha256 = result.get("codex_cli_sha256")
+    if codex_cli_sha256 is not None and not _is_sha256_hex(codex_cli_sha256):
+        raise EvalBoardError(
+            f"{context} codex_cli_sha256 must be null or 64 lowercase hex characters"
+        )
+    openai_max_output_tokens = result.get("openai_max_output_tokens")
+    if openai_max_output_tokens is not None and not _is_positive_int(
+        openai_max_output_tokens
+    ):
+        raise EvalBoardError(
+            f"{context} openai_max_output_tokens must be null or a positive integer"
+        )
+
+    backend = result.get("backend")
+    claude_fields_present = result.get("claude_cli_version") is not None
+    codex_fields_present = any(
+        result.get(field_name) is not None
+        for field_name in ("codex_cli_version", "codex_cli_sha256")
+    )
+    openai_fields_present = any(
+        result.get(field_name) is not None
+        for field_name in (
+            "openai_endpoint",
+            "openai_response_model_id",
+            "openai_service_tier",
+            "openai_max_output_tokens",
+        )
+    )
+    if (
+        (claude_fields_present and backend != "claude")
+        or (codex_fields_present and backend != "codex")
+        or (openai_fields_present and backend != "openai")
+    ):
+        raise EvalBoardError(
+            f"{context} effective-environment fields do not match its backend"
+        )
+
+    if backend == "claude" and not _is_nonempty_string(
+        result.get("claude_cli_version")
+    ):
+        raise EvalBoardError(f"{context} requires claude_cli_version")
+    if backend == "codex" and not _is_nonempty_string(result.get("codex_cli_version")):
+        raise EvalBoardError(f"{context} requires codex_cli_version")
+    if backend == "openai":
+        if not _is_nonempty_string(result.get("openai_endpoint")):
+            raise EvalBoardError(f"{context} requires openai_endpoint")
+        if not _is_positive_int(result.get("openai_max_output_tokens")):
+            raise EvalBoardError(f"{context} requires openai_max_output_tokens")
+
+
 def _validate_result_types(result: dict, *, context: str) -> None:
     """Refuse malformed rows instead of reinterpreting them."""
     _require_bool(result.get("success"), context=f"{context} success")
@@ -1551,6 +1618,7 @@ def _validate_result_types(result: dict, *, context: str) -> None:
         result.get("estimated_cost_usd"),
         context=f"{context} estimated_cost_usd",
     )
+    _validate_result_effective_environment(result, context=context)
     raw_metrics = result.get("metrics")
     if raw_metrics is not None and not isinstance(raw_metrics, dict):
         raise EvalBoardError(

@@ -39,6 +39,7 @@ from axiom_encode.harness.policyengine_runtime import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAPABILITY_MANIFEST = REPO_ROOT / "benchmarks" / "encodebench_uk_v1.yaml"
+_UNSET = object()
 
 CASE_IDENTITIES = [
     {
@@ -353,9 +354,32 @@ def _result(
     timeout_reason=None,
     timeout_seconds=None,
     timeout_attempts=0,
+    claude_cli_version=_UNSET,
+    codex_cli_version=_UNSET,
+    codex_cli_sha256=_UNSET,
+    openai_endpoint=_UNSET,
+    openai_response_model_id=_UNSET,
+    openai_service_tier=_UNSET,
+    openai_max_output_tokens=_UNSET,
 ):
     if metrics == "default":
         metrics = _metrics()
+    if claude_cli_version is _UNSET:
+        claude_cli_version = "Claude Code 2.test" if backend == "claude" else None
+    if codex_cli_version is _UNSET:
+        codex_cli_version = "codex-cli 0.test" if backend == "codex" else None
+    if codex_cli_sha256 is _UNSET:
+        codex_cli_sha256 = "d" * 64 if backend == "codex" else None
+    if openai_endpoint is _UNSET:
+        openai_endpoint = (
+            "https://api.openai.com/v1/responses" if backend == "openai" else None
+        )
+    if openai_response_model_id is _UNSET:
+        openai_response_model_id = model if backend == "openai" else None
+    if openai_service_tier is _UNSET:
+        openai_service_tier = "default" if backend == "openai" else None
+    if openai_max_output_tokens is _UNSET:
+        openai_max_output_tokens = 128_000 if backend == "openai" else None
     has_generated_artifact = success is True or isinstance(metrics, dict)
     eval_case = {
         "index": case["index"],
@@ -381,6 +405,13 @@ def _result(
         "timeout_reason": timeout_reason,
         "timeout_seconds": timeout_seconds,
         "timeout_attempts": timeout_attempts,
+        "claude_cli_version": claude_cli_version,
+        "codex_cli_version": codex_cli_version,
+        "codex_cli_sha256": codex_cli_sha256,
+        "openai_endpoint": openai_endpoint,
+        "openai_response_model_id": openai_response_model_id,
+        "openai_service_tier": openai_service_tier,
+        "openai_max_output_tokens": openai_max_output_tokens,
         "duration_ms": duration_ms,
         "estimated_cost_usd": cost,
         "output_file": (
@@ -1027,6 +1058,170 @@ def test_fold_refuses_infra_failure_that_claims_a_generated_artifact(
 
     with pytest.raises(EvalBoardError, match="no generated artifact"):
         fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "required_field"),
+    [
+        ("claude", "claude-fable-5", "claude_cli_version"),
+        ("codex", "gpt-5.6-terra", "codex_cli_version"),
+        ("openai", "gpt-5.4", "openai_endpoint"),
+        ("openai", "gpt-5.4", "openai_max_output_tokens"),
+    ],
+)
+def test_fold_requires_backend_effective_environment_field(
+    tmp_path, backend, model, required_field
+):
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    results[0].pop(required_field)
+    path = _write_payload(
+        tmp_path,
+        f"missing-{required_field}.json",
+        _payload([("runner", backend, model)], results),
+    )
+
+    with pytest.raises(EvalBoardError, match=required_field):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "field_name"),
+    [
+        ("claude", "claude-fable-5", "claude_cli_version"),
+        ("codex", "gpt-5.6-terra", "codex_cli_version"),
+        ("openai", "gpt-5.4", "openai_endpoint"),
+        ("openai", "gpt-5.4", "openai_response_model_id"),
+        ("openai", "gpt-5.4", "openai_service_tier"),
+    ],
+)
+@pytest.mark.parametrize("invalid_value", ["", "   ", 17])
+def test_fold_refuses_invalid_effective_environment_string(
+    tmp_path, backend, model, field_name, invalid_value
+):
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    results[0][field_name] = invalid_value
+    path = _write_payload(
+        tmp_path,
+        f"invalid-{field_name}.json",
+        _payload([("runner", backend, model)], results),
+    )
+
+    with pytest.raises(EvalBoardError, match=field_name):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("invalid_sha256", ["D" * 64, "d" * 63, 17])
+def test_fold_refuses_invalid_codex_cli_sha256(tmp_path, invalid_sha256):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0]["codex_cli_sha256"] = invalid_sha256
+    path = _write_payload(
+        tmp_path,
+        "invalid-codex-cli-sha256.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="codex_cli_sha256"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("invalid_max_tokens", [0, -1, True, "128000"])
+def test_fold_refuses_invalid_openai_max_output_tokens(tmp_path, invalid_max_tokens):
+    results = [
+        _result("openai", case, backend="openai", model="gpt-5.4")
+        for case in CASE_IDENTITIES
+    ]
+    results[0]["openai_max_output_tokens"] = invalid_max_tokens
+    path = _write_payload(
+        tmp_path,
+        "invalid-openai-max-output-tokens.json",
+        _payload([("openai", "openai", "gpt-5.4")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="openai_max_output_tokens"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "foreign_field", "foreign_value"),
+    [
+        ("codex", "gpt-5.6-terra", "claude_cli_version", "Claude Code 2.test"),
+        ("claude", "claude-fable-5", "codex_cli_version", "codex-cli 0.test"),
+        ("claude", "claude-fable-5", "codex_cli_sha256", "d" * 64),
+        (
+            "codex",
+            "gpt-5.6-terra",
+            "openai_endpoint",
+            "https://api.openai.com/v1/responses",
+        ),
+        ("codex", "gpt-5.6-terra", "openai_response_model_id", "gpt-5.4"),
+        ("codex", "gpt-5.6-terra", "openai_service_tier", "default"),
+        ("codex", "gpt-5.6-terra", "openai_max_output_tokens", 128_000),
+    ],
+)
+def test_fold_refuses_effective_environment_field_for_another_backend(
+    tmp_path, backend, model, foreign_field, foreign_value
+):
+    results = [
+        _result("runner", case, backend=backend, model=model)
+        for case in CASE_IDENTITIES
+    ]
+    results[0][foreign_field] = foreign_value
+    path = _write_payload(
+        tmp_path,
+        f"foreign-{foreign_field}.json",
+        _payload([("runner", backend, model)], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="effective-environment.*backend"):
+        fold_eval_board([path])
+
+
+def test_fold_allows_nullable_codex_sha_and_pre_response_openai_metadata(tmp_path):
+    codex_results = [
+        _result(
+            "terra",
+            case,
+            codex_cli_sha256=None,
+        )
+        for case in CASE_IDENTITIES
+    ]
+    codex_path = _write_payload(
+        tmp_path,
+        "codex-unreadable-executable.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], codex_results),
+    )
+    openai_results = [
+        _result(
+            "openai",
+            CASE_IDENTITIES[0],
+            backend="openai",
+            model="gpt-5.4",
+            success=False,
+            error="request failed before a response arrived",
+            metrics=None,
+            failure_kind="error",
+            openai_response_model_id=None,
+            openai_service_tier=None,
+        ),
+        *[
+            _result("openai", case, backend="openai", model="gpt-5.4")
+            for case in CASE_IDENTITIES[1:]
+        ],
+    ]
+    openai_path = _write_payload(
+        tmp_path,
+        "openai-pre-response-error.json",
+        _payload([("openai", "openai", "gpt-5.4")], openai_results),
+    )
+
+    assert fold_eval_board([codex_path]).cells[(1, "terra")].state == "pass"
+    assert fold_eval_board([openai_path]).cells[(1, "openai")].state == "error"
 
 
 def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
