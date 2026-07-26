@@ -8,6 +8,7 @@ from the source-unit admission policy implemented here.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import math
 import re
@@ -1514,12 +1515,12 @@ def _formula_branch_test_witnesses(
         for case in asserted_by_rule.get(rule_name, ()):
             if interval is None:
                 if branch_selector_names:
-                    signature = _case_selector_signature(
+                    outcome = _case_formula_branch_outcome(
+                        rule,
                         case,
-                        branch_selector_names,
                     )
-                    if signature:
-                        witnesses.add((rule_name, f"selectors:{signature!r}"))
+                    if outcome is not None:
+                        witnesses.add((rule_name, f"branch:{outcome}"))
                 else:
                     witnesses.add((rule_name, f"case:{id(case)}"))
                 continue
@@ -1535,11 +1536,8 @@ def _rule_branch_selector_names(rule: dict[str, Any]) -> set[str]:
     """Return identifiers that choose branches in a principal formula."""
 
     names: set[str] = set()
-    for match in re.finditer(
-        r"(?m)^[ \t]*(?:if|elif)[ \t]+(?P<condition>[^:\n]+):",
-        _rule_formula_text(rule),
-    ):
-        condition = re.sub(r"(['\"]).*?\1", "", match.group("condition"))
+    for condition in _rule_top_level_branch_conditions(rule):
+        condition = re.sub(r"(['\"]).*?\1", "", condition)
         names.update(
             identifier
             for identifier in _FORMULA_IDENTIFIER.findall(condition)
@@ -1560,25 +1558,164 @@ def _rule_branch_selector_names(rule: dict[str, Any]) -> set[str]:
     return names
 
 
-def _case_selector_signature(
-    case: dict[str, Any],
-    selector_names: set[str],
-) -> tuple[tuple[str, str], ...]:
-    """Fingerprint only case inputs that select a principal formula branch."""
+def _rule_top_level_branch_conditions(rule: dict[str, Any]) -> tuple[str, ...]:
+    """Return the ordered conditions in the formula's outer if/elif chain."""
 
-    inputs = case.get("input")
-    if not isinstance(inputs, dict):
-        return ()
-    return tuple(
-        sorted(
-            (
-                str(key),
-                repr(value),
-            )
-            for key, value in inputs.items()
-            if _input_key_names(key) & selector_names
+    matches = list(
+        re.finditer(
+            r"(?m)^(?P<indent>[ \t]*)(?:if|elif)[ \t]+"
+            r"(?P<condition>.+):[ \t]*$",
+            _rule_formula_text(rule),
         )
     )
+    if not matches:
+        return ()
+    outer_indent = min(len(match.group("indent").expandtabs(8)) for match in matches)
+    return tuple(
+        match.group("condition").strip()
+        for match in matches
+        if len(match.group("indent").expandtabs(8)) == outer_indent
+    )
+
+
+_UNRESOLVED_CONDITION_VALUE = object()
+
+
+def _case_formula_branch_outcome(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+) -> int | None:
+    """Return the outer formula branch selected by one executed test case."""
+
+    conditions = _rule_top_level_branch_conditions(rule)
+    inputs = case.get("input")
+    if not conditions or not isinstance(inputs, dict):
+        return None
+    environment: dict[str, Any] = {}
+    for key, value in inputs.items():
+        environment.update(
+            {
+                name: value
+                for name in _input_key_names(key)
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            }
+        )
+    for index, condition in enumerate(conditions):
+        try:
+            expression = ast.parse(condition, mode="eval").body
+        except SyntaxError:
+            return None
+        evaluated = _evaluate_condition_expression(expression, environment)
+        if evaluated is _UNRESOLVED_CONDITION_VALUE:
+            return None
+        if bool(evaluated):
+            return index
+    return len(conditions)
+
+
+def _evaluate_condition_expression(
+    expression: ast.expr,
+    environment: dict[str, Any],
+) -> Any:
+    """Evaluate a small side-effect-free subset of RuleSpec conditions."""
+
+    if isinstance(expression, ast.Constant):
+        return expression.value
+    if isinstance(expression, ast.Name):
+        lowered = expression.id.lower()
+        if lowered in {"true", "holds"}:
+            return True
+        if lowered in {"false", "not_holds"}:
+            return False
+        return environment.get(expression.id, _UNRESOLVED_CONDITION_VALUE)
+    if isinstance(expression, ast.BoolOp):
+        if isinstance(expression.op, ast.And):
+            for item in expression.values:
+                value = _evaluate_condition_expression(item, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE:
+                    return value
+                if not bool(value):
+                    return False
+            return True
+        if isinstance(expression.op, ast.Or):
+            for item in expression.values:
+                value = _evaluate_condition_expression(item, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE:
+                    return value
+                if bool(value):
+                    return True
+            return False
+    if isinstance(expression, ast.UnaryOp):
+        value = _evaluate_condition_expression(expression.operand, environment)
+        if value is _UNRESOLVED_CONDITION_VALUE:
+            return value
+        if isinstance(expression.op, ast.Not):
+            return not bool(value)
+        if isinstance(expression.op, ast.USub) and isinstance(value, (int, float)):
+            return -value
+    if isinstance(expression, ast.BinOp):
+        left = _evaluate_condition_expression(expression.left, environment)
+        right = _evaluate_condition_expression(expression.right, environment)
+        if (
+            left is _UNRESOLVED_CONDITION_VALUE
+            or right is _UNRESOLVED_CONDITION_VALUE
+        ):
+            return _UNRESOLVED_CONDITION_VALUE
+        with contextlib.suppress(ArithmeticError, TypeError, ValueError):
+            if isinstance(expression.op, ast.Add):
+                return left + right
+            if isinstance(expression.op, ast.Sub):
+                return left - right
+            if isinstance(expression.op, ast.Mult):
+                return left * right
+            if isinstance(expression.op, ast.Div):
+                return left / right
+            if isinstance(expression.op, ast.Mod):
+                return left % right
+        return _UNRESOLVED_CONDITION_VALUE
+    if isinstance(expression, ast.Compare):
+        left = _evaluate_condition_expression(expression.left, environment)
+        if left is _UNRESOLVED_CONDITION_VALUE:
+            return left
+        for operator, comparator in zip(expression.ops, expression.comparators):
+            right = _evaluate_condition_expression(comparator, environment)
+            if right is _UNRESOLVED_CONDITION_VALUE:
+                return right
+            with contextlib.suppress(TypeError, ValueError):
+                if isinstance(operator, ast.Eq):
+                    matched = left == right
+                elif isinstance(operator, ast.NotEq):
+                    matched = left != right
+                elif isinstance(operator, ast.Lt):
+                    matched = left < right
+                elif isinstance(operator, ast.LtE):
+                    matched = left <= right
+                elif isinstance(operator, ast.Gt):
+                    matched = left > right
+                elif isinstance(operator, ast.GtE):
+                    matched = left >= right
+                elif isinstance(operator, ast.In):
+                    matched = left in right
+                elif isinstance(operator, ast.NotIn):
+                    matched = left not in right
+                else:
+                    return _UNRESOLVED_CONDITION_VALUE
+                if not matched:
+                    return False
+            left = right
+        return True
+    if (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id in {"holds", "not_holds"}
+        and len(expression.args) == 1
+        and not expression.keywords
+    ):
+        value = _evaluate_condition_expression(expression.args[0], environment)
+        if value is _UNRESOLVED_CONDITION_VALUE:
+            return value
+        return bool(value) if expression.func.id == "holds" else not bool(value)
+    return _UNRESOLVED_CONDITION_VALUE
 
 
 def _branch_boundary_has_test_evidence(

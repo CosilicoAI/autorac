@@ -2062,33 +2062,55 @@ rules:
     versions:
       - effective_from: '2026-01-01'
         formula: |-
-          if married:
+          if married or high_income:
             income * married_multiplier
           else:
             income * single_multiplier
 """
 
-    def case(name: str, *, married: bool, income: int) -> dict[str, object]:
+    def case(
+        name: str,
+        *,
+        married: bool,
+        high_income: bool,
+        income: int,
+    ) -> dict[str, object]:
         return {
             "name": name,
-            "input": {"married": married, "income": income},
-            "output": {"amount": income * (2 if married else 3)},
+            "input": {
+                "married": married,
+                "high_income": high_income,
+                "income": income,
+            },
+            "output": {
+                "amount": income * (2 if married or high_income else 3)
+            },
         }
 
     repeated_married = _analyze(
         content,
         source,
         test_cases=[
-            case("married one", married=True, income=10),
-            case("married two", married=True, income=20),
+            case(
+                "married ordinary",
+                married=True,
+                high_income=False,
+                income=10,
+            ),
+            case(
+                "married high income",
+                married=True,
+                high_income=True,
+                income=20,
+            ),
         ],
     )
     both_branches = _analyze(
         content,
         source,
         test_cases=[
-            case("married", married=True, income=10),
-            case("single", married=False, income=10),
+            case("married", married=True, high_income=False, income=10),
+            case("single", married=False, high_income=False, income=10),
         ],
     )
 
