@@ -5,6 +5,7 @@ Tests all CLI commands using subprocess invocation and direct function calls.
 All external dependencies are mocked.
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -591,7 +592,7 @@ def _fake_verified_eval_suite_artifacts(
         "rulespec_roots": [rulespec_identity],
         "policyengine_runtime": (
             {
-                "identity": TEST_POLICYENGINE_RUNTIME_IDENTITY,
+                "identity": copy.deepcopy(TEST_POLICYENGINE_RUNTIME_IDENTITY),
                 "sha256": TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256,
             }
             if any(
@@ -780,7 +781,9 @@ def _test_eval_suite_report_payload(
             {
                 "policyengine_pass": True,
                 "policyengine_score": 1.0,
-                "policyengine_runtime_identity": TEST_POLICYENGINE_RUNTIME_IDENTITY,
+                "policyengine_runtime_identity": copy.deepcopy(
+                    TEST_POLICYENGINE_RUNTIME_IDENTITY
+                ),
                 "policyengine_runtime_identity_sha256": (
                     TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256
                 ),
@@ -827,7 +830,7 @@ def _rebind_test_eval_suite_report_payload(payload: dict, tmp_path: Path) -> Non
     """Re-sign a deliberately mutated report so only semantic admission can fail."""
 
     execution_identity = payload["evidence"]["execution_identity"]
-    execution_sha256 = _eval_suite_execution_identity_sha256(execution_identity)
+    execution_sha256 = _eval_suite_json_sha256(execution_identity)
     payload["evidence"]["execution_identity_sha256"] = execution_sha256
     for index, result in enumerate(payload["results"], start=1):
         result["admission"]["execution"] = {
