@@ -69,7 +69,11 @@ CORPUS_IDENTITY = {
 }
 
 
-def _policyengine_runtime_identity(*, root="/ci/pe-uk", pe_version="1.9.0"):
+def _policyengine_runtime_identity(
+    *,
+    root="/ci/policyengine-uk",
+    pe_version="1.9.0",
+):
     """Mirror the sealed-runtime identity shape, paths included."""
     stdlib = f"{root}/.venv/lib/python3.13"
     site_packages = f"{stdlib}/site-packages"
@@ -1035,7 +1039,7 @@ def test_fold_refuses_policyengine_runtime_wrapper_digest_mismatch(tmp_path):
 
 
 def test_fold_refuses_location_only_policyengine_runtime_identity(tmp_path):
-    runtime_identity = {"repository_root": "/ci/pe-uk"}
+    runtime_identity = {"repository_root": "/ci/policyengine-uk"}
     identity = _execution_identity(
         policyengine_runtime={
             "identity": runtime_identity,
@@ -1386,7 +1390,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [_result("terra", case) for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/home/ci/pe-uk"
+                    root="/home/ci/policyengine-uk"
                 ),
             ),
         ),
@@ -1399,7 +1403,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [_result("sol", case, model="gpt-5.6-sol") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/Users/max/pe-uk"
+                    root="/Users/max/policyengine-uk"
                 ),
             ),
         ),
@@ -1416,7 +1420,7 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
             [_result("luna", case, model="gpt-5.6-luna") for case in CASE_IDENTITIES],
             execution_identity=_execution_identity(
                 policyengine_runtime=_policyengine_runtime_identity(
-                    root="/home/ci/pe-uk", pe_version="1.10.0"
+                    root="/home/ci/policyengine-uk", pe_version="1.10.0"
                 ),
             ),
         ),
@@ -1427,8 +1431,8 @@ def test_fold_ignores_policyengine_runtime_locations(tmp_path):
 
 @pytest.mark.parametrize("topology_change", ["sys_path_order", "module_origin"])
 def test_policyengine_import_topology_is_score_affecting(topology_change):
-    left_runtime = _policyengine_runtime_identity(root="/ci/pe-uk")
-    right_runtime = _policyengine_runtime_identity(root="/home/runner/pe-uk")
+    left_runtime = _policyengine_runtime_identity(root="/ci/policyengine-uk")
+    right_runtime = _policyengine_runtime_identity(root="/home/runner/policyengine-uk")
     right_identity = right_runtime["identity"]
     if topology_change == "sys_path_order":
         right_identity["initial_sys_path"].reverse()
@@ -1439,8 +1443,7 @@ def test_policyengine_import_topology_is_score_affecting(topology_change):
         ]
     else:
         right_identity["packages"]["policyengine-uk"]["module_origin"] = (
-            f"{right_identity['repository_root']}/alternate_policyengine_uk/"
-            "__init__.py"
+            f"{right_identity['repository_root']}/alternate_policyengine_uk/__init__.py"
         )
     right_runtime["sha256"] = evals_canonical_json_sha256(right_identity)
 

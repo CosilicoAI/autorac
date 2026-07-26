@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from statistics import mean, median
@@ -77,29 +78,6 @@ _RULESPEC_WAIVER_PATHSPEC = "known-validation-gaps.yaml"
 # Location-only identity fields: where a checkout lives never affects scores,
 # so normalized execution identities drop these before comparison.
 _LOCATION_ONLY_IDENTITY_KEYS = frozenset({"path", "toolchain_root", "repository_root"})
-
-# The PolicyEngine runtime identity additionally embeds its sealed
-# environment's absolute locations (see policyengine_runtime's canonical
-# identity + probe payload). These are dropped only inside the
-# `policyengine_runtime` subtree; every remaining field there — versions,
-# tree digests, locked_versions, probe flags — is score-affecting.
-_POLICYENGINE_LOCATION_ONLY_KEYS = _LOCATION_ONLY_IDENTITY_KEYS | frozenset(
-    {
-        "rulespec_runtime_pin_path",
-        "venv_root",
-        "stdlib_root",
-        "site_packages_root",
-        "python_executable",
-        "python_prefix",
-        "python_base_prefix",
-        "python_exec_prefix",
-        "python_base_exec_prefix",
-        "initial_sys_path",
-        "effective_sys_path",
-        "module_origin",
-        "metadata_root",
-    }
-)
 
 # Identity digests computed over path-bearing structures (the PolicyEngine
 # runtime wrapper digest is the only producer key named exactly `sha256`;
@@ -317,19 +295,16 @@ def normalized_execution_identity(
     differ across machines and directories without affecting scores; every
     other field — commits, content hashes, waiver digests, versions, the case
     budget, and runner timeouts — is score-affecting and must match exactly. The
-    `policyengine_runtime`
-    subtree uses the extended location-key set because its sealed-runtime
-    identity embeds venv/stdlib/interpreter locations.
+    PolicyEngine's sealed-runtime paths are reduced to stable semantic anchors
+    so import order and relative module topology remain score-affecting even
+    when two equivalent runtimes live in different checkout directories.
     """
     if isinstance(identity, dict):
         return {
-            key: normalized_execution_identity(
-                value,
-                location_keys=(
-                    _POLICYENGINE_LOCATION_ONLY_KEYS
-                    if key == "policyengine_runtime"
-                    else location_keys
-                ),
+            key: (
+                _normalized_policyengine_runtime(value)
+                if key == "policyengine_runtime"
+                else normalized_execution_identity(value, location_keys=location_keys)
             )
             for key, value in identity.items()
             if key not in location_keys and key not in _LOCATION_DEPENDENT_DIGEST_KEYS
@@ -340,6 +315,112 @@ def normalized_execution_identity(
             for item in identity
         ]
     return identity
+
+
+def _normalized_policyengine_runtime(value: object) -> object:
+    """Preserve sealed import topology while removing host-specific roots."""
+
+    if value is None or not isinstance(value, dict):
+        return value
+    runtime = value.get("identity")
+    if not isinstance(runtime, dict):
+        return {
+            key: normalized_execution_identity(item)
+            for key, item in value.items()
+            if key not in _LOCATION_DEPENDENT_DIGEST_KEYS
+        }
+
+    repository_root = runtime.get("repository_root")
+    venv_root = runtime.get("venv_root")
+    stdlib_root = runtime.get("stdlib_root")
+    site_packages_root = runtime.get("site_packages_root")
+    anchors = (
+        ("<policyengine-site-packages>", site_packages_root),
+        ("<policyengine-stdlib>", stdlib_root),
+        ("<policyengine-venv>", venv_root),
+        ("<policyengine-checkout>", repository_root),
+    )
+
+    def anchored_path(path: object) -> object:
+        if not isinstance(path, str):
+            return path
+        for label, root in anchors:
+            if not isinstance(root, str):
+                continue
+            relative = _relative_identity_path(path, root)
+            if relative is None:
+                continue
+            return label if relative == "." else f"{label}/{relative}"
+        return "<outside-policyengine-runtime>"
+
+    normalized_runtime: dict[str, object] = {}
+    for key, item in runtime.items():
+        if key == "rulespec_runtime_pin_path":
+            continue
+        if key == "repository_root":
+            normalized_runtime[key] = "<policyengine-checkout>"
+        elif key == "venv_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                repository_root,
+                "<policyengine-checkout>",
+            )
+        elif key == "stdlib_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                venv_root,
+                "<policyengine-venv>",
+            )
+        elif key == "site_packages_root":
+            normalized_runtime[key] = _normalized_child_layout(
+                item,
+                stdlib_root,
+                "<policyengine-stdlib>",
+            )
+        elif key in {
+            "python_executable",
+            "python_prefix",
+            "python_base_prefix",
+            "python_exec_prefix",
+            "python_base_exec_prefix",
+        }:
+            normalized_runtime[key] = anchored_path(item)
+        elif key in {"initial_sys_path", "effective_sys_path"} and isinstance(
+            item, list
+        ):
+            normalized_runtime[key] = [anchored_path(path) for path in item]
+        elif key == "packages" and isinstance(item, dict):
+            normalized_runtime[key] = {
+                distribution: {
+                    package_key: (
+                        anchored_path(package_value)
+                        if package_key in {"module_origin", "metadata_root"}
+                        else normalized_execution_identity(package_value)
+                    )
+                    for package_key, package_value in package.items()
+                }
+                if isinstance(package, dict)
+                else normalized_execution_identity(package)
+                for distribution, package in item.items()
+            }
+        else:
+            normalized_runtime[key] = normalized_execution_identity(item)
+    return {"identity": normalized_runtime}
+
+
+def _normalized_child_layout(
+    path: object,
+    root: object,
+    root_label: str,
+) -> object:
+    """Return one stable path relative to its declared sealed-runtime parent."""
+
+    if not isinstance(path, str) or not isinstance(root, str):
+        return path
+    relative = _relative_identity_path(path, root)
+    if relative is None:
+        return "<outside-policyengine-runtime>"
+    return root_label if relative == "." else f"{root_label}/{relative}"
 
 
 def _canonical_json_sha256(payload: object) -> str:
@@ -493,9 +574,12 @@ def _relative_identity_path(path: str, root: str) -> str | None:
         candidate = path_class(path)
         parent = path_class(root)
         try:
-            return candidate.relative_to(parent).as_posix()
+            relative = candidate.relative_to(parent)
         except ValueError:
             continue
+        if ".." in relative.parts:
+            continue
+        return relative.as_posix()
     return None
 
 
@@ -560,6 +644,107 @@ def _valid_policyengine_package_identity(
         and value.get("version") == version
         and _is_nonempty_string(value.get("module_origin"))
         and _is_nonempty_string(value.get("metadata_root"))
+    )
+
+
+def _posix_identity_relative(path: object, root: object) -> str | None:
+    """Return a canonical lexical relative path for producer-emitted POSIX paths."""
+
+    if not isinstance(path, str) or not isinstance(root, str):
+        return None
+    candidate = PurePosixPath(path)
+    parent = PurePosixPath(root)
+    if not candidate.is_absolute() or not parent.is_absolute():
+        return None
+    try:
+        relative = candidate.relative_to(parent)
+    except ValueError:
+        return None
+    if ".." in relative.parts:
+        return None
+    return relative.as_posix()
+
+
+def _valid_policyengine_runtime_path_topology(
+    value: dict,
+    *,
+    country: str,
+) -> bool:
+    """Mirror the producer's sealed-root and trusted-import-path invariants."""
+
+    repository_root = value.get("repository_root")
+    venv_root = value.get("venv_root")
+    stdlib_root = value.get("stdlib_root")
+    site_packages_root = value.get("site_packages_root")
+    python_executable = value.get("python_executable")
+    pin_path = value.get("rulespec_runtime_pin_path")
+    if (
+        not isinstance(repository_root, str)
+        or PurePosixPath(repository_root).name != f"policyengine-{country}"
+        or _posix_identity_relative(venv_root, repository_root) != ".venv"
+        or not isinstance(stdlib_root, str)
+        or re.fullmatch(
+            r"lib/python\d+\.\d+",
+            _posix_identity_relative(stdlib_root, venv_root) or "",
+        )
+        is None
+        or _posix_identity_relative(site_packages_root, stdlib_root) != "site-packages"
+        or _posix_identity_relative(python_executable, venv_root) != "bin/python"
+        or not isinstance(pin_path, str)
+        or not PurePosixPath(pin_path).is_absolute()
+    ):
+        return False
+
+    for field_name in (
+        "python_prefix",
+        "python_base_prefix",
+        "python_exec_prefix",
+        "python_base_exec_prefix",
+    ):
+        if _posix_identity_relative(value.get(field_name), venv_root) is None:
+            return False
+
+    initial_sys_path = value.get("initial_sys_path")
+    effective_sys_path = value.get("effective_sys_path")
+    if (
+        not isinstance(initial_sys_path, list)
+        or not initial_sys_path
+        or any(
+            _posix_identity_relative(path, venv_root) is None
+            for path in initial_sys_path
+        )
+        or effective_sys_path
+        != [repository_root, site_packages_root, *initial_sys_path]
+    ):
+        return False
+
+    packages = value.get("packages")
+    country_distribution = f"policyengine-{country}"
+    if not isinstance(packages, dict):
+        return False
+    country_package = packages.get(country_distribution)
+    core_package = packages.get("policyengine-core")
+    if not isinstance(country_package, dict) or not isinstance(core_package, dict):
+        return False
+    return (
+        _posix_identity_relative(
+            country_package.get("module_origin"),
+            repository_root,
+        )
+        is not None
+        and _posix_identity_relative(
+            core_package.get("module_origin"),
+            site_packages_root,
+        )
+        is not None
+        and all(
+            _posix_identity_relative(
+                package.get("metadata_root"),
+                site_packages_root,
+            )
+            is not None
+            for package in (country_package, core_package)
+        )
     )
 
 
@@ -674,6 +859,7 @@ def _valid_policyengine_runtime_identity(value: object) -> bool:
         or any(not _is_nonempty_string(path) for path in effective_sys_path)
         or not isinstance(packages, dict)
         or set(packages) != {"policyengine-core", country_package}
+        or not _valid_policyengine_runtime_path_topology(value, country=country)
     ):
         return False
     return all(
