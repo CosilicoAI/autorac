@@ -743,6 +743,58 @@ def test_load_eval_artifact_rejects_malformed_result_rows(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("container", "field", "value"),
+    [
+        ("row", "input_tokens", {}),
+        ("row", "output_tokens", -1),
+        ("row", "cache_read_tokens", True),
+        ("row", "cache_creation_tokens", 1.5),
+        ("row", "reasoning_output_tokens", "1"),
+        ("row", "duration_ms", []),
+        ("row", "estimated_cost_usd", "1.25"),
+        ("row", "actual_cost_usd", float("nan")),
+        ("row", "success", "false"),
+        ("row", "error", {"message": "failed"}),
+        ("row", "backend", ["codex"]),
+        ("row", "generation_prompt_sha256", "not-a-sha256"),
+        ("metrics", "compile_pass", "false"),
+        ("metrics", "ci_pass", 0),
+        ("metrics", "generalist_review_pass", []),
+        ("metrics", "policyengine_pass", "true"),
+        ("metrics", "ungrounded_numeric_count", -1),
+        ("metrics", "generalist_review_score", "0.5"),
+        ("metrics", "policyengine_score", float("inf")),
+        ("metrics", "generalist_review_prompt_sha256", "not-a-sha256"),
+    ],
+)
+def test_load_eval_artifact_rejects_malformed_consumed_result_scalars(
+    tmp_path,
+    container,
+    field,
+    value,
+):
+    module = load_queue_runner_module()
+    results_path = tmp_path / "results.json"
+    row = {"metrics": {}}
+    if container == "metrics":
+        row["metrics"][field] = value
+    else:
+        row[field] = value
+    results_path.write_text(
+        module.json.dumps(
+            eval_artifact_payload(module, "results", results=[row])
+        )
+    )
+
+    with pytest.raises(ValueError, match=field):
+        module.load_eval_artifact(
+            results_path,
+            kind="results",
+            schema_tracker=module.ConsumedSchemaTracker(),
+        )
+
+
 def test_load_run_ledger_ids_does_not_let_v1_suppress_stamped_v2_migration(
     tmp_path,
 ):
