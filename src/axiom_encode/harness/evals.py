@@ -1986,7 +1986,7 @@ def _combine_retry_response(
             *retry.unexpected_accesses,
         ],
         error=retry.error,
-        timed_out=retry_timeout[0] > 0,
+        timed_out=retry.timed_out,
         timeout_stage=latest_timeout[1],
         timeout_reason=latest_timeout[2],
         timeout_seconds=latest_timeout[3],

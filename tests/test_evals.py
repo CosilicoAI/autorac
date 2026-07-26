@@ -5136,6 +5136,11 @@ def test_exhausted_encoder_timeout_classification_survives_result_round_trip(
                 "timeout_seconds": 1234,
             },
             error="Claude eval timed out",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=1234,
+            timeout_attempts=1,
         )
         for _ in range(2)
     ]
