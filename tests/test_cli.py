@@ -327,6 +327,10 @@ TEST_POLICYENGINE_RUNTIME_IDENTITY = {
     "country": "us",
     "repository_root": "/tmp/policyengine-us",
     "git_head": "9" * 40,
+    "rulespec_runtime_pin_path": (
+        "/tmp/rulespec-us/.axiom/policyengine-runtime.toml"
+    ),
+    "rulespec_runtime_pin_sha256": "d" * 64,
 }
 TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256 = hashlib.sha256(
     json.dumps(
@@ -507,11 +511,38 @@ def _fake_verified_eval_suite_artifacts(
             for index, case in enumerate(manifest.cases, start=1)
         ]
         manifest_content_sha256 = "3" * 64
-    policy_root = "/tmp/test-rulespec/us"
+    jurisdiction = (
+        case_identities[0]["corpus_citation_path"].split("/", 1)[0]
+        if case_identities
+        else "us"
+    )
+    country = jurisdiction.split("-", 1)[0]
+    toolchain_root = f"/tmp/rulespec-{country}"
+    policy_root = f"{toolchain_root}/{jurisdiction}"
     rulespec_identity = {
         "path": policy_root,
+        "content_state": "directory",
         "content_sha256": "6" * 64,
+        "file_count": 1,
+        "toolchain_root": toolchain_root,
+        "checkout_identity": {
+            "kind": "git",
+            "path": toolchain_root,
+            "commit": "a" * 40,
+            "origin_repository": (
+                f"github.com/TheAxiomFoundation/rulespec-{country}"
+            ),
+            "dirty": False,
+            "working_tree_sha256": "b" * 64,
+            "pathspecs": [
+                jurisdiction,
+                ".axiom/toolchain.toml",
+                ".axiom/policyengine-runtime.toml",
+                "known-validation-gaps.yaml",
+            ],
+        },
         "toolchain_contract_sha256": "7" * 64,
+        "policyengine_runtime_pin_sha256": "d" * 64,
         "validation_waiver_set_sha256": "8" * 64,
     }
     execution_identity = {
@@ -544,10 +575,19 @@ def _fake_verified_eval_suite_artifacts(
         },
         "axiom_encode": {
             "kind": "tree",
+            "path": "/tmp/axiom-encode",
+            "state": "directory",
             "tree_sha256": "1" * 64,
+            "file_count": 1,
             "version": AXIOM_ENCODE_TEST_VERSION,
         },
-        "axiom_rules_engine": {"kind": "tree", "tree_sha256": "2" * 64},
+        "axiom_rules_engine": {
+            "kind": "tree",
+            "path": "/tmp/axiom-rules-engine",
+            "state": "directory",
+            "tree_sha256": "2" * 64,
+            "file_count": 1,
+        },
         "rulespec_roots": [rulespec_identity],
         "policyengine_runtime": (
             {
@@ -691,6 +731,135 @@ def _fake_verified_eval_suite_artifacts(
         "parsed_runners": [],
         "complete": completed_case_indexes == set(range(1, len(manifest.cases) + 1)),
     }
+
+
+def _test_eval_suite_report_payload(
+    tmp_path: Path,
+    *,
+    corpus_citation_path: str = "us/statute/7/2017",
+    oracle: str = "none",
+) -> dict:
+    """Build one complete report payload whose nested evidence can be attacked."""
+
+    manifest_path = tmp_path / "suite.yaml"
+    oracle_line = f"    oracle: {oracle}\n" if oracle != "none" else ""
+    manifest_path.write_text(
+        "name: CLI admission parity\n"
+        "runners:\n"
+        "  - codex-gpt=codex:gpt\n"
+        "gates:\n"
+        "  min_cases: 1\n"
+        "  min_success_rate: 1.0\n"
+        "  min_compile_pass_rate: 1.0\n"
+        "  min_ci_pass_rate: 1.0\n"
+        "  min_zero_ungrounded_rate: 1.0\n"
+        "  min_generalist_review_pass_rate: 1.0\n"
+        + (
+            "  min_policyengine_pass_rate: 1.0\n"
+            if oracle == "policyengine"
+            else ""
+        )
+        + "cases:\n"
+        "  - kind: source\n"
+        "    name: case-a\n"
+        f"    corpus_citation_path: {corpus_citation_path}\n"
+        + oracle_line
+    )
+    manifest = load_eval_suite_manifest(manifest_path)
+    metrics = {
+        "compile_pass": True,
+        "ci_pass": True,
+        "ungrounded_numeric_count": 0,
+        "source_numeric_occurrence_count": 0,
+        "covered_source_numeric_occurrence_count": 0,
+        "generalist_review_pass": True,
+        "generalist_review_score": 9.0,
+    }
+    if oracle == "policyengine":
+        metrics.update(
+            {
+                "policyengine_pass": True,
+                "policyengine_score": 1.0,
+                "policyengine_runtime_identity": TEST_POLICYENGINE_RUNTIME_IDENTITY,
+                "policyengine_runtime_identity_sha256": (
+                    TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256
+                ),
+            }
+        )
+    result = _bind_test_eval_verdict(
+        {
+            "citation": corpus_citation_path,
+            "runner": "codex-gpt",
+            "backend": "codex",
+            "model": "gpt",
+            "mode": manifest.mode,
+            "success": True,
+            "duration_ms": 1000,
+            "estimated_cost_usd": 0.1,
+            **_write_test_eval_artifacts(tmp_path, "cli-admission"),
+            "metrics": metrics,
+        },
+        tmp_path,
+        "cli-admission",
+    )
+    verified = _fake_verified_eval_suite_artifacts(
+        manifest=manifest,
+        effective_runners=["codex-gpt=codex:gpt"],
+        results=[result],
+    )
+    verified["run_state"]["manifest"].update(
+        _build_eval_suite_manifest_identity(manifest)
+    )
+    verified_result = _eval_result_from_payload(_bind_eval_result_payload(result))
+    return _build_eval_suite_payload(
+        manifest=manifest,
+        effective_runners=["codex-gpt=codex:gpt"],
+        results=[verified_result],
+        readiness={
+            "codex-gpt": summarize_readiness([verified_result], manifest.gates)
+        },
+        run_state=verified["run_state"],
+        completed_case_indexes={1},
+    )
+
+
+def _rebind_test_eval_suite_report_payload(payload: dict, tmp_path: Path) -> None:
+    """Re-sign a deliberately mutated report so only semantic admission can fail."""
+
+    execution_identity = payload["evidence"]["execution_identity"]
+    execution_sha256 = _eval_suite_execution_identity_sha256(execution_identity)
+    payload["evidence"]["execution_identity_sha256"] = execution_sha256
+    for index, result in enumerate(payload["results"], start=1):
+        result["admission"]["execution"] = {
+            "identity": execution_identity,
+            "sha256": execution_sha256,
+        }
+        result.pop("result_sha256", None)
+        result.pop("verdict_file", None)
+        result.pop("verdict_sha256", None)
+        payload["results"][index - 1] = _bind_test_eval_verdict(
+            result,
+            tmp_path,
+            f"cli-admission-rebound-{index}",
+        )
+    payload["coverage"]["results_sha256"] = _eval_suite_json_sha256(
+        payload["results"]
+    )
+    unsigned_evidence = dict(payload["evidence"])
+    unsigned_evidence.pop("sha256", None)
+    payload["evidence"]["sha256"] = _eval_suite_json_sha256(unsigned_evidence)
+
+
+def test_cli_eval_suite_payload_is_admitted_by_eval_board(tmp_path):
+    from axiom_encode.harness.eval_board import fold_eval_board
+
+    payload = _test_eval_suite_report_payload(tmp_path)
+    results_file = tmp_path / "results.json"
+    results_file.write_text(json.dumps(payload) + "\n")
+
+    board = fold_eval_board([results_file])
+
+    assert [runner.runner for runner in board.runners] == ["codex-gpt"]
 
 
 TEST_CORPUS_RELEASE_NAME = "rulespec-test-release"
@@ -3110,6 +3279,149 @@ class TestCmdEvalSuiteReport:
 
         assert [row["case_index"] for row in report["case_rows"]] == [1, 2]
         assert [row["case"] for row in report["case_rows"]] == ["first", "second"]
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("path", "/tmp/rulespec-us/us/nested"),
+            ("toolchain_root", "/tmp/rulespec-uk"),
+        ],
+    )
+    def test_report_admission_rejects_noncanonical_rulespec_root_topology(
+        self,
+        tmp_path,
+        field,
+        value,
+    ):
+        payload = _test_eval_suite_report_payload(tmp_path)
+        root = payload["evidence"]["execution_identity"]["rulespec_roots"][0]
+        root[field] = value
+        if field == "path":
+            payload["results"][0]["admission"]["rulespec"]["policy_repo_root"] = value
+        _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+        with pytest.raises(ValueError, match="canonical RuleSpec root topology"):
+            _validated_eval_suite_report_payload(payload)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("path", "/tmp/different-rulespec-us"),
+            (
+                "pathspecs",
+                [
+                    "us-ca",
+                    ".axiom/toolchain.toml",
+                    ".axiom/policyengine-runtime.toml",
+                    "known-validation-gaps.yaml",
+                ],
+            ),
+        ],
+    )
+    def test_report_admission_binds_rulespec_checkout_to_its_root(
+        self,
+        tmp_path,
+        field,
+        value,
+    ):
+        payload = _test_eval_suite_report_payload(tmp_path)
+        checkout = payload["evidence"]["execution_identity"]["rulespec_roots"][0][
+            "checkout_identity"
+        ]
+        checkout[field] = value
+        _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+        with pytest.raises(ValueError, match="canonical RuleSpec root topology"):
+            _validated_eval_suite_report_payload(payload)
+
+    @pytest.mark.parametrize(
+        "origin_repository",
+        [
+            "https://github.com/TheAxiomFoundation/rulespec-us",
+            "git@github.com:TheAxiomFoundation/rulespec-us.git",
+            "github.com/TheAxiomFoundation/rulespec-us/extra",
+            "github.com//rulespec-us",
+            "github.com/TheAxiomFoundation/rulespec us",
+        ],
+    )
+    def test_report_admission_rejects_noncanonical_checkout_origin_repository(
+        self,
+        tmp_path,
+        origin_repository,
+    ):
+        payload = _test_eval_suite_report_payload(tmp_path)
+        checkout = payload["evidence"]["execution_identity"]["rulespec_roots"][0][
+            "checkout_identity"
+        ]
+        checkout["origin_repository"] = origin_repository
+        _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+        with pytest.raises(ValueError, match="origin_repository"):
+            _validated_eval_suite_report_payload(payload)
+
+    def test_report_row_admission_rejects_a_different_jurisdiction_root(
+        self,
+        tmp_path,
+    ):
+        payload = _test_eval_suite_report_payload(tmp_path)
+        execution_identity = payload["evidence"]["execution_identity"]
+        other_root = copy.deepcopy(execution_identity["rulespec_roots"][0])
+        other_root.update(
+            {
+                "path": "/tmp/rulespec-us/us-ca",
+                "content_sha256": "c" * 64,
+            }
+        )
+        other_root["checkout_identity"]["pathspecs"][0] = "us-ca"
+        execution_identity["rulespec_roots"].append(other_root)
+        payload["results"][0]["admission"]["rulespec"] = {
+            "policy_repo_root": other_root["path"],
+            "root_content_sha256": other_root["content_sha256"],
+            "toolchain_contract_sha256": other_root["toolchain_contract_sha256"],
+            "validation_waiver_set_sha256": other_root[
+                "validation_waiver_set_sha256"
+            ],
+        }
+        _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+        with pytest.raises(ValueError, match="case jurisdiction"):
+            _validated_eval_suite_report_payload(payload)
+
+    @pytest.mark.parametrize(
+        ("runtime_field", "runtime_value", "root_pin"),
+        [
+            ("country", "uk", "d" * 64),
+            (
+                "rulespec_runtime_pin_path",
+                "/tmp/rulespec-uk/.axiom/policyengine-runtime.toml",
+                "d" * 64,
+            ),
+            ("rulespec_runtime_pin_sha256", "e" * 64, "d" * 64),
+        ],
+    )
+    def test_report_policyengine_runtime_is_bound_to_the_row_rulespec_root(
+        self,
+        tmp_path,
+        runtime_field,
+        runtime_value,
+        root_pin,
+    ):
+        payload = _test_eval_suite_report_payload(tmp_path, oracle="policyengine")
+        execution_identity = payload["evidence"]["execution_identity"]
+        execution_identity["rulespec_roots"][0][
+            "policyengine_runtime_pin_sha256"
+        ] = root_pin
+        runtime = execution_identity["policyengine_runtime"]["identity"]
+        runtime[runtime_field] = runtime_value
+        runtime_sha256 = _eval_suite_json_sha256(runtime)
+        execution_identity["policyengine_runtime"]["sha256"] = runtime_sha256
+        metrics = payload["results"][0]["metrics"]
+        metrics["policyengine_runtime_identity"] = runtime
+        metrics["policyengine_runtime_identity_sha256"] = runtime_sha256
+        _rebind_test_eval_suite_report_payload(payload, tmp_path)
+
+        with pytest.raises(ValueError, match="PolicyEngine runtime.*RuleSpec root"):
+            _validated_eval_suite_report_payload(payload)
 
     def test_renders_markdown_and_writes_csv(self, tmp_path, capsys):
         manifest_path = tmp_path / "suite.yaml"
