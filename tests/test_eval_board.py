@@ -76,6 +76,7 @@ def _policyengine_runtime_identity(
     pe_version="1.9.0",
 ):
     """Mirror the sealed-runtime identity shape, paths included."""
+    rulespec_checkout = f"{root.rsplit('/', 1)[0]}/rulespec-uk"
     stdlib = f"{root}/.venv/lib/python3.13"
     site_packages = f"{stdlib}/site-packages"
     initial_sys_path = [
@@ -88,9 +89,11 @@ def _policyengine_runtime_identity(
         "official_repository_url": "https://github.com/PolicyEngine/policyengine-uk.git",
         "trusted_git_commit": "9" * 40,
         "official_tree_sha256": "13" * 32,
-        "official_tree_file_count": 5000,
-        "official_tree_byte_count": 12345678,
-        "rulespec_runtime_pin_path": f"{root}/rulespec/.axiom/policyengine.toml",
+        "official_tree_file_count": 5100,
+        "official_tree_byte_count": 22345678,
+        "rulespec_runtime_pin_path": (
+            f"{rulespec_checkout}/.axiom/policyengine-runtime.toml"
+        ),
         "rulespec_runtime_pin_schema": POLICYENGINE_RUNTIME_PIN_SCHEMA,
         "rulespec_runtime_pin_sha256": "14" * 32,
         "repository_root": root,
@@ -566,6 +569,52 @@ def test_fold_admits_producer_policyengine_runtime_identity(tmp_path):
     board = fold_eval_board([path])
 
     assert [runner.runner for runner in board.runners] == ["terra"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "file_count",
+        "byte_count",
+        "pin_filename",
+        "pin_checkout",
+        "python_version",
+    ],
+)
+def test_fold_refuses_policyengine_identity_the_producer_cannot_emit(
+    tmp_path,
+    mutation,
+):
+    runtime = _policyengine_runtime_identity()
+    runtime_identity = runtime["identity"]
+    if mutation == "file_count":
+        runtime_identity["official_tree_file_count"] -= 1
+    elif mutation == "byte_count":
+        runtime_identity["official_tree_byte_count"] -= 1
+    elif mutation == "pin_filename":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/rulespec-uk/.axiom/policyengine.toml"
+        )
+    elif mutation == "pin_checkout":
+        runtime_identity["rulespec_runtime_pin_path"] = (
+            "/ci/not-rulespec-uk/.axiom/policyengine-runtime.toml"
+        )
+    else:
+        runtime_identity["python_version"] = "3.12.5"
+    runtime["sha256"] = evals_canonical_json_sha256(runtime_identity)
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    path = _write_payload(
+        tmp_path,
+        f"producer-impossible-{mutation}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
 
 
 def test_fold_two_single_runner_payloads(tmp_path):
