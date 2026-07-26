@@ -26,3 +26,9 @@ launcher, and bind both launcher and resolved native-receiver digests into
 execution identity v5 and each local result row. Suite results and summaries
 use schema v8; OpenAI rows continue to bind the endpoint, response model,
 service tier, and request ceiling.
+
+The SNAP queue consumer now accepts only validated v8 result and summary
+payloads, refuses mixed generations, and stamps consumed schemas into its v2
+ledger records. Eval-suite archives likewise record result, summary, execution
+identity, and runner-effort schemas, with an explicit boundary separating
+legacy registry rows from versioned metadata.
