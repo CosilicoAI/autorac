@@ -246,7 +246,6 @@ from .harness.validator_pipeline import (
     _rulespec_rule_formula_rule_records,
     _rulespec_target_is_descendant_of,
     extract_embedded_source_text,
-    extract_numbers_from_text,
     extract_typed_numeric_occurrences_from_text,
     find_interval_table_reencoding_candidates,
     find_structured_scale_parameter_issue_records,
@@ -28851,13 +28850,14 @@ def _source_excerpt_preserving_whitespace(
     parts = str(excerpt).split()
     if not parts:
         return None
-    matches: set[str] = set()
+    matches: list[str] = []
     pattern = r"\s+".join(re.escape(part) for part in parts)
     for segment in split_proof_evidence_text(source_text):
-        match = re.search(pattern, segment, flags=re.IGNORECASE)
-        if match is not None:
-            matches.add(segment[match.start() : match.end()].strip())
-    return next(iter(matches)) if len(matches) == 1 else None
+        matches.extend(
+            segment[match.start() : match.end()]
+            for match in re.finditer(pattern, segment, flags=re.IGNORECASE)
+        )
+    return matches[0] if len(matches) == 1 else None
 
 
 _PROOF_EXCERPT_CANONICAL_PUNCTUATION = {
@@ -28941,6 +28941,13 @@ def _canonical_source_excerpt_matches(
             match_end = match_start + len(canonical_query)
             raw_start = coordinates[match_start][0]
             raw_end = coordinates[match_end - 1][1]
+            while raw_end < len(segment) and unicodedata.category(segment[raw_end]) in {
+                "Cf",
+                "Mc",
+                "Me",
+                "Mn",
+            }:
+                raw_end += 1
             matches.append(segment[raw_start:raw_end])
             search_from = match_start + 1
     return tuple(matches)
@@ -29149,13 +29156,15 @@ def _closest_exact_source_excerpt(
         re.search(whitespace_pattern, segment, flags=re.IGNORECASE) is not None
         for segment in segments
     )
+    canonical_matches = _canonical_source_excerpt_matches(
+        source_text=source,
+        excerpt=query,
+    )
+    if len(canonical_matches) > 1:
+        return None
     if not has_whitespace_match:
-        canonical_matches = _canonical_source_excerpt_matches(
-            source_text=source,
-            excerpt=query,
-        )
         if canonical_matches:
-            return canonical_matches[0] if len(canonical_matches) == 1 else None
+            return canonical_matches[0]
     if len(segments) > 1:
         matches = [
             candidate
@@ -29205,7 +29214,10 @@ def _closest_exact_source_excerpt(
         return _safe_wrapped_direct_source_match(source, direct_match)
 
     query_tokens = _proof_excerpt_match_tokens(query)
-    query_numbers = set(extract_numbers_from_text(query, profile=numeric_profile))
+    query_numbers = _proof_excerpt_numeric_occurrence_counter(
+        query,
+        profile=numeric_profile,
+    )
     if _has_malformed_profiled_numeric_envelope(
         query,
         profile=numeric_profile,
@@ -29218,17 +29230,18 @@ def _closest_exact_source_excerpt(
         normalized_candidate = re.sub(r"\s+", " ", candidate.text).strip()
         candidate_tokens = _proof_excerpt_match_tokens(candidate.text)
         shared_tokens = query_tokens & candidate_tokens
-        candidate_numbers = set(
-            extract_numbers_from_text(
-                candidate.text,
-                profile=numeric_profile,
-            )
+        candidate_numbers = _proof_excerpt_numeric_occurrence_counter(
+            candidate.text,
+            profile=numeric_profile,
         )
         shared_numbers = query_numbers & candidate_numbers
         if query_numbers and (
             not (query_numbers & candidate_numbers)
             if not require_all_query_numbers
-            else not query_numbers.issubset(candidate_numbers)
+            else any(
+                candidate_numbers[value] < count
+                for value, count in query_numbers.items()
+            )
         ):
             continue
         if len(shared_tokens) < 2 and not (shared_numbers and shared_tokens):
@@ -29241,18 +29254,27 @@ def _closest_exact_source_excerpt(
         token_coverage = len(shared_tokens) / max(1, len(query_tokens))
         if similarity < 0.55 and token_coverage < 0.6:
             continue
-        score = similarity + (1.25 * token_coverage) + (0.1 * len(shared_numbers))
+        score = (
+            similarity + (1.25 * token_coverage) + (0.1 * sum(shared_numbers.values()))
+        )
         scored.append((score, candidate))
     if not scored:
         return None
-    selected = max(
-        scored,
-        key=lambda item: (
+
+    def selection_key(
+        item: tuple[float, _SourceExcerptCandidate],
+    ) -> tuple[float, bool, int]:
+        return (
             item[0],
             item[1].kind == "paragraph",
             -len(re.sub(r"\s+", " ", item[1].text)),
-        ),
-    )[1]
+        )
+
+    best_key = max(selection_key(item) for item in scored)
+    best_candidates = [item[1] for item in scored if selection_key(item) == best_key]
+    if len({(candidate.start, candidate.end) for candidate in best_candidates}) > 1:
+        return None
+    selected = best_candidates[0]
     if selected.kind == "table_row":
         return selected.text
     return _governing_source_excerpt_candidate(
@@ -29260,6 +29282,28 @@ def _closest_exact_source_excerpt(
         candidates,
         allow_complete_conditional_fallback=True,
     )
+
+
+def _proof_excerpt_numeric_occurrence_counter(
+    text: str,
+    *,
+    profile: str,
+) -> Counter[float]:
+    """Count one source-facing numeric value per exact token coordinate."""
+    values_by_span: dict[tuple[int, int], float] = {}
+    for occurrence in extract_typed_numeric_occurrences_from_text(
+        text,
+        profile=profile,
+    ):
+        values_by_span.setdefault(
+            (occurrence.start, occurrence.end),
+            (
+                occurrence.value
+                if occurrence.source_value is None
+                else occurrence.source_value
+            ),
+        )
+    return Counter(values_by_span.values())
 
 
 def _safe_wrapped_direct_source_match(

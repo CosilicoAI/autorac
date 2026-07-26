@@ -1862,6 +1862,28 @@ def test_structural_labels_are_typed_grounding_only(source_text):
     assert not inventory
 
 
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "The details appear in regs. 123.45.",
+        "Use the 2nd digit and inspect the 3rd digit.",
+    ),
+)
+def test_english_structural_labels_are_typed_grounding_only(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="legacy",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="legacy",
+    )
+
+    assert grounding
+    assert all(occurrence.has_structural_context for occurrence in grounding)
+    assert not inventory
+
+
 def test_structural_range_markers_stay_out_of_numeric_recall():
     inventory = extract_typed_numeric_inventory_occurrences_from_text(
         "(1) bis (3) gelten entsprechend.",

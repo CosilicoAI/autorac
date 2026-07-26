@@ -6924,10 +6924,19 @@ def _evaluate_artifact_in_scope(
             half_up_recall_source_text or "",
         ),
     )
-    counted_numeric_source_text = _numeric_occurrence_source_text(
-        numeric_recall_source_text or "",
-        suppress_source_backed_half_up_increment=bool(half_up_helper_count),
-    )
+    if require_complete_source_unit:
+        counted_numeric_source_text = numeric_recall_source_text or ""
+        if half_up_helper_count:
+            counted_numeric_source_text = (
+                normalize_source_backed_half_up_rounding_occurrence_text(
+                    counted_numeric_source_text
+                )
+            )
+    else:
+        counted_numeric_source_text = _numeric_occurrence_source_text(
+            numeric_recall_source_text or "",
+            suppress_source_backed_half_up_increment=bool(half_up_helper_count),
+        )
     typed_source_numeric_occurrences = (
         extract_typed_numeric_inventory_occurrences_from_text(
             counted_numeric_source_text,

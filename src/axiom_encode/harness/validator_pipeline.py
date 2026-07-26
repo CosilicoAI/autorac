@@ -1791,9 +1791,14 @@ _GERMAN_STRUCTURAL_REFERENCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _ENGLISH_STRUCTURAL_REFERENCE_PATTERN = re.compile(
-    r"\b(?:articles?|sections?|secs?\.?|subsections?|paragraphs?|regulations?)"
+    r"\b(?:articles?|sections?|secs?\.?|subsections?|paragraphs?|"
+    r"regs?\.?|regulations?)"
     r"\s+\d+(?:\.\d+)*(?:\s*(?:,|and|through|to|[-–—])\s*"
     r"\d+(?:\.\d+)*)*",
+    re.IGNORECASE,
+)
+_ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN = re.compile(
+    r"\b(?:2nd|3rd)\s+digit\b",
     re.IGNORECASE,
 )
 _STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
@@ -6379,6 +6384,7 @@ def _structural_numeric_component_spans(
             _GERMAN_STRUCTURAL_LABEL_PATTERN,
             _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
             _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
+            _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
             _STRUCTURAL_LINE_MARKER_PATTERN,
             _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
         )

@@ -7703,6 +7703,12 @@ rules:
                 "_run_ci",
                 return_value=ValidationResult("ci", passed=True),
             ),
+            patch(
+                "axiom_encode.harness.evals._numeric_occurrence_source_text",
+                side_effect=AssertionError(
+                    "complete-mode recall must use the typed raw-source path"
+                ),
+            ),
         ):
             metrics = evaluate_artifact(
                 rulespec_file=rulespec_file,

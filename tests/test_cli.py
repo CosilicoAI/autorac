@@ -7861,6 +7861,18 @@ def test_closest_exact_source_excerpt_rejects_ambiguous_canonical_span():
     assert repaired is None
 
 
+def test_closest_exact_source_excerpt_rejects_mixed_direct_and_canonical_spans():
+    repaired = _closest_exact_source_excerpt(
+        source_text=(
+            "Der Wert beträgt 25 Euro. Eine zweite Zeile sagt: DerWert beträgt 25 Euro."
+        ),
+        excerpt="Der Wert beträgt 25 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
 def test_closest_exact_source_excerpt_rejects_identical_cross_record_matches():
     excerpt = "Der Wert beträgt 25 Euro."
     repaired = _closest_exact_source_excerpt(
@@ -7900,6 +7912,38 @@ def test_closest_exact_source_excerpt_rejects_changed_number_in_near_match():
     )
 
     assert repaired is None
+
+
+def test_closest_exact_source_excerpt_preserves_numeric_multiplicity():
+    repaired = _closest_exact_source_excerpt(
+        source_text=("Die Angabe „20 Euro“ wird durch die Angabe „25 Euro“ ersetzt."),
+        excerpt=('Die Angabe "20 Euro" wird durch die Angabe "20 Euro" geändert.'),
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_rejects_tied_fuzzy_spans():
+    repaired = _closest_exact_source_excerpt(
+        source_text=("Alpha Betrag ist 20 Euro. Alpha Betrag ist 20 Euro."),
+        excerpt="Delta Betrag ist 20 Euro.",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired is None
+
+
+def test_closest_exact_source_excerpt_preserves_decomposed_grapheme():
+    source_text = "Ho\u0308he"
+
+    repaired = _closest_exact_source_excerpt(
+        source_text=source_text,
+        excerpt="Höhe",
+        numeric_profile="de-DE",
+    )
+
+    assert repaired == source_text
 
 
 def test_repair_generated_undeclared_money_unit(tmp_path):
@@ -10882,6 +10926,18 @@ def test_declared_subsection_source_keeps_corpus_evidence_segments_separate():
     assert (
         _source_excerpt_preserving_whitespace(
             source_text=scoped,
+            excerpt=excerpt,
+        )
+        is None
+    )
+
+
+def test_protected_source_excerpt_rejects_repeated_coordinates():
+    excerpt = "The amount is 25 Euro."
+
+    assert (
+        _source_excerpt_preserving_whitespace(
+            source_text=f"{excerpt} An exception applies. {excerpt}",
             excerpt=excerpt,
         )
         is None
