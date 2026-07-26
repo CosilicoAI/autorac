@@ -8,10 +8,12 @@ allowance or suppress its retries. Deterministic artifact validation and
 optional reviewers are post-generation work and are not misrepresented as
 preemptible by this budget.
 Capability boards require the complete v3 identity, validate every nested
-checkout and RuleSpec-root field, verify the PolicyEngine identity wrapper
-digest, and refuse missing or unexpected toolchain fields. Terminal encoder
-timeout evidence stops suite-level retries, bounding Claude and Codex timeout
-paths to the two documented artifact-generation attempts instead of six.
+checkout and nonempty directory RuleSpec-root field, verify the complete sealed
+PolicyEngine runtime-v2 identity and wrapper digest, require that runtime
+whenever result rows carry PolicyEngine oracle evidence, and refuse missing or
+unexpected toolchain fields. Terminal encoder timeout evidence stops
+suite-level retries, bounding Claude and Codex timeout paths to the two
+documented artifact-generation attempts instead of six.
 Runtime retry loops now consume the same bound constants, and completed
 historical runs recover their digest-verified suite retry count before
 rebuilding the live identity, so nondefault policies remain verifiable without
