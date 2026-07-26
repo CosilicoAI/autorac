@@ -13184,6 +13184,9 @@ def _post_openai_eval_request(
             )
             continue
 
+        remaining = _remaining_eval_case_budget_seconds()
+        if remaining is not None and remaining <= 0:
+            raise _openai_case_budget_timeout(timeout_attempts=timeout_attempts + 1)
         last_response = response
         if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts:
             if timeout_attempts:
