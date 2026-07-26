@@ -1780,6 +1780,107 @@ rules:
     assert _has_issue(result, "73", "numeric-recall")
 
 
+RELEASED_UHVORSCHG_2_ABSATZ_4 = """\
+(4) Für Berechtigte, die keine allgemeinbildende Schule mehr besuchen, mindert sich die nach den Absätzen 1 bis 3 ergebende Unterhaltsleistung, soweit ihre in demselben Monat erzielten Einkünfte des Vermögens und der Ertrag ihrer zumutbaren Arbeit zum Unterhalt ausreichen. Als Ertrag der zumutbaren Arbeit des Berechtigten aus nichtselbstständiger Arbeit gelten die Einnahmen in Geld entsprechend der für die maßgeblichen Monate erstellten Lohn- und Gehaltsbescheinigungen des Arbeitgebers abzüglich eines Zwölftels des Arbeitnehmer-Pauschbetrags; bei Auszubildenden sind zusätzlich pauschal 100 Euro als ausbildungsbedingter Aufwand abzuziehen. Einkünfte und Erträge nach den Sätzen 1 und 2 sind nur zur Hälfte zu berücksichtigen."""
+
+
+def test_released_uhvorschg_word_denominator_is_grounding_not_scalar_recall():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/uhvorschg/2
+rules:
+  - name: apprenticeship_expense_deduction
+    kind: parameter
+    dtype: Money
+    source: de/statute/uhvorschg/2(4) Satz 2
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+  - name: employment_income_after_deductions
+    kind: derived
+    dtype: Money
+    source: de/statute/uhvorschg/2(4) Satz 2
+    versions:
+      - effective_from: '2026-01-01'
+        formula: employment_income - employee_lump_sum / 12 - apprenticeship_expense_deduction
+"""
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        RELEASED_UHVORSCHG_2_ABSATZ_4,
+        profile="de-DE",
+    )
+    result = _analyze(
+        content,
+        RELEASED_UHVORSCHG_2_ABSATZ_4,
+        corpus_citation_path="de/statute/uhvorschg/2",
+        test_cases=[],
+    )
+    grounding_issues = find_ungrounded_numeric_issues(
+        content,
+        source_text=RELEASED_UHVORSCHG_2_ABSATZ_4,
+        source_citation_path="de/statute/uhvorschg/2",
+        require_complete_source_unit=True,
+    )
+
+    assert [(occurrence.value, occurrence.raw) for occurrence in inventory] == [
+        (100.0, "100")
+    ]
+    assert not _has_issue(result, "numeric-recall", "value 12")
+    assert not any(
+        "Ungrounded generated numeric literal: 12" in issue
+        for issue in grounding_issues
+    )
+
+
+def test_unused_word_denominator_is_silent_for_scalar_recall():
+    result = _analyze(
+        "format: rulespec/v1\nrules: []\n",
+        "Der Pauschbetrag wird um ein Zwölftel gekürzt.",
+        corpus_citation_path="de/statute/uhvorschg/2",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "numeric-recall", "value 12")
+
+
+def test_numeric_money_literal_still_requires_named_scalar_when_used_in_formula():
+    source = "Der Abzug beträgt 12 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/uhvorschg/2
+rules:
+  - name: amount_after_deduction
+    kind: derived
+    dtype: Money
+    source: de/statute/uhvorschg/2
+    versions:
+      - effective_from: '2026-01-01'
+        formula: amount / 12
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/uhvorschg/2",
+        test_cases=[],
+    )
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=source,
+            source_citation_path="de/statute/uhvorschg/2",
+            require_complete_source_unit=True,
+        )
+        == []
+    )
+    assert _has_issue(result, "numeric-recall", "value 12")
+
+
 RELEASED_RBEG_2021_8_BODY = """\
 Die Regelbedarfsstufen nach der Anlage zu § 28 des Zwölften Buches Sozialgesetzbuch belaufen sich zum 1. Januar 2021
 1. in der Regelbedarfsstufe 1 auf 446 Euro für jede erwachsene Person, die in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch lebt und für die nicht Nummer 2 gilt,
