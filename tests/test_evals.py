@@ -13767,6 +13767,80 @@ cases:
         assert result.timeout_attempts == 1
         assert "case budget" in (result.error or "").lower()
 
+    def test_validation_time_does_not_consume_generation_retry_budget(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        policy_repo_checkout = _canonical_rulespec_content_root(tmp_path, "us").parent
+        manifest = EvalSuiteManifest(
+            name="Generation-only case budget",
+            path=tmp_path / "suite.yaml",
+            runners=["codex:gpt-5.4"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        clock = [0.0]
+        artifact = (
+            "=== FILE: sample.yaml ===\n"
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  summary: source states 451.\n"
+            "rules: []\n"
+            "=== FILE: sample.test.yaml ===\n"
+            "[]\n"
+        )
+        validation_results = [
+            _revalidation_metrics(
+                compile_pass=False,
+                compile_issues=["deterministic compile failure"],
+            ),
+            _revalidation_metrics(),
+        ]
+        monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setattr(evals_module.time, "monotonic", lambda: clock[0])
+
+        def generate_artifact(*_args, **_kwargs):
+            clock[0] += 1.0
+            return EvalPromptResponse(text=artifact, duration_ms=1000)
+
+        def validate_artifact(**_kwargs):
+            clock[0] += 20.0
+            return validation_results.pop(0)
+
+        with (
+            patch(
+                "axiom_encode.harness.evals._run_prompt_eval",
+                side_effect=generate_artifact,
+            ) as mock_prompt,
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                side_effect=validate_artifact,
+            ) as mock_validate,
+        ):
+            [result] = run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=policy_repo_checkout,
+                corpus_release=_write_test_corpus_provision(tmp_path),
+                suite_retry_attempts=1,
+            )
+
+        assert mock_prompt.call_count == 2
+        assert mock_validate.call_count == 2
+        assert result.success is True
+        assert result.timed_out is False
+
     def test_case_budget_scope_does_not_relabel_completed_artifact_outcome(self):
         result = _fake_eval_result("openai-gpt", "case-one")
 
