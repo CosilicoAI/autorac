@@ -1195,6 +1195,17 @@ rules: []
     result = _analyze(content, ABSATZ_6, test_cases=[])
 
     assert _has_issue(result, "(6)", "deferral")
+    issue = next(
+        issue
+        for issue in result.issues
+        if issue.startswith("[complete-source-unit:deferral]")
+    )
+    assert "Required shape" in issue
+    assert "module:\n  deferred_outputs:" in issue
+    assert "output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax" in issue
+    assert "reason: Cannot be computed until" in issue
+    assert "EStG § 26" in issue
+    assert "`blocked_by` is optional" in issue
 
 
 def test_deferral_cannot_name_its_own_branch_as_missing_dependency():

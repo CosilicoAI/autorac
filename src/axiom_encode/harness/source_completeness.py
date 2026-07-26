@@ -377,6 +377,14 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_IMPRECISE_DEFERRAL_RETRY_SHAPE = """\
+Required shape (adapt the output and cited dependency to the omitted branch):
+module:
+  deferred_outputs:
+    - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
+      reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
+`output` and `reason` are required; `blocked_by` is optional and, when present, \
+must list exact absolute upstream RuleSpec outputs."""
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -1355,7 +1363,7 @@ def _deferred_coverage(
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
                 "name an exact missing "
-                "dependency/citation."
+                f"dependency/citation.\n{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
             )
     return covered, issues
 
