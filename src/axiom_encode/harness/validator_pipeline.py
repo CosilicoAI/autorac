@@ -7506,6 +7506,51 @@ def _numeric_value_grounded_in_source(
     )
 
 
+def _attached_amendment_citations_for_numeric_value(
+    value: float,
+    amendment_source_texts: Mapping[str, str] | None,
+) -> tuple[str, ...]:
+    """Return exact attached citations containing ``value`` as typed evidence."""
+    if not amendment_source_texts:
+        return ()
+    matches: list[str] = []
+    for raw_citation_path, source_text in sorted(amendment_source_texts.items()):
+        if not isinstance(raw_citation_path, str) or not isinstance(source_text, str):
+            continue
+        with contextlib.suppress(InvalidCorpusCitationError):
+            citation_path = require_canonical_corpus_citation_path(raw_citation_path)
+            if _source_text_contains_numeric_value_equivalent(
+                source_text,
+                value,
+                profile=_numeric_profile_for_citation_path(citation_path),
+            ):
+                matches.append(citation_path)
+    return tuple(matches)
+
+
+def _attached_amendment_ungrounded_literal_hint(
+    value: float,
+    amendment_source_texts: Mapping[str, str] | None,
+) -> str:
+    """Point retries to attached evidence while leaving the value ungrounded."""
+    citations = _attached_amendment_citations_for_numeric_value(
+        value,
+        amendment_source_texts,
+    )
+    if not citations:
+        return ""
+    citation_display = ", ".join(f"`{citation}`" for citation in citations)
+    return (
+        " Attached-amendment grounding hint: this value appears in attached "
+        f"corpus document {citation_display}, but the attachment alone does not "
+        "ground it. Add a source proof atom to the owning scalar/formula with "
+        "the exact owning literal `path` (for a scalar parameter, for example, "
+        "`path: versions[0].formula`), an appropriate `kind`, and nested "
+        f"`source: {{corpus_citation_path: {citations[0]}, excerpt: <exact "
+        "verbatim source span>}}`."
+    )
+
+
 def _ungrounded_from_values(
     grounding_values: Sequence[tuple[int, str, float]],
     source: str,
@@ -7646,6 +7691,7 @@ def find_ungrounded_numeric_issues(
     authoritative_source_text: str | None = None,
     source_citation_path: str | None = None,
     require_complete_source_unit: bool = False,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Return issues for generated numeric literals absent from source text."""
     grounding_values = extract_grounding_values(content)
@@ -7680,10 +7726,14 @@ def find_ungrounded_numeric_issues(
             source_citation_path=source_citation_path,
             require_complete_source_unit=require_complete_source_unit,
         )
+        amendment_hint = _attached_amendment_ungrounded_literal_hint(
+            value,
+            amendment_source_texts,
+        )
         issues.append(
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
-            f"{hint}"
+            f"{hint}{amendment_hint}"
         )
     return issues
 
@@ -7866,6 +7916,7 @@ def find_ungrounded_numeric_issues_scoped(
     proof_source_texts: Mapping[str, str | None] | None = None,
     require_body_bound_proof_evidence: bool = True,
     require_complete_source_unit: bool = False,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Ground each rule's literals against the provisions that rule actually cites.
 
@@ -7893,6 +7944,7 @@ def find_ungrounded_numeric_issues_scoped(
             source_text=module_source_text,
             source_citation_path=module_citation_path,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_source_texts=amendment_source_texts,
         )
 
     if not extract_grounding_values(content):
@@ -7936,18 +7988,21 @@ def find_ungrounded_numeric_issues_scoped(
         if grounded:
             continue
         display = raw if raw == f"{value:g}" else f"{raw} ({value:g})"
+        stated_conversion_hint = _stated_conversion_ungrounded_literal_hint(
+            content,
+            module_source,
+            value,
+            source_citation_path=module_citation_path,
+            require_complete_source_unit=require_complete_source_unit,
+        )
+        amendment_hint = _attached_amendment_ungrounded_literal_hint(
+            value,
+            amendment_source_texts,
+        )
         issue = (
             "Ungrounded generated numeric literal: "
             f"{display} does not appear as a substantive numeric value in the source text."
-            f"{
-                _stated_conversion_ungrounded_literal_hint(
-                    content,
-                    module_source,
-                    value,
-                    source_citation_path=module_citation_path,
-                    require_complete_source_unit=require_complete_source_unit,
-                )
-            }"
+            f"{stated_conversion_hint}{amendment_hint}"
         )
         if issue not in seen:
             seen.add(issue)
@@ -23803,6 +23858,7 @@ class ValidatorPipeline:
         source_text: str | None = None,
         source_metadata: dict[str, object] | None = None,
         source_citation_path: str | None = None,
+        amendment_source_texts: Mapping[str, str] | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
         validation_staging_root: Path | None = None,
     ):
@@ -23871,6 +23927,18 @@ class ValidatorPipeline:
             if source_citation_path is not None
             else None
         )
+        if amendment_source_texts is None:
+            amendment_source_texts = {}
+        if not isinstance(amendment_source_texts, Mapping):
+            raise TypeError("amendment_source_texts must be a mapping when provided")
+        self.amendment_source_texts: dict[str, str] = {}
+        for raw_citation_path, raw_source_text in amendment_source_texts.items():
+            if not isinstance(raw_citation_path, str):
+                raise TypeError("amendment source citation paths must be strings")
+            if not isinstance(raw_source_text, str):
+                raise TypeError("amendment source bodies must be strings")
+            citation_path = require_canonical_corpus_citation_path(raw_citation_path)
+            self.amendment_source_texts[citation_path] = raw_source_text
         source_attestation = (
             self.source_metadata.get("source_attestation")
             if isinstance(self.source_metadata, dict)
@@ -25065,6 +25133,85 @@ class ValidatorPipeline:
         """Format a scalar value spec with its kind for failure messages."""
         return f"{value.get('kind')} {value.get('value')}"
 
+    def _complete_mode_effective_version_mismatch_hint(
+        self,
+        *,
+        expected_scalar: dict[str, Any],
+        actual_scalar: dict[str, Any],
+        period: Mapping[str, Any] | None,
+    ) -> str:
+        """Steer amendment-backed mismatches toward distinct effective versions."""
+        if (
+            not self.require_complete_source_unit
+            or not self.amendment_source_texts
+            or not self.source_text
+            or period is None
+        ):
+            return ""
+        numeric_kinds = {"integer", "decimal"}
+        if (
+            expected_scalar.get("kind") not in numeric_kinds
+            or actual_scalar.get("kind") not in numeric_kinds
+        ):
+            return ""
+        try:
+            expected_value = float(self._rulespec_decimal(expected_scalar.get("value")))
+            actual_value = float(self._rulespec_decimal(actual_scalar.get("value")))
+        except (ValueError, OverflowError):
+            return ""
+        if not math.isfinite(expected_value) or not math.isfinite(actual_value):
+            return ""
+        source_profile = _numeric_profile_for_citation_path(self.source_citation_path)
+        if _source_text_contains_numeric_value_equivalent(
+            self.source_text,
+            expected_value,
+            profile=source_profile,
+        ) or not _source_text_contains_numeric_value_equivalent(
+            self.source_text,
+            actual_value,
+            profile=source_profile,
+        ):
+            return ""
+        citations = _attached_amendment_citations_for_numeric_value(
+            expected_value,
+            self.amendment_source_texts,
+        )
+        if not citations:
+            return ""
+
+        citation_display = ", ".join(f"`{citation}`" for citation in citations)
+        period_start = str(period.get("start") or "")
+        year_match = re.match(r"(?P<year>\d{4})-", period_start)
+        version_shape = (
+            f"`{expected_value:g}` for the test period beginning {period_start} "
+            f"and `{actual_value:g}` as the later consolidated value"
+        )
+        if year_match is not None:
+            period_year = int(year_match.group("year"))
+            next_year = period_year + 1
+            matching_amendment_text = "\n".join(
+                self.amendment_source_texts[citation] for citation in citations
+            )
+            if re.search(
+                rf"(?<!\d){period_year}(?!\d)",
+                matching_amendment_text,
+            ) and re.search(
+                rf"(?<!\d){next_year}(?!\d)",
+                matching_amendment_text,
+            ):
+                version_shape = (
+                    f"`{expected_value:g}` for {period_year} from the amendment "
+                    f"and `{actual_value:g}` for the {next_year} consolidated version"
+                )
+
+        return (
+            " Complete-source effective-version hint: the expected value appears "
+            f"in attached amendment document {citation_display}, while the actual "
+            "value appears in the authoritative consolidated source. Encode dual "
+            f"effective versions—{version_shape}—and give each version a source "
+            "proof atom citing its own authoritative document."
+        )
+
     def _compare_rulespec_output(
         self,
         *,
@@ -25072,6 +25219,7 @@ class ValidatorPipeline:
         output_name: str,
         expected_value: Any,
         actual_output: Any,
+        period: Mapping[str, Any] | None = None,
     ) -> str | None:
         """Compare a single expected output; return an issue string on mismatch."""
         if isinstance(expected_value, list):
@@ -25100,6 +25248,7 @@ class ValidatorPipeline:
                     output_name=output_name,
                     expected_value=expected_item,
                     actual_output=actual_item,
+                    period=period,
                 )
                 if mismatch:
                     return f"{mismatch} (row #{row_index})"
@@ -25150,10 +25299,15 @@ class ValidatorPipeline:
                 expected_value = Decimal(expected_numeric_text)
         expected_scalar = self._rulespec_expected_scalar_value(expected_value)
         if not self._rulespec_scalar_values_equal(actual_scalar, expected_scalar):
-            return (
+            mismatch = (
                 f"Test case `{case_name}` output `{output_name}` expected "
                 f"{self._format_rulespec_scalar_value(expected_scalar)}, got "
                 f"{self._format_rulespec_actual_value(actual_output)}."
+            )
+            return mismatch + self._complete_mode_effective_version_mismatch_hint(
+                expected_scalar=expected_scalar,
+                actual_scalar=actual_scalar,
+                period=period,
             )
         return None
 
@@ -25562,6 +25716,7 @@ class ValidatorPipeline:
                     output_name=output_key,
                     expected_value=expected_value,
                     actual_output=actual_output,
+                    period=period,
                 )
                 if mismatch:
                     issues.append(mismatch)
@@ -25625,15 +25780,19 @@ class ValidatorPipeline:
         # (module source ∪ its own proof-atom sources), not the single
         # module-level source: a benefit/tax module legitimately draws its
         # rate, thresholds, and conversions from several provisions of one Act.
-        # When an explicit override source is supplied, keep single-source
-        # behavior for that caller.
-        if self.source_text is not None:
+        # When an explicit override source is supplied without amendment
+        # context, keep single-source behavior for that caller. Attached
+        # amendments remain hint-only unless an owning proof atom cites them;
+        # when attachments exist, scoped grounding is required so a valid
+        # citation can resolve and ground that exact literal path.
+        if self.source_text is not None and not self.amendment_source_texts:
             issues.extend(
                 find_ungrounded_numeric_issues(
                     content,
                     source_text=validation_source_text,
                     source_citation_path=self.source_citation_path,
                     require_complete_source_unit=self.require_complete_source_unit,
+                    amendment_source_texts=self.amendment_source_texts,
                 )
             )
         else:
@@ -25644,6 +25803,7 @@ class ValidatorPipeline:
                     module_citation_path=self.source_citation_path,
                     proof_source_texts=numeric_source_texts,
                     require_complete_source_unit=self.require_complete_source_unit,
+                    amendment_source_texts=self.amendment_source_texts,
                 )
             )
         issues.extend(find_deprecated_source_url_issues(content))

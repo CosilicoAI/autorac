@@ -99,7 +99,6 @@ from .policyengine_runtime import (
 )
 from .pricing import estimate_usage_cost_usd
 from .source_completeness import (
-    authoritative_numeric_recall_text,
     collect_artifact_numeric_values,
 )
 from .validator_pipeline import (
@@ -4097,6 +4096,7 @@ def _revalidate_persisted_eval_suite_case_results(
                 source_citation_path=source_citation_path,
                 rulespec_dependency_roots=rulespec_dependency_roots,
                 require_complete_source_unit=case.require_complete_source_unit,
+                amendment_documents=source_unit.amendment_documents,
             )
         fresh_success = bool(
             fresh_metrics is not None
@@ -6676,6 +6676,7 @@ def evaluate_artifact(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics:
     """Evaluate an artifact inside one exact named corpus release."""
 
@@ -6706,6 +6707,7 @@ def evaluate_artifact(
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=amendment_documents,
         )
 
 
@@ -6761,6 +6763,7 @@ def _evaluate_artifact_in_scope(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics:
     """Evaluate one RuleSpec artifact with deterministic checks plus optional oracles."""
     with _rulespec_validation_target(
@@ -6777,21 +6780,27 @@ def _evaluate_artifact_in_scope(
             policy_repo_root=policy_repo_root,
             rulespec_dependency_roots=rulespec_dependency_roots,
         )
-        pipeline = ValidatorPipeline(
-            policy_repo_path=validation_policy_repo_root,
-            axiom_rules_path=axiom_rules_path,
-            enable_oracles=oracle != "none",
-            policyengine_runtime=policyengine_runtime,
-            policyengine_rule_hint=policyengine_rule_hint,
-            require_policy_proofs=True,
-            source_text=source_text,
-            source_metadata=source_metadata,
-            local_corpus_release=local_corpus_release,
-            source_citation_path=source_citation_path,
-            rulespec_dependency_roots=validation_dependency_roots,
-            validation_staging_root=validation_staging_root,
-            require_complete_source_unit=require_complete_source_unit,
-        )
+        pipeline_options: dict[str, Any] = {
+            "policy_repo_path": validation_policy_repo_root,
+            "axiom_rules_path": axiom_rules_path,
+            "enable_oracles": oracle != "none",
+            "policyengine_runtime": policyengine_runtime,
+            "policyengine_rule_hint": policyengine_rule_hint,
+            "require_policy_proofs": True,
+            "source_text": source_text,
+            "source_metadata": source_metadata,
+            "local_corpus_release": local_corpus_release,
+            "source_citation_path": source_citation_path,
+            "rulespec_dependency_roots": validation_dependency_roots,
+            "validation_staging_root": validation_staging_root,
+            "require_complete_source_unit": require_complete_source_unit,
+        }
+        if amendment_documents:
+            pipeline_options["amendment_source_texts"] = {
+                document.citation_path: document.body
+                for document in amendment_documents
+            }
+        pipeline = ValidatorPipeline(**pipeline_options)
         compile_result = pipeline._run_compile_check(validation_file)
         ci_result = pipeline._run_ci(validation_file)
 
@@ -6880,7 +6889,7 @@ def _evaluate_artifact_in_scope(
     # separately parsed proof evidence below — never in module.summary.
     numeric_validation_source_text = embedded_source or numeric_source_text or ""
     numeric_recall_source_text = (
-        authoritative_numeric_recall_text(evaluation_source_text)
+        evaluation_source_text
         if require_complete_source_unit
         else numeric_validation_source_text
     )
@@ -7030,6 +7039,9 @@ def _evaluate_artifact_in_scope(
         proof_source_texts=numeric_proof_source_texts,
         require_body_bound_proof_evidence=False,
         require_complete_source_unit=require_complete_source_unit,
+        amendment_source_texts={
+            document.citation_path: document.body for document in amendment_documents
+        },
     )
     admin_agency_aggregate_issues = find_admin_agency_aggregate_entity_issues(
         content,
@@ -7115,6 +7127,7 @@ def _evaluate_generated_artifact_with_repairs(
     source_citation_path: str | None = None,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    amendment_documents: Sequence[CorpusAmendmentDocument] = (),
 ) -> EvalArtifactMetrics | None:
     metrics = evaluate_artifact(
         rulespec_file=rulespec_file,
@@ -7130,6 +7143,7 @@ def _evaluate_generated_artifact_with_repairs(
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
+        amendment_documents=amendment_documents,
     )
     if metrics is None:
         return None
@@ -7156,6 +7170,7 @@ def _evaluate_generated_artifact_with_repairs(
         source_citation_path=source_citation_path,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
+        amendment_documents=amendment_documents,
     )
 
 
@@ -7976,6 +7991,7 @@ def _run_single_eval(
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=source_unit.amendment_documents,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -8200,6 +8216,7 @@ def _run_single_source_eval(
             ),
             rulespec_dependency_roots=rulespec_dependency_roots,
             require_complete_source_unit=require_complete_source_unit,
+            amendment_documents=amendment_documents,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
