@@ -7429,3 +7429,85 @@ def test_generic_german_rounding_requires_nearest_rounding_and_fractional_proof(
     assert _has_issue(missing_operator, "rounding", "principal formula")
     assert _has_issue(missing_fractional_proof, "rounding", "fractional")
     assert not complete.issues
+
+
+@pytest.mark.parametrize(
+    ("source", "output"),
+    [
+        (
+            (
+                "(1) Der Zuschlag beträgt 259 Euro bis zu einem Einkommen "
+                "von 100 Euro nach § 26."
+            ),
+            "de:statutes/estg/32a/1#income_limited_supplement",
+        ),
+        (
+            (
+                "Der Zuschlag beträgt 259 Euro bis zu einem Einkommen "
+                "von 100 Euro nach § 26."
+            ),
+            "de:statutes/estg/32a#income_limited_supplement",
+        ),
+    ],
+)
+def test_precisely_deferred_control_is_not_rescanned(
+    source: str,
+    output: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: {output}
+      reason: >-
+        The income-limited supplement cannot be computed until EStG section 26
+        eligibility is available.
+      blocked_by:
+        - de:statutes/estg/26#eligibility
+rules:
+  - name: supplement_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: 259}}]
+  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions: [{{formula: 100}}]
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert not result.issues
+
+
+def test_unrelated_source_citation_cannot_authenticate_typed_deferral():
+    source = (
+        "(1) Der Betrag ist Einkommen * 2. Unberührt bleibt § 26."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  deferred_outputs:
+    - output: de:statutes/estg/32a/1#amount
+      reason: >-
+        The amount cannot be computed until the EStG section 26 base is
+        available.
+      blocked_by:
+        - de:statutes/estg/26#base
+rules:
+  - name: factor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions: [{formula: 2}]
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert _has_issue(result, "deferral", "dependency")
