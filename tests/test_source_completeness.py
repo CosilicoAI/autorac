@@ -3511,3 +3511,298 @@ rules:
 
     assert source_states_explicit_computation(source)
     assert _has_issue(result, "formula-output", "parameter-only")
+
+
+def test_nonbranching_formula_must_execute_the_source_computation():
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: unrelated_amount
+"""
+    case = {
+        "name": "unrelated output",
+        "period": "2026",
+        "input": {"income": 10, "unrelated_amount": 2},
+        "output": {"amount": 2},
+    }
+
+    unrelated = _analyze(content, source, test_cases=[case])
+    correct = _analyze(
+        content.replace(
+            "formula: unrelated_amount",
+            "formula: income * multiplier",
+        ),
+        source,
+        test_cases=[
+            {
+                **case,
+                "name": "operative output",
+                "output": {"amount": 20},
+            }
+        ],
+    )
+
+    assert _has_issue(unrelated, "formula branch")
+    assert not correct.issues
+
+
+def test_indexed_expression_multiplied_by_zero_cannot_witness_formula():
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: neutralizer
+    kind: parameter
+    dtype: Decimal
+    indexed_by: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        values:
+          1: 1
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled:
+            0 * neutralizer[index] * multiplier
+          else:
+            income * multiplier
+"""
+    case = {
+        "name": "disabled zero",
+        "period": "2026",
+        "input": {"disabled": True, "index": 1, "income": 10},
+        "output": {"amount": 0},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch")
+
+
+def test_named_match_pattern_uses_constant_value_not_identifier_text():
+    source = """\
+(1) Bei Ehegatten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: special_status
+    kind: parameter
+    dtype: String
+    versions:
+      - effective_from: '2026-01-01'
+        formula: married
+  - name: first_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: second_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: >-
+          match status: special_status => income * first_multiplier;
+          "single" => income * second_multiplier
+"""
+    cases = [
+        {
+            "name": status,
+            "input": {"status": status, "income": 10},
+            "output": {"amount": 30},
+        }
+        for status in ("special_status", "other")
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_neutral_terms_cannot_bind_or_distinguish_formula_branches():
+    source = """\
+(1) Der erste Betrag ist Einkommen + 2.
+(2) Der zweite Betrag ist Einkommen + 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: two
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: three
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if first:
+            income + two
+          else:
+            income + two + 0 * three
+"""
+    cases = [
+        {
+            "name": str(first),
+            "input": {"first": first, "income": 10},
+            "output": {"amount": 12},
+        }
+        for first in (True, False)
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "formula branch", "distinct")
+
+
+@pytest.mark.parametrize(
+    ("source", "formula", "expected"),
+    [
+        (
+            "(1) Der Betrag ist die Hälfte des Einkommens.",
+            "income * half_factor",
+            5,
+        ),
+        (
+            "(1) Der Betrag ist das Doppelte des Einkommens.",
+            "income + income",
+            20,
+        ),
+    ],
+)
+def test_common_algebraic_formula_equivalents_are_accepted(
+    source: str,
+    formula: str,
+    expected: int,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: half_factor
+    kind: parameter
+    dtype: Decimal
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.5
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if applies:
+            {formula}
+          else:
+            0
+"""
+    case = {
+        "name": "applies",
+        "input": {"applies": True, "income": 10},
+        "output": {"amount": expected},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_case_period_selects_nonbranching_temporal_formula():
+    source = "(1) Der Betrag wird als Einkommen * 2 berechnet."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: unrelated_amount
+      - effective_from: '2026-01-01'
+        formula: income * multiplier
+"""
+    case = {
+        "name": "current formula",
+        "period": "2026",
+        "input": {"income": 10, "unrelated_amount": 99},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues

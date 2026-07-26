@@ -1799,42 +1799,15 @@ def _formula_branch_test_witnesses(
         selector_names = _rule_numeric_selector_names(rule)
         has_branching_formula = _rule_has_branching_formula(rule)
         for case in asserted_by_rule.get(rule_name, ()):
-            execution = (
-                _case_formula_execution(
-                    rule,
-                    case,
-                    formula_environment=formula_environment,
-                )
-                if has_branching_formula or interval is not None
-                else None
+            execution = _case_formula_execution(
+                rule,
+                case,
+                formula_environment=formula_environment,
             )
-            if interval is None:
-                if has_branching_formula:
-                    if (
-                        execution is not None
-                        and _formula_execution_leaf_is_computational(execution)
-                        and _formula_execution_matches_source_branch(
-                            execution,
-                            branch,
-                            interval=interval,
-                            formula_environment=formula_environment,
-                            extract_numeric_occurrences=(
-                                extract_numeric_occurrences
-                            ),
-                            numeric_value_is_grounded=(
-                                numeric_value_is_grounded
-                            ),
-                        )
-                    ):
-                        leaf = _formula_leaf_semantic_key(execution.leaf)
-                        witnesses.add((rule_name, f"leaf:{leaf}"))
-                else:
-                    witnesses.add((rule_name, f"case:{id(case)}"))
-                continue
             if (
-                execution is not None
-                and _formula_execution_leaf_is_computational(execution)
-                and _formula_execution_matches_source_branch(
+                execution is None
+                or not _formula_execution_leaf_is_computational(execution)
+                or not _formula_execution_matches_source_branch(
                     execution,
                     branch,
                     interval=interval,
@@ -1842,7 +1815,22 @@ def _formula_branch_test_witnesses(
                     extract_numeric_occurrences=extract_numeric_occurrences,
                     numeric_value_is_grounded=numeric_value_is_grounded,
                 )
-                and _formula_execution_references_names(
+            ):
+                continue
+            if interval is None:
+                witness = (
+                    "leaf:"
+                    + _formula_leaf_semantic_key(
+                        execution.leaf,
+                        formula_environment=formula_environment,
+                    )
+                    if has_branching_formula
+                    else f"case:{id(case)}"
+                )
+                witnesses.add((rule_name, witness))
+                continue
+            if (
+                _formula_execution_references_names(
                     execution,
                     selector_names,
                 )
@@ -1871,8 +1859,16 @@ def _formula_execution_matches_source_branch(
     """Bind a reached leaf to numeric evidence in its exact source formula."""
 
     source_operations = _formula_operation_kinds(branch.text)
-    if source_operations and not source_operations.issubset(
-        _formula_operation_kinds(execution.leaf)
+    operative_leaf = _simplified_formula_text(
+        execution.leaf,
+        environment=formula_environment,
+    )
+    artifact_operations = _formula_ast_operation_kinds(operative_leaf)
+    if not _formula_operations_are_compatible(
+        source_operations,
+        artifact_operations,
+        source_text=branch.text,
+        artifact_formula=operative_leaf,
     ):
         return False
     source_occurrences = tuple(
@@ -1900,7 +1896,7 @@ def _formula_execution_matches_source_branch(
     if not computation_occurrences:
         return True
 
-    leaf_names = set(_FORMULA_IDENTIFIER.findall(execution.leaf))
+    leaf_names = set(_FORMULA_IDENTIFIER.findall(operative_leaf))
     candidate_values = [
         float(value)
         for name, value in formula_environment.items()
@@ -1910,8 +1906,15 @@ def _formula_execution_matches_source_branch(
     ]
     candidate_values.extend(
         float(occurrence.value)
-        for occurrence in extract_numeric_occurrences(execution.leaf)
+        for occurrence in extract_numeric_occurrences(operative_leaf)
     )
+    if (
+        "multiply" in source_operations
+        and "add" in artifact_operations
+        and _source_describes_doubling(branch.text)
+        and _formula_is_duplicate_addition(operative_leaf)
+    ):
+        candidate_values.append(2.0)
     return bool(candidate_values) and all(
         any(
             numeric_value_is_grounded(value, (source_occurrence,))
@@ -1922,25 +1925,12 @@ def _formula_execution_matches_source_branch(
 
 
 def _formula_operation_kinds(text: str) -> set[str]:
+    """Recognize operations in source prose or an explicit expression."""
+
+    parsed_operations = _formula_ast_operation_kinds(text)
+    if parsed_operations:
+        return parsed_operations
     operations: set[str] = set()
-    with contextlib.suppress(SyntaxError):
-        expression = ast.parse(text.strip(), mode="eval").body
-        for node in ast.walk(expression):
-            if isinstance(node, ast.BinOp):
-                if isinstance(node.op, ast.Add):
-                    operations.add("add")
-                elif isinstance(node.op, ast.Sub):
-                    operations.add("subtract")
-                elif isinstance(node.op, ast.Mult):
-                    operations.add("multiply")
-                elif isinstance(node.op, ast.Div):
-                    operations.add("divide")
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                lowered = node.func.id.lower()
-                if "sum" in lowered:
-                    operations.add("add")
-                elif "product" in lowered:
-                    operations.add("multiply")
     lowered_text = text.lower()
     operation_patterns = {
         "add": (
@@ -1955,7 +1945,8 @@ def _formula_operation_kinds(text: str) -> set[str]:
         ),
         "multiply": (
             r"(?:[*×·•∗∙]|\bprodukt\b|\bproduct\s+of\b|"
-            r"\bmultipl\w*\b|\bvervielfach\w*\b|\bmal\b|"
+            r"\b(?:multiplied|multiply|multiplication|multipliziert|"
+            r"multiplizieren|multiplikation)\b|\bvervielfach\w*\b|\bmal\b|"
             r"\b(?:doppelte|zweifache|dreifache|twice)\b)"
         ),
         "divide": (
@@ -1970,11 +1961,199 @@ def _formula_operation_kinds(text: str) -> set[str]:
     return operations
 
 
-def _formula_leaf_semantic_key(leaf: str) -> str:
+def _formula_ast_operation_kinds(text: str) -> set[str]:
+    operations: set[str] = set()
+    try:
+        expression = ast.parse(text.strip(), mode="eval").body
+    except SyntaxError:
+        return operations
+    for node in ast.walk(expression):
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Add):
+                operations.add("add")
+            elif isinstance(node.op, ast.Sub):
+                operations.add("subtract")
+            elif isinstance(node.op, ast.Mult):
+                operations.add("multiply")
+            elif isinstance(node.op, ast.Div):
+                operations.add("divide")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            lowered = node.func.id.lower()
+            if "sum" in lowered:
+                operations.add("add")
+            elif "product" in lowered:
+                operations.add("multiply")
+    return operations
+
+
+def _formula_operations_are_compatible(
+    source_operations: set[str],
+    artifact_operations: set[str],
+    *,
+    source_text: str,
+    artifact_formula: str,
+) -> bool:
+    if not source_operations:
+        return True
+    for operation in source_operations:
+        if operation in artifact_operations:
+            continue
+        if operation == "divide" and "multiply" in artifact_operations:
+            continue
+        if (
+            operation == "multiply"
+            and "add" in artifact_operations
+            and _source_describes_doubling(source_text)
+            and _formula_is_duplicate_addition(artifact_formula)
+        ):
+            continue
+        return False
+    return True
+
+
+def _source_describes_doubling(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:doppelte|zweifache|verdoppelt|twice|double[ds]?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _formula_is_duplicate_addition(text: str) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        if isinstance(expression, ast.BinOp) and isinstance(
+            expression.op,
+            ast.Add,
+        ):
+            return _canonical_formula_node(
+                expression.left
+            ) == _canonical_formula_node(expression.right)
+    return False
+
+
+def _formula_leaf_semantic_key(
+    leaf: str,
+    *,
+    formula_environment: dict[str, Any] | None = None,
+) -> str:
+    leaf = _simplified_formula_text(
+        leaf,
+        environment=formula_environment or {},
+    )
     with contextlib.suppress(SyntaxError):
         expression = ast.parse(leaf.strip(), mode="eval").body
         return repr(_canonical_formula_node(expression))
     return _collapse_text(leaf).lower()
+
+
+def _simplified_formula_text(
+    text: str,
+    *,
+    environment: dict[str, Any],
+) -> str:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        simplified = _simplify_formula_expression(
+            expression,
+            environment=environment,
+        )
+        return ast.unparse(ast.fix_missing_locations(simplified))
+    return text
+
+
+def _simplify_formula_expression(
+    expression: ast.expr,
+    *,
+    environment: dict[str, Any],
+) -> ast.expr:
+    if isinstance(expression, ast.BinOp):
+        left = _simplify_formula_expression(
+            expression.left,
+            environment=environment,
+        )
+        right = _simplify_formula_expression(
+            expression.right,
+            environment=environment,
+        )
+        left_value = _known_numeric_formula_value(left, environment)
+        right_value = _known_numeric_formula_value(right, environment)
+        if isinstance(expression.op, ast.Mult):
+            if left_value == 0 or right_value == 0:
+                return ast.Constant(value=0)
+            if left_value == 1:
+                return right
+            if right_value == 1:
+                return left
+        elif isinstance(expression.op, ast.Add):
+            if left_value == 0:
+                return right
+            if right_value == 0:
+                return left
+        elif isinstance(expression.op, ast.Sub) and right_value == 0:
+            return left
+        elif isinstance(expression.op, ast.Div) and right_value == 1:
+            return left
+        return ast.BinOp(left=left, op=expression.op, right=right)
+    if isinstance(expression, ast.UnaryOp):
+        return ast.UnaryOp(
+            op=expression.op,
+            operand=_simplify_formula_expression(
+                expression.operand,
+                environment=environment,
+            ),
+        )
+    if isinstance(expression, ast.Call):
+        return ast.Call(
+            func=expression.func,
+            args=[
+                _simplify_formula_expression(
+                    argument,
+                    environment=environment,
+                )
+                for argument in expression.args
+            ],
+            keywords=expression.keywords,
+        )
+    if isinstance(expression, ast.Compare):
+        return ast.Compare(
+            left=_simplify_formula_expression(
+                expression.left,
+                environment=environment,
+            ),
+            ops=expression.ops,
+            comparators=[
+                _simplify_formula_expression(
+                    comparator,
+                    environment=environment,
+                )
+                for comparator in expression.comparators
+            ],
+        )
+    if isinstance(expression, ast.BoolOp):
+        return ast.BoolOp(
+            op=expression.op,
+            values=[
+                _simplify_formula_expression(
+                    value,
+                    environment=environment,
+                )
+                for value in expression.values
+            ],
+        )
+    return expression
+
+
+def _known_numeric_formula_value(
+    expression: ast.expr,
+    environment: dict[str, Any],
+) -> int | float | None:
+    value = _evaluate_condition_expression(expression, environment)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return None
 
 
 def _canonical_formula_node(node: ast.AST) -> Any:
@@ -2087,7 +2266,7 @@ def _case_formula_execution(
                 return None
             input_environment[name] = normalized_value
     environment.update(input_environment)
-    formula_text = _unambiguous_rule_formula_text(rule)
+    formula_text = _rule_formula_text_for_case(rule, case)
     if formula_text is None:
         return None
     return _execute_formula_text(
@@ -2124,6 +2303,10 @@ def _execute_formula_text(
                     isinstance(evaluated, (int, float))
                     and not isinstance(evaluated, bool)
                     and evaluated == 0
+                )
+                or _formula_expression_is_definitely_zero(
+                    leaf,
+                    environment=environment,
                 )
             )
             return _FormulaExecution(
@@ -2613,7 +2796,7 @@ def _select_formula_branch(
     if not node.patterns:
         return None
     for index, pattern in enumerate(node.patterns[:-1]):
-        expected = _match_arm_value(pattern.strip())
+        expected = _match_arm_value(pattern.strip(), environment=environment)
         if expected is _UNRESOLVED_CONDITION_VALUE:
             return None
         if _same_formula_value(selector, expected):
@@ -2733,7 +2916,11 @@ def _case_formula_branch_outcome(
     return _formula_execution_outcome(execution)
 
 
-def _match_arm_value(value: str) -> Any:
+def _match_arm_value(
+    value: str,
+    *,
+    environment: dict[str, Any],
+) -> Any:
     if value == "_":
         return value
     lowered = value.lower()
@@ -2744,8 +2931,28 @@ def _match_arm_value(value: str) -> Any:
     with contextlib.suppress(SyntaxError, ValueError):
         return ast.literal_eval(value)
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-        return value
+        return environment.get(value, _UNRESOLVED_CONDITION_VALUE)
     return _UNRESOLVED_CONDITION_VALUE
+
+
+def _formula_expression_is_definitely_zero(
+    text: str,
+    *,
+    environment: dict[str, Any],
+) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        simplified = _simplify_formula_expression(
+            expression,
+            environment=environment,
+        )
+        value = _evaluate_condition_expression(simplified, environment)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value == 0
+        )
+    return False
 
 
 def _evaluate_condition_expression(
@@ -3751,6 +3958,45 @@ def _unambiguous_rule_formula_text(rule: dict[str, Any]) -> str | None:
         )
     )
     return formulas[0] if len(formulas) == 1 else None
+
+
+def _rule_formula_text_for_case(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+) -> str | None:
+    """Resolve one temporal formula when the companion case identifies a period."""
+
+    unambiguous = _unambiguous_rule_formula_text(rule)
+    if unambiguous is not None:
+        return unambiguous
+    period = str(case.get("period") or "").strip()
+    if re.fullmatch(r"\d{4}", period):
+        period = f"{period}-01-01"
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+        return None
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return None
+    candidates: list[tuple[str, str]] = []
+    for version in versions:
+        if not isinstance(version, dict) or version.get("formula") is None:
+            continue
+        effective_from = str(version.get("effective_from") or "").strip()
+        effective_to = str(version.get("effective_to") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", effective_from):
+            continue
+        if effective_from > period or (effective_to and effective_to < period):
+            continue
+        candidates.append((effective_from, str(version["formula"])))
+    if not candidates:
+        return None
+    latest = max(effective_from for effective_from, _formula in candidates)
+    formulas = {
+        formula
+        for effective_from, formula in candidates
+        if effective_from == latest
+    }
+    return next(iter(formulas)) if len(formulas) == 1 else None
 
 
 def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
