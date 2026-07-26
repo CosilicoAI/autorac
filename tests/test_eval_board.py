@@ -366,9 +366,7 @@ def _payload(
         row = copy.deepcopy(original_row)
         if "admission" not in row:
             raw_case = row.get("eval_case")
-            case_index = (
-                raw_case.get("index") if isinstance(raw_case, dict) else None
-            )
+            case_index = raw_case.get("index") if isinstance(raw_case, dict) else None
             admitted_case = (
                 case_identities[case_index - 1]
                 if (
@@ -494,6 +492,17 @@ def _write_payload(tmp_path, name, payload):
     path = tmp_path / name
     path.write_text(json.dumps(payload))
     return path
+
+
+def _rebind_payload_results(payload):
+    """Refresh producer digests after a test deliberately mutates result rows."""
+
+    for row in payload["results"]:
+        row.pop("result_sha256", None)
+        row["result_sha256"] = cli._eval_suite_json_sha256(row)
+    payload["coverage"]["results_sha256"] = cli._eval_suite_json_sha256(
+        payload["results"]
+    )
 
 
 def test_supported_schema_matches_producer():
@@ -1350,6 +1359,88 @@ def test_fold_refuses_result_without_matching_execution_admission(
     )
 
     with pytest.raises(EvalBoardError, match="admission execution identity"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_run",
+        "missing_suite",
+        "missing_case",
+        "missing_corpus",
+        "missing_rulespec",
+        "unexpected_section",
+        "run_mismatch",
+        "suite_mismatch",
+        "case_mismatch",
+        "corpus_mismatch",
+        "rulespec_root_mismatch",
+        "rulespec_digest_mismatch",
+    ],
+)
+def test_fold_refuses_result_without_complete_producer_admission(
+    tmp_path,
+    mutation,
+):
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+    )
+    admission = payload["results"][0]["admission"]
+    if mutation.startswith("missing_"):
+        admission.pop(mutation.removeprefix("missing_"))
+    elif mutation == "unexpected_section":
+        admission["unsigned_note"] = "producer cannot emit this"
+    elif mutation == "run_mismatch":
+        admission["run"]["id"] = "22222222-2222-4222-8222-222222222222"
+    elif mutation == "suite_mismatch":
+        admission["suite"]["manifest_content_sha256"] = "88" * 32
+    elif mutation == "case_mismatch":
+        admission["case"]["sha256"] = "88" * 32
+    elif mutation == "corpus_mismatch":
+        admission["corpus"]["corpus_release_selector_sha256"] = "88" * 32
+    elif mutation == "rulespec_root_mismatch":
+        admission["rulespec"]["policy_repo_root"] = "/foreign/rulespec-uk/uk"
+    else:
+        admission["rulespec"]["validation_waiver_set_sha256"] = "88" * 32
+    _rebind_payload_results(payload)
+    path = _write_payload(tmp_path, f"incomplete-admission-{mutation}.json", payload)
+
+    with pytest.raises(EvalBoardError, match="admission"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "bad_run",
+    [
+        {
+            "id": "11111111-1111-1111-8111-111111111111",
+            "started_at": RUN_IDENTITY["started_at"],
+        },
+        {
+            "id": RUN_IDENTITY["id"],
+            "started_at": "2026-07-25T00:00:00",
+        },
+    ],
+)
+def test_fold_refuses_malformed_run_identity_even_when_rows_match(
+    tmp_path,
+    bad_run,
+):
+    payload = _payload(
+        [("terra", "codex", "gpt-5.6-terra")],
+        [_result("terra", case) for case in CASE_IDENTITIES],
+    )
+    payload["evidence"]["run"] = copy.deepcopy(bad_run)
+    for row in payload["results"]:
+        row["admission"]["run"] = copy.deepcopy(bad_run)
+    payload["evidence"].pop("sha256")
+    payload["evidence"]["sha256"] = cli._eval_suite_json_sha256(payload["evidence"])
+    _rebind_payload_results(payload)
+    path = _write_payload(tmp_path, "malformed-run.json", payload)
+
+    with pytest.raises(EvalBoardError, match="run identity"):
         fold_eval_board([path])
 
 
