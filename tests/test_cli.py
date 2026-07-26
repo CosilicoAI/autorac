@@ -3685,6 +3685,12 @@ class TestCmdEvalSuite:
                 ),
             ) as mock_preflight,
             patch(
+                "axiom_encode.harness.evals._preflight_eval_cli_runners",
+                side_effect=AssertionError(
+                    "historical verification must not probe a live receiver"
+                ),
+            ) as mock_harness_preflight,
+            patch(
                 "axiom_encode.cli._load_eval_suite_resume_state",
                 return_value=(
                     "12345678-1234-4234-8234-123456789abc",
@@ -3706,20 +3712,15 @@ class TestCmdEvalSuite:
 
         assert verified["complete"] is True
         mock_preflight.assert_not_called()
+        mock_harness_preflight.assert_not_called()
         assert mock_build_identity.call_args.kwargs["suite_retry_attempts"] == 0
-        assert mock_build_identity.call_args.kwargs["receiver_environments"] == (
-            persisted_identity["receiver_environments"]
+        assert (
+            mock_build_identity.call_args.kwargs["receiver_environments"]
+            == (persisted_identity["receiver_environments"])
         )
 
 
 class TestCmdEvalSuiteReport:
-    @pytest.fixture(autouse=True)
-    def _inject_receiver_preflight(self, monkeypatch):
-        monkeypatch.setattr(
-            "axiom_encode.cli._preflight_eval_suite_output_receivers",
-            lambda _output_root: _test_eval_cli_environments(),
-        )
-
     def test_groups_duplicate_paths_by_case_index(self):
         results = []
         for case_index, case_name in ((1, "first"), (2, "second")):
@@ -4158,10 +4159,15 @@ class TestCmdEvalSuiteReport:
 
 class TestCmdEvalSuiteRevalidate:
     @pytest.fixture(autouse=True)
-    def _inject_receiver_preflight(self, monkeypatch):
+    def _forbid_receiver_preflight(self, monkeypatch):
+        def fail_preflight(_runners):
+            raise AssertionError(
+                "historical revalidation must not probe a live receiver"
+            )
+
         monkeypatch.setattr(
             "axiom_encode.cli._preflight_eval_cli_runners",
-            lambda _runners: _test_eval_cli_environments(),
+            fail_preflight,
         )
 
     @pytest.mark.parametrize("persisted_identity", [None, "wrong-release"])
@@ -4723,13 +4729,6 @@ def _archive_registry_migration_boundary(legacy_rows: int) -> dict:
 
 
 class TestCmdEvalSuiteArchive:
-    @pytest.fixture(autouse=True)
-    def _inject_receiver_preflight(self, monkeypatch):
-        monkeypatch.setattr(
-            "axiom_encode.cli._preflight_eval_suite_output_receivers",
-            lambda _output_root: _test_eval_cli_environments(),
-        )
-
     def test_archive_metadata_stamps_payload_and_effort_identity_schemas(
         self,
         tmp_path,
@@ -5749,35 +5748,25 @@ class TestCmdEvalSuiteArchive:
             json=False,
         )
 
-        cli_environments = _test_eval_cli_environments()
-        with (
-            patch(
-                "axiom_encode.cli._preflight_eval_suite_output_receivers",
-                return_value=cli_environments,
-            ) as receiver_preflight,
-            patch(
-                "axiom_encode.cli._load_verified_eval_suite_archive_payload",
-                return_value=current_payload,
-            ) as mock_verify,
-        ):
+        with patch(
+            "axiom_encode.cli._load_verified_eval_suite_archive_payload",
+            return_value=current_payload,
+        ) as mock_verify:
             cmd_eval_suite_archive(args)
 
         archive_dir = archive_root / "wave21-rerun16"
-        receiver_preflight.assert_called_once_with(source_output.resolve())
         assert mock_verify.call_args_list == [
             call(
                 source_output.resolve(),
                 axiom_rules_path=axiom_rules_path,
                 policy_repo_path=policy_repo_path,
                 corpus_path=corpus_path,
-                cli_environments=cli_environments,
             ),
             call(
                 archive_dir,
                 axiom_rules_path=axiom_rules_path,
                 policy_repo_path=policy_repo_path,
                 corpus_path=corpus_path,
-                cli_environments=cli_environments,
             ),
         ]
         assert archive_dir.exists()

@@ -47387,10 +47387,6 @@ def _load_verified_eval_suite_artifacts(
     parsed_runners = [parse_runner_spec(spec) for spec in effective_runners]
     if not parsed_runners:
         raise ValueError("Eval suite must have at least one effective runner")
-    cli_environments = _resolve_eval_cli_environments(
-        parsed_runners,
-        cli_environments,
-    )
 
     state_raw_before = _read_eval_suite_artifact_bytes(
         output_root,
@@ -47403,33 +47399,42 @@ def _load_verified_eval_suite_artifacts(
         max_bytes=256 * 1024 * 1024,
         required=False,
     )
+    try:
+        persisted_run_state = json.loads((state_raw_before or b"").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("suite-run.json is malformed") from exc
+    if not isinstance(persisted_run_state, dict):
+        raise ValueError("suite-run.json must contain a JSON object")
+    persisted_identity = persisted_run_state.get("execution_identity")
+    persisted_identity_sha256 = persisted_run_state.get("execution_identity_sha256")
+    if (
+        not isinstance(persisted_identity, dict)
+        or not isinstance(persisted_identity_sha256, str)
+        or persisted_identity_sha256
+        != _eval_suite_execution_identity_sha256(persisted_identity)
+    ):
+        raise ValueError("suite-run.json has an inconsistent execution identity digest")
+
     if suite_retry_attempts is None:
-        try:
-            persisted_run_state = json.loads((state_raw_before or b"").decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("suite-run.json is malformed") from exc
-        if not isinstance(persisted_run_state, dict):
-            raise ValueError("suite-run.json must contain a JSON object")
         if persisted_run_state.get("status") != "completed":
             raise ValueError(
                 "Incomplete eval-suite verification requires the current "
                 "suite_retry_attempts"
             )
-        persisted_identity = persisted_run_state.get("execution_identity")
-        persisted_identity_sha256 = persisted_run_state.get("execution_identity_sha256")
-        if (
-            not isinstance(persisted_identity, dict)
-            or not isinstance(persisted_identity_sha256, str)
-            or persisted_identity_sha256
-            != _eval_suite_execution_identity_sha256(persisted_identity)
-        ):
-            raise ValueError(
-                "suite-run.json has an inconsistent execution identity digest"
-            )
         suite_retry_attempts = _suite_retry_attempts_from_execution_identity(
             persisted_identity,
             artifact_name="suite-run.json execution identity",
         )
+    live_cli_environments = (
+        _resolve_eval_cli_environments(parsed_runners, cli_environments)
+        if cli_environments is not None
+        else None
+    )
+    persisted_receiver_environments = (
+        None
+        if live_cli_environments is not None
+        else persisted_identity.get("receiver_environments")
+    )
     manifest_identity = _build_eval_suite_manifest_identity(manifest)
     rulespec_roots = _eval_suite_rulespec_roots(manifest, policy_repo_path)
     policyengine_cases = [
@@ -47451,7 +47456,8 @@ def _load_verified_eval_suite_artifacts(
         axiom_rules_path,
         rulespec_roots,
         parsed_runners=parsed_runners,
-        cli_environments=cli_environments,
+        cli_environments=live_cli_environments,
+        receiver_environments=persisted_receiver_environments,
         policyengine_runtime=policyengine_runtime if policyengine_cases else None,
         suite_retry_attempts=suite_retry_attempts,
     )
@@ -48251,9 +48257,6 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
     ):
         print("suite-run.json is missing effective runner identities")
         sys.exit(1)
-    cli_environments = _preflight_eval_cli_runners(
-        [parse_runner_spec(spec) for spec in effective_runners]
-    )
     try:
         verified_output = _load_verified_eval_suite_artifacts(
             output_root=source_output,
@@ -48265,7 +48268,6 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             policyengine_runtime=policyengine_runtime,
             require_complete=True,
             revalidate_persisted_results=False,
-            cli_environments=cli_environments,
         )
     except ValueError as exc:
         print(str(exc))
@@ -48462,9 +48464,8 @@ def _load_verified_eval_suite_archive_payload(
     policy_repo_path: Path,
     corpus_path: Path,
     policyengine_runtime_root: Path | None = None,
-    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> dict:
-    """Verify a complete suite against current live inputs before archiving."""
+    """Verify a complete suite against live inputs and its persisted receiver."""
 
     state_raw = _read_eval_suite_artifact_bytes(
         source_output,
@@ -48508,7 +48509,6 @@ def _load_verified_eval_suite_archive_payload(
         corpus_release=corpus_release,
         policyengine_runtime=policyengine_runtime,
         require_complete=True,
-        cli_environments=cli_environments,
     )
     if verified_output["run_state"] != run_state:
         raise ValueError("suite-run.json changed while archive admission was verified")
@@ -48568,33 +48568,6 @@ def _load_verified_eval_suite_archive_payload(
     if summary_payload != _eval_suite_summary_payload(result_payload):
         raise ValueError("summary.json does not match the verified results payload")
     return result_payload
-
-
-def _preflight_eval_suite_output_receivers(
-    output_root: Path,
-) -> dict[str, EvalCliEnvironment]:
-    """Preflight only the local receivers persisted for one suite output."""
-
-    state_raw = _read_eval_suite_artifact_bytes(
-        output_root,
-        "suite-run.json",
-        max_bytes=8 * 1024 * 1024,
-    )
-    try:
-        run_state = json.loads((state_raw or b"").decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("suite-run.json is malformed") from exc
-    manifest = run_state.get("manifest") if isinstance(run_state, dict) else None
-    effective_runners = (
-        manifest.get("effective_runners") if isinstance(manifest, dict) else None
-    )
-    if not isinstance(effective_runners, list) or any(
-        not isinstance(spec, str) or not spec for spec in effective_runners
-    ):
-        raise ValueError("suite-run.json is missing effective runner identities")
-    return _preflight_eval_cli_runners(
-        [parse_runner_spec(spec) for spec in effective_runners]
-    )
 
 
 _EVAL_SUITE_ARCHIVE_CONTROL_FILES = {
@@ -49748,13 +49721,11 @@ def cmd_eval_suite_archive(args):
         label="Axiom Corpus",
     )
     try:
-        cli_environments = _preflight_eval_suite_output_receivers(source_output)
         verified_payload = _load_verified_eval_suite_archive_payload(
             source_output,
             axiom_rules_path=axiom_rules_path,
             policy_repo_path=policy_repo_path,
             corpus_path=corpus_path,
-            cli_environments=cli_environments,
             **(
                 {"policyengine_runtime_root": args.policyengine_runtime_root}
                 if getattr(args, "policyengine_runtime_root", None) is not None
@@ -49838,7 +49809,6 @@ def cmd_eval_suite_archive(args):
                     axiom_rules_path=axiom_rules_path,
                     policy_repo_path=policy_repo_path,
                     corpus_path=corpus_path,
-                    cli_environments=cli_environments,
                     **(
                         {"policyengine_runtime_root": (args.policyengine_runtime_root)}
                         if getattr(args, "policyengine_runtime_root", None) is not None
@@ -50598,7 +50568,6 @@ def cmd_eval_suite_report(args):
             or preflight_payload.get("schema") != _EVAL_SUITE_RESULTS_SCHEMA
         ):
             raise ValueError("Eval suite result payload uses an unsupported schema")
-        cli_environments = _preflight_eval_suite_output_receivers(result_json.parent)
         payload = _load_verified_eval_suite_archive_payload(
             result_json.parent,
             axiom_rules_path=_resolve_explicit_existing_directory(
@@ -50613,7 +50582,6 @@ def cmd_eval_suite_report(args):
                 args.corpus_path,
                 label="Axiom Corpus",
             ),
-            cli_environments=cli_environments,
             **(
                 {"policyengine_runtime_root": args.policyengine_runtime_root}
                 if getattr(args, "policyengine_runtime_root", None) is not None

@@ -3912,6 +3912,7 @@ def _build_eval_suite_execution_identity(
     *,
     parsed_runners: Sequence[EvalRunnerSpec],
     cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
+    receiver_environments: Mapping[str, object] | None = None,
     policyengine_runtime: PolicyEngineRuntime | None = None,
     suite_retry_attempts: int = _DEFAULT_SUITE_RETRY_ATTEMPTS,
 ) -> dict[str, object]:
@@ -3936,6 +3937,7 @@ def _build_eval_suite_execution_identity(
         "receiver_environments": _eval_receiver_execution_environments(
             parsed_runners,
             cli_environments,
+            receiver_environments=receiver_environments,
         ),
         # Each case-runner receives this full deadline for artifact generation
         # and every retry. Deterministic validation and optional reviewers run
@@ -3971,8 +3973,69 @@ def _build_eval_suite_execution_identity(
 def _eval_receiver_execution_environments(
     parsed_runners: Sequence[EvalRunnerSpec],
     cli_environments: Mapping[str, EvalCliEnvironment] | None,
+    *,
+    receiver_environments: Mapping[str, object] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Return path-free identities for only the local receivers a suite uses."""
+
+    expected_backends = {
+        runner.backend
+        for runner in parsed_runners
+        if runner.backend in {"claude", "codex"}
+    }
+    if receiver_environments is not None:
+        if cli_environments is not None:
+            raise ValueError(
+                "Receiver execution identity cannot combine live and persisted "
+                "CLI environments"
+            )
+        if not isinstance(receiver_environments, Mapping):
+            raise ValueError("Persisted receiver execution identity must be an object")
+        if set(receiver_environments) != expected_backends:
+            raise ValueError(
+                "Persisted receiver execution identity does not exactly match "
+                "the suite's local backends"
+            )
+        persisted_result: dict[str, dict[str, str]] = {}
+        expected_fields = {
+            "cli_version",
+            "launcher_sha256",
+            "native_sha256",
+        }
+        for backend in ("claude", "codex"):
+            if backend not in expected_backends:
+                continue
+            raw_environment = receiver_environments.get(backend)
+            if not isinstance(raw_environment, Mapping):
+                raise ValueError(
+                    f"Persisted {backend} receiver execution identity must be an object"
+                )
+            if set(raw_environment) != expected_fields:
+                raise ValueError(
+                    f"Persisted {backend} receiver execution identity has "
+                    "unexpected or missing fields"
+                )
+            cli_version = raw_environment.get("cli_version")
+            launcher_sha256 = raw_environment.get("launcher_sha256")
+            native_sha256 = raw_environment.get("native_sha256")
+            if (
+                not isinstance(cli_version, str)
+                or not cli_version.strip()
+                or not isinstance(launcher_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", launcher_sha256) is None
+                or not isinstance(native_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", native_sha256) is None
+            ):
+                raise ValueError(
+                    f"Persisted {backend} receiver execution identity is "
+                    "incomplete or malformed"
+                )
+            persisted_result[backend] = {
+                "cli_version": cli_version,
+                "launcher_sha256": launcher_sha256,
+                "native_sha256": native_sha256,
+            }
+        return persisted_result
 
     environments = {} if cli_environments is None else cli_environments
     result: dict[str, dict[str, str]] = {}
