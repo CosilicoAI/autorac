@@ -520,9 +520,30 @@ def _write_test_eval_artifacts(root: Path, name: str) -> dict[str, str]:
     }
 
 
+def _complete_test_eval_result_payload(result: dict) -> dict:
+    """Fill the mandatory v7 integrity and effective-environment evidence."""
+
+    result.setdefault("unexpected_accesses", [])
+    if result.get("backend") == "claude":
+        result.setdefault("claude_cli_version", "2.1.test (Claude Code)")
+    elif result.get("backend") == "codex":
+        result.setdefault("codex_cli_version", "codex-cli 0.test")
+        result.setdefault("codex_cli_sha256", "d" * 64)
+    elif result.get("backend") == "openai":
+        result.setdefault(
+            "openai_endpoint",
+            "https://api.openai.com/v1/responses",
+        )
+        result.setdefault("openai_response_model_id", result.get("model"))
+        result.setdefault("openai_service_tier", "default")
+        result.setdefault("openai_max_output_tokens", 128_000)
+    return result
+
+
 def _bind_test_eval_verdict(result: dict, root: Path, name: str) -> dict:
     """Add the independent validator-verdict artifact required by suite admission."""
 
+    _complete_test_eval_result_payload(result)
     result.setdefault("admission", {})
     payload = _bind_eval_result_payload(result)
     rehydrated = _eval_result_from_payload(payload)
@@ -726,22 +747,7 @@ def _fake_verified_eval_suite_artifacts(
             result_index += 1
             backend = runner_identity["backend"]
             if isinstance(result, dict):
-                if backend == "claude":
-                    result.setdefault(
-                        "claude_cli_version",
-                        "2.1.test (Claude Code)",
-                    )
-                elif backend == "codex":
-                    result.setdefault("codex_cli_version", "codex-cli 0.test")
-                    result.setdefault("codex_cli_sha256", "d" * 64)
-                elif backend == "openai":
-                    result.setdefault(
-                        "openai_endpoint",
-                        "https://api.openai.com/v1/responses",
-                    )
-                    result.setdefault("openai_response_model_id", result.get("model"))
-                    result.setdefault("openai_service_tier", "default")
-                    result.setdefault("openai_max_output_tokens", 128_000)
+                _complete_test_eval_result_payload(result)
             elif backend == "claude":
                 result.claude_cli_version = "2.1.test (Claude Code)"
             elif backend == "codex":
@@ -752,6 +758,15 @@ def _fake_verified_eval_suite_artifacts(
                 result.openai_response_model_id = result.model
                 result.openai_service_tier = "default"
                 result.openai_max_output_tokens = 128_000
+            if not isinstance(result, dict):
+                result.unexpected_accesses = []
+                to_dict_return_value = getattr(
+                    getattr(result, "to_dict", None),
+                    "return_value",
+                    None,
+                )
+                if isinstance(to_dict_return_value, dict):
+                    _complete_test_eval_result_payload(to_dict_return_value)
             admission = {
                 "schema": "axiom-encode/eval-result-admission/v2",
                 "run": {
@@ -4199,6 +4214,7 @@ class TestCmdEvalSuiteRevalidate:
                 ),
             },
         }
+        _complete_test_eval_result_payload(stale_result)
         (source_output / "suite-results.jsonl").write_text(
             json.dumps(
                 {
