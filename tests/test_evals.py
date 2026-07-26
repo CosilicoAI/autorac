@@ -16594,6 +16594,22 @@ class TestReadinessSummary:
         assert summary.mean_policyengine_score == 1.0
         assert summary.ready is False
 
+    def test_policyengine_pass_does_not_require_optional_score(self):
+        result = _fake_eval_result(
+            "runner",
+            "case-a",
+            policyengine_pass=True,
+            policyengine_score=None,
+        )
+
+        assert (
+            evals_module._eval_artifact_validation_error(
+                result.metrics,
+                require_policyengine=True,
+            )
+            is None
+        )
+
     @pytest.mark.parametrize(
         "cost",
         [None, -0.01, float("nan"), float("inf")],

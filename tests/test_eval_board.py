@@ -343,6 +343,7 @@ def _result(
 ):
     if metrics == "default":
         metrics = _metrics()
+    has_generated_artifact = success is True or isinstance(metrics, dict)
     eval_case = {
         "index": case["index"],
         "name": case["name"],
@@ -369,6 +370,16 @@ def _result(
         "timeout_attempts": timeout_attempts,
         "duration_ms": duration_ms,
         "estimated_cost_usd": cost,
+        "output_file": (
+            f"/eval/{runner}/{case['index']}.yaml" if has_generated_artifact else ""
+        ),
+        "generated_output_sha256": "d0" * 32 if has_generated_artifact else None,
+        "trace_file": f"/eval/traces/{runner}/{case['index']}.json",
+        "trace_sha256": "e0" * 32,
+        "context_manifest_file": (
+            f"/eval/workspaces/{runner}/{case['index']}/context-manifest.json"
+        ),
+        "context_manifest_sha256": "f0" * 32,
         "metrics": metrics,
         "eval_case": eval_case,
     }
@@ -948,6 +959,39 @@ def test_fold_refuses_timeout_row_that_claims_a_generated_artifact(tmp_path):
     )
 
     with pytest.raises(EvalBoardError, match="no generated artifact"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize("row_kind", ["success", "metrics_failure"])
+def test_fold_refuses_artifact_rows_without_content_bound_output(tmp_path, row_kind):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    if row_kind == "metrics_failure":
+        results[0].update(
+            success=False,
+            error="Generated RuleSpec failed CI validation",
+            failure_kind="validation",
+        )
+    results[0].update(output_file="", generated_output_sha256=None)
+    path = _write_payload(
+        tmp_path,
+        f"unbound-{row_kind}.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="content-bound generated RuleSpec"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_generated_output_without_trace_context_binding(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0].update(trace_file="", trace_sha256=None)
+    path = _write_payload(
+        tmp_path,
+        "unbound-trace.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="content-bound trace or context manifest"):
         fold_eval_board([path])
 
 
@@ -2513,6 +2557,58 @@ def test_fold_refuses_successful_policyengine_case_without_oracle_evidence(tmp_p
         fold_eval_board([path])
 
 
+def test_fold_refuses_successful_policyengine_case_with_failed_oracle(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(policyengine_pass=False, policyengine_score=None)
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "successful-failed-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="succeeded.*PolicyEngine.*pass"):
+        fold_eval_board([path])
+
+
+def test_fold_accepts_successful_policyengine_case_without_optional_score(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    metrics = _metrics(policyengine_pass=True, policyengine_score=None)
+    metrics["policyengine_runtime_identity"] = copy.deepcopy(runtime["identity"])
+    metrics["policyengine_runtime_identity_sha256"] = runtime["sha256"]
+    path = _write_payload(
+        tmp_path,
+        "successful-scoreless-policyengine.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                _result("terra", case_identities[0], metrics=metrics),
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    board = fold_eval_board([path])
+
+    assert board.runners[0].policyengine_case_count == 1
+    assert board.runners[0].policyengine_pass_rate == 1.0
+
+
 def test_fold_allows_failed_policyengine_case_without_artifact_evidence(tmp_path):
     runtime = _policyengine_runtime_identity()
     case_identities = _case_identities_with_policyengine(1)
@@ -2541,6 +2637,40 @@ def test_fold_allows_failed_policyengine_case_without_artifact_evidence(tmp_path
     board = fold_eval_board([path])
 
     assert board.runners[0].policyengine_case_count == 0
+
+
+def test_fold_refuses_artifact_bearing_policyengine_failure_without_metrics(tmp_path):
+    runtime = _policyengine_runtime_identity()
+    case_identities = _case_identities_with_policyengine(1)
+    result = _result(
+        "terra",
+        case_identities[0],
+        success=False,
+        error="oracle evidence was dropped",
+        metrics=None,
+        failure_kind="error",
+    )
+    result.update(
+        output_file="/eval/terra/1.yaml",
+        generated_output_sha256="d0" * 32,
+    )
+    path = _write_payload(
+        tmp_path,
+        "artifact-without-policyengine-evidence.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [
+                result,
+                _result("terra", case_identities[1]),
+                _result("terra", case_identities[2]),
+            ],
+            case_identities=case_identities,
+            execution_identity=_execution_identity(policyengine_runtime=runtime),
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="PolicyEngine.*artifact.*oracle evidence"):
+        fold_eval_board([path])
 
 
 def test_fold_refuses_oracle_metrics_from_different_policyengine_runtime(tmp_path):
