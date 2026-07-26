@@ -10,9 +10,9 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, runner timeouts, PolicyEngine runtime) — compared
-after dropping location-only fields, so the same toolchain checked out at
-different paths still folds. The manifest content hash may differ
+content/toolchain/waivers, the overall case budget, runner timeouts,
+PolicyEngine runtime) — compared after dropping location-only fields, so the
+same toolchain checked out at different paths still folds. The manifest content hash may differ
 (single-runner variants of one suite differ byte-wise but share case
 identities), and runner sets may differ — that is the add-a-model path.
 Duplicate runner names across payloads are refused rather than merged: two
@@ -299,8 +299,8 @@ def normalized_execution_identity(
 
     Checkout paths (and digests computed over structures that embed them)
     differ across machines and directories without affecting scores; every
-    other field — commits, content hashes, waiver digests, versions, and
-    runner timeouts — is score-affecting and must match exactly. The
+    other field — commits, content hashes, waiver digests, versions, the case
+    budget, and runner timeouts — is score-affecting and must match exactly. The
     `policyengine_runtime`
     subtree uses the extended location-key set because its sealed-runtime
     identity embeds venv/stdlib/interpreter locations.
@@ -423,6 +423,16 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"Suite results execution identity carries schema {schema!r}; "
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
+        )
+    case_timeout_seconds = identity.get("case_timeout_seconds")
+    if (
+        isinstance(case_timeout_seconds, bool)
+        or not isinstance(case_timeout_seconds, int)
+        or case_timeout_seconds <= 0
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"overall case timeout: {source}"
         )
     runner_timeouts = identity.get("runner_timeouts")
     claude_timeout = (

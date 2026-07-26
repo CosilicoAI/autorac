@@ -12762,8 +12762,7 @@ cases:
         with patch(
             "axiom_encode.harness.evals.run_source_eval",
             side_effect=[
-                subprocess.TimeoutExpired(["claude"], timeout=600)
-                for _ in range(3)
+                subprocess.TimeoutExpired(["claude"], timeout=600) for _ in range(3)
             ],
         ) as mock_source:
             [result] = run_eval_suite(
@@ -13542,6 +13541,7 @@ cases:
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
                 "schema": "axiom-encode/eval-execution-identity/v3",
+                "case_timeout_seconds": 3600,
                 "runner_timeouts": {
                     "claude": {"wall_seconds": 1800},
                 },
