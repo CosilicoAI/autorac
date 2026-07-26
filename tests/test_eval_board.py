@@ -711,7 +711,7 @@ def test_fold_refuses_execution_identity_without_case_budget(tmp_path):
         ),
     )
 
-    with pytest.raises(EvalBoardError, match="overall case timeout"):
+    with pytest.raises(EvalBoardError, match="generation/retry case timeout"):
         fold_eval_board([path])
 
 
@@ -990,7 +990,7 @@ def test_fold_refuses_mismatched_codex_timeout(tmp_path):
         fold_eval_board([left, right])
 
 
-def test_fold_refuses_mismatched_overall_case_timeout(tmp_path):
+def test_fold_refuses_mismatched_generation_retry_case_timeout(tmp_path):
     left = _write_payload(
         tmp_path,
         "left.json",

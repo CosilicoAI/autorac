@@ -10,13 +10,13 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, overall case budget, backend timeout policy, timeout
-retry policy, PolicyEngine runtime) — compared after dropping location-only
-fields, so the same toolchain checked out at different paths still folds. The
-manifest content hash may differ (single-runner variants of one suite differ
-byte-wise but share case identities), and runner sets may differ — that is the
-add-a-model path. Duplicate runner names across payloads are refused rather
-than merged: two runs of one runner are two boards, not one.
+content/toolchain/waivers, generation/retry case budget, backend timeout policy,
+timeout retry policy, PolicyEngine runtime) — compared after dropping
+location-only fields, so the same toolchain checked out at different paths still
+folds. The manifest content hash may differ (single-runner variants of one suite
+differ byte-wise but share case identities), and runner sets may differ — that
+is the add-a-model path. Duplicate runner names across payloads are refused
+rather than merged: two runs of one runner are two boards, not one.
 
 The board consumes canonical v6 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
@@ -463,7 +463,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
     if not _is_positive_int(case_timeout_seconds):
         raise EvalBoardError(
             "Suite results execution identity has a missing or malformed "
-            f"overall case timeout: {source}"
+            f"generation/retry case timeout: {source}"
         )
     runner_timeouts = identity.get("runner_timeouts")
     claude_timeout = (
@@ -934,7 +934,8 @@ def fold_eval_board(
                         "Suite results are not comparable: score-affecting "
                         f"execution identity in {source} does not match "
                         f"{reference_source} (encoder, rules engine, RuleSpec "
-                        "content/toolchain/waivers, case budget, runner "
+                        "content/toolchain/waivers, generation/retry case "
+                        "budget, runner "
                         "timeouts/retries, or PolicyEngine runtime differ; "
                         "checkout locations are ignored). Re-run on "
                         "one toolchain, or pass --allow-mixed-toolchains to "

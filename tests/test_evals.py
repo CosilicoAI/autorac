@@ -13550,6 +13550,20 @@ cases:
         assert result.timeout_attempts == 1
         assert "case budget" in (result.error or "").lower()
 
+    def test_case_budget_scope_does_not_relabel_completed_artifact_outcome(self):
+        result = _fake_eval_result("openai-gpt", "case-one")
+
+        evals_module._mark_suite_case_budget_timeout(
+            [result],
+            timeout_seconds=10,
+        )
+
+        assert result.success is True
+        assert result.output_file
+        assert result.metrics is not None
+        assert result.failure_kind is None
+        assert result.timed_out is False
+
     def test_suite_timeout_history_does_not_promote_later_error_to_timeout(
         self,
     ):
@@ -14555,7 +14569,7 @@ cases:
         }
         monkeypatch.setenv("AXIOM_ENCODE_EVAL_CASE_TIMEOUT_SECONDS", "3600")
 
-        with pytest.raises(ValueError, match="overall case timeout"):
+        with pytest.raises(ValueError, match="generation/retry case timeout"):
             _validate_eval_suite_execution_identity(
                 payload,
                 _test_eval_suite_execution_identity(),
