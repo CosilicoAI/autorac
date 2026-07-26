@@ -6775,6 +6775,7 @@ def _source_boundary_obligations(
         }:
             continue
         direct_text = authoritative_numeric_recall_text(branch.text)
+        direct_inventory = tuple(extract_numeric_occurrences(direct_text))
         for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
             if not re.search(
@@ -6800,6 +6801,12 @@ def _source_boundary_obligations(
                 (branch, boundary)
                 for boundary in (interval.lower, interval.upper)
                 if boundary is not None
+                and any(
+                    boundary.start == occurrence.start
+                    and boundary.end == occurrence.end
+                    and _numeric_occurrences_are_equivalent(boundary, occurrence)
+                    for occurrence in direct_inventory
+                )
             )
     for branch in narrative_formula_branches:
         interval = _formula_branch_interval(

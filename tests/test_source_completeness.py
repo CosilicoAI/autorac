@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ def _analyze(
     content: str,
     authoritative_source_text: str,
     *,
+    corpus_citation_path: str = CORPUS_CITATION_PATH,
     test_cases: list[object] | None = None,
     artifact_numeric_values: tuple[float, ...] | None = None,
     artifact_numeric_bindings: tuple[tuple[str, float], ...] | None = None,
@@ -40,7 +42,7 @@ def _analyze(
     return analyze_complete_source_unit(
         content,
         authoritative_source_text,
-        corpus_citation_path=CORPUS_CITATION_PATH,
+        corpus_citation_path=corpus_citation_path,
         test_cases=test_cases,
         extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
         extract_named_scalars=extract_named_scalar_occurrences,
@@ -62,6 +64,7 @@ def _pipeline_issues(
     content: str,
     authoritative_source_text: str,
     *,
+    corpus_citation_path: str = CORPUS_CITATION_PATH,
     test_cases: list[object] | None = None,
 ) -> list[str]:
     pipeline = ValidatorPipeline(
@@ -74,7 +77,7 @@ def _pipeline_issues(
     return pipeline._complete_source_unit_issues(
         content,
         validation_source_texts={
-            CORPUS_CITATION_PATH: authoritative_source_text,
+            corpus_citation_path: authoritative_source_text,
         },
         test_cases=test_cases,
     )
@@ -416,6 +419,253 @@ rules:
     assert not result.issues
     assert result.source_numeric_occurrence_count == 1
     assert result.covered_source_numeric_occurrence_count == 1
+
+
+SVBEZGRV_2025_SECTION_1_BODY = (
+    "Die Bezugsgröße nach § 18 Absatz 1 des Vierten Buches Sozialgesetzbuch "
+    "für das Jahr 2025 beträgt 44 940 Euro. Umgerechnet auf den Monat ergeben "
+    "sich 3 745 Euro."
+)
+SVBEZGRV_2025_SECTION_2_BODY = (
+    "(1) Die Jahresarbeitsentgeltgrenze nach § 6 Absatz 6 des Fünften Buches "
+    "Sozialgesetzbuch wird für das Jahr 2025 auf 73 800 Euro festgesetzt. "
+    "Umgerechnet auf den Monat ergeben sich 6 150 Euro.\n"
+    "(2) Die Jahresarbeitsentgeltgrenze nach § 6 Absatz 7 des Fünften Buches "
+    "Sozialgesetzbuch wird für das Jahr 2025 auf 66 150 Euro festgesetzt. "
+    "Umgerechnet auf den Monat ergeben sich 5 512,50 Euro."
+)
+MINUHV_SECTION_1_BODY = (
+    "Der monatliche Mindestunterhalt minderjähriger Kinder gemäß § 1612a "
+    "Absatz 1 des Bürgerlichen Gesetzbuchs beträgt\n"
+    "1. in der ersten Altersstufe (§ 1612a Absatz 1 Satz 3 Nummer 1 des "
+    "Bürgerlichen Gesetzbuchs) 482 Euro ab dem 1. Januar 2025 und 486 Euro "
+    "ab dem 1. Januar 2026,\n"
+    "2. in der zweiten Altersstufe (§ 1612a Absatz 1 Satz 3 Nummer 2 des "
+    "Bürgerlichen Gesetzbuchs) 554 Euro ab dem 1. Januar 2025 und 558 Euro "
+    "ab dem 1. Januar 2026,\n"
+    "3. in der dritten Altersstufe (§ 1612a Absatz 1 Satz 3 Nummer 3 des "
+    "Bürgerlichen Gesetzbuchs) 649 Euro ab dem 1. Januar 2025 und 653 Euro "
+    "ab dem 1. Januar 2026."
+)
+
+
+def test_exact_svbezgrv_2025_section_1_excludes_temporal_year_from_recall():
+    citation_path = "de/regulation/svbezgrv-2025/1"
+    assert (
+        hashlib.sha256(SVBEZGRV_2025_SECTION_1_BODY.encode()).hexdigest()
+        == "c2ab73a6ea8b7573c7073a340e2ec0714b44a50e70390d62cb46f741da614694"
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: annual_reference_amount
+    kind: parameter
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 44940
+  - name: monthly_reference_amount
+    kind: parameter
+    dtype: Money
+    source: {citation_path}
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 3745
+"""
+
+    result = _analyze(
+        content,
+        SVBEZGRV_2025_SECTION_1_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+    assert not result.issues
+    assert (
+        result.source_numeric_occurrence_count,
+        result.covered_source_numeric_occurrence_count,
+        result.missing_source_numeric_occurrence_count,
+    ) == (2, 2, 0)
+    assert not _pipeline_issues(
+        content,
+        SVBEZGRV_2025_SECTION_1_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+
+def test_exact_svbezgrv_2025_section_2_excludes_temporal_years_from_recall():
+    citation_path = "de/regulation/svbezgrv-2025/2"
+    assert (
+        hashlib.sha256(SVBEZGRV_2025_SECTION_2_BODY.encode()).hexdigest()
+        == "becd570c345b18381e5edd54a33754085b0ba1f80e879de6af961c07a9192bf4"
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: general_annual_income_limit
+    kind: parameter
+    dtype: Money
+    source: {citation_path}(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 73800
+  - name: general_monthly_income_limit
+    kind: parameter
+    dtype: Money
+    source: {citation_path}(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 6150
+  - name: special_annual_income_limit
+    kind: parameter
+    dtype: Money
+    source: {citation_path}(2)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 66150
+  - name: special_monthly_income_limit
+    kind: parameter
+    dtype: Money
+    source: {citation_path}(2)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 5512.5
+"""
+
+    result = _analyze(
+        content,
+        SVBEZGRV_2025_SECTION_2_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+    assert not result.issues
+    assert (
+        result.source_numeric_occurrence_count,
+        result.covered_source_numeric_occurrence_count,
+        result.missing_source_numeric_occurrence_count,
+    ) == (4, 4, 0)
+    assert not _pipeline_issues(
+        content,
+        SVBEZGRV_2025_SECTION_2_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+
+def test_exact_minuhv_section_1_excludes_date_and_nummer_values_from_recall():
+    citation_path = "de/regulation/minuhv/1"
+    assert (
+        hashlib.sha256(MINUHV_SECTION_1_BODY.encode()).hexdigest()
+        == "dc5fe67760f3cd298fd3ce3c7fa2625e4ea1bb60216be9cf05353316c44c3b7a"
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules:
+  - name: first_age_band_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}(1)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 482
+      - effective_from: '2026-01-01'
+        formula: 486
+  - name: second_age_band_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}(2)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 554
+      - effective_from: '2026-01-01'
+        formula: 558
+  - name: third_age_band_amount
+    kind: derived
+    dtype: Money
+    source: {citation_path}(3)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 649
+      - effective_from: '2026-01-01'
+        formula: 653
+"""
+    test_cases = [
+        {
+            "name": "2025",
+            "period": "2025",
+            "input": {},
+            "output": {
+                "first_age_band_amount": 482,
+                "second_age_band_amount": 554,
+                "third_age_band_amount": 649,
+            },
+        },
+        {
+            "name": "2026",
+            "period": "2026",
+            "input": {},
+            "output": {
+                "first_age_band_amount": 486,
+                "second_age_band_amount": 558,
+                "third_age_band_amount": 653,
+            },
+        },
+    ]
+
+    result = _analyze(
+        content,
+        MINUHV_SECTION_1_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=test_cases,
+    )
+
+    assert not result.issues
+    assert (
+        result.source_numeric_occurrence_count,
+        result.covered_source_numeric_occurrence_count,
+        result.missing_source_numeric_occurrence_count,
+    ) == (6, 6, 0)
+    assert not _pipeline_issues(
+        content,
+        MINUHV_SECTION_1_BODY,
+        corpus_citation_path=citation_path,
+        test_cases=test_cases,
+    )
+
+
+def test_year_shaped_money_still_requires_complete_mode_representation():
+    citation_path = "de/regulation/example/1"
+    source = "Die Pauschale beträgt 2025 Euro."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+    assert result.source_numeric_occurrence_count == 1
+    assert result.missing_source_numeric_occurrence_count == 1
+    assert _has_issue(result, "2025", "numeric-recall")
 
 
 @pytest.mark.parametrize(
