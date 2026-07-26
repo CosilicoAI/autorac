@@ -166,6 +166,8 @@ def _citation_rulespec_path(citation: str) -> tuple[str, PurePosixPath]:
 def _is_regular_file_beneath(root: Path, relative: PurePosixPath) -> bool:
     """Reject files reached through any symlink beneath the checkout root."""
 
+    if root.is_symlink() or not root.is_dir():
+        return False
     cursor = root
     for part in relative.parts:
         cursor /= part

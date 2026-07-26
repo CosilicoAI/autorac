@@ -278,6 +278,36 @@ def test_validate_dependent_cascade_rejects_symlinked_replacement_parent(
         )
 
 
+def test_validate_dependent_cascade_rejects_symlinked_jurisdiction_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    repo.mkdir()
+    outside = tmp_path / "outside-us"
+    _write_module(
+        outside.parent / "rulespec-outside",
+        "policies/income_tax/target.yaml",
+    )
+    outside_source = outside.parent / "rulespec-outside" / "us"
+    (repo / "us").symlink_to(outside_source, target_is_directory=True)
+    _write_module(
+        outside.parent / "rulespec-outside",
+        "regulations/42-cfr/435/559.yaml",
+        imports=("us:policies/income_tax/target#target_rule",),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="target citation has no regular baseline RuleSpec module",
+    ):
+        validate_dependent_cascade(
+            repo,
+            "us/regulation/42/435/555",
+            "us/regulation/42/435/559",
+            target_rulespec_path="us/policies/income_tax/target.yaml",
+        )
+
+
 def test_validate_dependent_cascade_rejects_unrelated_dependent(
     tmp_path: Path,
 ) -> None:
