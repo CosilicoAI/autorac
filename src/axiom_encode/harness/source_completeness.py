@@ -237,7 +237,8 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"\d+(?:[.,]\d+)?\s*-?fach(?:e[nsrm]?)?|"
     r"(?:vermindert|erhöht|gekürzt|vermehrt)\s+um|"
     r"(?:erhöht|mindert|vermindert|kürzt|vermehrt)\s+sich\s+um|"
-    r"(?:abzüglich|zuzüglich)|prozent\s+(?:des|der|von)|"
+    r"(?:abzüglich|zuzüglich|plus|minus)|"
+    r"(?:prozent|\d+(?:[.,]\d+)?\s*%)\s+(?:des|der|von|of)|"
     r"\d+(?:[.,]\d+)?\s+(?:vom\s+hundert|v\.?\s*h\.?)\s+"
     r"(?:des|der|von)|"
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
@@ -2339,14 +2340,14 @@ def _formula_operation_kinds(text: str) -> set[str]:
     lowered_text = text.lower()
     operation_patterns = {
         "add": (
-            r"(?:\+|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
+            r"(?:\+|\bplus\b|\bsumme\b|\bsum\s+of\b|\bzuzüglich\b|"
             r"\b(?:summieren|addieren)\b|"
             r"\berhöh\w*\s+(?:sich\s+)?um\b|"
             r"\bum\s+(?:\d+(?:[.,]\d+)?|[a-zäöüß]+)\s+zu\s+"
             r"(?:erhöhen|vermehren)\b)"
         ),
         "subtract": (
-            r"(?:\s[−–-]\s|\bunterschied\b|\bdifferenz\b|"
+            r"(?:\s[−–-]\s|\bminus\b|\bunterschied\b|\bdifferenz\b|"
             r"\bdifference\s+between\b|\babzüglich\b|"
             r"\b(?:vermindern|kürzen)\b|"
             r"\b(?:vermindert|gekürzt|mindert|kürzt)\w*\s+"
@@ -2355,7 +2356,8 @@ def _formula_operation_kinds(text: str) -> set[str]:
             r"(?:vermindern|kürzen)\b)"
         ),
         "multiply": (
-            r"(?:[*×·•∗∙]|\bprodukt\b|\bproduct\s+of\b|"
+            r"(?:[*×·•∗∙]|\d+(?:[.,]\d+)?\s*%\s+(?:des|der|von|of)\b|"
+            r"\bprodukt\b|\bproduct\s+of\b|"
             r"\b(?:multiplied|multiply|multiplication|multipliziert|"
             r"multiplizieren|multiplikation)\b|\bvervielfach\w*\b|\bmal\b|"
             r"\b(?:verfünf|versechs|versieben|veracht|verneun|verzehn)"
@@ -4637,7 +4639,8 @@ def _formula_interval_from_text(
 ) -> _NumericInterval | None:
     lowered = text.lower()
     keyword = re.search(
-        r"\b(?:zwischen|between|von(?!\s+(?:höchstens|mindestens))|"
+        r"\b(?:zwischen|between|von\s+mehr\s+als|"
+        r"von(?!\s+(?:höchstens|mindestens))|"
         r"from|unter|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
         r"at\s+most|über|more\s+than|above|ab|at\s+least|mindestens)\b",
@@ -4681,7 +4684,10 @@ def _formula_interval_from_text(
         lowered_range,
     ):
         return _NumericInterval(None, False, occurrences[0], True)
-    if re.match(r"(?:über|more\s+than|above)\b", lowered_range):
+    if re.match(
+        r"(?:über|more\s+than|above|von\s+mehr\s+als)\b",
+        lowered_range,
+    ):
         return _NumericInterval(occurrences[0], False, None, False)
     if re.match(
         r"(?:von|ab|from|at\s+least|mindestens)\b",
