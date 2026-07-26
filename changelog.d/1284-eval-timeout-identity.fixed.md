@@ -12,9 +12,12 @@ Capability boards require the complete v3 identity, validate every nested
 checkout and nonempty directory RuleSpec-root field, verify the complete sealed
 PolicyEngine runtime-v2 identity and wrapper digest, require that runtime
 whenever result rows carry PolicyEngine oracle evidence, and refuse missing or
-unexpected toolchain fields. Terminal encoder timeout evidence stops
-suite-level retries, bounding Claude and Codex timeout paths to the two
-documented artifact-generation attempts instead of six.
+unexpected toolchain fields. Git checkout identities must carry exactly the
+producer-owned scope for the encoder and each RuleSpec root, while the rules
+engine must remain whole-checkout scoped; a real producer-to-board admission
+lock protects that contract. Terminal encoder timeout evidence stops suite-level
+retries, bounding Claude and Codex timeout paths to the two documented
+artifact-generation attempts instead of six.
 Runtime retry loops now consume the same bound constants, and completed
 historical runs recover their digest-verified suite retry count before
 rebuilding the live identity, so nondefault policies remain verifiable without
