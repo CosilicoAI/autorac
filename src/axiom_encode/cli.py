@@ -48528,6 +48528,58 @@ _EVAL_SUITE_ARCHIVE_CONTROL_FILES = {
 }
 _EVAL_SUITE_ARCHIVE_COMPANION_TEST_MAX_BYTES = 32 * 1024 * 1024
 _EVAL_SUITE_ARCHIVE_INDEX_MAX_BYTES = 64 * 1024 * 1024
+_EVAL_SUITE_ARCHIVE_METADATA_SCHEMA = "axiom-encode/eval-suite-archive-metadata/v1"
+_EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_SCHEMA = (
+    "axiom-encode/eval-suite-archive-index-migration/v1"
+)
+_EVAL_SUITE_ARCHIVE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
+_EVAL_SUITE_ARCHIVE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v8"
+_EVAL_SUITE_ARCHIVE_EXECUTION_IDENTITY_SCHEMA = (
+    "axiom-encode/eval-execution-identity/v5"
+)
+_EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V1_FIELDS = frozenset(
+    {
+        "archived_at",
+        "source_output",
+        "archive_dir",
+        "manifest",
+        "status",
+        "started_at",
+        "finished_at",
+        "total_cases",
+        "completed_cases",
+        "result_count",
+        "all_ready",
+        "rewritten_files",
+    }
+)
+_EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V2_FIELDS = frozenset(
+    {
+        *_EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V1_FIELDS,
+        "run_id",
+        "evidence_sha256",
+        "results_sha256",
+    }
+)
+_EVAL_SUITE_ARCHIVE_METADATA_FIELDS = frozenset(
+    {
+        *_EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V2_FIELDS,
+        "schema",
+        "results_schema",
+        "summary_schema",
+        "execution_identity_schema",
+        "execution_identity_sha256",
+        "runner_efforts",
+    }
+)
+_EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_FIELDS = frozenset(
+    {
+        "schema",
+        "from_metadata_schema",
+        "to_metadata_schema",
+        "legacy_rows",
+    }
+)
 
 
 def _eval_suite_archive_relative_path(
@@ -48859,6 +48911,220 @@ def _rewrite_archived_eval_suite_json_files(
     return rewritten_files
 
 
+def _is_eval_suite_archive_sha256(value: object) -> bool:
+    """Return whether a registry value is one canonical SHA-256 digest."""
+
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_eval_suite_archive_common_metadata(
+    metadata: dict,
+    *,
+    require_digests: bool,
+) -> None:
+    """Validate fields shared by historical and versioned archive metadata."""
+
+    for field in ("archived_at", "source_output", "archive_dir"):
+        value = metadata.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"Eval-suite archive metadata has malformed {field}")
+    if not isinstance(metadata.get("manifest"), dict):
+        raise ValueError("Eval-suite archive metadata has malformed manifest")
+    for field in ("status", "started_at", "finished_at"):
+        value = metadata.get(field)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"Eval-suite archive metadata has malformed {field}")
+    for field in (
+        "total_cases",
+        "completed_cases",
+        "result_count",
+    ):
+        value = metadata.get(field)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise ValueError(f"Eval-suite archive metadata has malformed {field}")
+    all_ready = metadata.get("all_ready")
+    if all_ready is not None and not isinstance(all_ready, bool):
+        raise ValueError("Eval-suite archive metadata has malformed all_ready")
+    rewritten_files = metadata.get("rewritten_files")
+    if (
+        not isinstance(rewritten_files, list)
+        or any(not isinstance(item, str) or not item for item in rewritten_files)
+        or len(rewritten_files) != len(set(rewritten_files))
+    ):
+        raise ValueError("Eval-suite archive metadata has malformed rewritten_files")
+
+    if "run_id" in metadata:
+        run_id = metadata.get("run_id")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("Eval-suite archive metadata has malformed run_id")
+    for field in ("evidence_sha256", "results_sha256"):
+        if field not in metadata:
+            continue
+        value = metadata.get(field)
+        if (require_digests or value is not None) and not (
+            _is_eval_suite_archive_sha256(value)
+        ):
+            raise ValueError(f"Eval-suite archive metadata has malformed {field}")
+
+
+def _validated_eval_suite_archive_runner_efforts(
+    runner_efforts: object,
+) -> list[dict]:
+    """Return an exact copy of one valid persisted receiver-effort identity."""
+
+    if not isinstance(runner_efforts, list) or not runner_efforts:
+        raise ValueError("Eval-suite archive metadata has malformed runner efforts")
+    validated: list[dict] = []
+    names: set[str] = set()
+    expected_fields = {
+        "name",
+        "requested_effort",
+        "uses_receiver_default",
+    }
+    for index, effort in enumerate(runner_efforts, start=1):
+        if not isinstance(effort, dict) or set(effort) != expected_fields:
+            raise ValueError(
+                f"Eval-suite archive metadata has malformed runner effort {index}"
+            )
+        name = effort.get("name")
+        requested_effort = effort.get("requested_effort")
+        uses_receiver_default = effort.get("uses_receiver_default")
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError(
+                "Eval-suite archive metadata has malformed runner effort "
+                f"name at index {index}"
+            )
+        if requested_effort is not None and (
+            not isinstance(requested_effort, str) or not requested_effort
+        ):
+            raise ValueError(
+                "Eval-suite archive metadata has malformed requested effort "
+                f"at index {index}"
+            )
+        if not isinstance(uses_receiver_default, bool) or uses_receiver_default != (
+            requested_effort is None
+        ):
+            raise ValueError(
+                "Eval-suite archive metadata has inconsistent receiver-default "
+                f"marker at runner effort {index}"
+            )
+        names.add(name)
+        validated.append(copy.deepcopy(effort))
+    return validated
+
+
+def _validate_eval_suite_archive_metadata(metadata: object) -> None:
+    """Require one exact versioned archive-registry metadata row."""
+
+    if not isinstance(metadata, dict):
+        raise ValueError("Eval-suite archive metadata must be a JSON object")
+    fields = set(metadata)
+    unexpected = sorted(fields - _EVAL_SUITE_ARCHIVE_METADATA_FIELDS)
+    if unexpected:
+        raise ValueError(
+            "Eval-suite archive metadata has unexpected fields: "
+            + ", ".join(unexpected)
+        )
+    missing = sorted(_EVAL_SUITE_ARCHIVE_METADATA_FIELDS - fields)
+    if missing:
+        raise ValueError(
+            "Eval-suite archive metadata is missing fields: " + ", ".join(missing)
+        )
+    if metadata.get("schema") != _EVAL_SUITE_ARCHIVE_METADATA_SCHEMA:
+        raise ValueError("Eval-suite archive metadata uses an unsupported schema")
+    if metadata.get("results_schema") != _EVAL_SUITE_ARCHIVE_RESULTS_SCHEMA:
+        raise ValueError(
+            "Eval-suite archive metadata uses an unsupported results schema"
+        )
+    if metadata.get("summary_schema") != _EVAL_SUITE_ARCHIVE_SUMMARY_SCHEMA:
+        raise ValueError(
+            "Eval-suite archive metadata uses an unsupported summary schema"
+        )
+    if (
+        metadata.get("execution_identity_schema")
+        != _EVAL_SUITE_ARCHIVE_EXECUTION_IDENTITY_SCHEMA
+    ):
+        raise ValueError(
+            "Eval-suite archive metadata uses an unsupported execution identity schema"
+        )
+    if not _is_eval_suite_archive_sha256(metadata.get("execution_identity_sha256")):
+        raise ValueError(
+            "Eval-suite archive metadata has malformed execution identity digest"
+        )
+    _validate_eval_suite_archive_common_metadata(
+        metadata,
+        require_digests=True,
+    )
+    _validated_eval_suite_archive_runner_efforts(metadata.get("runner_efforts"))
+
+
+def _validate_eval_suite_archive_legacy_metadata(metadata: dict) -> None:
+    """Accept only the two exact schema-less archive metadata generations."""
+
+    fields = frozenset(metadata)
+    if fields not in {
+        _EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V1_FIELDS,
+        _EVAL_SUITE_ARCHIVE_LEGACY_METADATA_V2_FIELDS,
+    }:
+        raise ValueError(
+            "Eval-suite archive index has an unrecognized legacy metadata shape"
+        )
+    _validate_eval_suite_archive_common_metadata(
+        metadata,
+        require_digests=False,
+    )
+
+
+def _eval_suite_archive_index_migration_boundary(legacy_rows: int) -> dict:
+    """Build the sole marker separating known legacy and versioned rows."""
+
+    return {
+        "schema": _EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_SCHEMA,
+        "from_metadata_schema": "unversioned-known-legacy",
+        "to_metadata_schema": _EVAL_SUITE_ARCHIVE_METADATA_SCHEMA,
+        "legacy_rows": legacy_rows,
+    }
+
+
+def _validate_eval_suite_archive_index_migration_boundary(
+    row: dict,
+    *,
+    observed_legacy_rows: int,
+) -> None:
+    """Validate one migration marker against the preceding legacy segment."""
+
+    if set(row) != _EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_FIELDS:
+        raise ValueError("Eval-suite archive index has a malformed migration boundary")
+    legacy_rows = row.get("legacy_rows")
+    if (
+        isinstance(legacy_rows, bool)
+        or not isinstance(legacy_rows, int)
+        or legacy_rows <= 0
+    ):
+        raise ValueError("Eval-suite archive index has a malformed migration boundary")
+    if row != _eval_suite_archive_index_migration_boundary(observed_legacy_rows):
+        if legacy_rows != observed_legacy_rows:
+            raise ValueError(
+                "Eval-suite archive index migration boundary legacy row count "
+                "is inconsistent"
+            )
+        raise ValueError("Eval-suite archive index has a malformed migration boundary")
+
+
+def _load_eval_suite_archive_json_object(path: Path, *, artifact_name: str) -> dict:
+    """Load one required archive control object."""
+
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Archived {artifact_name} is malformed") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Archived {artifact_name} must contain a JSON object")
+    return payload
+
+
 def _build_eval_suite_archive_metadata(
     archive_dir: Path,
     source_root: Path,
@@ -48866,15 +49132,68 @@ def _build_eval_suite_archive_metadata(
     *,
     published_archive_dir: Path | None = None,
 ) -> dict:
-    """Build a compact metadata record for an archived suite snapshot."""
+    """Build versioned metadata bound to the archived suite and effort identity."""
+
     published_dir = published_archive_dir or archive_dir
     state_path = archive_dir / "suite-run.json"
-    summary_path = archive_dir / "summary.json"
-    results_path = archive_dir / "results.json"
+    state = (
+        _load_eval_suite_archive_json_object(
+            state_path,
+            artifact_name="suite-run.json",
+        )
+        if state_path.exists()
+        else {}
+    )
+    summary = _load_eval_suite_archive_json_object(
+        archive_dir / "summary.json",
+        artifact_name="summary.json",
+    )
+    results = _load_eval_suite_archive_json_object(
+        archive_dir / "results.json",
+        artifact_name="results.json",
+    )
+    results_schema = results.get("schema")
+    summary_schema = summary.get("schema")
+    if results_schema != _EVAL_SUITE_ARCHIVE_RESULTS_SCHEMA:
+        raise ValueError("Archived results.json uses an unsupported results schema")
+    if summary_schema != _EVAL_SUITE_ARCHIVE_SUMMARY_SCHEMA:
+        raise ValueError("Archived summary.json uses an unsupported summary schema")
 
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
-    results = json.loads(results_path.read_text()) if results_path.exists() else {}
+    evidence = results.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("Archived results.json has malformed execution evidence")
+    if summary.get("evidence") != evidence:
+        raise ValueError(
+            "Archived summary.json execution evidence differs from results.json"
+        )
+    execution_identity = evidence.get("execution_identity")
+    execution_identity_sha256 = evidence.get("execution_identity_sha256")
+    if not isinstance(execution_identity, dict):
+        raise ValueError("Archived results.json has malformed execution identity")
+    if (
+        execution_identity.get("schema")
+        != _EVAL_SUITE_ARCHIVE_EXECUTION_IDENTITY_SCHEMA
+    ):
+        raise ValueError(
+            "Archived results.json uses an unsupported execution identity schema"
+        )
+    if not isinstance(
+        execution_identity_sha256, str
+    ) or execution_identity_sha256 != _eval_suite_execution_identity_sha256(
+        execution_identity
+    ):
+        raise ValueError(
+            "Archived results.json has an inconsistent execution identity digest"
+        )
+    runner_efforts = _validated_eval_suite_archive_runner_efforts(
+        execution_identity.get("runner_efforts")
+    )
+    coverage = results.get("coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError("Archived results.json has malformed coverage")
+    result_rows = results.get("results")
+    if not isinstance(result_rows, list):
+        raise ValueError("Archived results.json has malformed results")
     manifest = (
         state.get("manifest")
         or summary.get("manifest")
@@ -48882,7 +49201,8 @@ def _build_eval_suite_archive_metadata(
         or {}
     )
 
-    return {
+    metadata = {
+        "schema": _EVAL_SUITE_ARCHIVE_METADATA_SCHEMA,
         "archived_at": _utc_now_iso(),
         "source_output": str(source_root),
         "archive_dir": str(published_dir),
@@ -48893,14 +49213,19 @@ def _build_eval_suite_archive_metadata(
         "finished_at": state.get("finished_at"),
         "total_cases": state.get("total_cases"),
         "completed_cases": state.get("completed_cases"),
-        "result_count": state.get(
-            "result_count", len(results.get("results", []) or [])
-        ),
+        "result_count": state.get("result_count", len(result_rows)),
         "all_ready": summary.get("all_ready"),
-        "evidence_sha256": (results.get("evidence") or {}).get("sha256"),
-        "results_sha256": (results.get("coverage") or {}).get("results_sha256"),
-        "rewritten_files": rewritten_files,
+        "evidence_sha256": evidence.get("sha256"),
+        "results_sha256": coverage.get("results_sha256"),
+        "rewritten_files": list(rewritten_files),
+        "results_schema": results_schema,
+        "summary_schema": summary_schema,
+        "execution_identity_schema": execution_identity["schema"],
+        "execution_identity_sha256": execution_identity_sha256,
+        "runner_efforts": runner_efforts,
     }
+    _validate_eval_suite_archive_metadata(metadata)
+    return metadata
 
 
 @contextlib.contextmanager
@@ -49007,15 +49332,15 @@ def _fsync_eval_suite_archive_tree(root: Path) -> None:
             os.close(directory_fd)
 
 
-def _read_eval_suite_archive_index(root_fd: int) -> bytes:
-    """Safely read and validate the current archive index, if present."""
+def _read_eval_suite_archive_index(root_fd: int) -> tuple[bytes, int]:
+    """Read the index and return bytes plus legacy rows awaiting a boundary."""
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         index_fd = os.open("index.jsonl", flags, dir_fd=root_fd)
     except FileNotFoundError:
-        return b""
+        return b"", 0
     except OSError as exc:
         raise ValueError("Eval-suite archive index cannot be opened safely") from exc
     try:
@@ -49047,6 +49372,9 @@ def _read_eval_suite_archive_index(root_fd: int) -> bytes:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Eval-suite archive index is not valid UTF-8") from exc
+    legacy_rows = 0
+    saw_migration_boundary = False
+    saw_versioned_metadata = False
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
@@ -49060,16 +49388,87 @@ def _read_eval_suite_archive_index(root_fd: int) -> bytes:
             raise ValueError(
                 f"Eval-suite archive index has a non-object row at line {line_number}"
             )
-    return raw
+        schema = row.get("schema")
+        if schema is None:
+            if saw_versioned_metadata:
+                raise ValueError(
+                    "Eval-suite archive index has legacy metadata after versioned "
+                    f"metadata at line {line_number}"
+                )
+            if saw_migration_boundary:
+                raise ValueError(
+                    "Eval-suite archive index has legacy metadata after its "
+                    f"migration boundary at line {line_number}"
+                )
+            _validate_eval_suite_archive_legacy_metadata(row)
+            legacy_rows += 1
+            continue
+        if schema == _EVAL_SUITE_ARCHIVE_INDEX_MIGRATION_SCHEMA:
+            if saw_migration_boundary:
+                raise ValueError(
+                    "Eval-suite archive index has a duplicate migration boundary "
+                    f"at line {line_number}"
+                )
+            if saw_versioned_metadata:
+                raise ValueError(
+                    "Eval-suite archive index has a migration boundary after "
+                    f"versioned metadata at line {line_number}"
+                )
+            if not legacy_rows:
+                raise ValueError(
+                    "Eval-suite archive index has a migration boundary before "
+                    f"legacy metadata at line {line_number}"
+                )
+            _validate_eval_suite_archive_index_migration_boundary(
+                row,
+                observed_legacy_rows=legacy_rows,
+            )
+            saw_migration_boundary = True
+            continue
+        if schema == _EVAL_SUITE_ARCHIVE_METADATA_SCHEMA:
+            _validate_eval_suite_archive_metadata(row)
+            if legacy_rows and not saw_migration_boundary:
+                raise ValueError(
+                    "Eval-suite archive index is missing a migration boundary "
+                    f"before versioned metadata at line {line_number}"
+                )
+            saw_versioned_metadata = True
+            continue
+        raise ValueError(
+            "Eval-suite archive index uses an unsupported row schema "
+            f"at line {line_number}"
+        )
+    if saw_migration_boundary and not saw_versioned_metadata:
+        raise ValueError(
+            "Eval-suite archive index migration boundary is not followed by "
+            "versioned metadata"
+        )
+    return raw, legacy_rows if not saw_versioned_metadata else 0
 
 
 def _update_eval_suite_archive_index(root_fd: int, metadata: dict) -> None:
     """Atomically replace the safe local index with one appended metadata row."""
 
-    raw = _read_eval_suite_archive_index(root_fd)
+    _validate_eval_suite_archive_metadata(metadata)
+    raw, legacy_rows = _read_eval_suite_archive_index(root_fd)
     if raw and not raw.endswith(b"\n"):
         raw += b"\n"
-    updated = raw + (json.dumps(metadata, sort_keys=True) + "\n").encode("utf-8")
+    migration_boundary = (
+        (
+            json.dumps(
+                _eval_suite_archive_index_migration_boundary(legacy_rows),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        if legacy_rows
+        else b""
+    )
+    updated = (
+        raw
+        + migration_boundary
+        + (json.dumps(metadata, sort_keys=True) + "\n").encode("utf-8")
+    )
     if len(updated) > _EVAL_SUITE_ARCHIVE_INDEX_MAX_BYTES:
         raise ValueError("Eval-suite archive index exceeds its safety limit")
 

@@ -4461,7 +4461,370 @@ class TestCmdEvalSuiteRevalidate:
         assert not list(output.rglob("*.tmp"))
 
 
+def _archive_registry_legacy_metadata(*, generation: int = 2) -> dict:
+    """Return one exact historical schema-less archive-index row."""
+
+    metadata = {
+        "archived_at": "2026-04-10T12:31:00+00:00",
+        "source_output": "/tmp/eval-output",
+        "archive_dir": "/tmp/eval-archives/eval-output",
+        "manifest": {"name": "Archive registry test"},
+        "status": "completed",
+        "started_at": "2026-04-10T12:00:00+00:00",
+        "finished_at": "2026-04-10T12:30:00+00:00",
+        "total_cases": 1,
+        "completed_cases": 1,
+        "result_count": 1,
+        "all_ready": True,
+        "rewritten_files": ["results.json"],
+    }
+    if generation == 2:
+        metadata.update(
+            {
+                "run_id": "12345678-1234-4234-8234-123456789abc",
+                "evidence_sha256": "a" * 64,
+                "results_sha256": "b" * 64,
+            }
+        )
+    elif generation != 1:
+        raise ValueError(f"Unknown archive metadata fixture generation: {generation}")
+    return metadata
+
+
+def _archive_registry_modern_metadata(*, archive_name: str = "modern") -> dict:
+    """Return one valid versioned archive-index metadata row."""
+
+    return {
+        **_archive_registry_legacy_metadata(),
+        "schema": "axiom-encode/eval-suite-archive-metadata/v1",
+        "archive_dir": f"/tmp/eval-archives/{archive_name}",
+        "results_schema": "axiom-encode/eval-suite-results/v8",
+        "summary_schema": "axiom-encode/eval-suite-summary/v8",
+        "execution_identity_schema": ("axiom-encode/eval-execution-identity/v5"),
+        "execution_identity_sha256": "c" * 64,
+        "runner_efforts": [
+            {
+                "name": "codex-gpt-5.4",
+                "requested_effort": "high",
+                "uses_receiver_default": False,
+            },
+            {
+                "name": "claude-claude-opus-4-1",
+                "requested_effort": None,
+                "uses_receiver_default": True,
+            },
+        ],
+    }
+
+
+def _archive_registry_migration_boundary(legacy_rows: int) -> dict:
+    """Return the one allowed legacy-to-versioned index boundary."""
+
+    return {
+        "schema": "axiom-encode/eval-suite-archive-index-migration/v1",
+        "from_metadata_schema": "unversioned-known-legacy",
+        "to_metadata_schema": "axiom-encode/eval-suite-archive-metadata/v1",
+        "legacy_rows": legacy_rows,
+    }
+
+
 class TestCmdEvalSuiteArchive:
+    def test_archive_metadata_stamps_payload_and_effort_identity_schemas(
+        self,
+        tmp_path,
+    ):
+        import axiom_encode.cli as cli_module
+
+        archive_dir = tmp_path / "staged"
+        archive_dir.mkdir()
+        source_root = tmp_path / "source"
+        published_archive_dir = tmp_path / "archives" / "suite"
+        execution_identity = {
+            "schema": "axiom-encode/eval-execution-identity/v5",
+            "runner_efforts": [
+                {
+                    "name": "claude-claude-opus-4-1",
+                    "requested_effort": None,
+                    "uses_receiver_default": True,
+                },
+                {
+                    "name": "codex-gpt-5.4",
+                    "requested_effort": "xhigh",
+                    "uses_receiver_default": False,
+                },
+            ],
+        }
+        execution_identity_sha256 = _eval_suite_json_sha256(execution_identity)
+        evidence = {
+            "sha256": "a" * 64,
+            "execution_identity": execution_identity,
+            "execution_identity_sha256": execution_identity_sha256,
+        }
+        (archive_dir / "suite-run.json").write_text(
+            json.dumps(
+                {
+                    "manifest": {"name": "Versioned archive"},
+                    "status": "completed",
+                    "run_id": "12345678-1234-4234-8234-123456789abc",
+                    "started_at": "2026-04-10T12:00:00+00:00",
+                    "finished_at": "2026-04-10T12:30:00+00:00",
+                    "total_cases": 2,
+                    "completed_cases": 2,
+                    "result_count": 2,
+                }
+            )
+            + "\n"
+        )
+        (archive_dir / "results.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/eval-suite-results/v8",
+                    "manifest": {"name": "Versioned archive"},
+                    "evidence": evidence,
+                    "coverage": {"results_sha256": "b" * 64},
+                    "results": [{}, {}],
+                }
+            )
+            + "\n"
+        )
+        (archive_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/eval-suite-summary/v8",
+                    "manifest": {"name": "Versioned archive"},
+                    "evidence": evidence,
+                    "all_ready": True,
+                }
+            )
+            + "\n"
+        )
+
+        metadata = cli_module._build_eval_suite_archive_metadata(
+            archive_dir,
+            source_root,
+            ["results.json"],
+            published_archive_dir=published_archive_dir,
+        )
+
+        assert metadata["schema"] == ("axiom-encode/eval-suite-archive-metadata/v1")
+        assert metadata["results_schema"] == ("axiom-encode/eval-suite-results/v8")
+        assert metadata["summary_schema"] == ("axiom-encode/eval-suite-summary/v8")
+        assert metadata["execution_identity_schema"] == (
+            "axiom-encode/eval-execution-identity/v5"
+        )
+        assert metadata["execution_identity_sha256"] == (execution_identity_sha256)
+        assert metadata["runner_efforts"] == execution_identity["runner_efforts"]
+
+    def test_archive_metadata_rejects_inconsistent_execution_identity_digest(
+        self,
+        tmp_path,
+    ):
+        import axiom_encode.cli as cli_module
+
+        archive_dir = tmp_path / "staged"
+        archive_dir.mkdir()
+        evidence = {
+            "sha256": "a" * 64,
+            "execution_identity": {
+                "schema": "axiom-encode/eval-execution-identity/v5",
+                "runner_efforts": [
+                    {
+                        "name": "codex-gpt-5.4",
+                        "requested_effort": None,
+                        "uses_receiver_default": True,
+                    }
+                ],
+            },
+            "execution_identity_sha256": "f" * 64,
+        }
+        (archive_dir / "results.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/eval-suite-results/v8",
+                    "evidence": evidence,
+                    "coverage": {"results_sha256": "b" * 64},
+                    "results": [],
+                }
+            )
+            + "\n"
+        )
+        (archive_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/eval-suite-summary/v8",
+                    "evidence": evidence,
+                }
+            )
+            + "\n"
+        )
+
+        with pytest.raises(ValueError, match="execution identity digest"):
+            cli_module._build_eval_suite_archive_metadata(
+                archive_dir,
+                tmp_path / "source",
+                [],
+            )
+
+    def test_archive_index_inserts_one_boundary_after_known_legacy_rows(
+        self,
+        tmp_path,
+    ):
+        import axiom_encode.cli as cli_module
+
+        archive_root = tmp_path / "archives"
+        archive_root.mkdir()
+        legacy_rows = [
+            _archive_registry_legacy_metadata(generation=1),
+            _archive_registry_legacy_metadata(generation=2),
+        ]
+        (archive_root / "index.jsonl").write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in legacy_rows)
+        )
+
+        first_modern = _archive_registry_modern_metadata(archive_name="first")
+        second_modern = _archive_registry_modern_metadata(archive_name="second")
+        with cli_module._locked_eval_suite_archive_root(archive_root) as root_fd:
+            cli_module._update_eval_suite_archive_index(root_fd, first_modern)
+            cli_module._update_eval_suite_archive_index(root_fd, second_modern)
+
+        index_rows = [
+            json.loads(line)
+            for line in (archive_root / "index.jsonl").read_text().splitlines()
+        ]
+        assert index_rows == [
+            *legacy_rows,
+            _archive_registry_migration_boundary(legacy_rows=2),
+            first_modern,
+            second_modern,
+        ]
+
+    @pytest.mark.parametrize(
+        ("rows", "error"),
+        [
+            (
+                [
+                    _archive_registry_legacy_metadata(),
+                    _archive_registry_modern_metadata(),
+                ],
+                "missing a migration boundary",
+            ),
+            (
+                [
+                    _archive_registry_modern_metadata(),
+                    _archive_registry_legacy_metadata(),
+                ],
+                "legacy metadata after versioned metadata",
+            ),
+            (
+                [
+                    _archive_registry_legacy_metadata(),
+                    _archive_registry_migration_boundary(legacy_rows=1),
+                    _archive_registry_migration_boundary(legacy_rows=1),
+                    _archive_registry_modern_metadata(),
+                ],
+                "duplicate migration boundary",
+            ),
+            (
+                [
+                    _archive_registry_migration_boundary(legacy_rows=0),
+                    _archive_registry_modern_metadata(),
+                ],
+                "migration boundary before legacy metadata",
+            ),
+            (
+                [
+                    _archive_registry_legacy_metadata(),
+                    _archive_registry_migration_boundary(legacy_rows=1),
+                ],
+                "migration boundary is not followed",
+            ),
+            (
+                [
+                    {
+                        **_archive_registry_legacy_metadata(),
+                        "unexpected": True,
+                    }
+                ],
+                "unrecognized legacy metadata shape",
+            ),
+            (
+                [
+                    _archive_registry_legacy_metadata(),
+                    _archive_registry_migration_boundary(legacy_rows=2),
+                    _archive_registry_modern_metadata(),
+                ],
+                "migration boundary legacy row count",
+            ),
+        ],
+    )
+    def test_archive_index_rejects_malformed_or_unmarked_generations(
+        self,
+        tmp_path,
+        rows,
+        error,
+    ):
+        import axiom_encode.cli as cli_module
+
+        archive_root = tmp_path / "archives"
+        archive_root.mkdir()
+        (archive_root / "index.jsonl").write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+        )
+
+        with (
+            cli_module._locked_eval_suite_archive_root(archive_root) as root_fd,
+            pytest.raises(ValueError, match=error),
+        ):
+            cli_module._read_eval_suite_archive_index(root_fd)
+
+    @pytest.mark.parametrize(
+        ("mutate", "error"),
+        [
+            (
+                lambda metadata: metadata.update(
+                    results_schema="axiom-encode/eval-suite-results/v7"
+                ),
+                "results schema",
+            ),
+            (
+                lambda metadata: metadata.update(
+                    execution_identity_schema=(
+                        "axiom-encode/eval-execution-identity/v4"
+                    )
+                ),
+                "execution identity schema",
+            ),
+            (
+                lambda metadata: metadata["runner_efforts"][0].update(
+                    uses_receiver_default=True
+                ),
+                "receiver-default marker",
+            ),
+            (
+                lambda metadata: metadata.update(unexpected=True),
+                "unexpected fields",
+            ),
+        ],
+    )
+    def test_archive_index_rejects_invalid_versioned_metadata(
+        self,
+        tmp_path,
+        mutate,
+        error,
+    ):
+        import axiom_encode.cli as cli_module
+
+        archive_root = tmp_path / "archives"
+        archive_root.mkdir()
+        metadata = _archive_registry_modern_metadata()
+        mutate(metadata)
+
+        with (
+            cli_module._locked_eval_suite_archive_root(archive_root) as root_fd,
+            pytest.raises(ValueError, match=error),
+        ):
+            cli_module._update_eval_suite_archive_index(root_fd, metadata)
+
     @pytest.mark.parametrize("kind", ["file", "directory"])
     def test_archive_rejects_unreferenced_symlink_descendants(
         self,
@@ -4765,6 +5128,10 @@ class TestCmdEvalSuiteArchive:
                 "axiom_encode.cli._snapshot_verified_eval_suite_archive_files",
                 return_value={Path("suite-run.json"): b"{}\n"},
             ),
+            patch(
+                "axiom_encode.cli._build_eval_suite_archive_metadata",
+                return_value=_archive_registry_modern_metadata(),
+            ),
             pytest.raises(SystemExit) as exc_info,
         ):
             cmd_eval_suite_archive(args)
@@ -4816,6 +5183,10 @@ class TestCmdEvalSuiteArchive:
             patch(
                 "axiom_encode.cli._rewrite_archived_eval_suite_json_files",
                 return_value=[],
+            ),
+            patch(
+                "axiom_encode.cli._build_eval_suite_archive_metadata",
+                return_value=_archive_registry_modern_metadata(),
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -4873,6 +5244,10 @@ class TestCmdEvalSuiteArchive:
             patch(
                 "axiom_encode.cli._rewrite_archived_eval_suite_json_files",
                 return_value=[],
+            ),
+            patch(
+                "axiom_encode.cli._build_eval_suite_archive_metadata",
+                return_value=_archive_registry_modern_metadata(),
             ),
             patch(
                 "axiom_encode.cli._fsync_eval_suite_archive_tree",
