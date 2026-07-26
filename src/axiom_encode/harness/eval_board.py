@@ -654,7 +654,14 @@ def _posix_identity_relative(path: object, root: object) -> str | None:
         return None
     candidate = PurePosixPath(path)
     parent = PurePosixPath(root)
-    if not candidate.is_absolute() or not parent.is_absolute():
+    if (
+        not candidate.is_absolute()
+        or not parent.is_absolute()
+        or candidate.as_posix() != path
+        or parent.as_posix() != root
+        or ".." in candidate.parts
+        or ".." in parent.parts
+    ):
         return None
     try:
         relative = candidate.relative_to(parent)
@@ -902,6 +909,44 @@ def _valid_policyengine_runtime_wrapper(value: object) -> bool:
     return value["sha256"] == _canonical_json_sha256(value["identity"])
 
 
+def _valid_policyengine_rulespec_binding(
+    runtime_wrapper: object,
+    rulespec_roots: list[object],
+) -> bool:
+    """Bind a sealed runtime pin to an exposed producer-owned RuleSpec checkout."""
+
+    if runtime_wrapper is None:
+        return True
+    if not isinstance(runtime_wrapper, dict):
+        return False
+    runtime = runtime_wrapper.get("identity")
+    if not isinstance(runtime, dict):
+        return False
+    country = runtime.get("country")
+    pin_path = runtime.get("rulespec_runtime_pin_path")
+    if not isinstance(country, str) or not isinstance(pin_path, str):
+        return False
+    for root in rulespec_roots:
+        if not isinstance(root, dict):
+            continue
+        toolchain_root = root.get("toolchain_root")
+        if (
+            not isinstance(toolchain_root, str)
+            or PurePosixPath(toolchain_root).name != f"rulespec-{country}"
+        ):
+            continue
+        expected_pin = (
+            PurePosixPath(toolchain_root) / ".axiom" / "policyengine-runtime.toml"
+        ).as_posix()
+        if (
+            pin_path == expected_pin
+            and _posix_identity_relative(pin_path, toolchain_root)
+            == ".axiom/policyengine-runtime.toml"
+        ):
+            return True
+    return False
+
+
 def _payload_corpus_identity(payload: dict, source: str) -> dict:
     corpus = payload["evidence"].get("corpus")
     if (
@@ -965,6 +1010,10 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             not _valid_rulespec_root_execution_identity(root) for root in rulespec_roots
         )
         or not _valid_policyengine_runtime_wrapper(policyengine_runtime)
+        or not _valid_policyengine_rulespec_binding(
+            policyengine_runtime,
+            rulespec_roots,
+        )
     ):
         raise EvalBoardError(
             "Suite results execution identity has missing or malformed core "
