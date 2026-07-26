@@ -3292,6 +3292,15 @@ def _branch_boundary_has_test_evidence(
     formula_environment: dict[str, Any] | None = None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
 ) -> bool:
+    source_interval = (
+        _source_interval_for_boundary(
+            branch,
+            boundary,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        if extract_numeric_occurrences is not None
+        else None
+    )
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         rule = principal_rules[rule_name]
         selector_names = _rule_numeric_selector_names(rule)
@@ -3316,6 +3325,7 @@ def _branch_boundary_has_test_evidence(
                         boundary,
                         input_names=input_names,
                         formula_environment=execution.constant_environment,
+                        source_interval=source_interval,
                         extract_numeric_occurrences=(
                             extract_numeric_occurrences
                         ),
@@ -3349,6 +3359,7 @@ def _formula_execution_binds_boundary(
     *,
     input_names: set[str],
     formula_environment: dict[str, Any],
+    source_interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
@@ -3376,6 +3387,8 @@ def _formula_execution_binds_boundary(
             input_names=input_names,
             boundary_names=boundary_names,
             boundary=boundary,
+            formula_environment=formula_environment,
+            source_interval=source_interval,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
@@ -3389,6 +3402,8 @@ def _formula_text_has_boundary_comparison(
     input_names: set[str],
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    formula_environment: dict[str, Any],
+    source_interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
@@ -3398,24 +3413,45 @@ def _formula_text_has_boundary_comparison(
             node for node in ast.walk(expression) if isinstance(node, ast.Compare)
         ):
             operands = (comparison.left, *comparison.comparators)
-            for left, right in zip(operands, operands[1:]):
-                if (
-                    _formula_node_references_names(left, input_names)
-                    and _formula_node_binds_boundary(
-                        right,
+            for operator, left, right in zip(
+                comparison.ops,
+                operands,
+                operands[1:],
+            ):
+                left_is_input = _formula_node_references_names(
+                    left,
+                    input_names,
+                )
+                right_is_input = _formula_node_references_names(
+                    right,
+                    input_names,
+                )
+                boundary_node = (
+                    right if left_is_input and not right_is_input else left
+                )
+                if not (
+                    (left_is_input and not right_is_input)
+                    or (right_is_input and not left_is_input)
+                ):
+                    continue
+                boundary_value = _formula_node_boundary_value(
+                    boundary_node,
+                    boundary_names=boundary_names,
+                    boundary=boundary,
+                    formula_environment=formula_environment,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
+                )
+                if boundary_value is not None and (
+                    source_interval is None
+                    or _comparison_matches_source_interval(
+                        operator,
+                        input_on_left=left_is_input,
+                        compared_boundary_value=boundary_value,
                         boundary_names=boundary_names,
                         boundary=boundary,
-                        extract_numeric_occurrences=extract_numeric_occurrences,
                         numeric_value_is_grounded=numeric_value_is_grounded,
-                    )
-                ) or (
-                    _formula_node_references_names(right, input_names)
-                    and _formula_node_binds_boundary(
-                        left,
-                        boundary_names=boundary_names,
-                        boundary=boundary,
-                        extract_numeric_occurrences=extract_numeric_occurrences,
-                        numeric_value_is_grounded=numeric_value_is_grounded,
+                        source_interval=source_interval,
                     )
                 ):
                     return True
@@ -3436,33 +3472,187 @@ def _formula_node_references_names(
     )
 
 
-def _formula_node_binds_boundary(
+def _formula_node_boundary_value(
     node: ast.AST,
     *,
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
+    formula_environment: dict[str, Any],
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
-) -> bool:
-    if _formula_node_references_names(node, boundary_names):
-        return True
+) -> float | None:
+    if isinstance(node, ast.Name) and node.id in boundary_names:
+        value = formula_environment.get(node.id)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
     if isinstance(node, ast.Constant) and isinstance(
         node.value,
         (int, float),
     ) and not isinstance(node.value, bool):
         value = float(node.value)
-        return numeric_value_is_grounded(
+        if numeric_value_is_grounded(
             value,
             (boundary,),
-        ) or _is_adjacent_integral_boundary(value, boundary)
+        ) or _is_adjacent_integral_boundary(value, boundary):
+            return value
+        return None
     if extract_numeric_occurrences is None:
-        return False
+        return None
     text = ast.unparse(node)
-    return any(
-        numeric_value_is_grounded(float(occurrence.value), (boundary,))
-        or _is_adjacent_integral_boundary(float(occurrence.value), boundary)
-        for occurrence in extract_numeric_occurrences(text)
+    return next(
+        (
+            float(occurrence.value)
+            for occurrence in extract_numeric_occurrences(text)
+            if numeric_value_is_grounded(float(occurrence.value), (boundary,))
+            or _is_adjacent_integral_boundary(
+                float(occurrence.value),
+                boundary,
+            )
+        ),
+        None,
     )
+
+
+def _source_interval_for_boundary(
+    branch: SourceStructureBranch,
+    boundary: NumericOccurrenceLike,
+    *,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> _NumericInterval | None:
+    for fragment in re.split(
+        r"(?:[;\n]+|(?<=[.!?])\s+)",
+        branch.text,
+    ):
+        interval = _formula_interval_from_text(
+            fragment.split(":", 1)[0],
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        if interval is None:
+            continue
+        if any(
+            occurrence is not None
+            and _numeric_occurrences_are_equivalent(occurrence, boundary)
+            for occurrence in (interval.lower, interval.upper)
+        ):
+            return interval
+    return None
+
+
+def _comparison_matches_source_interval(
+    operator: ast.cmpop,
+    *,
+    input_on_left: bool,
+    compared_boundary_value: float,
+    boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+    source_interval: _NumericInterval,
+) -> bool:
+    del boundary_names
+    relation = _input_comparison_relation(operator, input_on_left=input_on_left)
+    if relation is None:
+        return False
+    relations = {relation, _complement_comparison_relation(relation)}
+    is_exact = numeric_value_is_grounded(
+        compared_boundary_value,
+        (boundary,),
+    )
+    boundary_value = float(boundary.value)
+    is_lower = (
+        source_interval.lower is not None
+        and _numeric_occurrences_are_equivalent(
+            source_interval.lower,
+            boundary,
+        )
+    )
+    is_upper = (
+        source_interval.upper is not None
+        and _numeric_occurrences_are_equivalent(
+            source_interval.upper,
+            boundary,
+        )
+    )
+    if is_lower:
+        expected = ">=" if source_interval.lower_inclusive else ">"
+        if is_exact:
+            return expected in relations
+        if (
+            _is_adjacent_integral_boundary(
+                compared_boundary_value,
+                boundary,
+            )
+            and source_interval.lower_inclusive
+            and math.isclose(compared_boundary_value, boundary_value - 1)
+        ):
+            return ">" in relations
+        if (
+            _is_adjacent_integral_boundary(
+                compared_boundary_value,
+                boundary,
+            )
+            and not source_interval.lower_inclusive
+            and math.isclose(compared_boundary_value, boundary_value + 1)
+        ):
+            return ">=" in relations
+    if is_upper:
+        expected = "<=" if source_interval.upper_inclusive else "<"
+        if is_exact:
+            return expected in relations
+        if (
+            _is_adjacent_integral_boundary(
+                compared_boundary_value,
+                boundary,
+            )
+            and source_interval.upper_inclusive
+            and math.isclose(compared_boundary_value, boundary_value + 1)
+        ):
+            return "<" in relations
+        if (
+            _is_adjacent_integral_boundary(
+                compared_boundary_value,
+                boundary,
+            )
+            and not source_interval.upper_inclusive
+            and math.isclose(compared_boundary_value, boundary_value - 1)
+        ):
+            return "<=" in relations
+    return False
+
+
+def _input_comparison_relation(
+    operator: ast.cmpop,
+    *,
+    input_on_left: bool,
+) -> str | None:
+    relation = {
+        ast.Lt: "<",
+        ast.LtE: "<=",
+        ast.Gt: ">",
+        ast.GtE: ">=",
+        ast.Eq: "==",
+        ast.NotEq: "!=",
+    }.get(type(operator))
+    if relation is None or input_on_left:
+        return relation
+    return {
+        "<": ">",
+        "<=": ">=",
+        ">": "<",
+        ">=": "<=",
+        "==": "==",
+        "!=": "!=",
+    }[relation]
+
+
+def _complement_comparison_relation(relation: str) -> str:
+    return {
+        "<": ">=",
+        "<=": ">",
+        ">": "<=",
+        ">=": "<",
+        "==": "!=",
+        "!=": "==",
+    }[relation]
 
 
 def _boundary_case_changes_formula_effect(
@@ -3555,7 +3745,8 @@ def _formula_interval_from_text(
 ) -> _NumericInterval | None:
     lowered = text.lower()
     keyword = re.search(
-        r"\b(?:zwischen|between|von|from|unter|less\s+than|below|"
+        r"\b(?:zwischen|between|von(?!\s+(?:höchstens|mindestens))|"
+        r"from|unter|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
         r"at\s+most|über|more\s+than|above|ab|at\s+least|mindestens)\b",
         lowered,

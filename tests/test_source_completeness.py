@@ -3953,6 +3953,58 @@ def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
 
 
 @pytest.mark.parametrize(
+    ("wording", "correct_formula", "correct_output", "wrong_formula"),
+    [
+        ("bis 100 Euro", "income <= income_limit", True, "income >= income_limit"),
+        ("unter 100 Euro", "income < income_limit", False, "income <= income_limit"),
+        ("ab 100 Euro", "income >= income_limit", True, "income <= income_limit"),
+        ("über 100 Euro", "income > income_limit", False, "income >= income_limit"),
+    ],
+)
+def test_boundary_comparator_preserves_direction_and_inclusivity(
+    wording: str,
+    correct_formula: str,
+    correct_output: bool,
+    wrong_formula: str,
+):
+    source = f"(1) Die Regel gilt für Einkommen {wording}."
+    limit_versions = """\
+      - effective_from: '2026-01-01'
+        formula: 100"""
+    correct = _boundary_control_content(
+        formula=correct_formula,
+        limit_versions=limit_versions,
+    )
+    wrong = _boundary_control_content(
+        formula=wrong_formula,
+        limit_versions=limit_versions,
+    )
+    base_case = {
+        "name": "source endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+    }
+
+    correct_result = _analyze(
+        correct,
+        source,
+        test_cases=[
+            {**base_case, "output": {"eligible": correct_output}},
+        ],
+    )
+    wrong_result = _analyze(
+        wrong,
+        source,
+        test_cases=[
+            {**base_case, "output": {"eligible": True}},
+        ],
+    )
+
+    assert not correct_result.issues
+    assert _has_issue(wrong_result, "boundary", "100")
+
+
+@pytest.mark.parametrize(
     ("wording", "formula"),
     [
         ("höchstens 100 Euro", "income <= income_limit"),
