@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -439,6 +440,17 @@ def _bind_fake_source_results(
                 reasoning_output_tokens=result.reasoning_output_tokens,
             ),
         )
+        cli_environments = kwargs.get("cli_environments") or {}
+        if result.backend == "claude":
+            result.claude_cli_version = cli_environments["claude"].version
+        elif result.backend == "codex":
+            result.codex_cli_version = cli_environments["codex"].version
+            result.codex_cli_sha256 = cli_environments["codex"].executable_sha256
+        elif result.backend == "openai":
+            result.openai_endpoint = "https://api.openai.com/v1/responses"
+            result.openai_response_model_id = result.model
+            result.openai_service_tier = "default"
+            result.openai_max_output_tokens = 128_000
     return results
 
 
@@ -632,6 +644,151 @@ class TestParseRunnerSpec:
     def test_rejects_noncanonical_or_empty_runner_identity(self, spec):
         with pytest.raises(ValueError, match="Invalid runner spec"):
             parse_runner_spec(spec)
+
+
+def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
+    monkeypatch,
+):
+    help_text = {
+        "claude": " ".join(
+            (
+                "--print",
+                "--output-format",
+                "--permission-mode",
+                "--safe-mode",
+                "--no-session-persistence",
+                "--disable-slash-commands",
+                "--no-chrome",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "--tools",
+                "--allowed-tools",
+                "--model",
+                "--effort",
+            )
+        ),
+        "codex": " ".join(
+            (
+                "--json",
+                "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--strict-config",
+                "--output-last-message",
+                "--model",
+                "--cd",
+                "--sandbox",
+                "--config",
+            )
+        ),
+    }
+
+    def probe(command, **_kwargs):
+        executable = Path(command[0]).name
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    "2.1.99 (Claude Code)\n"
+                    if executable == "claude"
+                    else "codex-cli 0.999.0\n"
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=help_text[executable],
+            stderr="",
+        )
+
+    monkeypatch.setattr(evals_module.shutil, "which", lambda name: f"/bin/{name}")
+    with (
+        patch("axiom_encode.harness.evals.subprocess.run", side_effect=probe) as run,
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value="/bin/codex",
+        ),
+        patch(
+            "axiom_encode.harness.evals._eval_cli_executable_sha256",
+            return_value="a" * 64,
+        ),
+    ):
+        environments = evals_module._preflight_eval_cli_runners(
+            [
+                parse_runner_spec("adaptive=claude:opus"),
+                parse_runner_spec("forced=claude:opus@max"),
+                parse_runner_spec("low=codex:gpt-5.4@low"),
+                parse_runner_spec("high=codex:gpt-5.4@high"),
+                parse_runner_spec("openai:gpt-5.4"),
+            ]
+        )
+
+    assert run.call_count == 4
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["/bin/claude", "--version"],
+        ["/bin/claude", "--help"],
+        ["/bin/codex", "--version"],
+        ["/bin/codex", "exec", "--help"],
+    ]
+    assert environments["claude"].version == "2.1.99 (Claude Code)"
+    assert environments["codex"].version == "codex-cli 0.999.0"
+    assert "openai" not in environments
+
+
+@pytest.mark.parametrize(
+    ("runner_spec", "version", "help_text", "missing_flag"),
+    [
+        (
+            "claude:opus",
+            "2.1.87 (Claude Code)",
+            "--print --output-format --permission-mode --no-session-persistence "
+            "--disable-slash-commands --no-chrome --strict-mcp-config --mcp-config "
+            "--tools --allowed-tools --model",
+            "--safe-mode",
+        ),
+        (
+            "codex:gpt-5.4",
+            "codex-cli 0.143.0",
+            "--json --skip-git-repo-check --ignore-user-config "
+            "--output-last-message --model --cd --sandbox",
+            "--strict-config",
+        ),
+    ],
+)
+def test_eval_cli_preflight_rejects_missing_required_flag(
+    monkeypatch,
+    runner_spec,
+    version,
+    help_text,
+    missing_flag,
+):
+    backend = parse_runner_spec(runner_spec).backend
+    monkeypatch.setattr(
+        evals_module.shutil,
+        "which",
+        lambda _name: f"/bin/{backend}",
+    )
+    responses = [
+        subprocess.CompletedProcess([], 0, stdout=version, stderr=""),
+        subprocess.CompletedProcess([], 0, stdout=help_text, stderr=""),
+    ]
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=f"/bin/{backend}",
+        ),
+        patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=responses,
+        ),
+        pytest.raises(
+            RuntimeError,
+            match=rf"{re.escape(version)}.*{re.escape(missing_flag)}",
+        ),
+    ):
+        evals_module._preflight_eval_cli_runners([parse_runner_spec(runner_spec)])
 
 
 def test_source_identifier_maps_corpus_regulation_to_repo_path():
@@ -6434,10 +6591,20 @@ def test_run_source_eval_does_not_retry_when_first_response_writes_rulespec(tmp_
             local_corpus_release=corpus_release,
             runtime_axiom_rules_path=tmp_path / "axiom-rules-engine",
             mode="cold",
+            cli_environments={
+                "codex": evals_module.EvalCliEnvironment(
+                    backend="codex",
+                    executable="/bin/codex",
+                    version="codex-cli 0.test",
+                    executable_sha256="d" * 64,
+                )
+            },
         )
 
     assert result.success is True
     assert result.retry_count == 0
+    assert result.codex_cli_version == "codex-cli 0.test"
+    assert result.codex_cli_sha256 == "d" * 64
     assert mock_prompt_eval.call_count == 1
 
 
@@ -6489,6 +6656,8 @@ def test_eval_result_payload_round_trips_prompt_digests():
             ),
         ),
         generation_prompt_sha256="generation-digest",
+        codex_cli_version="codex-cli 0.test",
+        codex_cli_sha256="d" * 64,
         source_attestation={
             "requested_corpus_citation_path": "us/statute/7/2014/e/6/A",
             "source_sha256": "a" * 64,
@@ -6502,6 +6671,8 @@ def test_eval_result_payload_round_trips_prompt_digests():
     assert strict_payload["require_complete_source_unit"] is True
     assert restored.require_complete_source_unit is True
     assert restored.generation_prompt_sha256 == "generation-digest"
+    assert restored.codex_cli_version == "codex-cli 0.test"
+    assert restored.codex_cli_sha256 == "d" * 64
     assert restored.retry_count == 1
     assert restored.metrics is not None
     assert restored.metrics.generalist_review_prompt_sha256 == "review-digest"
@@ -13445,6 +13616,8 @@ class TestOpenAIEvalRequest:
         response = Mock(status_code=200, headers={}, text="")
         response.json.return_value = {
             "status": "completed",
+            "model": "gpt-5.4-2026-06-01",
+            "service_tier": "priority",
             "output_text": "format: rulespec/v1\nrules: []\n",
             "usage": {},
         }
@@ -13536,6 +13709,8 @@ class TestOpenAIEvalRequest:
         response = Mock(status_code=200, headers={}, text="")
         response.json.return_value = {
             "status": "completed",
+            "model": "gpt-5.4-2026-06-01",
+            "service_tier": "priority",
             "output_text": "format: rulespec/v1\nrules: []\n",
             "usage": {},
         }
@@ -13551,6 +13726,9 @@ class TestOpenAIEvalRequest:
             )
 
         assert mock_post.call_args.kwargs["body"]["max_output_tokens"] == 128_000
+        assert result.openai_endpoint == "https://api.openai.com/v1/responses"
+        assert result.openai_response_model_id == "gpt-5.4-2026-06-01"
+        assert result.openai_service_tier == "priority"
         assert result.openai_max_output_tokens == 128_000
 
     def test_post_openai_eval_request_retries_transient_status(self):
@@ -13973,12 +14151,73 @@ class TestEvalSuiteManifest:
             assert APPLY_MANIFEST_SIGNING_PRIVATE_KEY_ENV not in os.environ
             return metrics
 
-        with patch(
-            "axiom_encode.harness.evals.evaluate_artifact",
-            side_effect=evaluate_without_private_key,
-        ) as mock_evaluate:
+        def fake_cli_preflight(runners):
+            environments = {}
+            if any(runner.backend == "claude" for runner in runners):
+                environments["claude"] = evals_module.EvalCliEnvironment(
+                    backend="claude",
+                    executable="/bin/claude",
+                    version="2.1.test (Claude Code)",
+                )
+            if any(runner.backend == "codex" for runner in runners):
+                environments["codex"] = evals_module.EvalCliEnvironment(
+                    backend="codex",
+                    executable="/bin/codex",
+                    version="codex-cli 0.test",
+                    executable_sha256="d" * 64,
+                )
+            return environments
+
+        with (
+            patch(
+                "axiom_encode.harness.evals._preflight_eval_cli_runners",
+                side_effect=fake_cli_preflight,
+            ) as mock_preflight,
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                side_effect=evaluate_without_private_key,
+            ) as mock_evaluate,
+        ):
+            self.eval_cli_preflight = mock_preflight
             self.persisted_result_revalidation = mock_evaluate
             yield
+
+    def test_cli_preflight_failure_precedes_every_case_dispatch(self, tmp_path):
+        manifest = EvalSuiteManifest(
+            name="Preflight first",
+            path=tmp_path / "suite.yaml",
+            runners=["claude:opus"],
+            mode="cold",
+            allow_context=[],
+            gates=EvalReadinessGates(),
+            cases=[
+                EvalSuiteCase(
+                    kind="source",
+                    name="case-one",
+                    corpus_citation_path="us/statute/7/2017",
+                    mode="cold",
+                )
+            ],
+        )
+        self.eval_cli_preflight.side_effect = RuntimeError(
+            "Claude CLI 2.1.87 (Claude Code) does not support required eval "
+            "flag(s): --safe-mode"
+        )
+
+        with (
+            patch("axiom_encode.harness.evals.run_source_eval") as mock_source,
+            pytest.raises(RuntimeError, match="2.1.87.*--safe-mode"),
+        ):
+            run_eval_suite(
+                manifest=manifest,
+                output_root=tmp_path / "out",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=_write_test_corpus_provision(tmp_path),
+            )
+
+        mock_source.assert_not_called()
+        assert not (tmp_path / "out" / "suite-run.json").exists()
 
     def test_manifest_case_identity_exposes_oracle_mode(self, tmp_path):
         manifest = EvalSuiteManifest(
@@ -15588,6 +15827,7 @@ cases:
                     [runner],
                     subprocess.TimeoutExpired(["claude"], timeout=600),
                     source_attestation=source_attestation,
+                    cli_environments=kwargs["cli_environments"],
                 )
             if attempts[runner.name] == 1:
                 return evals_module._suite_case_failure_results(
@@ -15595,6 +15835,7 @@ cases:
                     [runner],
                     RuntimeError("stream disconnected"),
                     source_attestation=source_attestation,
+                    cli_environments=kwargs["cli_environments"],
                 )
             result = _fake_eval_result(runner.name, "case-one")
             result.backend = runner.backend
@@ -15714,6 +15955,9 @@ cases:
                 kwargs["source_unit"],
                 rulespec_root=kwargs["policy_path"],
             )
+            final_error.claude_cli_version = kwargs["cli_environments"][
+                "claude"
+            ].version
             return [final_error]
 
         with patch(
@@ -16326,7 +16570,7 @@ cases:
         result_payload = row["result"]
         verdict_path = Path(result_payload["verdict_file"])
         verdict_payload = json.loads(verdict_path.read_text())
-        verdict_payload["schema"] = "axiom-encode/eval-result-verdict/v5"
+        verdict_payload["schema"] = "axiom-encode/eval-result-verdict/v6"
         verdict_payload["signature"] = sign_eval_evidence(
             verdict_payload,
             get_signing_broker(capability="eval_ed25519"),

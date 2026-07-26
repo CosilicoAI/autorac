@@ -67,7 +67,7 @@ _RESULTS_FILE_NAME = "results.json"
 # The one producer schema this consumer understands. A new producer version
 # must be reviewed here before boards fold it; test_eval_board locks this to
 # the producer constant in cli.py.
-SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
+SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v7"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.

@@ -709,6 +709,16 @@ class EvalRunnerSpec:
     effort: str | None = None
 
 
+@dataclass(frozen=True)
+class EvalCliEnvironment:
+    """One preflight-verified local CLI environment used by an eval suite."""
+
+    backend: Literal["claude", "codex"]
+    executable: str
+    version: str
+    executable_sha256: str | None = None
+
+
 @dataclass
 class GroundingMetric:
     """A numeric grounding decision."""
@@ -950,6 +960,9 @@ class EvalPromptResponse:
     timeout_reason: str | None = None
     timeout_seconds: float | None = None
     timeout_attempts: int = 0
+    openai_endpoint: str | None = None
+    openai_response_model_id: str | None = None
+    openai_service_tier: str | None = None
     openai_max_output_tokens: int | None = None
 
 
@@ -988,8 +1001,13 @@ class EvalResult:
     timeout_seconds: float | None = None
     timeout_attempts: int = 0
     generation_prompt_sha256: str | None = None
+    claude_cli_version: str | None = None
     codex_cli_version: str | None = None
     codex_cli_sha256: str | None = None
+    openai_endpoint: str | None = None
+    openai_response_model_id: str | None = None
+    openai_service_tier: str | None = None
+    openai_max_output_tokens: int | None = None
     retry_count: int = 0
     source_attestation: dict[str, object] | None = None
     admission: dict[str, object] | None = None
@@ -1131,6 +1149,55 @@ def _validate_eval_result_artifact_binding(
                 f"{artifact_name} has invalid nonnegative finite cost field "
                 f"'{field_name}'"
             )
+    for field_name in (
+        "claude_cli_version",
+        "codex_cli_version",
+        "openai_endpoint",
+        "openai_response_model_id",
+        "openai_service_tier",
+    ):
+        value = payload.get(field_name)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(
+                f"{artifact_name} has invalid effective-environment field "
+                f"'{field_name}'"
+            )
+    codex_cli_sha256 = payload.get("codex_cli_sha256")
+    if codex_cli_sha256 is not None and (
+        not isinstance(codex_cli_sha256, str)
+        or _SHA256_HEX_PATTERN.fullmatch(codex_cli_sha256) is None
+    ):
+        raise ValueError(f"{artifact_name} has invalid codex_cli_sha256")
+    openai_max_output_tokens = payload.get("openai_max_output_tokens")
+    if openai_max_output_tokens is not None and (
+        isinstance(openai_max_output_tokens, bool)
+        or not isinstance(openai_max_output_tokens, int)
+        or openai_max_output_tokens <= 0
+    ):
+        raise ValueError(f"{artifact_name} has invalid openai_max_output_tokens")
+    backend = payload.get("backend")
+    claude_fields_present = payload.get("claude_cli_version") is not None
+    codex_fields_present = any(
+        payload.get(field_name) is not None
+        for field_name in ("codex_cli_version", "codex_cli_sha256")
+    )
+    openai_fields_present = any(
+        payload.get(field_name) is not None
+        for field_name in (
+            "openai_endpoint",
+            "openai_response_model_id",
+            "openai_service_tier",
+            "openai_max_output_tokens",
+        )
+    )
+    if (
+        (claude_fields_present and backend != "claude")
+        or (codex_fields_present and backend != "codex")
+        or (openai_fields_present and backend != "openai")
+    ):
+        raise ValueError(
+            f"{artifact_name} effective-environment fields do not match its backend"
+        )
 
     bound_fields: set[str] = set()
     for path_field, digest_field, label, _max_bytes in _EVAL_RESULT_ARTIFACT_SPECS:
@@ -1373,6 +1440,192 @@ def parse_runner_spec(spec: str) -> EvalRunnerSpec:
     return EvalRunnerSpec(name=name, backend=backend, model=model, effort=effort)
 
 
+_CLAUDE_EVAL_REQUIRED_FLAGS = (
+    "--print",
+    "--output-format",
+    "--permission-mode",
+    "--safe-mode",
+    "--no-session-persistence",
+    "--disable-slash-commands",
+    "--no-chrome",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "--tools",
+    "--allowed-tools",
+    "--model",
+)
+_CODEX_EVAL_REQUIRED_FLAGS = (
+    "--json",
+    "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--strict-config",
+    "--output-last-message",
+    "--model",
+    "--cd",
+    "--sandbox",
+)
+_EVAL_CLI_PREFLIGHT_TIMEOUT_SECONDS = 15
+
+
+def _eval_cli_executable_sha256(executable: str) -> str | None:
+    """Hash the resolved CLI executable when its bytes are locally readable."""
+
+    resolved = Path(executable)
+    if not resolved.is_absolute():
+        discovered = shutil.which(executable)
+        if discovered is None:
+            return None
+        resolved = Path(discovered)
+    try:
+        digest = hashlib.sha256()
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _run_eval_cli_preflight_probe(
+    command: list[str],
+    *,
+    backend_label: str,
+    probe_label: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one bounded local CLI capability probe with a clear failure."""
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=_EVAL_CLI_PREFLIGHT_TIMEOUT_SECONDS,
+            env=scrub_attestation_signing_keys(),
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"{backend_label} CLI preflight failed: executable not found: {command[0]}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"{backend_label} CLI preflight {probe_label} timed out after "
+            f"{_EVAL_CLI_PREFLIGHT_TIMEOUT_SECONDS} seconds"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip()
+        raise RuntimeError(
+            f"{backend_label} CLI preflight {probe_label} failed"
+            + (f": {detail}" if detail else "")
+        )
+    return completed
+
+
+def _eval_cli_help_has_flag(help_text: str, flag: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(flag)}(?![A-Za-z0-9_-])",
+            help_text,
+        )
+        is not None
+    )
+
+
+def _preflight_eval_cli_runners(
+    runners: Sequence[EvalRunnerSpec],
+) -> dict[str, EvalCliEnvironment]:
+    """Verify each local CLI once before an eval suite dispatches any case."""
+
+    environments: dict[str, EvalCliEnvironment] = {}
+    for backend in ("claude", "codex"):
+        backend_runners = [runner for runner in runners if runner.backend == backend]
+        if not backend_runners:
+            continue
+        if backend == "claude":
+            executable = shutil.which("claude") or "claude"
+            backend_label = "Claude"
+            help_command = [executable, "--help"]
+            required_flags = list(_CLAUDE_EVAL_REQUIRED_FLAGS)
+            if any(runner.effort is not None for runner in backend_runners):
+                required_flags.append("--effort")
+        else:
+            executable = resolve_codex_cli()
+            backend_label = "Codex"
+            help_command = [executable, "exec", "--help"]
+            required_flags = list(_CODEX_EVAL_REQUIRED_FLAGS)
+            if any(runner.effort is not None for runner in backend_runners):
+                required_flags.append("--config")
+
+        version_probe = _run_eval_cli_preflight_probe(
+            [executable, "--version"],
+            backend_label=backend_label,
+            probe_label="--version",
+        )
+        version = (version_probe.stdout.strip() or version_probe.stderr.strip()).strip()
+        if not version:
+            raise RuntimeError(
+                f"{backend_label} CLI preflight returned an empty version"
+            )
+        help_probe = _run_eval_cli_preflight_probe(
+            help_command,
+            backend_label=backend_label,
+            probe_label="help",
+        )
+        help_text = f"{help_probe.stdout}\n{help_probe.stderr}"
+        missing_flags = [
+            flag
+            for flag in required_flags
+            if not _eval_cli_help_has_flag(help_text, flag)
+        ]
+        if missing_flags:
+            raise RuntimeError(
+                f"{backend_label} CLI {version} does not support required eval "
+                f"flag(s): {', '.join(missing_flags)}"
+            )
+        environments[backend] = EvalCliEnvironment(
+            backend=backend,
+            executable=executable,
+            version=version,
+            executable_sha256=_eval_cli_executable_sha256(executable),
+        )
+    return environments
+
+
+def _validate_eval_cli_environment(
+    runner: EvalRunnerSpec,
+    environment: EvalCliEnvironment | None,
+) -> None:
+    if environment is None:
+        return
+    if (
+        runner.backend not in {"claude", "codex"}
+        or environment.backend != runner.backend
+    ):
+        raise ValueError(
+            f"CLI environment for '{environment.backend}' cannot be used by "
+            f"runner '{runner.name}' ({runner.backend})"
+        )
+    if not environment.version.strip():
+        raise ValueError(f"CLI environment for runner '{runner.name}' has no version")
+
+
+def _eval_response_optional_string(
+    response: EvalPromptResponse,
+    field_name: str,
+) -> str | None:
+    value = getattr(response, field_name, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _eval_response_optional_positive_int(
+    response: EvalPromptResponse,
+    field_name: str,
+) -> int | None:
+    value = getattr(response, field_name, None)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _validate_eval_oracle_runtime(
     oracle: str,
     runtime: PolicyEngineRuntime | None,
@@ -1411,6 +1664,7 @@ def run_model_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1450,6 +1704,7 @@ def run_model_eval(
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
                         validation_retry_feedback=validation_retry_feedback,
+                        cli_environment=(cli_environments or {}).get(runner.backend),
                     )
                 )
 
@@ -1472,6 +1727,7 @@ def run_source_eval(
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one corpus-backed source unit."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1510,6 +1766,7 @@ def run_source_eval(
                     rulespec_dependency_roots=rulespec_dependency_roots,
                     review_findings_paths=review_findings_paths or [],
                     require_complete_source_unit=require_complete_source_unit,
+                    cli_environment=(cli_environments or {}).get(runner.backend),
                 )
             )
 
@@ -2025,6 +2282,10 @@ def _combine_retry_response(
         timeout_reason=latest_timeout[2],
         timeout_seconds=latest_timeout[3],
         timeout_attempts=timeout_attempts,
+        openai_endpoint=retry.openai_endpoint,
+        openai_response_model_id=retry.openai_response_model_id,
+        openai_service_tier=retry.openai_service_tier,
+        openai_max_output_tokens=retry.openai_max_output_tokens,
     )
 
 
@@ -2440,6 +2701,7 @@ def _run_eval_suite_with_signer(
         raise ValueError("Eval suite manifest must declare at least one runner")
     parsed_runners = [parse_runner_spec(spec) for spec in resolved_runners]
     _expected_eval_suite_runners(parsed_runners)
+    cli_environments = _preflight_eval_cli_runners(parsed_runners)
     manifest_identity = _build_eval_suite_manifest_identity(manifest)
     rulespec_roots = _eval_suite_rulespec_roots(manifest, policy_repo_path)
     execution_identity = (
@@ -2594,6 +2856,7 @@ def _run_eval_suite_with_signer(
                                     require_complete_source_unit=(
                                         case.require_complete_source_unit
                                     ),
+                                    cli_environments=cli_environments,
                                 )
                             elif case.kind == "source":
                                 if (
@@ -2620,6 +2883,7 @@ def _run_eval_suite_with_signer(
                                     require_complete_source_unit=(
                                         case.require_complete_source_unit
                                     ),
+                                    cli_environments=cli_environments,
                                 )
                             else:
                                 raise ValueError(
@@ -2631,6 +2895,7 @@ def _run_eval_suite_with_signer(
                                 [parsed_runner],
                                 exc,
                                 source_attestation=expected_source_attestation,
+                                cli_environments=cli_environments,
                             )
 
                         _accumulate_suite_case_timeout_attempts(
@@ -2656,6 +2921,7 @@ def _run_eval_suite_with_signer(
                 case_results,
                 parsed_runners,
                 expected_source_attestation=expected_source_attestation,
+                cli_environments=cli_environments,
             )
             _append_eval_suite_case_results(
                 output_root,
@@ -2796,7 +3062,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 _EVAL_RESULT_SHA256_FIELD = "result_sha256"
-_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v6"
+_EVAL_RESULT_VERDICT_SCHEMA = "axiom-encode/eval-result-verdict/v7"
 _EVAL_RESULT_ADMISSION_SCHEMA = "axiom-encode/eval-result-admission/v2"
 
 
@@ -2878,6 +3144,13 @@ def _eval_result_verdict_evidence_payload(
             "retry_count": result_payload.get("retry_count"),
             "retrieved_files": result_payload.get("retrieved_files"),
             "unexpected_accesses": result_payload.get("unexpected_accesses"),
+            "claude_cli_version": result_payload.get("claude_cli_version"),
+            "codex_cli_version": result_payload.get("codex_cli_version"),
+            "codex_cli_sha256": result_payload.get("codex_cli_sha256"),
+            "openai_endpoint": result_payload.get("openai_endpoint"),
+            "openai_response_model_id": result_payload.get("openai_response_model_id"),
+            "openai_service_tier": result_payload.get("openai_service_tier"),
+            "openai_max_output_tokens": result_payload.get("openai_max_output_tokens"),
         },
         "source_attestation": result_payload.get("source_attestation"),
         "validation": {
@@ -3540,6 +3813,7 @@ def _validate_new_eval_suite_case_results(
     parsed_runners: Sequence[EvalRunnerSpec],
     *,
     expected_source_attestation: dict[str, object] | None = None,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> None:
     """Refuse to persist an incomplete, duplicate, or mislabelled result group."""
 
@@ -3562,6 +3836,34 @@ def _validate_new_eval_suite_case_results(
             raise ValueError(
                 f"Eval suite case '{case.name}' returned runner '{result.runner}' "
                 "with a different backend or model"
+            )
+        if cli_environments is not None and runner.backend == "claude":
+            environment = (cli_environments or {}).get("claude")
+            if environment is None or result.claude_cli_version != environment.version:
+                raise ValueError(
+                    f"Eval suite case '{case.name}' returned runner "
+                    f"'{result.runner}' without its preflight-verified Claude "
+                    "CLI version"
+                )
+        elif cli_environments is not None and runner.backend == "codex":
+            environment = (cli_environments or {}).get("codex")
+            if (
+                environment is None
+                or result.codex_cli_version != environment.version
+                or result.codex_cli_sha256 != environment.executable_sha256
+            ):
+                raise ValueError(
+                    f"Eval suite case '{case.name}' returned runner "
+                    f"'{result.runner}' without its preflight-verified Codex "
+                    "CLI environment"
+                )
+        elif cli_environments is not None and (
+            result.openai_endpoint != _OPENAI_RESPONSES_ENDPOINT
+            or result.openai_max_output_tokens != _OPENAI_MAX_OUTPUT_TOKENS
+        ):
+            raise ValueError(
+                f"Eval suite case '{case.name}' returned runner '{result.runner}' "
+                "without its effective OpenAI request environment"
             )
         if result.mode != case.mode:
             raise ValueError(
@@ -4931,6 +5233,13 @@ def _eval_result_from_payload(
         success=payload["success"],
         error=payload.get("error"),
         generation_prompt_sha256=payload.get("generation_prompt_sha256"),
+        claude_cli_version=payload.get("claude_cli_version"),
+        codex_cli_version=payload.get("codex_cli_version"),
+        codex_cli_sha256=payload.get("codex_cli_sha256"),
+        openai_endpoint=payload.get("openai_endpoint"),
+        openai_response_model_id=payload.get("openai_response_model_id"),
+        openai_service_tier=payload.get("openai_service_tier"),
+        openai_max_output_tokens=payload.get("openai_max_output_tokens"),
         require_complete_source_unit=(
             payload.get("require_complete_source_unit", False) is True
         ),
@@ -4972,6 +5281,7 @@ def _suite_case_failure_results(
     exc: Exception,
     *,
     source_attestation: dict[str, object] | None = None,
+    cli_environments: Mapping[str, EvalCliEnvironment] | None = None,
 ) -> list[EvalResult]:
     """Convert an exception into explicit failed results for each runner."""
     timed_out = isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
@@ -4988,46 +5298,71 @@ def _suite_case_failure_results(
         and isinstance(exc.timeout, (int, float))
         else None
     )
-    return [
-        EvalResult(
-            citation=_eval_suite_case_result_citation(case),
-            runner=runner.name,
-            backend=runner.backend,
-            model=runner.model,
-            mode=case.mode,
-            output_file="",
-            trace_file="",
-            context_manifest_file="",
-            generated_output_sha256=None,
-            trace_sha256=None,
-            context_manifest_sha256=None,
-            duration_ms=0,
-            success=False,
-            error=str(exc),
-            generation_prompt_sha256=None,
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_creation_tokens=0,
-            reasoning_output_tokens=0,
-            estimated_cost_usd=None,
-            actual_cost_usd=None,
-            retrieved_files=[],
-            unexpected_accesses=[],
-            metrics=None,
-            failure_kind=failure_kind,
-            timed_out=timed_out,
-            timeout_stage="case" if timed_out else None,
-            timeout_reason="wall" if timed_out else None,
-            timeout_seconds=timeout_seconds,
-            timeout_attempts=1 if timed_out else 0,
-            source_attestation=(
-                dict(source_attestation) if source_attestation is not None else None
-            ),
-            require_complete_source_unit=case.require_complete_source_unit,
+    results: list[EvalResult] = []
+    for runner in runners:
+        cli_environment = (cli_environments or {}).get(runner.backend)
+        _validate_eval_cli_environment(runner, cli_environment)
+        results.append(
+            EvalResult(
+                citation=_eval_suite_case_result_citation(case),
+                runner=runner.name,
+                backend=runner.backend,
+                model=runner.model,
+                mode=case.mode,
+                output_file="",
+                trace_file="",
+                context_manifest_file="",
+                generated_output_sha256=None,
+                trace_sha256=None,
+                context_manifest_sha256=None,
+                duration_ms=0,
+                success=False,
+                error=str(exc),
+                generation_prompt_sha256=None,
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                reasoning_output_tokens=0,
+                estimated_cost_usd=None,
+                actual_cost_usd=None,
+                retrieved_files=[],
+                unexpected_accesses=[],
+                metrics=None,
+                failure_kind=failure_kind,
+                timed_out=timed_out,
+                timeout_stage="case" if timed_out else None,
+                timeout_reason="wall" if timed_out else None,
+                timeout_seconds=timeout_seconds,
+                timeout_attempts=1 if timed_out else 0,
+                claude_cli_version=(
+                    cli_environment.version
+                    if cli_environment is not None and runner.backend == "claude"
+                    else None
+                ),
+                codex_cli_version=(
+                    cli_environment.version
+                    if cli_environment is not None and runner.backend == "codex"
+                    else None
+                ),
+                codex_cli_sha256=(
+                    cli_environment.executable_sha256
+                    if cli_environment is not None and runner.backend == "codex"
+                    else None
+                ),
+                openai_endpoint=(
+                    _OPENAI_RESPONSES_ENDPOINT if runner.backend == "openai" else None
+                ),
+                openai_max_output_tokens=(
+                    _OPENAI_MAX_OUTPUT_TOKENS if runner.backend == "openai" else None
+                ),
+                source_attestation=(
+                    dict(source_attestation) if source_attestation is not None else None
+                ),
+                require_complete_source_unit=case.require_complete_source_unit,
+            )
         )
-        for runner in runners
-    ]
+    return results
 
 
 def _accumulate_suite_case_timeout_attempts(
@@ -7950,7 +8285,9 @@ def _run_single_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> EvalResult:
+    _validate_eval_cli_environment(runner, cli_environment)
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
         source_unit = resolve_corpus_source_unit(citation, corpus_release)
@@ -8116,8 +8453,31 @@ def _run_single_eval(
         or (None if wrote_artifact else "No RuleSpec content returned")
         or validation_error,
         generation_prompt_sha256=generation_prompt_sha256,
-        codex_cli_version=getattr(response, "codex_cli_version", None),
-        codex_cli_sha256=getattr(response, "codex_cli_sha256", None),
+        claude_cli_version=(
+            cli_environment.version
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
+        codex_cli_version=(
+            cli_environment.version
+            if cli_environment is not None and runner.backend == "codex"
+            else _eval_response_optional_string(response, "codex_cli_version")
+        ),
+        codex_cli_sha256=(
+            cli_environment.executable_sha256
+            if cli_environment is not None and runner.backend == "codex"
+            else _eval_response_optional_string(response, "codex_cli_sha256")
+        ),
+        openai_endpoint=_eval_response_optional_string(response, "openai_endpoint"),
+        openai_response_model_id=_eval_response_optional_string(
+            response, "openai_response_model_id"
+        ),
+        openai_service_tier=_eval_response_optional_string(
+            response, "openai_service_tier"
+        ),
+        openai_max_output_tokens=_eval_response_optional_positive_int(
+            response, "openai_max_output_tokens"
+        ),
         input_tokens=tokens.input_tokens if tokens else 0,
         output_tokens=tokens.output_tokens if tokens else 0,
         cache_read_tokens=tokens.cache_read_tokens if tokens else 0,
@@ -8206,8 +8566,10 @@ def _run_single_source_eval(
     rulespec_dependency_roots: Sequence[Path] = (),
     review_findings_paths: list[Path] | None = None,
     require_complete_source_unit: bool = False,
+    cli_environment: EvalCliEnvironment | None = None,
 ) -> EvalResult:
     """Run one eval on a corpus-backed source unit rather than a USC citation."""
+    _validate_eval_cli_environment(runner, cli_environment)
     workspace = prepare_eval_workspace(
         citation=source_identifier,
         runner=runner,
@@ -8343,6 +8705,31 @@ def _run_single_source_eval(
         or (None if wrote_artifact else "No RuleSpec content returned")
         or validation_error,
         generation_prompt_sha256=generation_prompt_sha256,
+        claude_cli_version=(
+            cli_environment.version
+            if cli_environment is not None and runner.backend == "claude"
+            else None
+        ),
+        codex_cli_version=(
+            cli_environment.version
+            if cli_environment is not None and runner.backend == "codex"
+            else _eval_response_optional_string(response, "codex_cli_version")
+        ),
+        codex_cli_sha256=(
+            cli_environment.executable_sha256
+            if cli_environment is not None and runner.backend == "codex"
+            else _eval_response_optional_string(response, "codex_cli_sha256")
+        ),
+        openai_endpoint=_eval_response_optional_string(response, "openai_endpoint"),
+        openai_response_model_id=_eval_response_optional_string(
+            response, "openai_response_model_id"
+        ),
+        openai_service_tier=_eval_response_optional_string(
+            response, "openai_service_tier"
+        ),
+        openai_max_output_tokens=_eval_response_optional_positive_int(
+            response, "openai_max_output_tokens"
+        ),
         input_tokens=tokens.input_tokens if tokens else 0,
         output_tokens=tokens.output_tokens if tokens else 0,
         cache_read_tokens=tokens.cache_read_tokens if tokens else 0,
@@ -13597,6 +13984,8 @@ def _run_openai_prompt_eval(
                 "model": runner.model,
             },
             error="OPENAI_API_KEY is not set",
+            openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+            openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )
 
     body = {
@@ -13661,6 +14050,8 @@ def _run_openai_prompt_eval(
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
             timeout_attempts=timeout_attempts,
+            openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+            openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )
     duration_ms = int((time.time() - start) * 1000)
     (
@@ -13679,11 +14070,20 @@ def _run_openai_prompt_eval(
                 "message": response.text or f"HTTP {response.status_code}",
             }
         }
+    response_model_id = payload.get("model")
+    if not isinstance(response_model_id, str) or not response_model_id.strip():
+        response_model_id = None
+    service_tier = payload.get("service_tier")
+    if not isinstance(service_tier, str) or not service_tier.strip():
+        service_tier = None
 
     trace = {
         "provider": "openai",
         "backend": "responses",
         "model": runner.model,
+        "endpoint": _OPENAI_RESPONSES_ENDPOINT,
+        "response_model_id": response_model_id,
+        "service_tier": service_tier,
         "request_id": request_id,
         "request_body": body,
         "json_result": payload,
@@ -13706,6 +14106,9 @@ def _run_openai_prompt_eval(
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
             timeout_attempts=timeout_attempts,
+            openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+            openai_response_model_id=response_model_id,
+            openai_service_tier=service_tier,
             openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )
 
@@ -13734,6 +14137,9 @@ def _run_openai_prompt_eval(
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
             timeout_attempts=timeout_attempts,
+            openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+            openai_response_model_id=response_model_id,
+            openai_service_tier=service_tier,
             openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )
 
@@ -13747,6 +14153,9 @@ def _run_openai_prompt_eval(
         timeout_reason=timeout_reason,
         timeout_seconds=timeout_seconds,
         timeout_attempts=timeout_attempts,
+        openai_endpoint=_OPENAI_RESPONSES_ENDPOINT,
+        openai_response_model_id=response_model_id,
+        openai_service_tier=service_tier,
         openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
     )
 

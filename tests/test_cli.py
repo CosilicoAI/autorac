@@ -3294,10 +3294,10 @@ class TestCmdEvalSuite:
             run_state=verified["run_state"],
             completed_case_indexes=set(),
         )
-        assert payload["schema"] == "axiom-encode/eval-suite-results/v6"
+        assert payload["schema"] == "axiom-encode/eval-suite-results/v7"
         assert payload["evidence"]["schema"] == ("axiom-encode/eval-suite-evidence/v5")
         assert _eval_suite_summary_payload(payload)["schema"] == (
-            "axiom-encode/eval-suite-summary/v6"
+            "axiom-encode/eval-suite-summary/v7"
         )
 
         assert payload["coverage"]["complete"] is False
@@ -4445,7 +4445,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v6",
+                    "schema": "axiom-encode/eval-suite-summary/v7",
                     "manifest": payload["manifest"],
                     "evidence": payload["evidence"],
                     "coverage": payload["coverage"],
@@ -4930,7 +4930,7 @@ class TestCmdEvalSuiteArchive:
         (source_output / "summary.json").write_text(
             json.dumps(
                 {
-                    "schema": "axiom-encode/eval-suite-summary/v6",
+                    "schema": "axiom-encode/eval-suite-summary/v7",
                     "manifest": current_payload["manifest"],
                     "evidence": current_payload["evidence"],
                     "coverage": current_payload["coverage"],

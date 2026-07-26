@@ -47179,6 +47179,17 @@ def _serialize_eval_result(result) -> dict:
             "generation_prompt_sha256": getattr(
                 result, "generation_prompt_sha256", None
             ),
+            "claude_cli_version": getattr(result, "claude_cli_version", None),
+            "codex_cli_version": getattr(result, "codex_cli_version", None),
+            "codex_cli_sha256": getattr(result, "codex_cli_sha256", None),
+            "openai_endpoint": getattr(result, "openai_endpoint", None),
+            "openai_response_model_id": getattr(
+                result, "openai_response_model_id", None
+            ),
+            "openai_service_tier": getattr(result, "openai_service_tier", None),
+            "openai_max_output_tokens": getattr(
+                result, "openai_max_output_tokens", None
+            ),
             "retry_count": getattr(result, "retry_count", 0),
             "admission": getattr(result, "admission", None),
             "metrics": getattr(result, "metrics", None),
@@ -47236,8 +47247,8 @@ def _serialize_readiness_summary(summary) -> dict:
 
 
 _EVAL_SUITE_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
-_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v6"
-_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v6"
+_EVAL_SUITE_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v7"
+_EVAL_SUITE_SUMMARY_SCHEMA = "axiom-encode/eval-suite-summary/v7"
 _EVAL_SUITE_REVALIDATION_MARKER = ".eval-suite-revalidation.json"
 
 
