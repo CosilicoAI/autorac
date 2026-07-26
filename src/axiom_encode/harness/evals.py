@@ -6890,10 +6890,22 @@ def _evaluate_artifact_in_scope(
                     numeric_payload
                 )
     numeric_profile = _numeric_profile_for_citation_path(numeric_source_citation_path)
+    half_up_recall_source_text = (
+        evaluation_source_text
+        if require_complete_source_unit
+        else numeric_validation_source_text
+    )
+    half_up_authoritative_source_text = (
+        evaluation_source_text if require_complete_source_unit else source_text
+    )
     half_up_helper_count = min(
-        source_backed_half_up_rounding_helper_count(content, source_text),
         source_backed_half_up_rounding_helper_count(
-            content, numeric_validation_source_text or ""
+            content,
+            half_up_authoritative_source_text,
+        ),
+        source_backed_half_up_rounding_helper_count(
+            content,
+            half_up_recall_source_text or "",
         ),
     )
     counted_numeric_source_text = _numeric_occurrence_source_text(

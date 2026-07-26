@@ -7394,6 +7394,74 @@ rules:
         assert metrics.missing_source_numeric_occurrence_count == 1
         assert any("73" in issue for issue in metrics.numeric_occurrence_issues)
 
+    def test_complete_mode_numeric_recall_is_summary_invariant(self, tmp_path):
+        source_text = (
+            "If the 3rd digit is 5 or more, increase the 2nd digit by 1."
+        )
+        citation_path = "ca/policy/cra/example/rounding"
+        corpus_release = _write_test_corpus_provision(
+            tmp_path,
+            citation_path=citation_path,
+            body=source_text,
+        )
+        rulespec_file = tmp_path / "policies" / "cra" / "example" / "rounding.yaml"
+        rulespec_file.parent.mkdir(parents=True)
+        signatures = []
+
+        for summary in (
+            source_text,
+            "A deliberately terse summary with no numeric inventory.",
+        ):
+            rulespec_file.write_text(
+                f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+  summary: {summary}
+rules:
+  - name: rounding_half_unit
+    kind: parameter
+    dtype: Decimal
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.5
+"""
+            )
+            with (
+                patch.object(
+                    ValidatorPipeline,
+                    "_run_compile_check",
+                    return_value=ValidationResult("compile", True, issues=[]),
+                ),
+                patch.object(
+                    ValidatorPipeline,
+                    "_run_ci",
+                    return_value=ValidationResult("ci", True, issues=[]),
+                ),
+            ):
+                metrics = evaluate_artifact(
+                    rulespec_file=rulespec_file,
+                    policy_repo_root=_canonical_rulespec_content_root(
+                        tmp_path,
+                        "ca",
+                    ),
+                    axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+                    source_text=source_text,
+                    local_corpus_release=corpus_release,
+                    source_citation_path=citation_path,
+                    require_complete_source_unit=True,
+                )
+            signatures.append(
+                (
+                    metrics.source_numeric_occurrence_count,
+                    metrics.covered_source_numeric_occurrence_count,
+                    metrics.missing_source_numeric_occurrence_count,
+                    metrics.numeric_occurrence_issues,
+                )
+            )
+
+        assert signatures[0] == signatures[1]
+
     def test_numeric_occurrence_check_counts_inline_source_table_bounds(self, tmp_path):
         rulespec_file = tmp_path / "statutes" / "26" / "3241" / "b.yaml"
         rulespec_file.parent.mkdir(parents=True)
