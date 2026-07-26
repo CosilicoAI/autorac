@@ -69,6 +69,11 @@ CORPUS_IDENTITY = {
     "corpus_release_selector_sha256": "dc" * 32,
 }
 
+RUN_IDENTITY = {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "started_at": "2026-07-25T00:00:00+00:00",
+}
+
 
 def _policyengine_runtime_identity(
     *,
@@ -334,6 +339,21 @@ def _payload(
     schema=SUPPORTED_RESULTS_SCHEMA,
 ):
     case_identities = CASE_IDENTITIES if case_identities is None else case_identities
+    corpus_identity = dict(CORPUS_IDENTITY if corpus is None else corpus)
+    runner_identities = [
+        {
+            "name": name,
+            "backend": backend,
+            "model": model,
+        }
+        for name, backend, model in runners
+    ]
+    manifest_identity = {
+        "name": suite_name,
+        "path": "benchmarks/encodebench_uk_v1.yaml",
+        "content_sha256": "77" * 32,
+        "case_identities": case_identities,
+    }
     if execution_identity is None:
         execution_identity = _execution_identity()
     if execution_identity_sha256 is None:
@@ -345,11 +365,50 @@ def _payload(
             continue
         row = copy.deepcopy(original_row)
         if "admission" not in row:
+            raw_case = row.get("eval_case")
+            case_index = (
+                raw_case.get("index") if isinstance(raw_case, dict) else None
+            )
+            admitted_case = (
+                case_identities[case_index - 1]
+                if (
+                    type(case_index) is int
+                    and 1 <= case_index <= len(case_identities)
+                    and isinstance(case_identities[case_index - 1], dict)
+                )
+                else raw_case
+            )
+            roots = execution_identity.get("rulespec_roots")
+            root_identity = (
+                next((root for root in roots if isinstance(root, dict)), {})
+                if isinstance(roots, list)
+                else {}
+            )
             row["admission"] = {
                 "schema": "axiom-encode/eval-result-admission/v2",
+                "run": copy.deepcopy(RUN_IDENTITY),
+                "suite": {
+                    "name": suite_name,
+                    "manifest_path": manifest_identity["path"],
+                    "manifest_content_sha256": manifest_identity["content_sha256"],
+                    "manifest_case_identities": copy.deepcopy(case_identities),
+                    "effective_runner_identities": copy.deepcopy(runner_identities),
+                },
+                "case": copy.deepcopy(admitted_case),
+                "corpus": copy.deepcopy(corpus_identity),
                 "execution": {
                     "identity": copy.deepcopy(execution_identity),
                     "sha256": execution_identity_sha256,
+                },
+                "rulespec": {
+                    "policy_repo_root": root_identity.get("path"),
+                    "root_content_sha256": root_identity.get("content_sha256"),
+                    "toolchain_contract_sha256": root_identity.get(
+                        "toolchain_contract_sha256"
+                    ),
+                    "validation_waiver_set_sha256": root_identity.get(
+                        "validation_waiver_set_sha256"
+                    ),
                 },
             }
         metrics = row.get("metrics")
@@ -403,21 +462,10 @@ def _payload(
         coverage.update(coverage_overrides)
     evidence = {
         "schema": cli._EVAL_SUITE_EVIDENCE_SCHEMA,
-        "manifest": {
-            "name": suite_name,
-            "path": "benchmarks/encodebench_uk_v1.yaml",
-            "content_sha256": "77" * 32,
-            "case_identities": case_identities,
-        },
-        "corpus": dict(CORPUS_IDENTITY if corpus is None else corpus),
-        "effective_runner_identities": [
-            {
-                "name": name,
-                "backend": backend,
-                "model": model,
-            }
-            for name, backend, model in runners
-        ],
+        "manifest": manifest_identity,
+        "run": copy.deepcopy(RUN_IDENTITY),
+        "corpus": corpus_identity,
+        "effective_runner_identities": runner_identities,
         "execution_identity": execution_identity,
         "execution_identity_sha256": execution_identity_sha256,
     }
@@ -617,6 +665,27 @@ def test_fold_refuses_policyengine_identity_the_producer_cannot_emit(
     path = _write_payload(
         tmp_path,
         f"producer-impossible-{mutation}.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=execution_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_policyengine_pin_digest_unbound_from_rulespec_checkout(
+    tmp_path,
+):
+    runtime = _policyengine_runtime_identity()
+    execution_identity = _execution_identity(policyengine_runtime=runtime)
+    runtime["identity"]["rulespec_runtime_pin_sha256"] = "99" * 32
+    runtime["sha256"] = evals_canonical_json_sha256(runtime["identity"])
+    path = _write_payload(
+        tmp_path,
+        "producer-impossible-pin-digest.json",
         _payload(
             [("terra", "codex", "gpt-5.6-terra")],
             [_result("terra", case) for case in CASE_IDENTITIES],
