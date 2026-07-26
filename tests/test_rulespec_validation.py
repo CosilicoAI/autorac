@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -272,21 +273,51 @@ def test_validator_subprocess_capture_output_paths_are_reproducible():
 
 
 def test_validator_subprocess_cleanup_error_cannot_mask_timeout():
+    class NeverCompletes:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self):
+            return self.returncode
+
+    real_rmtree = shutil.rmtree
+    cleanup_failures: list[str] = []
+
+    def rmtree_with_cleanup_failure(path, *args, onexc=None, **kwargs):
+        assert onexc is not None
+        failing_path = str(Path(path) / "stdout.log")
+        cleanup_failures.append(failing_path)
+        onexc(
+            os.unlink,
+            failing_path,
+            OSError(5, "synthetic cleanup failure", failing_path),
+        )
+        return real_rmtree(path)
+
     with (
         patch.object(
-            Path,
-            "unlink",
-            autospec=True,
-            side_effect=OSError("synthetic cleanup failure"),
+            validator_pipeline.subprocess,
+            "Popen",
+            return_value=NeverCompletes(),
         ),
+        patch.object(validator_pipeline.time, "time", side_effect=[0.0, 2.0]),
+        patch.object(shutil, "rmtree", side_effect=rmtree_with_cleanup_failure),
         pytest.raises(subprocess.TimeoutExpired),
     ):
         validator_pipeline._run_subprocess_with_idle_timeout(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
-            timeout=0.001,
+            ["unused"],
+            timeout=1,
             idle_timeout=10,
-            poll_interval=0.001,
+            poll_interval=0,
         )
+
+    assert len(cleanup_failures) == 1
+    assert cleanup_failures[0].endswith("/stdout.log")
 
 
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:

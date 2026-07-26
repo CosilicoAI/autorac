@@ -5037,6 +5037,38 @@ def test_empty_artifact_retry_prompt_uses_minimal_source_scope_protocol():
     assert "Return exactly this two-file bundle" in retry_prompt
 
 
+def test_empty_artifact_runtime_uses_bound_max_attempts(monkeypatch, tmp_path):
+    monkeypatch.setattr(evals_module, "_EMPTY_ARTIFACT_MAX_ATTEMPTS", 1)
+    response = EvalPromptResponse(text="", duration_ms=1)
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            return_value=response,
+        ) as mock_prompt,
+        patch(
+            "axiom_encode.harness.evals._materialize_eval_artifact",
+            return_value=False,
+        ),
+    ):
+        _response, wrote_artifact, retry_count, materialized_paths = (
+            evals_module._run_prompt_eval_with_empty_artifact_retry(
+                parse_runner_spec("codex:gpt-5.4"),
+                SimpleNamespace(root=tmp_path),
+                "prompt",
+                tmp_path / "output.yaml",
+                "source",
+                "output.yaml",
+                False,
+            )
+        )
+
+    assert mock_prompt.call_count == 1
+    assert wrote_artifact is False
+    assert retry_count == 0
+    assert materialized_paths == frozenset()
+
+
 def test_run_source_eval_retries_once_when_first_response_times_out(tmp_path):
     policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
     corpus_release, source_unit = _write_test_source_unit(
@@ -5186,6 +5218,16 @@ def test_result_binding_rejects_failed_row_without_failure_kind():
         evals_module._validate_eval_result_artifact_binding(payload)
 
 
+def test_result_rehydration_rejects_non_boolean_success():
+    payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
+    payload["success"] = "false"
+    payload["failure_kind"] = None
+    payload = _bind_eval_result_payload(payload)
+
+    with pytest.raises(ValueError, match="success must be a boolean"):
+        _eval_result_from_payload(payload)
+
+
 def test_codex_prompt_timeouts_use_default_for_short_source(tmp_path):
     workspace = prepare_eval_workspace(
         citation="us/statute/7/2012",
@@ -5278,6 +5320,80 @@ def test_codex_prompt_timeouts_use_long_env_for_large_source(tmp_path, monkeypat
     )
 
     assert _codex_prompt_timeouts(workspace) == (240, 60)
+
+
+def test_run_codex_prompt_eval_records_idle_timeout_threshold(tmp_path):
+    runner = parse_runner_spec("codex:gpt-5.4")
+    workspace = prepare_eval_workspace(
+        citation="uksi/2002/1792/schedule/VI/paragraph/4A/1",
+        runner=runner,
+        output_root=tmp_path / "out",
+        source_text="maximum disregard",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "uk"),
+        mode="cold",
+        extra_context_paths=[],
+    )
+    bundle = "=== FILE: example.yaml ===\nformat: rulespec/v1\nrules: []\n"
+
+    class FakePopen:
+        def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+            self.args = cmd
+            self.returncode = None
+            Path(cwd, ".codex-last-message.txt").write_text(bundle)
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    with (
+        patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+        patch(
+            "axiom_encode.harness.evals._wait_for_codex_process",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["codex", "exec"],
+                timeout=300,
+            ),
+        ),
+    ):
+        response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+    assert response.error is None
+    assert response.text == bundle.strip()
+    assert response.timeout_reason == "idle"
+    assert response.timeout_seconds == 300
+    assert response.trace["timeout_reason"] == "idle"
+    assert response.trace["timeout_seconds"] == 300
+
+
+def test_equal_codex_wall_and_idle_limits_preserve_triggering_reason(tmp_path):
+    class NeverCompletes:
+        args = ["codex", "exec"]
+
+        def poll(self):
+            return None
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.time.time",
+            side_effect=[0.0, 601.0],
+        ),
+        pytest.raises(subprocess.TimeoutExpired) as exc_info,
+    ):
+        _wait_for_codex_process(
+            NeverCompletes(),
+            tmp_path / "last-message.txt",
+            timeout=600,
+            max_idle_seconds=600,
+            poll_interval=0,
+        )
+
+    assert exc_info.value.timeout == 600
+    assert exc_info.value.timeout_reason == "wall"
 
 
 def test_run_source_eval_does_not_retry_when_first_response_writes_rulespec(tmp_path):
@@ -11722,6 +11838,66 @@ class TestOpenAIEvalRequest:
         assert response is ok_response
         assert mock_post.call_count == 2
 
+    def test_post_openai_eval_request_uses_bound_backoff_policy(self, monkeypatch):
+        error_response = Mock(status_code=503)
+        ok_response = Mock(status_code=200)
+        monkeypatch.setattr(
+            evals_module,
+            "_OPENAI_REQUEST_BACKOFF_SECONDS",
+            (7, 11),
+        )
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.requests.post",
+                side_effect=[error_response, error_response, ok_response],
+            ),
+            patch("axiom_encode.harness.evals.time.sleep") as mock_sleep,
+        ):
+            response = _post_openai_eval_request(
+                headers={"Authorization": "Bearer test"},
+                body={"model": "gpt-5.4", "input": "hi"},
+                attempts=3,
+            )
+
+        assert response is ok_response
+        assert [item.args[0] for item in mock_sleep.call_args_list] == [7, 11]
+
+    @pytest.mark.parametrize(
+        ("error", "expected_reason", "expected_seconds"),
+        [
+            (requests.exceptions.ConnectTimeout("connect"), "connect", 30),
+            (requests.exceptions.ReadTimeout("read"), "read", 180),
+            (requests.exceptions.Timeout("ambiguous"), "request", None),
+        ],
+        ids=["connect", "read", "ambiguous"],
+    )
+    def test_openai_prompt_eval_records_triggering_timeout_policy(
+        self,
+        monkeypatch,
+        error,
+        expected_reason,
+        expected_seconds,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            side_effect=error,
+        ):
+            response = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert response.timed_out is True
+        assert response.timeout_stage == "encoder"
+        assert response.timeout_reason == expected_reason
+        assert response.timeout_seconds == expected_seconds
+        assert response.trace["timeout_reason"] == expected_reason
+        assert response.trace["timeout_seconds"] == expected_seconds
+
 
 class TestEvalSuiteManifest:
     @pytest.fixture(autouse=True)
@@ -13888,6 +14064,48 @@ cases:
 
         assert identity["timeout_retry_policy"]["suite_max_attempts"] == 1
 
+    def test_execution_identity_retry_policy_round_trips_nondefault_suite_attempts(
+        self,
+    ):
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            identity = _build_eval_suite_execution_identity(
+                Path("/tmp/axiom-rules"),
+                (),
+                suite_retry_attempts=0,
+            )
+
+        assert (
+            evals_module._suite_retry_attempts_from_execution_identity(
+                identity,
+                artifact_name="test identity",
+            )
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "suite_max_attempts",
+        [True, 0, "1"],
+        ids=["boolean", "zero", "string"],
+    )
+    def test_execution_identity_retry_policy_rejects_malformed_suite_attempts(
+        self,
+        suite_max_attempts,
+    ):
+        identity = _test_eval_suite_execution_identity()
+        identity["timeout_retry_policy"]["suite_max_attempts"] = suite_max_attempts
+
+        with pytest.raises(ValueError, match="timeout retry policy"):
+            evals_module._suite_retry_attempts_from_execution_identity(
+                identity,
+                artifact_name="test identity",
+            )
+
     def test_run_eval_suite_resume_rejects_tampered_source_attestation(self, tmp_path):
         manifest, corpus_release, output_root, axiom_rules_path = (
             _complete_test_eval_suite(tmp_path)
@@ -14822,6 +15040,92 @@ class TestReadinessSummary:
         assert gate_results["min_generalist_review_pass_rate"].passed is False
         assert gate_results["min_policyengine_pass_rate"].passed is False
         assert gate_results["max_mean_estimated_cost_usd"].passed is True
+
+    def test_timeout_rows_are_excluded_from_artifact_readiness_denominators(self):
+        artifact = _fake_eval_result(
+            "runner",
+            "case-a",
+            compile_pass=True,
+            ci_pass=True,
+            generalist_review_pass=True,
+        )
+        timeout = replace(
+            _fake_eval_result("runner", "case-b"),
+            output_file="",
+            trace_file="",
+            context_manifest_file="",
+            generated_output_sha256=None,
+            trace_sha256=None,
+            context_manifest_sha256=None,
+            success=False,
+            error="encoder timed out",
+            metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
+        )
+
+        summary = summarize_readiness(
+            [artifact, timeout],
+            EvalReadinessGates(
+                min_compile_pass_rate=1.0,
+                min_ci_pass_rate=1.0,
+                min_zero_ungrounded_rate=1.0,
+                min_generalist_review_pass_rate=1.0,
+            ),
+        )
+
+        assert summary.total_cases == 2
+        assert summary.artifact_case_count == 1
+        assert summary.timeout_count == 1
+        assert summary.success_rate == 0.5
+        assert summary.compile_pass_rate == 1.0
+        assert summary.ci_pass_rate == 1.0
+        assert summary.zero_ungrounded_rate == 1.0
+        assert summary.generalist_review_pass_rate == 1.0
+        assert summary.ready is True
+
+    def test_all_timeout_readiness_has_no_artifact_rates(self):
+        timeout = replace(
+            _fake_eval_result("runner", "case-a"),
+            output_file="",
+            trace_file="",
+            context_manifest_file="",
+            generated_output_sha256=None,
+            trace_sha256=None,
+            context_manifest_sha256=None,
+            success=False,
+            error="encoder timed out",
+            metrics=None,
+            failure_kind="timeout",
+            timed_out=True,
+            timeout_stage="encoder",
+            timeout_reason="wall",
+            timeout_seconds=600,
+            timeout_attempts=1,
+        )
+
+        summary = summarize_readiness(
+            [timeout],
+            EvalReadinessGates(
+                min_compile_pass_rate=1.0,
+                min_ci_pass_rate=1.0,
+                min_zero_ungrounded_rate=1.0,
+                min_generalist_review_pass_rate=1.0,
+            ),
+        )
+
+        assert summary.artifact_case_count == 0
+        assert summary.timeout_count == 1
+        assert summary.compile_pass_rate is None
+        assert summary.ci_pass_rate is None
+        assert summary.zero_ungrounded_rate is None
+        assert summary.generalist_review_pass_rate is None
+        assert all(gate.actual is None for gate in summary.gate_results[1:])
+        assert summary.ready is False
 
     def test_policyengine_exception_without_score_counts_as_oracle_failure(self):
         passed = _fake_eval_result(

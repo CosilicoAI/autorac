@@ -2977,10 +2977,10 @@ class TestCmdEvalSuite:
             run_state=verified["run_state"],
             completed_case_indexes=set(),
         )
-        assert payload["schema"] == "axiom-encode/eval-suite-results/v5"
+        assert payload["schema"] == "axiom-encode/eval-suite-results/v6"
         assert payload["evidence"]["schema"] == ("axiom-encode/eval-suite-evidence/v5")
         assert _eval_suite_summary_payload(payload)["schema"] == (
-            "axiom-encode/eval-suite-summary/v5"
+            "axiom-encode/eval-suite-summary/v6"
         )
 
         assert payload["coverage"]["complete"] is False

@@ -406,6 +406,7 @@ def _write_payload(tmp_path, name, payload):
 
 def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
+    assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v6"
     assert (
         SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v3"
     )
