@@ -326,8 +326,16 @@ class TestAgentSDKBackend:
             assert resp.tokens is not None
 
     @pytest.mark.asyncio
-    async def test_encode_async_rejects_max_tokens_partial(self, tmp_path):
-        """A max-token stop is an infrastructure failure, never a scored artifact."""
+    @pytest.mark.parametrize(
+        "stop_reason",
+        ["max_tokens", "model_context_window_exceeded"],
+    )
+    async def test_encode_async_rejects_truncated_partial(
+        self,
+        tmp_path,
+        stop_reason,
+    ):
+        """A truncation stop is an infrastructure failure, never a scored artifact."""
         backend = AgentSDKBackend(api_key="test-key")
         output_path = tmp_path / "partial.yaml"
         output_path.write_text("stale_or_partial: true\n")
@@ -336,7 +344,7 @@ class TestAgentSDKBackend:
         mock_client = Mock()
         mock_response = Mock(
             content=[Mock(text="partial: response")],
-            stop_reason="max_tokens",
+            stop_reason=stop_reason,
             usage=Mock(input_tokens=100, output_tokens=16_384),
         )
         mock_client.messages = Mock()
@@ -355,7 +363,7 @@ class TestAgentSDKBackend:
         assert not resp.success
         assert resp.rulespec_content == ""
         assert resp.error is not None
-        assert "max_tokens" in resp.error
+        assert stop_reason in resp.error
 
     @pytest.mark.asyncio
     async def test_encode_batch_parallel(self):
