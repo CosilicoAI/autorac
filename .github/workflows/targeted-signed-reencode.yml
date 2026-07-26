@@ -42,6 +42,14 @@ on:
         description: Independent-review finding for the direct dependent
         required: false
         type: string
+      second_dependent_citation:
+        description: Second direct dependent to re-encode in the same signed change
+        required: false
+        type: string
+      second_dependent_review_finding:
+        description: Independent-review finding for the second direct dependent
+        required: false
+        type: string
       open_pr:
         description: Commit, push, and open a draft RuleSpec pull request
         required: false
@@ -491,17 +499,30 @@ jobs:
           PY
 
       - name: Validate dependent cascade
-        if: ${{ inputs.dependent_citation != '' }}
+        if: >-
+          ${{
+            inputs.dependent_citation != ''
+            || inputs.second_dependent_citation != ''
+          }}
         env:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
           set -euo pipefail
+          if [ -z "$DEPENDENT_CITATION" ]; then
+            echo "first dependent citation is required before a second dependent" >&2
+            exit 1
+          fi
+          dependent_citations=("$DEPENDENT_CITATION")
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            dependent_citations+=("$SECOND_DEPENDENT_CITATION")
+          fi
           axiom-encode/.venv/bin/python \
             axiom-encode/scripts/prepare_signed_backfill.py \
             validate-dependent-cascade \
-            "$RULESPEC_CHECKOUT" "$CITATION" "$DEPENDENT_CITATION"
+            "$RULESPEC_CHECKOUT" "$CITATION" "${dependent_citations[@]}"
 
       - name: Encode, review, validate, and apply
         env:
@@ -511,9 +532,13 @@ jobs:
           REVIEW_FINDING: ${{ inputs.review_finding }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SECOND_DEPENDENT_REVIEW_FINDING: ${{ inputs.second_dependent_review_finding }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
         run: |
           set -euo pipefail
+          : "${SECOND_DEPENDENT_CITATION:=}"
+          : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
 
           run_signed_encode() {
             local citation="$1"
@@ -558,23 +583,49 @@ jobs:
               -- "${args[@]}"
           }
 
+          if [ -n "$DEPENDENT_REVIEW_FINDING" ] && [ -z "$DEPENDENT_CITATION" ]; then
+            echo "dependent citation is required with dependent review finding" >&2
+            exit 1
+          fi
+          if [ -n "$DEPENDENT_CITATION" ] && [ -z "$DEPENDENT_REVIEW_FINDING" ]; then
+            echo "dependent review finding is required with dependent citation" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ] && [ -z "$DEPENDENT_CITATION" ]; then
+            echo "first dependent citation is required before a second dependent" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_DEPENDENT_REVIEW_FINDING" ] && \
+            [ -z "$SECOND_DEPENDENT_CITATION" ]; then
+            echo "second dependent citation is required with its review finding" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ] && \
+            [ -z "$SECOND_DEPENDENT_REVIEW_FINDING" ]; then
+            echo "second dependent review finding is required" >&2
+            exit 1
+          fi
+          if [ -n "$DEPENDENT_CITATION" ] && [ "$DEPENDENT_CITATION" = "$CITATION" ]; then
+            echo "dependent citation must differ from the target citation" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ] && \
+            { [ "$SECOND_DEPENDENT_CITATION" = "$CITATION" ] || \
+              [ "$SECOND_DEPENDENT_CITATION" = "$DEPENDENT_CITATION" ]; }; then
+            echo "second dependent citation must be unique" >&2
+            exit 1
+          fi
+
           if [ -n "$DEPENDENT_CITATION" ]; then
-            if [ "$DEPENDENT_CITATION" = "$CITATION" ]; then
-              echo "dependent citation must differ from the target citation" >&2
-              exit 1
-            fi
-            if [ -z "$DEPENDENT_REVIEW_FINDING" ]; then
-              echo "dependent review finding is required with dependent citation" >&2
-              exit 1
-            fi
             run_signed_encode "$CITATION" "$REVIEW_FINDING" true target
             run_signed_encode \
               "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent
-          else
-            if [ -n "$DEPENDENT_REVIEW_FINDING" ]; then
-              echo "dependent citation is required with dependent review finding" >&2
-              exit 1
+            if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+              run_signed_encode \
+                "$SECOND_DEPENDENT_CITATION" \
+                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2
             fi
+          else
             run_signed_encode "$CITATION" "$REVIEW_FINDING" false target
           fi
 
@@ -599,6 +650,8 @@ jobs:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING_PRESENT: ${{ inputs.dependent_review_finding != '' }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SECOND_DEPENDENT_REVIEW_FINDING_PRESENT: ${{ inputs.second_dependent_review_finding != '' }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           QUEUE_ID: ${{ inputs.queue_id }}
           QUEUE_ITEM_ID: ${{ inputs.queue_item_id }}
@@ -645,9 +698,14 @@ jobs:
               )
           )
           dependent_citation = os.environ.get("DEPENDENT_CITATION") or ""
+          second_dependent_citation = (
+              os.environ.get("SECOND_DEPENDENT_CITATION") or ""
+          )
           expected_citations = {os.environ["CITATION"]}
           if dependent_citation:
               expected_citations.add(dependent_citation)
+          if second_dependent_citation:
+              expected_citations.add(second_dependent_citation)
 
           matches = {}
           for relative_path in sorted(manifest_paths):
@@ -676,6 +734,20 @@ jobs:
                       os.environ["DEPENDENT_REVIEW_FINDING_PRESENT"] == "true",
                       Path(sys.argv[1]).with_name("dependent-context-manifest.json"),
                       "dependent",
+                  )
+              )
+          if second_dependent_citation:
+              expected.append(
+                  (
+                      second_dependent_citation,
+                      (
+                          os.environ["SECOND_DEPENDENT_REVIEW_FINDING_PRESENT"]
+                          == "true"
+                      ),
+                      Path(sys.argv[1]).with_name(
+                          "dependent-2-context-manifest.json"
+                      ),
+                      "dependent-2",
                   )
               )
 
@@ -768,6 +840,9 @@ jobs:
               "schema": "axiom-encode/targeted-reencode-artifact/v1",
               "citation": os.environ["CITATION"],
               "dependent_citation": os.environ.get("DEPENDENT_CITATION") or None,
+              "second_dependent_citation": (
+                  os.environ.get("SECOND_DEPENDENT_CITATION") or None
+              ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
               "queue_id": os.environ.get("QUEUE_ID") or None,
               "queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None,
@@ -815,6 +890,8 @@ jobs:
           GH_TOKEN: ${{ secrets.AXIOM_REPO_TOKEN }}
           COUNTRY: ${{ inputs.country }}
           CITATION: ${{ inputs.citation }}
+          DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           QUEUE_ID: ${{ inputs.queue_id }}
@@ -836,6 +913,8 @@ jobs:
             '## Signed apply manifest' \
             '' \
             "Citation: \`${CITATION}\`" \
+            "Direct dependent: \`${DEPENDENT_CITATION:-n/a}\`" \
+            "Second direct dependent: \`${SECOND_DEPENDENT_CITATION:-n/a}\`" \
             "Base commit: \`${RULESPEC_REF}\`" \
             "Base branch: \`${PR_BASE_BRANCH}\`" \
             "Queue item: \`${QUEUE_ID:-ad-hoc}/${QUEUE_ITEM_ID:-ad-hoc}\`" \
