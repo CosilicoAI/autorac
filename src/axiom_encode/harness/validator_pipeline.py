@@ -124,6 +124,7 @@ _SENSITIVE_ENV_NAME_MARKERS = (
 )
 _VALIDATION_STAGING_ROOT_PLACEHOLDER = "<rulespec-validation-root>"
 _VALIDATION_TEMP_ROOT_PLACEHOLDER = "<rulespec-validation-temp>"
+_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER = "<validator-subprocess-capture>"
 _AUTHORITATIVE_CORPUS_RELEASE: ContextVar[LocalCorpusRelease | None] = ContextVar(
     "axiom_authoritative_corpus_release",
     default=None,
@@ -415,68 +416,96 @@ def _run_subprocess_with_idle_timeout(
     poll_interval: float = 0.5,
 ) -> _SubprocessRunResult:
     """Run a subprocess, aborting if it stops emitting output for too long."""
-    with (
-        tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
-        tempfile.NamedTemporaryFile(mode="w+", delete=False) as stderr_file,
-    ):
-        stdout_path = Path(stdout_file.name)
-        stderr_path = Path(stderr_file.name)
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            text=True,
-            cwd=cwd,
-            env=(
-                scrub_attestation_signing_keys()
-                if env is None
-                else scrub_attestation_signing_keys(env)
-            ),
-        )
-
-    start = time.time()
-    last_activity = start
-    last_snapshot: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None
-
-    def _snapshot() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-        values: list[tuple[int, int, int]] = []
-        for path in (stdout_path, stderr_path):
-            try:
-                stat = path.stat()
-            except OSError:
-                values.append((0, 0, 0))
-                continue
-            values.append((1, stat.st_size, stat.st_mtime_ns))
-        return values[0], values[1]
-
+    capture_root: Path | None = None
     try:
-        while True:
-            if process.poll() is not None:
-                break
+        with tempfile.TemporaryDirectory(
+            prefix="axiom-validator-subprocess-",
+            ignore_cleanup_errors=True,
+        ) as capture_dir:
+            capture_root = Path(capture_dir)
+            stdout_path = capture_root / "stdout.log"
+            stderr_path = capture_root / "stderr.log"
+            with (
+                stdout_path.open("w+") as stdout_file,
+                stderr_path.open("w+") as stderr_file,
+            ):
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    cwd=cwd,
+                    env=(
+                        scrub_attestation_signing_keys()
+                        if env is None
+                        else scrub_attestation_signing_keys(env)
+                    ),
+                )
 
-            now = time.time()
-            if now - start > timeout:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(cmd, timeout)
+            start = time.time()
+            last_activity = start
+            last_snapshot: tuple[tuple[int, int, int], tuple[int, int, int]] | None = (
+                None
+            )
 
-            snapshot = _snapshot()
-            if snapshot != last_snapshot:
-                last_snapshot = snapshot
-                last_activity = now
-            elif idle_timeout >= 0 and now - last_activity >= idle_timeout:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(cmd, idle_timeout)
+            def _snapshot() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+                values: list[tuple[int, int, int]] = []
+                for path in (stdout_path, stderr_path):
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        values.append((0, 0, 0))
+                        continue
+                    values.append((1, stat.st_size, stat.st_mtime_ns))
+                return values[0], values[1]
 
-            time.sleep(poll_interval)
+            while True:
+                if process.poll() is not None:
+                    break
 
-        output = stdout_path.read_text() + stderr_path.read_text()
-        return _SubprocessRunResult(output=output, returncode=process.returncode or 0)
-    finally:
-        stdout_path.unlink(missing_ok=True)
-        stderr_path.unlink(missing_ok=True)
+                now = time.time()
+                if now - start > timeout:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                snapshot = _snapshot()
+                if snapshot != last_snapshot:
+                    last_snapshot = snapshot
+                    last_activity = now
+                elif idle_timeout >= 0 and now - last_activity >= idle_timeout:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(cmd, idle_timeout)
+
+                time.sleep(poll_interval)
+
+            output = stdout_path.read_text() + stderr_path.read_text()
+            normalized_output = _normalize_validation_staging_text(
+                output,
+                capture_root,
+                placeholder=_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER,
+            )
+            return _SubprocessRunResult(
+                output=normalized_output,
+                returncode=process.returncode or 0,
+            )
+    except subprocess.TimeoutExpired:
+        raise
+    except Exception as exc:
+        if capture_root is None:
+            raise RuntimeError(
+                f"Validator subprocess capture setup failed: {type(exc).__name__}"
+            ) from exc
+        normalized_error = _normalize_validation_staging_text(
+            str(exc),
+            capture_root,
+            placeholder=_VALIDATOR_SUBPROCESS_CAPTURE_PLACEHOLDER,
+        )
+        if normalized_error == str(exc):
+            raise
+        raise RuntimeError(normalized_error) from exc
 
 
 def _extract_codex_text_output(output: str) -> str:

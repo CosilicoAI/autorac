@@ -10,13 +10,13 @@ not comparable.
 Comparability contract: every folded payload must carry the same suite name,
 the same ordered case identities, the same corpus release identity, and the
 same score-affecting execution identity (encoder, rules engine, RuleSpec
-content/toolchain/waivers, the overall case budget, runner timeouts,
+content/toolchain/waivers, backend timeout policy, timeout retry policy,
 PolicyEngine runtime) — compared after dropping location-only fields, so the
-same toolchain checked out at different paths still folds. The manifest content hash may differ
-(single-runner variants of one suite differ byte-wise but share case
-identities), and runner sets may differ — that is the add-a-model path.
-Duplicate runner names across payloads are refused rather than merged: two
-runs of one runner are two boards, not one.
+same toolchain checked out at different paths still folds. The manifest
+content hash may differ (single-runner variants of one suite differ byte-wise
+but share case identities), and runner sets may differ — that is the
+add-a-model path. Duplicate runner names across payloads are refused rather
+than merged: two runs of one runner are two boards, not one.
 
 The board consumes canonical v5 suite payloads and refuses anything else:
 unknown schema versions, rows for runners a payload never declared, rows
@@ -57,6 +57,7 @@ SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
 SUPPORTED_EVIDENCE_SCHEMA = "axiom-encode/eval-suite-evidence/v5"
+EVAL_BOARD_SCHEMA = "axiom-encode/eval-board/v2"
 
 # Every persisted result row carries this self-binding digest.
 _RESULT_SHA256_FIELD = "result_sha256"
@@ -383,6 +384,10 @@ def _is_sha256_hex(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _SHA256_HEX
 
 
+def _is_positive_int(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
 def _payload_corpus_identity(payload: dict, source: str) -> dict:
     corpus = payload["evidence"].get("corpus")
     if (
@@ -424,35 +429,74 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
         )
-    case_timeout_seconds = identity.get("case_timeout_seconds")
-    if (
-        isinstance(case_timeout_seconds, bool)
-        or not isinstance(case_timeout_seconds, int)
-        or case_timeout_seconds <= 0
-    ):
-        raise EvalBoardError(
-            "Suite results execution identity has a missing or malformed "
-            f"overall case timeout: {source}"
-        )
     runner_timeouts = identity.get("runner_timeouts")
     claude_timeout = (
         runner_timeouts.get("claude") if isinstance(runner_timeouts, dict) else None
     )
-    wall_seconds = (
+    claude_wall_seconds = (
         claude_timeout.get("wall_seconds") if isinstance(claude_timeout, dict) else None
+    )
+    codex_timeout = (
+        runner_timeouts.get("codex") if isinstance(runner_timeouts, dict) else None
+    )
+    codex_short = (
+        codex_timeout.get("short_source") if isinstance(codex_timeout, dict) else None
+    )
+    codex_long = (
+        codex_timeout.get("long_source") if isinstance(codex_timeout, dict) else None
+    )
+    openai_timeout = (
+        runner_timeouts.get("openai") if isinstance(runner_timeouts, dict) else None
     )
     if (
         not isinstance(runner_timeouts, dict)
-        or set(runner_timeouts) != {"claude"}
+        or set(runner_timeouts) != {"claude", "codex", "openai"}
         or not isinstance(claude_timeout, dict)
         or set(claude_timeout) != {"wall_seconds"}
-        or isinstance(wall_seconds, bool)
-        or not isinstance(wall_seconds, int)
-        or wall_seconds <= 0
+        or not _is_positive_int(claude_wall_seconds)
+        or not isinstance(codex_timeout, dict)
+        or set(codex_timeout)
+        != {"short_source", "long_source", "long_source_char_threshold"}
+        or not isinstance(codex_short, dict)
+        or set(codex_short) != {"wall_seconds", "idle_seconds"}
+        or not _is_positive_int(codex_short.get("wall_seconds"))
+        or not _is_positive_int(codex_short.get("idle_seconds"))
+        or codex_short["idle_seconds"] > codex_short["wall_seconds"]
+        or not isinstance(codex_long, dict)
+        or set(codex_long) != {"wall_seconds", "idle_seconds"}
+        or not _is_positive_int(codex_long.get("wall_seconds"))
+        or not _is_positive_int(codex_long.get("idle_seconds"))
+        or codex_long["idle_seconds"] > codex_long["wall_seconds"]
+        or not _is_positive_int(codex_timeout.get("long_source_char_threshold"))
+        or not isinstance(openai_timeout, dict)
+        or set(openai_timeout) != {"request_connect_seconds", "request_read_seconds"}
+        or not _is_positive_int(openai_timeout.get("request_connect_seconds"))
+        or not _is_positive_int(openai_timeout.get("request_read_seconds"))
     ):
         raise EvalBoardError(
             "Suite results execution identity has a missing or malformed "
             f"runner timeout policy: {source}"
+        )
+    retry_policy = identity.get("timeout_retry_policy")
+    if (
+        not isinstance(retry_policy, dict)
+        or set(retry_policy)
+        != {
+            "empty_artifact_max_attempts",
+            "suite_max_attempts",
+            "suite_retries_after_timeout",
+            "openai_request_max_attempts",
+            "openai_request_backoff_seconds",
+        }
+        or retry_policy.get("empty_artifact_max_attempts") != 2
+        or not _is_positive_int(retry_policy.get("suite_max_attempts"))
+        or retry_policy.get("suite_retries_after_timeout") is not False
+        or retry_policy.get("openai_request_max_attempts") != 6
+        or retry_policy.get("openai_request_backoff_seconds") != [1, 2, 4, 8, 10]
+    ):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"timeout retry policy: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -1079,7 +1123,7 @@ def _format_optional(value: float | None, template: str) -> str:
 def eval_board_to_json(board: EvalBoard) -> dict:
     """A machine-readable board payload."""
     return {
-        "schema": "axiom-encode/eval-board/v1",
+        "schema": EVAL_BOARD_SCHEMA,
         "suite": board.suite_name,
         "corpus": board.corpus_identity,
         "sources": board.sources,

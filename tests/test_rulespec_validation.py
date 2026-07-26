@@ -259,12 +259,16 @@ def test_validator_subprocess_capture_output_paths_are_reproducible():
     assert captured_paths[0].parent == captured_paths[1].parent
     assert captured_paths[2].parent == captured_paths[3].parent
     assert captured_paths[0].parent != captured_paths[2].parent
-    assert outputs == [
-        (
-            "capture=<validator-subprocess-capture>/stdout.log\n"
-            "capture=<validator-subprocess-capture>/stderr.log\n"
-        )
-    ] * 2
+    assert (
+        outputs
+        == [
+            (
+                "capture=<validator-subprocess-capture>/stdout.log\n"
+                "capture=<validator-subprocess-capture>/stderr.log\n"
+            )
+        ]
+        * 2
+    )
 
 
 def test_validator_subprocess_cleanup_error_cannot_mask_timeout():

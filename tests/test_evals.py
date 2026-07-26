@@ -12388,7 +12388,13 @@ cases:
         manifest = load_eval_suite_manifest(manifest_file)
         source_result = _fake_eval_result("openai-gpt-5.4", "sample")
 
-        def fake_execution_identity(_engine_path, roots):
+        def fake_execution_identity(
+            _engine_path,
+            roots,
+            *,
+            suite_retry_attempts,
+        ):
+            assert suite_retry_attempts == 2
             return {
                 "schema": "test",
                 "rulespec_roots": [
@@ -12929,6 +12935,8 @@ cases:
         )
         final_error = replace(
             _fake_eval_result("claude-opus", "us/statute/7/2017"),
+            backend="claude",
+            model="opus",
             output_file="",
             trace_file="",
             context_manifest_file="",
@@ -12946,9 +12954,16 @@ cases:
             timeout_attempts=1,
         )
 
+        def return_final_error(**kwargs):
+            final_error.source_attestation = _expected_eval_source_attestation(
+                kwargs["source_unit"],
+                rulespec_root=kwargs["policy_path"],
+            )
+            return [final_error]
+
         with patch(
             "axiom_encode.harness.evals.run_source_eval",
-            return_value=[final_error],
+            side_effect=return_final_error,
         ) as mock_source:
             [result] = run_eval_suite(
                 manifest=manifest,
@@ -13908,6 +13923,8 @@ cases:
         row = json.loads(ledger_path.read_text())
         if mutation == "success":
             row["result"]["success"] = False
+            row["result"]["error"] = "tampered failure"
+            row["result"]["failure_kind"] = "error"
         else:
             row["result"]["metrics"]["compile_pass"] = False
         row["result"] = _bind_eval_result_payload(row["result"])
