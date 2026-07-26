@@ -12994,7 +12994,7 @@ def _wait_for_codex_process(
     poll_interval: float = 0.5,
 ) -> bool:
     """Wait for Codex CLI, terminating it once output is stable or persistent."""
-    start = time.time()
+    start = time.monotonic()
     last_snapshot: tuple[int, int] | None = None
     stable_since: float | None = None
     output_seen_at: float | None = None
@@ -13017,14 +13017,19 @@ def _wait_for_codex_process(
         return tuple(snapshot)
 
     while True:
-        if process.poll() is not None:
-            return False
-
-        now = time.time()
-        if now - start > timeout:
+        now = time.monotonic()
+        if now - start >= timeout:
             error = subprocess.TimeoutExpired(process.args, timeout)
             error.timeout_reason = "wall"
             raise error
+        completed = process.poll() is not None
+        now = time.monotonic()
+        if now - start >= timeout:
+            error = subprocess.TimeoutExpired(process.args, timeout)
+            error.timeout_reason = "wall"
+            raise error
+        if completed:
+            return False
 
         current_heartbeat_snapshot = _snapshot_activity()
         if current_heartbeat_snapshot != heartbeat_snapshot:

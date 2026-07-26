@@ -5708,7 +5708,7 @@ def test_equal_codex_wall_and_idle_limits_preserve_triggering_reason(tmp_path):
 
     with (
         patch(
-            "axiom_encode.harness.evals.time.time",
+            "axiom_encode.harness.evals.time.monotonic",
             side_effect=[0.0, 601.0],
         ),
         pytest.raises(subprocess.TimeoutExpired) as exc_info,
