@@ -29046,6 +29046,7 @@ def _try_repair_generated_nonexact_proof_excerpts_for_apply(
                     source_text=source_text,
                     excerpt=excerpt,
                     numeric_profile=numeric_profile,
+                    require_all_query_numbers=not targets[target],
                 )
             if exact_excerpt is None or exact_excerpt == excerpt:
                 continue
@@ -29136,6 +29137,7 @@ def _closest_exact_source_excerpt(
     source_text: str,
     excerpt: str,
     numeric_profile: str = "legacy",
+    require_all_query_numbers: bool = True,
 ) -> str | None:
     source = str(source_text)
     query = re.sub(r"\s+", " ", str(excerpt)).strip()
@@ -29163,6 +29165,7 @@ def _closest_exact_source_excerpt(
                     source_text=segment,
                     excerpt=excerpt,
                     numeric_profile=numeric_profile,
+                    require_all_query_numbers=require_all_query_numbers,
                 )
             )
         ]
@@ -29222,7 +29225,11 @@ def _closest_exact_source_excerpt(
             )
         )
         shared_numbers = query_numbers & candidate_numbers
-        if query_numbers and not query_numbers.issubset(candidate_numbers):
+        if query_numbers and (
+            not (query_numbers & candidate_numbers)
+            if not require_all_query_numbers
+            else not query_numbers.issubset(candidate_numbers)
+        ):
             continue
         if len(shared_tokens) < 2 and not (shared_numbers and shared_tokens):
             continue

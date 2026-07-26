@@ -8500,7 +8500,7 @@ must use a reasonable allocation method.
 
 def test_closest_exact_source_excerpt_uses_direct_match_source_coordinates():
     source_text = """(a) If household income is below the threshold and all documentation requirements are satisfied, the agency shall pay $500.
-(b) If fraud is found, the agency shall pay $500.
+(b) If fraud is found, the agency shall pay $600.
 """
 
     repaired = _closest_exact_source_excerpt(
