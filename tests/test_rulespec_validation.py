@@ -52,6 +52,7 @@ from axiom_encode.harness.validator_pipeline import (
     extract_named_scalar_occurrences,
     extract_numbers_from_text,
     extract_numeric_occurrences_from_text,
+    extract_typed_numeric_inventory_occurrences_from_text,
     extract_typed_numeric_occurrences_from_text,
     find_aggregate_exception_predicate_issues,
     find_anaphoric_scope_omission_issues,
@@ -8274,6 +8275,185 @@ def test_de_numeric_profile_types_local_rate_context(source_text, expected):
     assert numeric_value_is_grounded(0.42, occurrences) is expected
 
 
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+@pytest.mark.parametrize(
+    ("source_text", "expected_temporal_values"),
+    (
+        ("für das Jahr 2025", [2025.0]),
+        ("ab dem 1. Januar 2025", [1.0, 2025.0]),
+        (
+            "vom 1. Oktober 2022 bis zum 31. Dezember 2022",
+            [1.0, 2022.0, 31.0, 2022.0],
+        ),
+        ("Veranlagungszeitraum 2026", [2026.0]),
+        ("für die Jahre 2022 bis 2025", [2022.0, 2025.0]),
+        ("2022 bis 2025", [2022.0, 2025.0]),
+        ("2022–2025", [2022.0, 2025.0]),
+        ("Jahre 2022–2025", [2022.0, 2025.0]),
+        ("31.12.2022", [2022.0]),
+        ("01.10.2022 bis 31.12.2022", [2022.0, 2022.0]),
+        ("zum 31. Dezember des Jahres 2025", [31.0, 2025.0]),
+        ("Jahr: 2025", [2025.0]),
+        ("Jahre 2022/2025", [2022.0, 2025.0]),
+        ("für Veranlagungszeiträume vor 1996", [1996.0]),
+    ),
+)
+def test_typed_temporal_occurrences_stay_grounding_only(
+    profile,
+    source_text,
+    expected_temporal_values,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    assert [
+        occurrence.value for occurrence in grounding if occurrence.has_temporal_context
+    ] == expected_temporal_values
+    assert not inventory
+    assert all(
+        occurrence.raw == source_text[occurrence.start : occurrence.end]
+        for occurrence in grounding
+    )
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Jahr 2025a",
+        "year 2025_code",
+        "Jahr 2025.1",
+        "Jahr 2025,00a",
+    ),
+)
+def test_temporal_year_recovery_respects_numeric_token_boundaries(
+    profile,
+    source_text,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    assert all(
+        occurrence.raw != "2025" and not occurrence.has_temporal_context
+        for occurrence in grounding
+    )
+    assert all(
+        occurrence.raw != "2025" and not occurrence.has_temporal_context
+        for occurrence in inventory
+    )
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+def test_year_shaped_money_is_not_temporal(profile):
+    source_text = "Die Pauschale beträgt 2025 Euro."
+
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    occurrence = next(item for item in grounding if item.value == 2025)
+    assert not occurrence.has_temporal_context
+    assert [(item.value, item.raw) for item in inventory] == [(2025.0, "2025")]
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Die Werte betragen 2025 Euro bis 2026 Euro.",
+        "Die Werte betragen 2025 bis 2026 Euro.",
+        "Die Werte betragen 2025-2026 Euro.",
+        "Die Werte betragen Euro 2025 bis 2026.",
+    ),
+)
+def test_money_markers_override_temporal_year_range_typing(profile, source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    year_occurrences = [
+        occurrence for occurrence in grounding if occurrence.raw in {"2025", "2026"}
+    ]
+    assert year_occurrences
+    assert all(not occurrence.has_temporal_context for occurrence in year_occurrences)
+    assert [(item.value, item.raw) for item in inventory] == [
+        (2025.0, "2025"),
+        (2026.0, "2026"),
+    ]
+
+
+@pytest.mark.parametrize("profile", ("legacy", "de-DE"))
+def test_shared_rate_marker_overrides_temporal_year_range_typing(profile):
+    source_text = "Der Satz beträgt 2025 bis 2026 Prozent."
+
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile=profile,
+    )
+
+    year_occurrences = [
+        occurrence for occurrence in grounding if occurrence.raw in {"2025", "2026"}
+    ]
+    assert year_occurrences
+    assert all(
+        occurrence.has_rate_context and not occurrence.has_temporal_context
+        for occurrence in year_occurrences
+    )
+    assert [(item.value, item.raw) for item in inventory] == [
+        (2025.0, "2025"),
+        (2026.0, "2026"),
+    ]
+
+
+def test_temporal_recall_filter_does_not_exempt_generated_literal_grounding():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/regulation/example/1
+rules:
+  - name: fabricated_year_value
+    kind: parameter
+    dtype: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2025
+"""
+
+    issues = find_ungrounded_numeric_issues(
+        content,
+        source_text="Die Regel gilt für das Jahr 2026.",
+    )
+
+    assert any("2025" in issue for issue in issues), issues
+
+
 @pytest.mark.parametrize(
     ("source_text", "expected"),
     (
@@ -12244,12 +12424,16 @@ def test_numeric_occurrence_extraction_accepts_french_hundreds():
     assert 800 in extract_numeric_occurrences_from_text(text)
 
 
-def test_numeric_occurrence_extraction_accepts_belgian_dotted_date_year():
+def test_belgian_dotted_date_year_stays_available_only_for_grounding():
     text = "Cette disposition produit ses effets le 01.01.2028."
 
-    values = extract_numeric_occurrences_from_text(text)
+    grounding = extract_typed_numeric_occurrences_from_text(text)
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(text)
 
-    assert values == [2028.0]
+    assert [(item.value, item.has_temporal_context) for item in grounding] == [
+        (2028.0, True)
+    ]
+    assert inventory == []
 
 
 def test_numeric_occurrence_extraction_ignores_section_symbol_reference():
