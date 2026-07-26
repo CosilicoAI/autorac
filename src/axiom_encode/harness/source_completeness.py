@@ -212,9 +212,8 @@ _WORDED_ARITHMETIC_EXPRESSION = re.compile(
     rf"{_SYMBOLIC_ARITHMETIC_OPERAND}",
     flags=re.IGNORECASE,
 )
-_EXPLICIT_SYMBOLIC_ARITHMETIC_CHAIN = re.compile(
-    rf"(?P<expression>{_SYMBOLIC_ARITHMETIC_OPERAND}"
-    rf"(?:\s*[+*/×·•∗∙−–-]\s*{_SYMBOLIC_ARITHMETIC_OPERAND}){{2,}})"
+_SYMBOLIC_ARITHMETIC_TOKEN = re.compile(
+    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}|[()+*/×·•∗∙−–-]"
 )
 _COMPUTATION_LANGUAGE = re.compile(
     r"\b(?:"
@@ -2517,40 +2516,83 @@ def _formula_operation_kinds(text: str) -> set[str]:
 
 
 def _explicit_source_arithmetic_topology(text: str) -> Any | None:
-    """Parse a complete, unparenthesized symbolic source arithmetic chain."""
+    """Parse the largest complete symbolic expression, including grouping."""
 
-    for match in _EXPLICIT_SYMBOLIC_ARITHMETIC_CHAIN.finditer(text):
-        prefix = text[: match.start()].rstrip()
-        suffix = text[match.end() :].lstrip()
-        if prefix.endswith("(") or suffix.startswith(")"):
-            continue
-        expression_text = match.group("expression")
-        expression_text = re.sub(
-            r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+,\d+",
-            lambda number: number.group(0).replace(" ", "").replace(".", "").replace(
-                ",",
-                ".",
-            ),
-            expression_text,
-        )
-        expression_text = expression_text.translate(
-            str.maketrans(
-                {
-                    "×": "*",
-                    "·": "*",
-                    "•": "*",
-                    "∗": "*",
-                    "∙": "*",
-                    "−": "-",
-                    "–": "-",
-                }
+    tokens = tuple(_SYMBOLIC_ARITHMETIC_TOKEN.finditer(text))
+    candidates: list[tuple[int, int, str]] = []
+    for start_index, start_token in enumerate(tokens):
+        for end_token in tokens[start_index:]:
+            expression_text = _normalized_source_arithmetic_expression(
+                text[start_token.start() : end_token.end()]
             )
+            with contextlib.suppress(SyntaxError):
+                expression = ast.parse(expression_text, mode="eval").body
+                if not _is_supported_arithmetic_expression(expression):
+                    continue
+                operation_count = sum(
+                    isinstance(node, ast.BinOp) for node in ast.walk(expression)
+                )
+                if operation_count >= 2:
+                    candidates.append(
+                        (
+                            operation_count,
+                            end_token.end() - start_token.start(),
+                            expression_text,
+                        )
+                    )
+    if not candidates:
+        return None
+    _operation_count, _length, expression_text = max(
+        candidates,
+        key=lambda candidate: (candidate[0], candidate[1]),
+    )
+    return _formula_arithmetic_topology(expression_text, environment={})
+
+
+def _normalized_source_arithmetic_expression(text: str) -> str:
+    normalized = re.sub(
+        r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+,\d+",
+        lambda number: number.group(0).replace(" ", "").replace(".", "").replace(
+            ",",
+            ".",
+        ),
+        text,
+    )
+    return normalized.translate(
+        str.maketrans(
+            {
+                "×": "*",
+                "·": "*",
+                "•": "*",
+                "∗": "*",
+                "∙": "*",
+                "−": "-",
+                "–": "-",
+            }
         )
-        with contextlib.suppress(SyntaxError):
-            expression = ast.parse(expression_text, mode="eval").body
-            if sum(isinstance(node, ast.BinOp) for node in ast.walk(expression)) >= 2:
-                return _formula_arithmetic_topology(expression_text, environment={})
-    return None
+    )
+
+
+def _is_supported_arithmetic_expression(expression: ast.expr) -> bool:
+    return all(
+        isinstance(
+            node,
+            (
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.Name,
+                ast.Constant,
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.Div,
+                ast.USub,
+                ast.UAdd,
+                ast.Load,
+            ),
+        )
+        for node in ast.walk(expression)
+    )
 
 
 def _formula_arithmetic_topology(
@@ -2563,7 +2605,8 @@ def _formula_arithmetic_topology(
     with contextlib.suppress(SyntaxError):
         expression = ast.parse(formula.strip(), mode="eval").body
         expression = _unwrap_formula_result_wrapper(expression)
-        return _formula_arithmetic_topology_node(expression, environment)
+        topology = _formula_arithmetic_topology_node(expression, environment)
+        return _canonicalize_topology_variables(topology)
     return None
 
 
@@ -2571,27 +2614,83 @@ def _formula_arithmetic_topology_node(
     node: ast.expr,
     environment: dict[str, Any],
 ) -> Any:
-    known = _known_numeric_formula_value(node, environment)
-    if known is not None:
-        return "constant", float(known)
     if isinstance(node, ast.Name):
-        return ("variable",)
+        known = _known_numeric_formula_value(node, environment)
+        if known is not None:
+            return "constant", float(known)
+        return "variable", node.id
+    if isinstance(node, ast.Constant):
+        known = _known_numeric_formula_value(node, environment)
+        if known is not None:
+            return "constant", float(known)
+        return "unsupported", type(node.value).__name__
     if isinstance(node, ast.BinOp):
         operator = type(node.op).__name__
-        operands = (
+        operands: tuple[Any, ...] = (
             _formula_arithmetic_topology_node(node.left, environment),
             _formula_arithmetic_topology_node(node.right, environment),
         )
         if isinstance(node.op, (ast.Add, ast.Mult)):
-            operands = tuple(sorted(operands, key=repr))
+            flattened: list[Any] = []
+            for operand in operands:
+                if (
+                    isinstance(operand, tuple)
+                    and len(operand) == 3
+                    and operand[:2] == ("binop", operator)
+                ):
+                    flattened.extend(operand[2])
+                else:
+                    flattened.append(operand)
+            operands = tuple(
+                sorted(
+                    flattened,
+                    key=lambda operand: repr(
+                        _topology_without_variable_names(operand)
+                    ),
+                )
+            )
         return "binop", operator, operands
     if isinstance(node, ast.UnaryOp):
+        known = _known_numeric_formula_value(node, environment)
+        if known is not None:
+            return "constant", float(known)
         return (
             "unary",
             type(node.op).__name__,
             _formula_arithmetic_topology_node(node.operand, environment),
         )
     return ("unsupported", type(node).__name__)
+
+
+def _topology_without_variable_names(topology: Any) -> Any:
+    if (
+        isinstance(topology, tuple)
+        and len(topology) == 2
+        and topology[0] == "variable"
+    ):
+        return ("variable",)
+    if isinstance(topology, tuple):
+        return tuple(_topology_without_variable_names(item) for item in topology)
+    return topology
+
+
+def _canonicalize_topology_variables(topology: Any) -> Any:
+    identities: dict[str, int] = {}
+
+    def canonicalize(item: Any) -> Any:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and item[0] == "variable"
+        ):
+            name = str(item[1])
+            identity = identities.setdefault(name, len(identities))
+            return "variable", identity
+        if isinstance(item, tuple):
+            return tuple(canonicalize(part) for part in item)
+        return item
+
+    return canonicalize(topology)
 
 
 def _formula_ast_operation_kinds(text: str) -> set[str]:
