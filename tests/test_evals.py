@@ -5525,6 +5525,47 @@ def test_empty_artifact_runtime_uses_bound_max_attempts(monkeypatch, tmp_path):
     assert materialized_paths == frozenset()
 
 
+def test_terminal_infra_response_is_never_materialized_or_retried(tmp_path):
+    artifact_root = tmp_path / "out"
+    artifact_root.mkdir()
+    output_file = artifact_root / "sample.yaml"
+    response = EvalPromptResponse(
+        text="format: rulespec/v1\nrules: []\n",
+        duration_ms=1,
+        error="OpenAI response was incomplete: max_output_tokens",
+        failure_kind="output_truncated",
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals._run_prompt_eval",
+            return_value=response,
+        ) as mock_prompt,
+        patch(
+            "axiom_encode.harness.evals._materialize_eval_artifact",
+        ) as mock_materialize,
+    ):
+        returned, wrote_artifact, retry_count, materialized_paths = (
+            evals_module._run_prompt_eval_with_empty_artifact_retry(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(root=tmp_path),
+                "prompt",
+                output_file,
+                "source",
+                "sample.yaml",
+                False,
+                artifact_root=artifact_root,
+            )
+        )
+
+    assert returned.text == ""
+    assert wrote_artifact is False
+    assert retry_count == 0
+    assert materialized_paths == frozenset()
+    mock_prompt.assert_called_once()
+    mock_materialize.assert_not_called()
+
+
 def test_materialized_artifact_crossing_case_budget_is_discarded(
     monkeypatch,
     tmp_path,
@@ -6009,6 +6050,37 @@ def test_result_binding_rejects_failed_row_without_failure_kind():
 
     with pytest.raises(ValueError, match="failed result without a failure_kind"):
         evals_module._validate_eval_result_artifact_binding(payload)
+
+
+def test_result_binding_rejects_terminal_infra_failure_with_artifact():
+    payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
+    payload["success"] = False
+    payload["error"] = "OpenAI output was truncated"
+    payload["failure_kind"] = "output_truncated"
+
+    with pytest.raises(ValueError, match="terminal infra failure.*no artifact"):
+        evals_module._validate_eval_result_artifact_binding(payload)
+
+
+def test_suite_context_overflow_is_recorded_as_distinct_infra_failure():
+    case = EvalSuiteCase(
+        kind="source",
+        name="overflow-case",
+        mode="cold",
+        corpus_citation_path="us/statute/7/2017",
+    )
+
+    [result] = evals_module._suite_case_failure_results(
+        case,
+        [parse_runner_spec("openai:gpt-5.4")],
+        evals_module.EvalContextOverflowError(
+            "context_overflow: prompt exceeds receiver envelope"
+        ),
+    )
+
+    assert result.failure_kind == "context_overflow"
+    assert result.output_file == ""
+    assert result.metrics is None
 
 
 def test_policyengine_binding_rejects_artifact_without_oracle_evidence():
@@ -13391,6 +13463,96 @@ class TestOpenAIEvalRequest:
         assert body["reasoning"].get("effort") == expected_effort
         assert result.error is None
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "output_text": "format: rulespec/v1\nrules: []\n",
+                "usage": {},
+            },
+            {
+                "status": "in_progress",
+                "output_text": "format: rulespec/v1\nrules: []\n",
+                "usage": {},
+            },
+            {
+                "status": "completed",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": "format: rulespec/v1\nrules: []\n",
+                "usage": {},
+            },
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "status": "incomplete",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "format: rulespec/v1\nrules: []\n",
+                            }
+                        ],
+                    }
+                ],
+                "usage": {},
+            },
+        ],
+        ids=[
+            "missing-status",
+            "noncompleted-status",
+            "incomplete-details",
+            "incomplete-message",
+        ],
+    )
+    def test_openai_prompt_eval_rejects_every_incomplete_response(
+        self,
+        monkeypatch,
+        payload,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        response = Mock(status_code=200, headers={}, text="")
+        response.json.return_value = payload
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            return_value=response,
+        ):
+            result = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert result.text == ""
+        assert result.failure_kind == "output_truncated"
+        assert "incomplete" in (result.error or "").lower()
+
+    def test_openai_prompt_eval_uses_model_max_output_ceiling(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        response = Mock(status_code=200, headers={}, text="")
+        response.json.return_value = {
+            "status": "completed",
+            "output_text": "format: rulespec/v1\nrules: []\n",
+            "usage": {},
+        }
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            return_value=response,
+        ) as mock_post:
+            result = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.4"),
+                SimpleNamespace(),
+                "prompt",
+            )
+
+        assert mock_post.call_args.kwargs["body"]["max_output_tokens"] == 128_000
+        assert result.openai_max_output_tokens == 128_000
+
     def test_post_openai_eval_request_retries_transient_status(self):
         error_response = Mock()
         error_response.status_code = 502
@@ -13675,6 +13837,7 @@ class TestOpenAIEvalRequest:
             text="",
         )
         ok_response.json.return_value = {
+            "status": "completed",
             "output_text": "format: rulespec/v1\nrules: []\n",
             "usage": {},
         }
@@ -19921,6 +20084,72 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         assert response.error is not None
         assert "PolicyEngine skills" in response.error
         assert response.unexpected_accesses
+
+    def test_run_codex_prompt_eval_makes_out_of_contract_access_terminal(
+        self,
+        tmp_path,
+    ):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        event_lines = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat /etc/passwd",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "format: rulespec/v1\nrules: []\n",
+                        },
+                    }
+                ),
+            ]
+        )
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                stdout.write(event_lines + "\n")
+                stdout.flush()
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            response = _run_codex_prompt_eval(runner, workspace, "prompt")
+
+        assert response.text == ""
+        assert response.failure_kind == "integrity"
+        assert "workspace contract" in (response.error or "")
+        assert response.unexpected_accesses == ["cat /etc/passwd"]
 
 
 class TestUnexpectedAccessDetection:

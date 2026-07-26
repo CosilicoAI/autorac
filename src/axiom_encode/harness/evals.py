@@ -137,7 +137,14 @@ from .validator_pipeline import (
 
 EvalMode = Literal["cold", "repo-augmented"]
 EvalOracleMode = Literal["none", "policyengine"]
-EvalFailureKind = Literal["timeout", "validation", "error"]
+EvalFailureKind = Literal[
+    "timeout",
+    "validation",
+    "error",
+    "context_overflow",
+    "output_truncated",
+    "integrity",
+]
 IMPORT_ITEM_PATTERN = re.compile(r"^\s*-\s*(['\"]?)([^'\"]+?)\1\s*$")
 TABLE_BOUND_COMPARATOR_NUMBER_PATTERN = re.compile(
     r"(?:(?:<=|>=|<|>|==)\s*(-?[\d,]+(?:\.\d+)?)"
@@ -259,7 +266,12 @@ _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
 _OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
 _OPENAI_REQUEST_MAX_ATTEMPTS = 6
 _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
+_OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
+_OPENAI_MAX_OUTPUT_TOKENS = 128_000
 _EVAL_PROMPT_MAX_UTF8_BYTES = 500_000
+_TERMINAL_INFRA_FAILURE_KINDS = frozenset(
+    {"context_overflow", "output_truncated", "integrity"}
+)
 _RUNNER_EFFORTS_BY_BACKEND = {
     "claude": frozenset({"low", "medium", "high", "max"}),
     "codex": frozenset({"low", "medium", "high", "xhigh", "ultra"}),
@@ -932,11 +944,13 @@ class EvalPromptResponse:
     trace: dict | None = None
     unexpected_accesses: list[str] = field(default_factory=list)
     error: str | None = None
+    failure_kind: EvalFailureKind | None = None
     timed_out: bool = False
     timeout_stage: str | None = None
     timeout_reason: str | None = None
     timeout_seconds: float | None = None
     timeout_attempts: int = 0
+    openai_max_output_tokens: int | None = None
 
 
 @dataclass
@@ -1044,7 +1058,13 @@ def _validate_eval_result_artifact_binding(
                 f"'{field_name}'"
             )
     failure_kind = payload.get("failure_kind")
-    if failure_kind not in {None, "timeout", "validation", "error"}:
+    if failure_kind not in {
+        None,
+        "timeout",
+        "validation",
+        "error",
+        *_TERMINAL_INFRA_FAILURE_KINDS,
+    }:
         raise ValueError(f"{artifact_name} has an invalid failure_kind")
     timed_out = payload.get("timed_out", False)
     if not isinstance(timed_out, bool):
@@ -1088,6 +1108,12 @@ def _validate_eval_result_artifact_binding(
     if failure_kind == "validation" and not isinstance(payload.get("metrics"), dict):
         raise ValueError(
             f"{artifact_name} marks validation failure without artifact metrics"
+        )
+    if failure_kind in _TERMINAL_INFRA_FAILURE_KINDS and (
+        payload.get("output_file") or isinstance(payload.get("metrics"), dict)
+    ):
+        raise ValueError(
+            f"{artifact_name} terminal infra failure must have no artifact or metrics"
         )
     if payload.get("success") is False and failure_kind is None:
         raise ValueError(f"{artifact_name} has a failed result without a failure_kind")
@@ -1993,6 +2019,7 @@ def _combine_retry_response(
             *retry.unexpected_accesses,
         ],
         error=retry.error,
+        failure_kind=retry.failure_kind,
         timed_out=retry.timed_out,
         timeout_stage=latest_timeout[1],
         timeout_reason=latest_timeout[2],
@@ -2038,6 +2065,8 @@ def _prompt_response_timeout_evidence(
 
 def _response_allows_empty_artifact_retry(response: EvalPromptResponse) -> bool:
     """Return true when a missing artifact should get one forced retry."""
+    if response.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS:
+        return False
     if response.error is None:
         return True
     return not response.text.strip() and "timed out" in response.error.lower()
@@ -4946,6 +4975,13 @@ def _suite_case_failure_results(
 ) -> list[EvalResult]:
     """Convert an exception into explicit failed results for each runner."""
     timed_out = isinstance(exc, (subprocess.TimeoutExpired, TimeoutError))
+    failure_kind: EvalFailureKind = (
+        "timeout"
+        if timed_out
+        else "context_overflow"
+        if isinstance(exc, EvalContextOverflowError)
+        else "error"
+    )
     timeout_seconds = (
         float(exc.timeout)
         if isinstance(exc, subprocess.TimeoutExpired)
@@ -4979,7 +5015,7 @@ def _suite_case_failure_results(
             retrieved_files=[],
             unexpected_accesses=[],
             metrics=None,
-            failure_kind="timeout" if timed_out else "error",
+            failure_kind=failure_kind,
             timed_out=timed_out,
             timeout_stage="case" if timed_out else None,
             timeout_reason="wall" if timed_out else None,
@@ -7707,6 +7743,14 @@ def _run_prompt_eval_with_empty_artifact_retry(
             raise RuntimeError("_EMPTY_ARTIFACT_MAX_ATTEMPTS must be positive")
         materialized_paths: set[Path] = set()
         response = _run_prompt_eval(runner, workspace, prompt)
+        if _discard_artifacts_after_terminal_infra_response(
+            response,
+            output_file=output_file,
+            artifact_root=artifact_root,
+            workspace_root=workspace.root,
+            materialized_paths=materialized_paths,
+        ):
+            return response, False, 0, frozenset()
         timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
             response,
             output_file=output_file,
@@ -7745,6 +7789,13 @@ def _run_prompt_eval_with_empty_artifact_retry(
         for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
             retry_response = _run_prompt_eval(runner, workspace, retry_prompt)
             retry_count += 1
+            terminal_infra_attempt = _discard_artifacts_after_terminal_infra_response(
+                retry_response,
+                output_file=output_file,
+                artifact_root=artifact_root,
+                workspace_root=workspace.root,
+                materialized_paths=materialized_paths,
+            )
             timed_out_attempt = _discard_artifacts_after_timed_out_attempt(
                 retry_response,
                 output_file=output_file,
@@ -7753,6 +7804,9 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 materialized_paths=materialized_paths,
             )
             response = _combine_retry_response(response, retry_response, retry_prompt)
+            if terminal_infra_attempt:
+                wrote_artifact = False
+                break
             wrote_artifact = False
             if not timed_out_attempt:
                 wrote_artifact = _materialize_eval_artifact(
@@ -7780,6 +7834,29 @@ def _run_prompt_eval_with_empty_artifact_retry(
         return response, wrote_artifact, retry_count, frozenset(materialized_paths)
     finally:
         _pause_eval_case_budget()
+
+
+def _discard_artifacts_after_terminal_infra_response(
+    response: EvalPromptResponse,
+    *,
+    output_file: Path,
+    artifact_root: Path | None,
+    workspace_root: Path,
+    materialized_paths: set[Path],
+) -> bool:
+    """Discard output that a receiver produced after a terminal infra violation."""
+
+    if response.failure_kind not in _TERMINAL_INFRA_FAILURE_KINDS:
+        return False
+    _clear_eval_target_artifacts(output_file, artifact_root)
+    workspace_root = Path(workspace_root)
+    _clear_eval_target_artifacts(
+        workspace_root / output_file.name,
+        workspace_root,
+    )
+    materialized_paths.clear()
+    response.text = ""
+    return True
 
 
 def _discard_artifacts_after_timed_out_attempt(
@@ -8091,6 +8168,8 @@ def _eval_result_outcome(
     failure_kind: EvalFailureKind | None
     if terminal_timeout:
         failure_kind = "timeout"
+    elif response.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS:
+        failure_kind = response.failure_kind
     elif validation_error is not None:
         failure_kind = "validation"
     elif response.error is not None or not wrote_artifact:
@@ -13107,6 +13186,7 @@ def _run_codex_prompt_eval(
     usage_payload: dict | None = None
     unexpected_accesses: list[str] = []
     error = None
+    failure_kind: EvalFailureKind | None = None
 
     for line in (stdout_text + stderr_text).splitlines():
         stripped = line.strip()
@@ -13131,8 +13211,15 @@ def _run_codex_prompt_eval(
                             "Codex eval attempted to use PolicyEngine skills, "
                             "which are disallowed for Axiom encoding"
                         )
+                    failure_kind = "integrity"
                 if _command_looks_out_of_bounds(command, receiver_workspace_root):
                     unexpected_accesses.append(command)
+                    if not error:
+                        error = (
+                            "Codex eval violated the declared empty-workspace contract "
+                            f"with command: {command}"
+                        )
+                    failure_kind = "integrity"
         elif payload.get("type") == "turn.completed":
             usage_payload = payload.get("usage") or {}
         elif payload.get("type") == "error":
@@ -13156,7 +13243,9 @@ def _run_codex_prompt_eval(
     if last_message_text.strip():
         final_text = last_message_text.strip()
 
-    if timeout_stage == "case_budget":
+    if failure_kind == "integrity":
+        final_text = ""
+    elif timeout_stage == "case_budget":
         final_text = ""
         error = "Eval case budget timed out"
     elif timed_out and not error and not final_text:
@@ -13190,6 +13279,7 @@ def _run_codex_prompt_eval(
         },
         unexpected_accesses=unexpected_accesses,
         error=error,
+        failure_kind=failure_kind,
         timed_out=timed_out,
         timeout_stage=timeout_stage,
         timeout_reason=timeout_reason,
@@ -13512,7 +13602,7 @@ def _run_openai_prompt_eval(
     body = {
         "model": runner.model,
         "input": prompt,
-        "max_output_tokens": 16384,
+        "max_output_tokens": _OPENAI_MAX_OUTPUT_TOKENS,
         "reasoning": {
             "summary": "auto",
         },
@@ -13616,6 +13706,7 @@ def _run_openai_prompt_eval(
             timeout_reason=timeout_reason,
             timeout_seconds=timeout_seconds,
             timeout_attempts=timeout_attempts,
+            openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
         )
 
     usage = payload.get("usage") or {}
@@ -13629,6 +13720,23 @@ def _run_openai_prompt_eval(
         ((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0)
     )
 
+    incomplete_error = _openai_incomplete_response_error(payload)
+    if incomplete_error is not None:
+        return EvalPromptResponse(
+            text="",
+            duration_ms=duration_ms,
+            tokens=tokens,
+            estimated_cost_usd=estimate_usage_cost_usd(runner.model, tokens),
+            trace=trace,
+            error=incomplete_error,
+            failure_kind="output_truncated",
+            timeout_stage=timeout_stage,
+            timeout_reason=timeout_reason,
+            timeout_seconds=timeout_seconds,
+            timeout_attempts=timeout_attempts,
+            openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
+        )
+
     return EvalPromptResponse(
         text=_extract_openai_response_text(payload),
         duration_ms=duration_ms,
@@ -13639,7 +13747,44 @@ def _run_openai_prompt_eval(
         timeout_reason=timeout_reason,
         timeout_seconds=timeout_seconds,
         timeout_attempts=timeout_attempts,
+        openai_max_output_tokens=_OPENAI_MAX_OUTPUT_TOKENS,
     )
+
+
+def _openai_incomplete_response_error(payload: object) -> str | None:
+    """Return a terminal error for every incomplete Responses API payload."""
+
+    if not isinstance(payload, dict):
+        return "OpenAI eval response was incomplete: response payload is not an object"
+    status = payload.get("status")
+    if status != "completed":
+        return (
+            "OpenAI eval response was incomplete: "
+            f"response status is {status!r}, expected 'completed'"
+        )
+    incomplete_details = payload.get("incomplete_details")
+    if incomplete_details:
+        return (
+            "OpenAI eval response was incomplete: "
+            f"incomplete_details={incomplete_details!r}"
+        )
+    for index, item in enumerate(payload.get("output") or []):
+        if not isinstance(item, dict):
+            continue
+        item_status = item.get("status")
+        if item_status is not None and item_status != "completed":
+            return (
+                "OpenAI eval response was incomplete: "
+                f"output[{index}] status is {item_status!r}"
+            )
+        for field_name in ("finish_reason", "stop_reason"):
+            reason = item.get(field_name)
+            if reason in {"max_tokens", "max_output_tokens", "length"}:
+                return (
+                    "OpenAI eval response was incomplete: "
+                    f"output[{index}] {field_name}={reason!r}"
+                )
+    return None
 
 
 def _post_openai_request_with_wall_deadline(
@@ -13660,7 +13805,7 @@ def _post_openai_request_with_wall_deadline(
 
     def post() -> requests.Response:
         return requests.post(
-            "https://api.openai.com/v1/responses",
+            _OPENAI_RESPONSES_ENDPOINT,
             headers=headers,
             json=body,
             timeout=request_timeout,
