@@ -328,9 +328,7 @@ TEST_POLICYENGINE_RUNTIME_IDENTITY = {
     "country": "us",
     "repository_root": "/tmp/policyengine-us",
     "git_head": "9" * 40,
-    "rulespec_runtime_pin_path": (
-        "/tmp/rulespec-us/.axiom/policyengine-runtime.toml"
-    ),
+    "rulespec_runtime_pin_path": ("/tmp/rulespec-us/.axiom/policyengine-runtime.toml"),
     "rulespec_runtime_pin_sha256": "d" * 64,
 }
 TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256 = hashlib.sha256(
@@ -530,9 +528,7 @@ def _fake_verified_eval_suite_artifacts(
             "kind": "git",
             "path": toolchain_root,
             "commit": "a" * 40,
-            "origin_repository": (
-                f"github.com/TheAxiomFoundation/rulespec-{country}"
-            ),
+            "origin_repository": (f"github.com/TheAxiomFoundation/rulespec-{country}"),
             "dirty": False,
             "working_tree_sha256": "b" * 64,
             "pathspecs": [
@@ -755,16 +751,11 @@ def _test_eval_suite_report_payload(
         "  min_ci_pass_rate: 1.0\n"
         "  min_zero_ungrounded_rate: 1.0\n"
         "  min_generalist_review_pass_rate: 1.0\n"
-        + (
-            "  min_policyengine_pass_rate: 1.0\n"
-            if oracle == "policyengine"
-            else ""
-        )
+        + ("  min_policyengine_pass_rate: 1.0\n" if oracle == "policyengine" else "")
         + "cases:\n"
         "  - kind: source\n"
         "    name: case-a\n"
-        f"    corpus_citation_path: {corpus_citation_path}\n"
-        + oracle_line
+        f"    corpus_citation_path: {corpus_citation_path}\n" + oracle_line
     )
     manifest = load_eval_suite_manifest(manifest_path)
     metrics = {
@@ -818,9 +809,7 @@ def _test_eval_suite_report_payload(
         manifest=manifest,
         effective_runners=["codex-gpt=codex:gpt"],
         results=[verified_result],
-        readiness={
-            "codex-gpt": summarize_readiness([verified_result], manifest.gates)
-        },
+        readiness={"codex-gpt": summarize_readiness([verified_result], manifest.gates)},
         run_state=verified["run_state"],
         completed_case_indexes={1},
     )
@@ -845,9 +834,7 @@ def _rebind_test_eval_suite_report_payload(payload: dict, tmp_path: Path) -> Non
             tmp_path,
             f"cli-admission-rebound-{index}",
         )
-    payload["coverage"]["results_sha256"] = _eval_suite_json_sha256(
-        payload["results"]
-    )
+    payload["coverage"]["results_sha256"] = _eval_suite_json_sha256(payload["results"])
     unsigned_evidence = dict(payload["evidence"])
     unsigned_evidence.pop("sha256", None)
     payload["evidence"]["sha256"] = _eval_suite_json_sha256(unsigned_evidence)
@@ -3387,9 +3374,7 @@ class TestCmdEvalSuiteReport:
             "policy_repo_root": other_root["path"],
             "root_content_sha256": other_root["content_sha256"],
             "toolchain_contract_sha256": other_root["toolchain_contract_sha256"],
-            "validation_waiver_set_sha256": other_root[
-                "validation_waiver_set_sha256"
-            ],
+            "validation_waiver_set_sha256": other_root["validation_waiver_set_sha256"],
         }
         _rebind_test_eval_suite_report_payload(payload, tmp_path)
 
@@ -3417,9 +3402,9 @@ class TestCmdEvalSuiteReport:
     ):
         payload = _test_eval_suite_report_payload(tmp_path, oracle="policyengine")
         execution_identity = payload["evidence"]["execution_identity"]
-        execution_identity["rulespec_roots"][0][
-            "policyengine_runtime_pin_sha256"
-        ] = root_pin
+        execution_identity["rulespec_roots"][0]["policyengine_runtime_pin_sha256"] = (
+            root_pin
+        )
         runtime = execution_identity["policyengine_runtime"]["identity"]
         runtime[runtime_field] = runtime_value
         runtime_sha256 = _eval_suite_json_sha256(runtime)
