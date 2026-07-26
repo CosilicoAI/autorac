@@ -598,6 +598,74 @@ def test_explicit_satz_markers_after_absatz_are_recognized():
     }
 
 
+@pytest.mark.parametrize(
+    ("source", "source_reference", "parent_label"),
+    [
+        (
+            "(1) Anspruch besteht nur bei Wohnsitz.\n"
+            "1. Der Freibetrag beträgt 259 Euro.",
+            "de/statute/estg/32a(1)(1)",
+            "(1)",
+        ),
+        (
+            "1. Anspruch besteht nur bei Wohnsitz.\n"
+            "a) Der Freibetrag beträgt 259 Euro.",
+            "de/statute/estg/32a Nummer 1 Buchstabe a",
+            "1.",
+        ),
+    ],
+)
+def test_child_encoding_cannot_hide_substantive_parent_chapeau(
+    source: str,
+    source_reference: str,
+    parent_label: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Scalar child only.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    source: {source_reference}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert any(
+        f"Source branch {parent_label} at " in issue for issue in result.issues
+    )
+
+
+def test_child_encoding_covers_marker_only_parent_container():
+    source = "(1)\n1. Der Freibetrag beträgt 259 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Scalar child.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+
+    result = _analyze(content, source, test_cases=[])
+
+    assert not result.issues
+
+
 def test_imprecise_absatz_deferral_does_not_cover_branch():
     content = """\
 format: rulespec/v1
