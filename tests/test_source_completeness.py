@@ -457,7 +457,7 @@ def test_same_valued_boundaries_keep_their_own_rate_context():
             "versions": [
                 {
                     "effective_from": "2026-01-01",
-                    "formula": "selector",
+                    "formula": "selector <= 0.42",
                 }
             ]
         }
@@ -467,7 +467,7 @@ def test_same_valued_boundaries_keep_their_own_rate_context():
         "candidate": [
             {
                 "input": {"selector": 0.42},
-                "output": {"candidate": 1},
+                "output": {"candidate": True},
             }
         ]
     }
@@ -479,6 +479,7 @@ def test_same_valued_boundaries_keep_their_own_rate_context():
         principal_rule_paths=principal_rule_paths,
         asserted_by_rule=asserted_by_rule,
         numeric_value_is_grounded=numeric_value_is_grounded,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
     assert completeness_module._branch_boundary_has_test_evidence(
         branch,
@@ -487,6 +488,7 @@ def test_same_valued_boundaries_keep_their_own_rate_context():
         principal_rule_paths=principal_rule_paths,
         asserted_by_rule=asserted_by_rule,
         numeric_value_is_grounded=numeric_value_is_grounded,
+        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
     )
 
 
@@ -3626,7 +3628,7 @@ rules:
     dtype: String
     versions:
       - effective_from: '2026-01-01'
-        formula: married
+        formula: '"married"'
   - name: first_multiplier
     kind: parameter
     dtype: Decimal
@@ -3663,6 +3665,32 @@ rules:
     result = _analyze(content, source, test_cases=cases)
 
     assert _has_issue(result, "formula branch", "distinct")
+
+
+def test_bare_enum_match_patterns_remain_literal_values():
+    rule = {
+        "versions": [
+            {
+                "effective_from": "2026-01-01",
+                "formula": (
+                    "match status: married => income * 2; "
+                    "single => income * 3"
+                ),
+            }
+        ]
+    }
+
+    married = completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"status": "married", "income": 10}},
+    )
+    single = completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"status": "single", "income": 10}},
+    )
+
+    assert married == "match:0"
+    assert single == "match:1"
 
 
 def test_neutral_terms_cannot_bind_or_distinguish_formula_branches():
@@ -3806,3 +3834,282 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+def _boundary_control_content(
+    *,
+    formula: str,
+    limit_versions: str,
+    extra_rules: str = "",
+) -> str:
+    return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+{extra_rules}  - name: income_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+{limit_versions}
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: >-
+          {formula}
+"""
+
+
+def test_boundary_requires_one_operative_input_threshold_comparison():
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    limit_versions = """\
+      - effective_from: '2026-01-01'
+        formula: 100"""
+    inert = _boundary_control_content(
+        formula="if income > 0: income_limit > 0 else: false",
+        limit_versions=limit_versions,
+    )
+    operative = _boundary_control_content(
+        formula="income <= income_limit",
+        limit_versions=limit_versions,
+    )
+    case = {
+        "name": "at threshold",
+        "period": "2026-01",
+        "input": {"income": 100},
+        "output": {"eligible": True},
+    }
+
+    inert_result = _analyze(inert, source, test_cases=[case])
+    operative_result = _analyze(operative, source, test_cases=[case])
+
+    assert _has_issue(inert_result, "boundary", "100")
+    assert not operative_result.issues
+
+
+def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    source_limit_rule = """\
+  - name: source_limit
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 100
+"""
+    limit_versions = """\
+      - effective_from: '2026-01-01'
+        formula: 101"""
+    correct = _boundary_control_content(
+        formula="income < income_limit",
+        limit_versions=limit_versions,
+        extra_rules=source_limit_rule,
+    )
+    wrong = _boundary_control_content(
+        formula="income <= income_limit",
+        limit_versions=limit_versions,
+        extra_rules=source_limit_rule,
+    )
+    case = {
+        "name": "inclusive source endpoint",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": True},
+    }
+
+    correct_result = _analyze(correct, source, test_cases=[case])
+    wrong_result = _analyze(wrong, source, test_cases=[case])
+
+    assert not correct_result.issues
+    assert _has_issue(wrong_result, "boundary", "100")
+
+
+@pytest.mark.parametrize(
+    ("wording", "formula"),
+    [
+        ("höchstens 100 Euro", "income <= income_limit"),
+        ("mindestens 100 Euro", "income >= income_limit"),
+    ],
+)
+def test_german_minimum_and_maximum_boundaries_are_controlled(
+    wording: str,
+    formula: str,
+):
+    source = f"(1) Die Regel gilt für Einkommen von {wording}."
+    content = _boundary_control_content(
+        formula=formula,
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "at threshold",
+        "period": "2026",
+        "input": {"income": 100},
+        "output": {"eligible": True},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_monthly_case_period_resolves_versioned_boundary_constant():
+    source = "(1) Die Regel gilt für Einkommen bis 100 Euro."
+    content = _boundary_control_content(
+        formula="income <= income_limit",
+        limit_versions="""\
+      - effective_from: '2025-01-01'
+        formula: 90
+      - effective_from: '2026-01-01'
+        formula: 100""",
+    )
+    case = {
+        "name": "current threshold",
+        "period": "2026-01",
+        "input": {"income": 100},
+        "output": {"eligible": True},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_equal_asserted_exception_effects_do_not_count_as_toggle():
+    source = (
+        "(1) Ein Anspruch besteht, es sei denn, eine Befreiung liegt vor."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: eligible
+    kind: derived
+    dtype: bool
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if exemption_applies:
+            false
+          else:
+            0 == 1
+"""
+    same_effect_cases = [
+        {
+            "name": str(exemption_applies),
+            "input": {"exemption_applies": exemption_applies},
+            "output": {"eligible": False},
+        }
+        for exemption_applies in (False, True)
+    ]
+    proper_content = content.replace(
+        """\
+formula: |-
+          if exemption_applies:
+            false
+          else:
+            0 == 1""",
+        "formula: not exemption_applies",
+    )
+    proper_cases = [
+        {
+            "name": str(exemption_applies),
+            "input": {"exemption_applies": exemption_applies},
+            "output": {"eligible": not exemption_applies},
+        }
+        for exemption_applies in (False, True)
+    ]
+
+    same_effect = _analyze(content, source, test_cases=same_effect_cases)
+    proper_effect = _analyze(proper_content, source, test_cases=proper_cases)
+
+    assert _has_issue(same_effect, "exception", "test")
+    assert not proper_effect.issues
+
+
+def test_division_cannot_be_witnessed_by_multiplying_by_the_divisor():
+    source = "(1) Der Betrag ist Einkommen / 2."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: divisor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * divisor
+"""
+    case = {
+        "name": "wrong inverse",
+        "period": "2026",
+        "input": {"income": 10},
+        "output": {"amount": 20},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch")
+
+
+def test_zero_over_provably_nonzero_indexed_term_cannot_witness_division():
+    source = "(1) Der Betrag ist Einkommen / 2."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: divisor
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: dummy_table
+    kind: parameter
+    dtype: Decimal
+    indexed_by: Integer
+    versions:
+      - effective_from: '2026-01-01'
+        values:
+          1: 10
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0 / max(1, dummy_table[index]) / divisor
+"""
+    case = {
+        "name": "zero bypass",
+        "period": "2026",
+        "input": {"income": 10, "index": 1},
+        "output": {"amount": 0},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "formula branch")

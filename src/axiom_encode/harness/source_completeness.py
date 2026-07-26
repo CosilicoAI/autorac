@@ -90,6 +90,14 @@ class _FormulaExecution:
     leaf: str
     evaluated_value: tuple[str, str] | None
     evaluates_to_zero: bool
+    constant_environment: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _TemporalFormulaValue:
+    """Literal parameter values selectable by a companion case period."""
+
+    versions: tuple[tuple[str, str, Any], ...]
 
 
 @dataclass(frozen=True)
@@ -1822,7 +1830,7 @@ def _formula_branch_test_witnesses(
                     "leaf:"
                     + _formula_leaf_semantic_key(
                         execution.leaf,
-                        formula_environment=formula_environment,
+                        formula_environment=execution.constant_environment,
                     )
                     if has_branching_formula
                     else f"case:{id(case)}"
@@ -1859,9 +1867,15 @@ def _formula_execution_matches_source_branch(
     """Bind a reached leaf to numeric evidence in its exact source formula."""
 
     source_operations = _formula_operation_kinds(branch.text)
+    binding_environment = {
+        name: value
+        for name, value in formula_environment.items()
+        if not isinstance(value, _TemporalFormulaValue)
+    }
+    binding_environment.update(execution.constant_environment)
     operative_leaf = _simplified_formula_text(
         execution.leaf,
-        environment=formula_environment,
+        environment=binding_environment,
     )
     artifact_operations = _formula_ast_operation_kinds(operative_leaf)
     if not _formula_operations_are_compatible(
@@ -1869,8 +1883,36 @@ def _formula_execution_matches_source_branch(
         artifact_operations,
         source_text=branch.text,
         artifact_formula=operative_leaf,
+        artifact_environment=binding_environment,
     ):
         return False
+    source_multiplier = _source_named_multiplier(branch.text)
+    if source_multiplier is not None and not (
+        _formula_has_numeric_factor(
+            operative_leaf,
+            binding_environment,
+            source_multiplier,
+        )
+        or (
+            math.isclose(source_multiplier, 2.0)
+            and _formula_is_duplicate_addition(operative_leaf)
+        )
+    ):
+        return False
+    if _source_describes_half(branch.text):
+        if not (
+            _formula_has_numeric_factor(
+                operative_leaf,
+                binding_environment,
+                0.5,
+            )
+            or _formula_has_numeric_divisor(
+                operative_leaf,
+                binding_environment,
+                2.0,
+            )
+        ):
+            return False
     source_occurrences = tuple(
         extract_numeric_occurrences(
             authoritative_numeric_recall_text(branch.text)
@@ -1899,7 +1941,7 @@ def _formula_execution_matches_source_branch(
     leaf_names = set(_FORMULA_IDENTIFIER.findall(operative_leaf))
     candidate_values = [
         float(value)
-        for name, value in formula_environment.items()
+        for name, value in binding_environment.items()
         if name in leaf_names
         and isinstance(value, (int, float))
         and not isinstance(value, bool)
@@ -1992,13 +2034,23 @@ def _formula_operations_are_compatible(
     *,
     source_text: str,
     artifact_formula: str,
+    artifact_environment: dict[str, Any],
 ) -> bool:
     if not source_operations:
         return True
     for operation in source_operations:
         if operation in artifact_operations:
             continue
-        if operation == "divide" and "multiply" in artifact_operations:
+        if (
+            operation == "divide"
+            and "multiply" in artifact_operations
+            and _source_describes_half(source_text)
+            and _formula_has_numeric_factor(
+                artifact_formula,
+                artifact_environment,
+                0.5,
+            )
+        ):
             continue
         if (
             operation == "multiply"
@@ -2012,13 +2064,79 @@ def _formula_operations_are_compatible(
 
 
 def _source_describes_doubling(text: str) -> bool:
+    multiplier = _source_named_multiplier(text)
+    return multiplier is not None and math.isclose(multiplier, 2.0)
+
+
+def _source_named_multiplier(text: str) -> float | None:
+    patterns = (
+        (2.0, r"\b(?:doppelte|zweifache|verdoppelt|twice|double[ds]?)\b"),
+        (3.0, r"\b(?:dreifache|verdreifacht|threefold|triple[ds]?)\b"),
+        (4.0, r"\b(?:vierfache|vervierfacht|fourfold|quadruple[ds]?)\b"),
+        (5.0, r"\b(?:fünffache|fivefold)\b"),
+        (6.0, r"\b(?:sechsfache|sixfold)\b"),
+        (7.0, r"\b(?:siebenfache|sevenfold)\b"),
+        (8.0, r"\b(?:achtfache|eightfold)\b"),
+        (9.0, r"\b(?:neunfache|ninefold)\b"),
+        (10.0, r"\b(?:zehnfache|tenfold)\b"),
+    )
+    return next(
+        (
+            multiplier
+            for multiplier, pattern in patterns
+            if re.search(pattern, text, flags=re.IGNORECASE)
+        ),
+        None,
+    )
+
+
+def _source_describes_half(text: str) -> bool:
     return bool(
         re.search(
-            r"\b(?:doppelte|zweifache|verdoppelt|twice|double[ds]?)\b",
+            r"\b(?:hälfte|halb(?:e[nsrm]?)?|half)\b",
             text,
             flags=re.IGNORECASE,
         )
     )
+
+
+def _formula_has_numeric_factor(
+    text: str,
+    environment: dict[str, Any],
+    expected: float,
+) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        for node in ast.walk(expression):
+            if not isinstance(node, ast.BinOp) or not isinstance(
+                node.op,
+                ast.Mult,
+            ):
+                continue
+            for operand in (node.left, node.right):
+                value = _known_numeric_formula_value(operand, environment)
+                if value is not None and math.isclose(float(value), expected):
+                    return True
+    return False
+
+
+def _formula_has_numeric_divisor(
+    text: str,
+    environment: dict[str, Any],
+    expected: float,
+) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        for node in ast.walk(expression):
+            if not isinstance(node, ast.BinOp) or not isinstance(
+                node.op,
+                ast.Div,
+            ):
+                continue
+            value = _known_numeric_formula_value(node.right, environment)
+            if value is not None and math.isclose(float(value), expected):
+                return True
+    return False
 
 
 def _formula_is_duplicate_addition(text: str) -> bool:
@@ -2094,8 +2212,14 @@ def _simplify_formula_expression(
                 return left
         elif isinstance(expression.op, ast.Sub) and right_value == 0:
             return left
-        elif isinstance(expression.op, ast.Div) and right_value == 1:
-            return left
+        elif isinstance(expression.op, ast.Div):
+            if right_value == 1:
+                return left
+            if left_value == 0 and _formula_node_is_provably_nonzero(
+                right,
+                environment,
+            ):
+                return ast.Constant(value=0)
         return ast.BinOp(left=left, op=expression.op, right=right)
     if isinstance(expression, ast.UnaryOp):
         return ast.UnaryOp(
@@ -2154,6 +2278,27 @@ def _known_numeric_formula_value(
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
     return None
+
+
+def _formula_node_is_provably_nonzero(
+    expression: ast.expr,
+    environment: dict[str, Any],
+) -> bool:
+    value = _known_numeric_formula_value(expression, environment)
+    if value is not None:
+        return value != 0
+    if (
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Name)
+        and expression.func.id == "max"
+    ):
+        return any(
+            (known := _known_numeric_formula_value(argument, environment))
+            is not None
+            and known > 0
+            for argument in expression.args
+        )
+    return False
 
 
 def _canonical_formula_node(node: ast.AST) -> Any:
@@ -2251,7 +2396,11 @@ def _case_formula_execution(
     inputs = case.get("input")
     if not isinstance(inputs, dict):
         return None
-    environment: dict[str, Any] = dict(formula_environment or {})
+    constant_environment = _formula_environment_for_case(
+        formula_environment or {},
+        case,
+    )
+    environment: dict[str, Any] = dict(constant_environment)
     input_environment: dict[str, Any] = {}
     for key, value in inputs.items():
         boolean_value = _boolean_value(value)
@@ -2272,6 +2421,7 @@ def _case_formula_execution(
     return _execute_formula_text(
         formula_text,
         environment=environment,
+        constant_environment=constant_environment,
     )
 
 
@@ -2279,6 +2429,7 @@ def _execute_formula_text(
     formula_text: str,
     *,
     environment: dict[str, Any],
+    constant_environment: dict[str, Any],
 ) -> _FormulaExecution | None:
     """Interpret formula control flow without evaluating the formula itself."""
 
@@ -2314,6 +2465,7 @@ def _execute_formula_text(
                 leaf,
                 value_signature,
                 evaluates_to_zero,
+                constant_environment,
             )
         selected = _select_formula_branch(node, environment=environment)
         if selected is None:
@@ -2931,7 +3083,7 @@ def _match_arm_value(
     with contextlib.suppress(SyntaxError, ValueError):
         return ast.literal_eval(value)
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-        return environment.get(value, _UNRESOLVED_CONDITION_VALUE)
+        return environment.get(value, value)
     return _UNRESOLVED_CONDITION_VALUE
 
 
@@ -3120,7 +3272,8 @@ def _branch_boundary_has_test_evidence(
                     and _formula_execution_binds_boundary(
                         execution,
                         boundary,
-                        formula_environment=formula_environment or {},
+                        input_names=input_names,
+                        formula_environment=execution.constant_environment,
                         extract_numeric_occurrences=(
                             extract_numeric_occurrences
                         ),
@@ -3128,7 +3281,15 @@ def _branch_boundary_has_test_evidence(
                             numeric_value_is_grounded
                         ),
                     )
-                    for input_names, value in (
+                    and _boundary_case_changes_formula_effect(
+                        rule,
+                        case,
+                        input_key=input_key,
+                        boundary_value=value,
+                        execution=execution,
+                        formula_environment=formula_environment or {},
+                    )
+                    for input_key, input_names, value in (
                         _case_numeric_selector_evidence(
                             case,
                             selector_names,
@@ -3144,6 +3305,7 @@ def _formula_execution_binds_boundary(
     execution: _FormulaExecution,
     boundary: NumericOccurrenceLike,
     *,
+    input_names: set[str],
     formula_environment: dict[str, Any],
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
@@ -3158,17 +3320,152 @@ def _formula_execution_binds_boundary(
             or _is_adjacent_integral_boundary(float(value), boundary)
         )
     }
-    if boundary_names and _formula_execution_references_names(
-        execution,
-        boundary_names,
-    ):
+    if input_names & boundary_names:
+        return False
+    texts = [
+        selector
+        for step in execution.trace
+        for selector in step.selectors
+    ]
+    texts.append(execution.leaf)
+    return any(
+        _formula_text_has_boundary_comparison(
+            text,
+            input_names=input_names,
+            boundary_names=boundary_names,
+            boundary=boundary,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+        for text in texts
+    )
+
+
+def _formula_text_has_boundary_comparison(
+    text: str,
+    *,
+    input_names: set[str],
+    boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    with contextlib.suppress(SyntaxError):
+        expression = ast.parse(text.strip(), mode="eval").body
+        for comparison in (
+            node for node in ast.walk(expression) if isinstance(node, ast.Compare)
+        ):
+            operands = (comparison.left, *comparison.comparators)
+            for left, right in zip(operands, operands[1:]):
+                if (
+                    _formula_node_references_names(left, input_names)
+                    and _formula_node_binds_boundary(
+                        right,
+                        boundary_names=boundary_names,
+                        boundary=boundary,
+                        extract_numeric_occurrences=extract_numeric_occurrences,
+                        numeric_value_is_grounded=numeric_value_is_grounded,
+                    )
+                ) or (
+                    _formula_node_references_names(right, input_names)
+                    and _formula_node_binds_boundary(
+                        left,
+                        boundary_names=boundary_names,
+                        boundary=boundary,
+                        extract_numeric_occurrences=extract_numeric_occurrences,
+                        numeric_value_is_grounded=numeric_value_is_grounded,
+                    )
+                ):
+                    return True
+    return False
+
+
+def _formula_node_references_names(
+    node: ast.AST,
+    names: set[str],
+) -> bool:
+    return bool(
+        {
+            candidate.id
+            for candidate in ast.walk(node)
+            if isinstance(candidate, ast.Name)
+        }
+        & names
+    )
+
+
+def _formula_node_binds_boundary(
+    node: ast.AST,
+    *,
+    boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    if _formula_node_references_names(node, boundary_names):
         return True
-    if extract_numeric_occurrences is not None and any(
+    if isinstance(node, ast.Constant) and isinstance(
+        node.value,
+        (int, float),
+    ) and not isinstance(node.value, bool):
+        value = float(node.value)
+        return numeric_value_is_grounded(
+            value,
+            (boundary,),
+        ) or _is_adjacent_integral_boundary(value, boundary)
+    if extract_numeric_occurrences is None:
+        return False
+    text = ast.unparse(node)
+    return any(
         numeric_value_is_grounded(float(occurrence.value), (boundary,))
-        for occurrence in extract_numeric_occurrences(execution.leaf)
+        or _is_adjacent_integral_boundary(float(occurrence.value), boundary)
+        for occurrence in extract_numeric_occurrences(text)
+    )
+
+
+def _boundary_case_changes_formula_effect(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+    *,
+    input_key: object,
+    boundary_value: float,
+    execution: _FormulaExecution,
+    formula_environment: dict[str, Any],
+) -> bool:
+    inputs = case.get("input")
+    if (
+        not isinstance(inputs, dict)
+        or input_key not in inputs
+        or isinstance(inputs[input_key], bool)
+        or not isinstance(inputs[input_key], (int, float))
     ):
-        return True
-    return not boundary_names
+        return False
+    step = (
+        1.0
+        if float(boundary_value).is_integer()
+        else max(abs(boundary_value) * 1e-6, 1e-9)
+    )
+    signature = _formula_execution_effect_signature(execution)
+    for candidate_value in (
+        boundary_value - step,
+        boundary_value + step,
+    ):
+        candidate_inputs = dict(inputs)
+        candidate_inputs[input_key] = candidate_value
+        candidate_case = dict(case)
+        candidate_case["input"] = candidate_inputs
+        candidate_execution = _case_formula_execution(
+            rule,
+            candidate_case,
+            formula_environment=formula_environment,
+        )
+        if (
+            candidate_execution is not None
+            and _formula_execution_effect_signature(candidate_execution)
+            != signature
+        ):
+            return True
+    return False
 
 
 def _is_adjacent_integral_boundary(
@@ -3327,7 +3624,7 @@ def _case_numeric_selector_values(
 ) -> tuple[float, ...]:
     return tuple(
         value
-        for _names, value in _case_numeric_selector_evidence(
+        for _key, _names, value in _case_numeric_selector_evidence(
             case,
             selector_names,
         )
@@ -3337,17 +3634,17 @@ def _case_numeric_selector_values(
 def _case_numeric_selector_evidence(
     case: dict[str, Any],
     selector_names: set[str],
-) -> tuple[tuple[set[str], float], ...]:
+) -> tuple[tuple[object, set[str], float], ...]:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
         return ()
-    evidence: list[tuple[set[str], float]] = []
+    evidence: list[tuple[object, set[str], float]] = []
     for key, value in inputs.items():
         matched_names = _input_key_names(key) & selector_names
         if not matched_names:
             continue
         evidence.extend(
-            (matched_names, numeric_value)
+            (key, matched_names, numeric_value)
             for numeric_value in _numeric_test_input_values(value)
         )
     return tuple(evidence)
@@ -3525,9 +3822,26 @@ def _toggled_formula_boolean_selectors(
             )
             if left_execution is None or right_execution is None:
                 continue
-            if _formula_execution_effect_signature(
-                left_execution
-            ) == _formula_execution_effect_signature(right_execution):
+            left_asserted = _test_case_asserted_output_value(
+                left_case,
+                rule_name,
+            )
+            right_asserted = _test_case_asserted_output_value(
+                right_case,
+                rule_name,
+            )
+            if (
+                left_asserted is not _UNRESOLVED_CONDITION_VALUE
+                and right_asserted is not _UNRESOLVED_CONDITION_VALUE
+                and _same_formula_value(left_asserted, right_asserted)
+            ) or (
+                (
+                    left_asserted is _UNRESOLVED_CONDITION_VALUE
+                    or right_asserted is _UNRESOLVED_CONDITION_VALUE
+                )
+                and _formula_execution_effect_signature(left_execution)
+                == _formula_execution_effect_signature(right_execution)
+            ):
                 continue
             for selector_name in matched_names:
                 if all(
@@ -3543,11 +3857,27 @@ def _toggled_formula_boolean_selectors(
 
 def _formula_execution_effect_signature(
     execution: _FormulaExecution,
-) -> tuple[str, tuple[str, str] | None]:
-    return (
-        _collapse_text(execution.leaf).lower(),
-        execution.evaluated_value,
-    )
+) -> tuple[str, Any]:
+    if execution.evaluated_value is not None:
+        return "evaluated", execution.evaluated_value
+    return "leaf", _collapse_text(execution.leaf).lower()
+
+
+def _test_case_asserted_output_value(
+    case: dict[str, Any],
+    rule_name: str,
+) -> Any:
+    outputs = case.get("output")
+    if not isinstance(outputs, dict):
+        return _UNRESOLVED_CONDITION_VALUE
+    values = [
+        value
+        for key, value in outputs.items()
+        if str(key).rsplit("#", 1)[-1] == rule_name
+    ]
+    if len(values) != 1:
+        return _UNRESOLVED_CONDITION_VALUE
+    return values[0]
 
 
 def _formula_execution_reaches_selector(
@@ -3827,7 +4157,8 @@ def _source_boundary_obligations(
             if not re.search(
                 r"\b(?:zwischen|between|bis|von|ab|unter|über|from|to|"
                 r"through|less\s+than|more\s+than|at\s+least|up\s+to|"
-                r"above|below|nicht\s+mehr\s+als)\b",
+                r"at\s+most|above|below|höchstens|mindestens|"
+                r"nicht\s+mehr\s+als)\b",
                 range_fragment,
                 flags=re.IGNORECASE,
             ):
@@ -3969,9 +4300,7 @@ def _rule_formula_text_for_case(
     unambiguous = _unambiguous_rule_formula_text(rule)
     if unambiguous is not None:
         return unambiguous
-    period = str(case.get("period") or "").strip()
-    if re.fullmatch(r"\d{4}", period):
-        period = f"{period}-01-01"
+    period = _normalized_case_period(case)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
         return None
     versions = rule.get("versions")
@@ -4000,7 +4329,7 @@ def _rule_formula_text_for_case(
 
 
 def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return unambiguous literal rule values usable by condition evaluation."""
+    """Return literal rule values, retaining resolvable temporal variants."""
 
     environment: dict[str, Any] = {}
     rules = payload.get("rules")
@@ -4013,7 +4342,7 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
         versions = rule.get("versions")
         if not name or not isinstance(versions, list):
             continue
-        values: list[Any] = []
+        entries: list[tuple[str, str, Any]] = []
         for version in versions:
             if not isinstance(version, dict) or "formula" not in version:
                 continue
@@ -4024,13 +4353,69 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
                     value,
                     complex,
                 ):
-                    values.append(value)
+                    entries.append(
+                        (
+                            str(version.get("effective_from") or "").strip(),
+                            str(version.get("effective_to") or "").strip(),
+                            value,
+                        )
+                    )
+        values = [value for _start, _end, value in entries]
         if values and all(
             type(value) is type(values[0]) and value == values[0]
             for value in values[1:]
         ):
             environment[name] = values[0]
+        elif entries and all(
+            re.fullmatch(r"\d{4}-\d{2}-\d{2}", start)
+            and (not end or re.fullmatch(r"\d{4}-\d{2}-\d{2}", end))
+            for start, end, _value in entries
+        ):
+            environment[name] = _TemporalFormulaValue(tuple(entries))
     return environment
+
+
+def _formula_environment_for_case(
+    environment: dict[str, Any],
+    case: dict[str, Any],
+) -> dict[str, Any]:
+    period = _normalized_case_period(case)
+    resolved: dict[str, Any] = {}
+    for name, value in environment.items():
+        if not isinstance(value, _TemporalFormulaValue):
+            resolved[name] = value
+            continue
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+            continue
+        candidates = [
+            (start, candidate)
+            for start, end, candidate in value.versions
+            if start <= period and (not end or period <= end)
+        ]
+        if not candidates:
+            continue
+        latest = max(start for start, _candidate in candidates)
+        latest_values = [
+            candidate
+            for start, candidate in candidates
+            if start == latest
+        ]
+        if latest_values and all(
+            type(candidate) is type(latest_values[0])
+            and candidate == latest_values[0]
+            for candidate in latest_values[1:]
+        ):
+            resolved[name] = latest_values[0]
+    return resolved
+
+
+def _normalized_case_period(case: dict[str, Any]) -> str:
+    period = str(case.get("period") or "").strip()
+    if re.fullmatch(r"\d{4}", period):
+        return f"{period}-01-01"
+    if re.fullmatch(r"\d{4}-\d{2}", period):
+        return f"{period}-01"
+    return period
 
 
 def _collapse_text(value: str) -> str:
