@@ -1713,7 +1713,23 @@ def _case_formula_branch_outcome(
                 if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
             }
         )
+    conditions = _rule_top_level_branch_conditions(rule)
+    condition_outcome = _evaluate_case_condition_chain(
+        conditions,
+        environment,
+    )
+    if conditions and condition_outcome is None:
+        return None
     if match_spec := _rule_match_branch_spec(rule):
+        match_guard_branch = _rule_match_outer_branch(rule)
+        if match_guard_branch is None:
+            return None
+        if isinstance(match_guard_branch, int):
+            if condition_outcome != match_guard_branch:
+                return f"if:{condition_outcome}"
+            outcome_prefix = f"if:{condition_outcome}/"
+        else:
+            outcome_prefix = ""
         selector_name, arm_patterns = match_spec
         if selector_name not in environment:
             return None
@@ -1727,12 +1743,22 @@ def _case_formula_branch_outcome(
                 if expected == "_":
                     default_index = index
                 elif selector_value == expected:
-                    return f"match:{index}"
-        return f"match:{default_index}" if default_index is not None else None
+                    return f"{outcome_prefix}match:{index}"
+        return (
+            f"{outcome_prefix}match:{default_index}"
+            if default_index is not None
+            else None
+        )
 
-    conditions = _rule_top_level_branch_conditions(rule)
     if not conditions:
         return None
+    return f"if:{condition_outcome}"
+
+
+def _evaluate_case_condition_chain(
+    conditions: Sequence[str],
+    environment: dict[str, Any],
+) -> int | None:
     for index, condition in enumerate(conditions):
         try:
             expression = ast.parse(condition, mode="eval").body
@@ -1742,8 +1768,83 @@ def _case_formula_branch_outcome(
         if evaluated is _UNRESOLVED_CONDITION_VALUE:
             return None
         if bool(evaluated):
-            return f"if:{index}"
-    return f"if:{len(conditions)}"
+            return index
+    return len(conditions)
+
+
+def _rule_match_outer_branch(rule: dict[str, Any]) -> str | int | None:
+    """Return the outer if/elif/else branch containing the first match."""
+
+    formula = _rule_formula_text(rule)
+    match = re.search(
+        r"(?<![A-Za-z0-9_])match[ \t]+"
+        r"[A-Za-z_][A-Za-z0-9_]*[ \t]*:",
+        formula,
+    )
+    if match is None:
+        return None
+
+    multiline_headers = list(
+        re.finditer(
+            r"(?m)^(?P<indent>[ \t]*)(?P<kind>if|elif|else)"
+            r"(?:[ \t]+[^:\n]+)?[ \t]*:",
+            formula,
+        )
+    )
+    condition_headers = [
+        header
+        for header in multiline_headers
+        if header.group("kind") in {"if", "elif"}
+    ]
+    if condition_headers:
+        outer_indent = min(
+            len(header.group("indent").expandtabs(8))
+            for header in condition_headers
+        )
+        outer_headers = [
+            header
+            for header in multiline_headers
+            if len(header.group("indent").expandtabs(8)) == outer_indent
+        ]
+        match_line_start = formula.rfind("\n", 0, match.start()) + 1
+        match_indent = len(
+            formula[match_line_start : match.start()].expandtabs(8)
+        )
+        if match_indent <= outer_indent:
+            return "top"
+        branch_index = -1
+        condition_index = 0
+        for header in outer_headers:
+            if header.start() >= match.start():
+                break
+            if header.group("kind") in {"if", "elif"}:
+                branch_index = condition_index
+                condition_index += 1
+            else:
+                branch_index = len(condition_headers)
+        return branch_index if branch_index >= 0 else None
+
+    inline_condition_headers = list(
+        re.finditer(
+            r"(?<![A-Za-z0-9_])(?:if)[ \t]+[^:\n]+:",
+            formula,
+        )
+    )
+    if not inline_condition_headers or match.start() < inline_condition_headers[0].start():
+        return "top"
+    inline_else_headers = list(
+        re.finditer(r"(?<![A-Za-z0-9_])else[ \t]*:", formula)
+    )
+    headers: list[tuple[int, int]] = [
+        (header.start(), index)
+        for index, header in enumerate(inline_condition_headers)
+    ]
+    headers.extend(
+        (header.start(), len(inline_condition_headers))
+        for header in inline_else_headers
+    )
+    preceding = [item for item in headers if item[0] < match.start()]
+    return max(preceding)[1] if preceding else None
 
 
 def _match_arm_value(value: str) -> Any:

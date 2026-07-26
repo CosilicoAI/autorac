@@ -2305,6 +2305,84 @@ def test_judgment_selector_normalizes_holds_and_not_holds():
     ) == "if:1"
 
 
+def test_nested_match_arms_do_not_count_when_outer_guard_bypasses_them():
+    source = """\
+(1) Bei Verheirateten ist der Betrag Einkommen * 2.
+(2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: married_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: single_multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 3
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1); de/statute/estg/32a(2)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled:
+            0
+          else:
+            match filing_status:
+              "married" => income * married_multiplier
+              "single" => income * single_multiplier
+"""
+
+    def case(
+        name: str,
+        *,
+        disabled: bool,
+        filing_status: str,
+    ) -> dict[str, object]:
+        multiplier = 2 if filing_status == "married" else 3
+        return {
+            "name": name,
+            "input": {
+                "disabled": disabled,
+                "filing_status": filing_status,
+                "income": 10,
+            },
+            "output": {"amount": 0 if disabled else 10 * multiplier},
+        }
+
+    bypassed_match = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("disabled married", disabled=True, filing_status="married"),
+            case("disabled single", disabled=True, filing_status="single"),
+        ],
+    )
+    executed_match = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("married", disabled=False, filing_status="married"),
+            case("single", disabled=False, filing_status="single"),
+        ],
+    )
+
+    assert _has_issue(bypassed_match, "formula branch", "distinct")
+    assert not _has_issue(executed_match, "formula branch")
+
+
 def test_numbered_prose_formulas_require_distinct_executed_cases():
     source = """\
 (1) Es gelten folgende Berechnungen:
