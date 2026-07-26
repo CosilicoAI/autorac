@@ -2305,6 +2305,107 @@ def test_judgment_selector_normalizes_holds_and_not_holds():
     ) == "if:1"
 
 
+def test_inline_elif_formula_reports_each_reachable_branch():
+    rule = {
+        "versions": [
+            {
+                "formula": "if first: A elif second: B else: C",
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"first": True, "second": False}},
+    ) == "if:0"
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"first": False, "second": True}},
+    ) == "if:1"
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"first": False, "second": False}},
+    ) == "if:2"
+
+
+def test_formula_execution_fails_closed_on_non_boolean_guard_and_alias_conflict():
+    rule = {
+        "versions": [
+            {
+                "formula": "if enabled: enabled_amount else: disabled_amount",
+            }
+        ]
+    }
+
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"enabled": 1}},
+        )
+        is None
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"enabled": True, "other#enabled": False}},
+        )
+        is None
+    )
+
+
+def test_match_uses_last_arm_as_runtime_fallback():
+    rule = {
+        "versions": [
+            {
+                "formula": (
+                    'match filing_status: "married" => joint_amount; '
+                    '"single" => single_amount'
+                ),
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"filing_status": "unknown"}},
+    ) == "match:1"
+
+
+def test_quoted_control_text_does_not_confuse_formula_execution():
+    rule = {
+        "versions": [
+            {
+                "formula": (
+                    'if code == "if x: y else: z": selected_amount '
+                    "else: other_amount"
+                ),
+            }
+        ]
+    }
+
+    assert completeness_module._case_formula_branch_outcome(
+        rule,
+        {"input": {"code": "if x: y else: z"}},
+    ) == "if:0"
+
+
+def test_formula_execution_rejects_ambiguous_versions():
+    rule = {
+        "versions": [
+            {"formula": "if enabled: first_amount else: zero_amount"},
+            {"formula": "if enabled: second_amount else: zero_amount"},
+        ]
+    }
+
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
 def test_nested_match_arms_do_not_count_when_outer_guard_bypasses_them():
     source = """\
 (1) Bei Verheirateten ist der Betrag Einkommen * 2.
@@ -2421,6 +2522,281 @@ rules:
     assert _has_issue(bypassed_match, "formula branch", "distinct")
     assert not _has_issue(executed_match, "formula branch")
     assert not _has_issue(executed_match_below_nested_guard, "formula branch")
+
+
+def test_nested_if_bypass_cannot_witness_arithmetic_branches():
+    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+        "formula: income * first_multiplier + income * second_multiplier",
+        """\
+formula: |-
+          if disabled:
+            0
+          else:
+            if married:
+              income * first_multiplier
+            else:
+              income * second_multiplier""",
+    )
+
+    def case(
+        name: str,
+        *,
+        disabled: bool,
+        married: bool,
+    ) -> dict[str, object]:
+        expected = 0 if disabled else 10 * (2 if married else 3)
+        return {
+            "name": name,
+            "input": {
+                "disabled": disabled,
+                "married": married,
+                "income": 10,
+            },
+            "output": {"combined_amount": expected},
+        }
+
+    bypass_plus_one_branch = _analyze(
+        content,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[
+            case("disabled single", disabled=True, married=False),
+            case("enabled married", disabled=False, married=True),
+        ],
+    )
+    both_arithmetic_branches = _analyze(
+        content,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[
+            case("enabled married", disabled=False, married=True),
+            case("enabled single", disabled=False, married=False),
+        ],
+    )
+
+    assert _has_issue(bypass_plus_one_branch, "formula branch", "distinct")
+    assert not _has_issue(both_arithmetic_branches, "formula branch")
+
+
+def test_match_arm_bypasses_cannot_witness_arithmetic_branches():
+    content = MULTI_PARAGRAPH_FORMULA_CONTENT.replace(
+        "formula: income * first_multiplier + income * second_multiplier",
+        """\
+formula: |-
+          match filing_status:
+            "married" => if disabled: 0 else: income * first_multiplier
+            "single" => if disabled: 0 else: income * second_multiplier""",
+    )
+
+    def case(
+        status: str,
+        *,
+        disabled: bool,
+    ) -> dict[str, object]:
+        expected = 0 if disabled else 10 * (2 if status == "married" else 3)
+        return {
+            "name": f"{status} disabled={disabled}",
+            "input": {
+                "disabled": disabled,
+                "filing_status": status,
+                "income": 10,
+            },
+            "output": {"combined_amount": expected},
+        }
+
+    bypassed_arms = _analyze(
+        content,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[
+            case("married", disabled=True),
+            case("single", disabled=True),
+        ],
+    )
+    executed_arms = _analyze(
+        content,
+        MULTI_PARAGRAPH_FORMULA_SOURCE,
+        test_cases=[
+            case("married", disabled=False),
+            case("single", disabled=False),
+        ],
+    )
+
+    assert _has_issue(bypassed_arms, "formula branch", "distinct")
+    assert not _has_issue(executed_arms, "formula branch")
+
+
+def test_interval_cases_must_reach_the_piecewise_formula():
+    content = NARRATIVE_PIECEWISE_CONTENT.replace(
+        """\
+          if taxable_income <= tariff_boundary:
+            taxable_income * lower_tariff_rate_percent / 100
+          else:
+            taxable_income * upper_tariff_rate_percent / 100""",
+        """\
+          if disabled:
+            0
+          else:
+            if taxable_income <= tariff_boundary:
+              taxable_income * lower_tariff_rate_percent / 100
+            else:
+              taxable_income * upper_tariff_rate_percent / 100""",
+    )
+
+    def case(name: str, income: int, *, disabled: bool) -> dict[str, object]:
+        expected = (
+            0
+            if disabled
+            else int(income * (5 if income <= 100 else 7) / 100)
+        )
+        return {
+            "name": name,
+            "input": {"disabled": disabled, "taxable_income": income},
+            "output": {"tariff_income_tax_amount": expected},
+        }
+
+    bypassed_intervals = _analyze(
+        content,
+        NARRATIVE_PIECEWISE_SOURCE,
+        test_cases=[
+            case("disabled lower", 90, disabled=True),
+            case("disabled upper", 110, disabled=True),
+            case("disabled boundary", 100, disabled=True),
+        ],
+    )
+    executed_intervals = _analyze(
+        content,
+        NARRATIVE_PIECEWISE_SOURCE,
+        test_cases=[
+            case("lower", 90, disabled=False),
+            case("upper", 110, disabled=False),
+            case("boundary", 100, disabled=False),
+        ],
+    )
+
+    assert _has_issue(bypassed_intervals, "formula branch", "distinct")
+    assert _has_issue(bypassed_intervals, "boundary", "test")
+    assert not executed_intervals.issues
+
+
+def test_exception_toggle_must_be_reached_by_both_cases():
+    source = """\
+(1) Der Betrag wird als Einkommen * 2 berechnet. Ausnahme: Bei einer Befreiung beträgt der Betrag null.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled:
+            0
+          else:
+            if exemption_applies:
+              0
+            else:
+              income * multiplier
+"""
+
+    def case(
+        name: str,
+        *,
+        disabled: bool,
+        exemption_applies: bool,
+    ) -> dict[str, object]:
+        expected = 0 if disabled or exemption_applies else 20
+        return {
+            "name": name,
+            "input": {
+                "disabled": disabled,
+                "exemption_applies": exemption_applies,
+                "income": 10,
+            },
+            "output": {"amount": expected},
+        }
+
+    unreachable_toggle = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("disabled ordinary", disabled=True, exemption_applies=False),
+            case("disabled exempt", disabled=True, exemption_applies=True),
+        ],
+    )
+    reached_toggle = _analyze(
+        content,
+        source,
+        test_cases=[
+            case("ordinary", disabled=False, exemption_applies=False),
+            case("exempt", disabled=False, exemption_applies=True),
+        ],
+    )
+
+    assert _has_issue(unreachable_toggle, "exception", "test")
+    assert not reached_toggle.issues
+
+
+def test_rounding_witness_must_reach_the_rounding_operator():
+    source = """\
+(1) Der Betrag wird als Einkommen * 2 berechnet und auf volle Euro abzurunden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if disabled:
+            0
+          else:
+            floor(income * multiplier)
+"""
+
+    def case(name: str, *, disabled: bool) -> dict[str, object]:
+        return {
+            "name": name,
+            "input": {"disabled": disabled, "income": 10.25},
+            "output": {"amount": 0 if disabled else 20},
+        }
+
+    bypassed_rounding = _analyze(
+        content,
+        source,
+        test_cases=[case("disabled fractional", disabled=True)],
+    )
+    executed_rounding = _analyze(
+        content,
+        source,
+        test_cases=[case("enabled fractional", disabled=False)],
+    )
+
+    assert _has_issue(bypassed_rounding, "rounding", "fractional")
+    assert not executed_rounding.issues
 
 
 def test_numbered_prose_formulas_require_distinct_executed_cases():

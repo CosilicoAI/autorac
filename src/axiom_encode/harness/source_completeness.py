@@ -12,6 +12,7 @@ import ast
 import contextlib
 import math
 import re
+import textwrap
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -70,6 +71,35 @@ class _NumericInterval:
     lower_inclusive: bool
     upper: NumericOccurrenceLike | None
     upper_inclusive: bool
+
+
+@dataclass(frozen=True)
+class _FormulaTraceStep:
+    """One control-flow decision evaluated by a companion case."""
+
+    kind: str
+    selectors: tuple[str, ...]
+    choice: int
+
+
+@dataclass(frozen=True)
+class _FormulaExecution:
+    """The selected control-flow path and reconstructed reachable formula."""
+
+    trace: tuple[_FormulaTraceStep, ...]
+    leaf: str
+
+
+@dataclass(frozen=True)
+class _FormulaBranchNode:
+    """One parsed RuleSpec conditional or match expression."""
+
+    start: int
+    end: int
+    kind: str
+    selectors: tuple[str, ...]
+    patterns: tuple[str, ...]
+    choices: tuple[str, ...]
 
 
 _PARAGRAPH_MARKER = re.compile(
@@ -529,6 +559,7 @@ def _analyze_rulespec_payload(
                 test_cases=test_cases,
                 extract_numeric_occurrences=extract_numeric_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
+                formula_environment=_constant_rule_environment(payload),
             )
         )
 
@@ -1216,6 +1247,7 @@ def _companion_test_issues(
     test_cases: Sequence[object] | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
+    formula_environment: dict[str, Any],
 ) -> list[str]:
     issues: list[str] = []
     cases = [case for case in (test_cases or ()) if isinstance(case, dict)]
@@ -1252,6 +1284,7 @@ def _companion_test_issues(
         principal_formula_clause_rules=principal_formula_clause_rules,
         asserted_by_rule=asserted_by_rule,
         extract_numeric_occurrences=extract_numeric_occurrences,
+        formula_environment=formula_environment,
     )
     for branch in missing_formula_branches:
         issues.append(
@@ -1279,6 +1312,7 @@ def _companion_test_issues(
             principal_rule_paths=principal_rule_paths,
             asserted_by_rule=asserted_by_rule,
             numeric_value_is_grounded=numeric_value_is_grounded,
+            formula_environment=formula_environment,
         ):
             continue
         missing_boundaries.append((branch, boundary))
@@ -1302,6 +1336,7 @@ def _companion_test_issues(
         toggled_exception_selectors = _toggled_formula_boolean_selectors(
             principal_rules,
             asserted_by_rule=asserted_by_rule,
+            formula_environment=formula_environment,
         )
         missing_exception_branches = _unwitnessed_exception_branches(
             exception_branches,
@@ -1349,6 +1384,7 @@ def _companion_test_issues(
                     principal_rules[name],
                     asserted_by_rule=asserted_by_rule,
                     direction=direction,
+                    formula_environment=formula_environment,
                 )
                 for name in rule_names
             )
@@ -1509,6 +1545,7 @@ def _unwitnessed_formula_branches(
     principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    formula_environment: dict[str, Any],
 ) -> tuple[SourceStructureBranch, ...]:
     """Consume each executed rule/case witness for at most one source formula."""
 
@@ -1519,6 +1556,7 @@ def _unwitnessed_formula_branches(
             rule_names=principal_formula_clause_rules[branch],
             asserted_by_rule=asserted_by_rule,
             extract_numeric_occurrences=extract_numeric_occurrences,
+            formula_environment=formula_environment,
         )
         for branch in branches
     }
@@ -1560,6 +1598,7 @@ def _formula_branch_test_witnesses(
     rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    formula_environment: dict[str, Any],
 ) -> set[tuple[str, str]]:
     interval = _formula_branch_interval(
         branch,
@@ -1571,285 +1610,700 @@ def _formula_branch_test_witnesses(
         selector_names = _rule_numeric_selector_names(rule)
         has_branching_formula = _rule_has_branching_formula(rule)
         for case in asserted_by_rule.get(rule_name, ()):
+            execution = (
+                _case_formula_execution(
+                    rule,
+                    case,
+                    formula_environment=formula_environment,
+                )
+                if has_branching_formula or interval is not None
+                else None
+            )
             if interval is None:
                 if has_branching_formula:
-                    outcome = _case_formula_branch_outcome(
-                        rule,
-                        case,
-                    )
-                    if outcome is not None:
+                    if (
+                        execution is not None
+                        and _formula_execution_leaf_is_computational(execution)
+                    ):
+                        outcome = _formula_execution_outcome(execution)
                         witnesses.add((rule_name, f"branch:{outcome}"))
                 else:
                     witnesses.add((rule_name, f"case:{id(case)}"))
                 continue
-            if selector_names and any(
-                _interval_contains(interval, value)
-                for value in _case_numeric_selector_values(case, selector_names)
+            if (
+                execution is not None
+                and _formula_execution_leaf_is_computational(execution)
+                and _formula_execution_references_names(
+                    execution,
+                    selector_names,
+                )
+                and selector_names
+                and any(
+                    _interval_contains(interval, value)
+                    for value in _case_numeric_selector_values(
+                        case,
+                        selector_names,
+                    )
+                )
             ):
-                witnesses.add((rule_name, id(case)))
+                witnesses.add((rule_name, f"case:{id(case)}"))
     return witnesses
 
 
 def _rule_has_branching_formula(rule: dict[str, Any]) -> bool:
-    return bool(
-        re.search(
-            r"(?<![A-Za-z0-9_])(?:if|match)\s+[^:\n]+:",
-            _rule_formula_text(rule),
-        )
-    )
-
-
-def _rule_branch_selector_names(rule: dict[str, Any]) -> set[str]:
-    """Return identifiers that choose branches in a principal formula."""
-
-    names: set[str] = set()
-    if match_spec := _rule_match_branch_spec(rule):
-        names.add(match_spec[0])
-    for condition in _rule_top_level_branch_conditions(rule):
-        condition = re.sub(r"(['\"]).*?\1", "", condition)
-        names.update(
-            identifier
-            for identifier in _FORMULA_IDENTIFIER.findall(condition)
-            if identifier.lower()
-            not in {
-                "if",
-                "elif",
-                "else",
-                "and",
-                "or",
-                "not",
-                "true",
-                "false",
-                "holds",
-                "not_holds",
-            }
-        )
-    return names
-
-
-def _rule_top_level_branch_conditions(rule: dict[str, Any]) -> tuple[str, ...]:
-    """Return the ordered conditions in the formula's outer if/elif chain."""
-
-    matches = list(
-        re.finditer(
-            r"(?m)^(?P<indent>[ \t]*)(?:if|elif)[ \t]+"
-            r"(?P<condition>.+):[ \t]*$",
-            _rule_formula_text(rule),
-        )
-    )
-    if matches:
-        outer_indent = min(
-            len(match.group("indent").expandtabs(8)) for match in matches
-        )
-        return tuple(
-            match.group("condition").strip()
-            for match in matches
-            if len(match.group("indent").expandtabs(8)) == outer_indent
-        )
-    return tuple(
-        match.group("condition").strip()
-        for match in re.finditer(
-            r"(?<![A-Za-z0-9_])if[ \t]+(?P<condition>[^:\n]+):",
-            _rule_formula_text(rule),
-        )
-    )
-
-
-def _rule_match_branch_spec(
-    rule: dict[str, Any],
-) -> tuple[str, tuple[str, ...]] | None:
-    """Return one RuleSpec match selector and its ordered arm patterns."""
-
-    match = re.search(
-        r"(?<![A-Za-z0-9_])match[ \t]+"
-        r"(?P<selector>[A-Za-z_][A-Za-z0-9_]*)[ \t]*:"
-        r"(?P<body>[\s\S]*)",
-        _rule_formula_text(rule),
-    )
-    if match is None:
-        return None
-    body = match.group("body")
-    if "\n" in body:
-        arm_patterns = tuple(
-            arm.group("pattern").strip()
-            for arm in re.finditer(
-                r"(?m)^[ \t]*(?P<pattern>[^=\n]+?)[ \t]*=>",
-                body,
-            )
-        )
-    else:
-        arm_patterns = tuple(
-            arm.group("pattern").strip()
-            for arm in re.finditer(
-                r"(?:^|;)[ \t]*(?P<pattern>[^=;]+?)[ \t]*=>",
-                body,
-            )
-        )
-    if not arm_patterns:
-        return None
-    return match.group("selector"), arm_patterns
+    return _rule_text_has_branching_formula(_rule_formula_text(rule))
 
 
 _UNRESOLVED_CONDITION_VALUE = object()
+
+
+def _case_formula_execution(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+    *,
+    formula_environment: dict[str, Any] | None = None,
+) -> _FormulaExecution | None:
+    """Resolve the reachable RuleSpec formula for one asserted test case."""
+
+    inputs = case.get("input")
+    if not isinstance(inputs, dict):
+        return None
+    environment: dict[str, Any] = dict(formula_environment or {})
+    input_environment: dict[str, Any] = {}
+    for key, value in inputs.items():
+        boolean_value = _boolean_value(value)
+        normalized_value = boolean_value if boolean_value is not None else value
+        for name in _input_key_names(key):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                continue
+            if name in input_environment and not _same_formula_value(
+                input_environment[name],
+                normalized_value,
+            ):
+                return None
+            input_environment[name] = normalized_value
+    environment.update(input_environment)
+    formula_text = _unambiguous_rule_formula_text(rule)
+    if formula_text is None:
+        return None
+    return _execute_formula_text(
+        formula_text,
+        environment=environment,
+    )
+
+
+def _execute_formula_text(
+    formula_text: str,
+    *,
+    environment: dict[str, Any],
+) -> _FormulaExecution | None:
+    """Interpret formula control flow without evaluating the formula itself."""
+
+    selected_text = formula_text.strip()
+    trace: list[_FormulaTraceStep] = []
+    for _depth in range(32):
+        node = _first_formula_branch_node(selected_text)
+        if node is None:
+            if _rule_text_has_branching_formula(selected_text):
+                return None
+            return _FormulaExecution(tuple(trace), selected_text.strip())
+        selected = _select_formula_branch(node, environment=environment)
+        if selected is None:
+            return None
+        choice, evaluated_selectors = selected
+        selected_body = textwrap.dedent(node.choices[choice]).strip()
+        if not selected_body:
+            return None
+        trace.append(
+            _FormulaTraceStep(
+                node.kind,
+                evaluated_selectors,
+                choice,
+            )
+        )
+        selected_text = (
+            selected_text[: node.start]
+            + selected_body
+            + selected_text[node.end :]
+        )
+    return None
+
+
+def _first_formula_branch_node(text: str) -> _FormulaBranchNode | None:
+    candidates = tuple(
+        candidate
+        for candidate in (
+            _first_multiline_if_node(text),
+            _first_multiline_match_node(text),
+            _first_inline_if_node(text),
+            _first_inline_match_node(text),
+        )
+        if candidate is not None
+    )
+    return min(candidates, key=lambda item: item.start, default=None)
+
+
+def _formula_line_records(
+    text: str,
+) -> tuple[tuple[int, int, int, str], ...]:
+    records: list[tuple[int, int, int, str]] = []
+    start = 0
+    for raw_line in text.splitlines(keepends=True):
+        content = raw_line.rstrip("\r\n")
+        content_end = start + len(content)
+        full_end = start + len(raw_line)
+        records.append((start, content_end, full_end, content))
+        start = full_end
+    if not records or start < len(text):
+        records.append((start, len(text), len(text), text[start:]))
+    return tuple(records)
+
+
+def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
+    lines = _formula_line_records(text)
+    masked_lines = _formula_line_records(_mask_formula_strings(text))
+    for index, (start, _content_end, _full_end, line) in enumerate(lines):
+        masked_line = masked_lines[index][3]
+        header = re.match(
+            r"^(?P<indent>[ \t]*)if[ \t]+"
+            r"(?P<condition>[^:\n]+):[ \t]*$",
+            masked_line,
+        )
+        if header is None:
+            continue
+        base_indent = _formula_indent_width(header.group("indent"))
+        headers: list[tuple[int, str, str]] = [
+            (
+                index,
+                "if",
+                line[header.start("condition") : header.end("condition")].strip(),
+            )
+        ]
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor][3]
+            masked_candidate = masked_lines[cursor][3]
+            if not candidate.strip():
+                cursor += 1
+                continue
+            indent = _formula_indent_width(
+                candidate[: len(candidate) - len(candidate.lstrip())]
+            )
+            if indent > base_indent:
+                cursor += 1
+                continue
+            chain_header = (
+                re.match(
+                    r"^[ \t]*elif[ \t]+(?P<condition>[^:\n]+):[ \t]*$",
+                    masked_candidate,
+                )
+                if indent == base_indent
+                else None
+            )
+            if chain_header is not None:
+                headers.append(
+                    (
+                        cursor,
+                        "elif",
+                        candidate[
+                            chain_header.start("condition") :
+                            chain_header.end("condition")
+                        ].strip(),
+                    )
+                )
+                cursor += 1
+                continue
+            if indent == base_indent and re.match(
+                r"^[ \t]*else:[ \t]*$",
+                masked_candidate,
+            ):
+                headers.append((cursor, "else", ""))
+                cursor += 1
+                continue
+            break
+        chain_end = lines[cursor][0] if cursor < len(lines) else len(text)
+        conditions = tuple(
+            condition
+            for _line_index, kind, condition in headers
+            if kind != "else"
+        )
+        choices: list[str] = []
+        for header_index, (line_index, _kind, _condition) in enumerate(headers):
+            body_start = lines[line_index][2]
+            body_end = (
+                lines[headers[header_index + 1][0]][0]
+                if header_index + 1 < len(headers)
+                else chain_end
+            )
+            choices.append(text[body_start:body_end])
+        if not conditions or not choices:
+            continue
+        return _FormulaBranchNode(
+            start,
+            chain_end,
+            "if",
+            conditions,
+            (),
+            tuple(choices),
+        )
+    return None
+
+
+def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
+    lines = _formula_line_records(text)
+    masked_lines = _formula_line_records(_mask_formula_strings(text))
+    for index, (start, _content_end, _full_end, line) in enumerate(lines):
+        masked_line = masked_lines[index][3]
+        header = re.match(
+            r"^(?P<indent>[ \t]*)match[ \t]+"
+            r"(?P<selector>[^:\n]+):[ \t]*$",
+            masked_line,
+        )
+        if header is None:
+            continue
+        base_indent = _formula_indent_width(header.group("indent"))
+        arm_headers: list[tuple[int, str, str]] = []
+        arm_indent: int | None = None
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor][3]
+            masked_candidate = masked_lines[cursor][3]
+            if not candidate.strip():
+                cursor += 1
+                continue
+            indent_text = candidate[: len(candidate) - len(candidate.lstrip())]
+            indent = _formula_indent_width(indent_text)
+            if indent <= base_indent:
+                break
+            arrow = masked_candidate.find("=>", len(indent_text))
+            pattern = candidate[len(indent_text) : arrow].strip()
+            is_arm = arrow >= 0 and bool(pattern)
+            if arm_indent is None and is_arm:
+                arm_indent = indent
+            if is_arm and indent == arm_indent:
+                arm_headers.append(
+                    (
+                        cursor,
+                        pattern,
+                        candidate[arrow + 2 :].lstrip(),
+                    )
+                )
+            cursor += 1
+        chain_end = lines[cursor][0] if cursor < len(lines) else len(text)
+        if not arm_headers:
+            continue
+        choices: list[str] = []
+        for arm_index, (line_index, _pattern, inline_body) in enumerate(
+            arm_headers
+        ):
+            body_end = (
+                lines[arm_headers[arm_index + 1][0]][0]
+                if arm_index + 1 < len(arm_headers)
+                else chain_end
+            )
+            trailing_body = text[lines[line_index][2] : body_end]
+            choices.append(
+                "\n".join(
+                    part
+                    for part in (inline_body, trailing_body)
+                    if part.strip()
+                )
+            )
+        return _FormulaBranchNode(
+            start,
+            chain_end,
+            "match",
+            (
+                line[
+                    header.start("selector") : header.end("selector")
+                ].strip(),
+            ),
+            tuple(pattern for _line_index, pattern, _body in arm_headers),
+            tuple(choices),
+        )
+    return None
+
+
+def _first_inline_if_node(text: str) -> _FormulaBranchNode | None:
+    masked_text = _mask_formula_strings(text)
+    for candidate in re.finditer(
+        r"(?<![A-Za-z0-9_])if[ \t]+",
+        masked_text,
+    ):
+        line_end = text.find("\n", candidate.start())
+        if line_end < 0:
+            line_end = len(text)
+        colon = masked_text.find(":", candidate.end(), line_end)
+        if colon < 0 or not text[colon + 1 : line_end].strip():
+            continue
+        chain_headers = _find_inline_chain_headers(
+            masked_text,
+            body_start=colon + 1,
+            limit=line_end,
+        )
+        if not chain_headers or chain_headers[-1][0] != "else":
+            continue
+        else_body_start = chain_headers[-1][2]
+        end = _formula_expression_end(
+            text,
+            body_start=else_body_start,
+            branch_start=candidate.start(),
+            limit=line_end,
+        )
+        conditions = [text[candidate.end() : colon].strip()]
+        conditions.extend(
+            text[condition_start:condition_end].strip()
+            for kind, _start, _body_start, condition_start, condition_end
+            in chain_headers
+            if kind == "elif"
+        )
+        body_boundaries = [
+            header_start
+            for _kind, header_start, _body_start, _condition_start, _condition_end
+            in chain_headers
+        ]
+        body_starts = [
+            colon + 1,
+            *(
+                header_body_start
+                for kind, _header_start, header_body_start, _start, _end
+                in chain_headers
+                if kind == "elif"
+            ),
+        ]
+        choices = [
+            text[start:stop]
+            for start, stop in zip(body_starts, body_boundaries)
+        ]
+        choices.append(text[else_body_start:end])
+        return _FormulaBranchNode(
+            candidate.start(),
+            end,
+            "if",
+            tuple(conditions),
+            (),
+            tuple(choices),
+        )
+    return None
+
+
+def _find_inline_chain_headers(
+    masked_text: str,
+    *,
+    body_start: int,
+    limit: int,
+) -> tuple[tuple[str, int, int, int, int], ...]:
+    nested_if_depth = 0
+    headers: list[tuple[str, int, int, int, int]] = []
+    for token in re.finditer(
+        r"\b(?:if|elif|else)\b",
+        masked_text[body_start:limit],
+    ):
+        token_start = body_start + token.start()
+        token_end = body_start + token.end()
+        kind = token.group(0)
+        if kind == "if":
+            colon = masked_text.find(":", token_end, limit)
+            if colon >= 0:
+                nested_if_depth += 1
+            continue
+        colon = masked_text.find(":", token_end, limit)
+        if colon < 0:
+            continue
+        if kind == "elif":
+            if nested_if_depth == 0:
+                headers.append(("elif", token_start, colon + 1, token_end, colon))
+            continue
+        cursor = token_end
+        while cursor < limit and masked_text[cursor] in " \t":
+            cursor += 1
+        if cursor >= limit or masked_text[cursor] != ":":
+            continue
+        if nested_if_depth:
+            nested_if_depth -= 1
+            continue
+        headers.append(("else", token_start, cursor + 1, cursor, cursor))
+        return tuple(headers)
+    return ()
+
+
+def _first_inline_match_node(text: str) -> _FormulaBranchNode | None:
+    masked_text = _mask_formula_strings(text)
+    for candidate in re.finditer(
+        r"(?<![A-Za-z0-9_])match[ \t]+",
+        masked_text,
+    ):
+        line_end = text.find("\n", candidate.start())
+        if line_end < 0:
+            line_end = len(text)
+        colon = masked_text.find(":", candidate.end(), line_end)
+        if colon < 0 or not text[colon + 1 : line_end].strip():
+            continue
+        end = _formula_expression_end(
+            text,
+            body_start=colon + 1,
+            branch_start=candidate.start(),
+            limit=line_end,
+            stop_at_semicolon=False,
+        )
+        patterns: list[str] = []
+        choices: list[str] = []
+        for arm in _split_formula_arms(text[colon + 1 : end]):
+            pattern, separator, body = arm.partition("=>")
+            if not separator or not pattern.strip() or not body.strip():
+                patterns = []
+                choices = []
+                break
+            patterns.append(pattern.strip())
+            choices.append(body)
+        if not patterns:
+            continue
+        return _FormulaBranchNode(
+            candidate.start(),
+            end,
+            "match",
+            (text[candidate.end() : colon].strip(),),
+            tuple(patterns),
+            tuple(choices),
+        )
+    return None
+
+
+def _split_formula_arms(text: str) -> tuple[str, ...]:
+    arms: list[str] = []
+    start = 0
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index, character in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character in "([{":
+            stack.append(character)
+        elif character in pairs and stack and stack[-1] == pairs[character]:
+            stack.pop()
+        elif character == ";" and not stack:
+            arms.append(text[start:index])
+            start = index + 1
+    arms.append(text[start:])
+    return tuple(arms)
+
+
+def _formula_expression_end(
+    text: str,
+    *,
+    body_start: int,
+    branch_start: int,
+    limit: int,
+    stop_at_semicolon: bool = True,
+) -> int:
+    initial_stack = _formula_bracket_stack(text[:branch_start])
+    stack = list(initial_stack)
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index in range(body_start, limit):
+        character = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character in "([{":
+            stack.append(character)
+        elif character in pairs:
+            if len(stack) <= len(initial_stack):
+                return index
+            if stack[-1] == pairs[character]:
+                stack.pop()
+        elif character == "," and len(stack) == len(initial_stack):
+            return index
+        elif (
+            stop_at_semicolon
+            and character == ";"
+            and len(stack) == len(initial_stack)
+        ):
+            return index
+    return limit
+
+
+def _formula_bracket_stack(text: str) -> tuple[str, ...]:
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for character in text:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character in "([{":
+            stack.append(character)
+        elif character in pairs and stack and stack[-1] == pairs[character]:
+            stack.pop()
+    return tuple(stack)
+
+
+def _select_formula_branch(
+    node: _FormulaBranchNode,
+    *,
+    environment: dict[str, Any],
+) -> tuple[int, tuple[str, ...]] | None:
+    if node.kind == "if":
+        evaluated: list[str] = []
+        for index, condition in enumerate(node.selectors):
+            evaluated.append(condition)
+            value = _evaluate_formula_selector(condition, environment)
+            if not isinstance(value, bool):
+                return None
+            if value:
+                return index, tuple(evaluated)
+        if len(node.choices) > len(node.selectors):
+            return len(node.selectors), tuple(evaluated)
+        return None
+
+    selector = _evaluate_formula_selector(node.selectors[0], environment)
+    if selector is _UNRESOLVED_CONDITION_VALUE:
+        return None
+    if not node.patterns:
+        return None
+    for index, pattern in enumerate(node.patterns[:-1]):
+        expected = _match_arm_value(pattern.strip())
+        if expected is _UNRESOLVED_CONDITION_VALUE:
+            return None
+        if _same_formula_value(selector, expected):
+            return index, node.selectors
+    return len(node.patterns) - 1, node.selectors
+
+
+def _evaluate_formula_selector(
+    selector: str,
+    environment: dict[str, Any],
+) -> Any:
+    try:
+        expression = ast.parse(selector, mode="eval").body
+    except SyntaxError:
+        return _UNRESOLVED_CONDITION_VALUE
+    return _evaluate_condition_expression(expression, environment)
+
+
+def _rule_text_has_branching_formula(formula_text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?<![A-Za-z0-9_])(?:if|elif|else|match)(?![A-Za-z0-9_])",
+            _mask_formula_strings(formula_text),
+        )
+    )
+
+
+def _formula_execution_outcome(execution: _FormulaExecution) -> str:
+    return "/".join(
+        f"{step.kind}:{step.choice}"
+        for step in execution.trace
+    )
+
+
+def _formula_execution_leaf_is_computational(
+    execution: _FormulaExecution,
+) -> bool:
+    leaf = execution.leaf.strip()
+    with contextlib.suppress(SyntaxError, ValueError):
+        literal = ast.literal_eval(leaf)
+        if literal is False or (
+            isinstance(literal, (int, float, complex))
+            and not isinstance(literal, bool)
+            and literal == 0
+        ):
+            return False
+    return not bool(
+        re.fullmatch(
+            r"(?:true|false|holds|not_holds|null|none)",
+            leaf,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _formula_execution_references_names(
+    execution: _FormulaExecution,
+    names: set[str],
+    *,
+    selectors_only: bool = False,
+) -> bool:
+    texts = [
+        selector
+        for step in execution.trace
+        for selector in step.selectors
+    ]
+    if not selectors_only:
+        texts.append(execution.leaf)
+    return any(
+        set(_FORMULA_IDENTIFIER.findall(text)) & names
+        for text in texts
+    )
+
+
+def _same_formula_value(left: Any, right: Any) -> bool:
+    return type(left) is type(right) and left == right
+
+
+def _mask_formula_strings(text: str) -> str:
+    """Blank quoted content while preserving offsets and newlines."""
+
+    masked = list(text)
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(text):
+        if quote is None:
+            if character in {'"', "'"}:
+                quote = character
+                masked[index] = " "
+            continue
+        if character != "\n":
+            masked[index] = " "
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            quote = None
+    return "".join(masked)
 
 
 def _case_formula_branch_outcome(
     rule: dict[str, Any],
     case: dict[str, Any],
 ) -> str | None:
-    """Return the outer formula branch selected by one executed test case."""
+    """Return the complete reachable branch path for one test case."""
 
-    inputs = case.get("input")
-    if not isinstance(inputs, dict):
+    execution = _case_formula_execution(rule, case)
+    if (
+        execution is None
+        or not execution.trace
+        or not _formula_execution_leaf_is_computational(execution)
+    ):
         return None
-    environment: dict[str, Any] = {}
-    for key, value in inputs.items():
-        boolean_value = _boolean_value(value)
-        normalized_value = boolean_value if boolean_value is not None else value
-        environment.update(
-            {
-                name: normalized_value
-                for name in _input_key_names(key)
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
-            }
-        )
-    conditions = _rule_top_level_branch_conditions(rule)
-    condition_outcome = _evaluate_case_condition_chain(
-        conditions,
-        environment,
-    )
-    if conditions and condition_outcome is None:
-        return None
-    if match_spec := _rule_match_branch_spec(rule):
-        match_guard_branch = _rule_match_outer_branch(rule)
-        if match_guard_branch is None:
-            return None
-        if isinstance(match_guard_branch, int):
-            if condition_outcome != match_guard_branch:
-                return f"if:{condition_outcome}"
-            outcome_prefix = f"if:{condition_outcome}/"
-        else:
-            outcome_prefix = ""
-        selector_name, arm_patterns = match_spec
-        if selector_name not in environment:
-            return None
-        selector_value = environment[selector_name]
-        default_index: int | None = None
-        for index, arm_pattern in enumerate(arm_patterns):
-            for alternative in re.split(r"[|,]", arm_pattern):
-                expected = _match_arm_value(alternative.strip())
-                if expected is _UNRESOLVED_CONDITION_VALUE:
-                    continue
-                if expected == "_":
-                    default_index = index
-                elif selector_value == expected:
-                    return f"{outcome_prefix}match:{index}"
-        return (
-            f"{outcome_prefix}match:{default_index}"
-            if default_index is not None
-            else None
-        )
-
-    if not conditions:
-        return None
-    return f"if:{condition_outcome}"
-
-
-def _evaluate_case_condition_chain(
-    conditions: Sequence[str],
-    environment: dict[str, Any],
-) -> int | None:
-    for index, condition in enumerate(conditions):
-        try:
-            expression = ast.parse(condition, mode="eval").body
-        except SyntaxError:
-            return None
-        evaluated = _evaluate_condition_expression(expression, environment)
-        if evaluated is _UNRESOLVED_CONDITION_VALUE:
-            return None
-        if bool(evaluated):
-            return index
-    return len(conditions)
-
-
-def _rule_match_outer_branch(rule: dict[str, Any]) -> str | int | None:
-    """Return the outer if/elif/else branch containing the first match."""
-
-    formula = _rule_formula_text(rule)
-    match = re.search(
-        r"(?<![A-Za-z0-9_])match[ \t]+"
-        r"[A-Za-z_][A-Za-z0-9_]*[ \t]*:",
-        formula,
-    )
-    if match is None:
-        return None
-
-    multiline_headers = list(
-        re.finditer(
-            r"(?m)^(?P<indent>[ \t]*)(?P<kind>if|elif|else)"
-            r"(?:[ \t]+[^:\n]+)?[ \t]*:",
-            formula,
-        )
-    )
-    condition_headers = [
-        header
-        for header in multiline_headers
-        if header.group("kind") in {"if", "elif"}
-    ]
-    if condition_headers:
-        outer_indent = min(
-            len(header.group("indent").expandtabs(8))
-            for header in condition_headers
-        )
-        outer_headers = [
-            header
-            for header in multiline_headers
-            if len(header.group("indent").expandtabs(8)) == outer_indent
-        ]
-        outer_condition_headers = [
-            header
-            for header in outer_headers
-            if header.group("kind") in {"if", "elif"}
-        ]
-        match_line_start = formula.rfind("\n", 0, match.start()) + 1
-        match_indent = len(
-            formula[match_line_start : match.start()].expandtabs(8)
-        )
-        if match_indent <= outer_indent:
-            return "top"
-        branch_index = -1
-        condition_index = 0
-        for header in outer_headers:
-            if header.start() >= match.start():
-                break
-            if header.group("kind") in {"if", "elif"}:
-                branch_index = condition_index
-                condition_index += 1
-            else:
-                branch_index = len(outer_condition_headers)
-        return branch_index if branch_index >= 0 else None
-
-    inline_condition_headers = list(
-        re.finditer(
-            r"(?<![A-Za-z0-9_])(?:if)[ \t]+[^:\n]+:",
-            formula,
-        )
-    )
-    if not inline_condition_headers or match.start() < inline_condition_headers[0].start():
-        return "top"
-    inline_else_headers = list(
-        re.finditer(r"(?<![A-Za-z0-9_])else[ \t]*:", formula)
-    )
-    headers: list[tuple[int, int]] = [
-        (header.start(), index)
-        for index, header in enumerate(inline_condition_headers)
-    ]
-    headers.extend(
-        (header.start(), len(inline_condition_headers))
-        for header in inline_else_headers
-    )
-    preceding = [item for item in headers if item[0] < match.start()]
-    return max(preceding)[1] if preceding else None
+    return _formula_execution_outcome(execution)
 
 
 def _match_arm_value(value: str) -> Any:
@@ -1937,8 +2391,12 @@ def _evaluate_condition_expression(
                 return right
             try:
                 if isinstance(operator, ast.Eq):
+                    if type(left) is not type(right):
+                        return _UNRESOLVED_CONDITION_VALUE
                     matched = left == right
                 elif isinstance(operator, ast.NotEq):
+                    if type(left) is not type(right):
+                        return _UNRESOLVED_CONDITION_VALUE
                     matched = left != right
                 elif isinstance(operator, ast.Lt):
                     matched = left < right
@@ -1982,15 +2440,29 @@ def _branch_boundary_has_test_evidence(
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     numeric_value_is_grounded: NumericGroundingPredicate,
+    formula_environment: dict[str, Any] | None = None,
 ) -> bool:
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
-        selector_names = _rule_numeric_selector_names(principal_rules[rule_name])
+        rule = principal_rules[rule_name]
+        selector_names = _rule_numeric_selector_names(rule)
         if not selector_names:
             continue
         for case in asserted_by_rule.get(rule_name, ()):
-            if any(
+            execution = _case_formula_execution(
+                rule,
+                case,
+                formula_environment=formula_environment,
+            )
+            if (
+                execution is not None
+                and _formula_execution_references_names(
+                    execution,
+                    selector_names,
+                )
+                and any(
                 numeric_value_is_grounded(value, (boundary,))
                 for value in _case_numeric_selector_values(case, selector_names)
+                )
             ):
                 return True
     return False
@@ -2296,15 +2768,37 @@ def _toggled_formula_boolean_selectors(
     principal_rules: dict[str, dict[str, Any]],
     *,
     asserted_by_rule: dict[str, list[dict[str, Any]]],
+    formula_environment: dict[str, Any],
 ) -> set[tuple[str, str]]:
     toggled: set[tuple[str, str]] = set()
     for rule_name, rule in principal_rules.items():
         selector_names = _rule_exception_selector_names(rule)
         if not selector_names:
             continue
-        for key in _paired_boolean_toggle_keys(asserted_by_rule.get(rule_name, ())):
-            matched_names = _input_key_names(key) & selector_names
-            toggled.update((rule_name, name) for name in matched_names)
+        cases = asserted_by_rule.get(rule_name, ())
+        for selector_name in selector_names:
+            reachable_cases = [
+                case
+                for case in cases
+                if (
+                    (
+                        execution := _case_formula_execution(
+                            rule,
+                            case,
+                            formula_environment=formula_environment,
+                        )
+                    )
+                    is not None
+                    and _formula_execution_references_names(
+                        execution,
+                        {selector_name},
+                        selectors_only=True,
+                    )
+                )
+            ]
+            for key in _paired_boolean_toggle_keys(reachable_cases):
+                if selector_name in _input_key_names(key):
+                    toggled.add((rule_name, selector_name))
     return toggled
 
 
@@ -2435,6 +2929,7 @@ def _fractional_rounding_case_witnesses(
     *,
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     direction: str,
+    formula_environment: dict[str, Any],
 ) -> set[tuple[str, int]]:
     evidence: set[tuple[str, int]] = set()
     functions = {
@@ -2450,6 +2945,16 @@ def _fractional_rounding_case_witnesses(
         inputs = case.get("input")
         if not isinstance(inputs, dict):
             continue
+        execution = _case_formula_execution(
+            rule,
+            case,
+            formula_environment=formula_environment,
+        )
+        if execution is None or not _formula_execution_implements_rounding(
+            execution,
+            direction,
+        ):
+            continue
         if any(
             _input_key_names(key) & rounded_operand_identifiers
             and any(
@@ -2460,6 +2965,22 @@ def _fractional_rounding_case_witnesses(
         ):
             evidence.add((rule_name, id(case)))
     return evidence
+
+
+def _formula_execution_implements_rounding(
+    execution: _FormulaExecution,
+    direction: str,
+) -> bool:
+    if direction == "nearest":
+        return bool(
+            re.search(r"\bfloor\s*\(", execution.leaf)
+            and re.search(r"\+\s*0?\.5\b", execution.leaf)
+        )
+    function_name = "ceil" if direction == "upward" else "floor"
+    return re.search(
+        rf"\b{function_name}\s*\(",
+        execution.leaf,
+    ) is not None
 
 
 def _rounding_operand_identifier_names(
@@ -2644,6 +3165,54 @@ def _rule_formula_text(rule: dict[str, Any]) -> str:
         for version in versions
         if isinstance(version, dict) and version.get("formula") is not None
     )
+
+
+def _unambiguous_rule_formula_text(rule: dict[str, Any]) -> str | None:
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return None
+    formulas = tuple(
+        dict.fromkeys(
+            str(version["formula"])
+            for version in versions
+            if isinstance(version, dict) and version.get("formula") is not None
+        )
+    )
+    return formulas[0] if len(formulas) == 1 else None
+
+
+def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return unambiguous literal rule values usable by condition evaluation."""
+
+    environment: dict[str, Any] = {}
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        return environment
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        name = str(rule.get("name") or "").strip()
+        versions = rule.get("versions")
+        if not name or not isinstance(versions, list):
+            continue
+        values: list[Any] = []
+        for version in versions:
+            if not isinstance(version, dict) or "formula" not in version:
+                continue
+            formula = version["formula"]
+            with contextlib.suppress(SyntaxError, ValueError):
+                value = ast.literal_eval(str(formula))
+                if isinstance(value, (str, int, float, bool)) and not isinstance(
+                    value,
+                    complex,
+                ):
+                    values.append(value)
+        if values and all(
+            type(value) is type(values[0]) and value == values[0]
+            for value in values[1:]
+        ):
+            environment[name] = values[0]
+    return environment
 
 
 def _collapse_text(value: str) -> str:
