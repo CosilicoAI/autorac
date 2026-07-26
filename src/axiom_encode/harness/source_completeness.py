@@ -262,6 +262,7 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
     r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
+    r"\d+(?:[.,]\d+)?\s+times\b|"
     r"percentage\s+of|in\s+excess\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
@@ -282,6 +283,28 @@ _STATED_CONVERSION_RESULT = re.compile(
 )
 _STATED_CONVERSION_BASE_VALUE = re.compile(
     r"\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?"
+)
+_STATED_CONVERSION_GERMAN_MONTH = (
+    r"(?:jan(?:uar)?|feb(?:ruar)?|märz|maerz|mrz|apr(?:il)?|mai|"
+    r"jun(?:i)?|jul(?:i)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"okt(?:ober)?|nov(?:ember)?|dez(?:ember)?)\.?"
+)
+_STATED_CONVERSION_ENGLISH_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_STATED_CONVERSION_DATE = re.compile(
+    rf"(?:"
+    rf"(?<!\w)\d{{1,2}}\.\s*{_STATED_CONVERSION_GERMAN_MONTH}\s+"
+    rf"(?:des\s+Jahres\s+)?(?:18|19|20)\d{{2}}|"
+    rf"\b{_STATED_CONVERSION_ENGLISH_MONTH}\s+\d{{1,2}}"
+    rf"(?:st|nd|rd|th)?\s*,?\s*(?:18|19|20)\d{{2}}|"
+    rf"(?<!\w)\d{{1,2}}(?:st|nd|rd|th)?\s+"
+    rf"{_STATED_CONVERSION_ENGLISH_MONTH}\s+(?:18|19|20)\d{{2}}|"
+    rf"(?<!\w)\d{{1,2}}[./]\d{{1,2}}[./]\d{{2,4}}(?!\w)"
+    rf")",
+    flags=re.IGNORECASE,
 )
 _ROUNDING_LANGUAGE = re.compile(
     r"\b(?:"
@@ -563,7 +586,14 @@ def _stated_conversion_candidate_contains_formula(
     """Keep arithmetic inside a conversion clause out of the scalar exemption."""
 
     start = cue.start()
-    end = result.start("value")
+    suffix_limit = min(len(source_text), result.end("value") + 160)
+    clause_suffix = source_text[result.end("value") : suffix_limit]
+    clause_boundary = re.search(r"[.!?\n]", clause_suffix)
+    end = (
+        result.end("value") + clause_boundary.start()
+        if clause_boundary is not None
+        else suffix_limit
+    )
     characters = list(source_text[start:end])
     verb_start = result.start("verb") - start
     verb_end = result.end("verb") - start
@@ -581,6 +611,18 @@ def _looks_like_temporal_or_structural_number(
     match: re.Match[str],
 ) -> bool:
     """Return whether a prospective base value is only metadata or structure."""
+
+    for pattern in (
+        _STATED_CONVERSION_DATE,
+        _GERMAN_LEGAL_CITATION,
+        _ENGLISH_LEGAL_CITATION,
+        _STRUCTURAL_REFERENCE,
+    ):
+        if any(
+            metadata.start() <= match.start() and match.end() <= metadata.end()
+            for metadata in pattern.finditer(text)
+        ):
+            return True
 
     raw = match.group(0).replace(" ", "").replace(".", "").replace(",", ".")
     with contextlib.suppress(ValueError):

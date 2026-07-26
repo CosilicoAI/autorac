@@ -1544,6 +1544,8 @@ def test_stated_conversion_pair_scans_past_trailing_year():
     "source",
     (
         "Nach § 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergibt sich 6 150 Euro.",
+        "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
         "(1) Umgerechnet auf den Monat ergibt sich 6 150 Euro.",
     ),
 )
@@ -1552,12 +1554,29 @@ def test_stated_conversion_pair_rejects_structural_number_as_base(source: str):
     assert source_states_explicit_computation(source)
 
 
-def test_same_clause_stated_conversion_formula_requires_derived_output():
-    source = (
-        "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat ergibt "
-        "sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag von "
-        "6 150 Euro."
-    )
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich aus dem Jahresbetrag geteilt durch 12 ein Monatsbetrag "
+            "von 6 150 Euro."
+        ),
+        (
+            "Der Jahresbetrag beträgt 73 800 Euro. Umgerechnet auf den Monat "
+            "ergibt sich 1/12 des Jahresbetrags, nämlich 6 150 Euro."
+        ),
+        (
+            "Der Monatsbetrag beträgt 6 150 Euro. Umgerechnet auf das Jahr "
+            "ergibt sich das 12-Fache des Monatsbetrags, also 73 800 Euro."
+        ),
+        (
+            "The monthly amount is 6,150 dollars. Converted to an annual amount, "
+            "it is 12 times the monthly amount, or 73,800 dollars."
+        ),
+    ),
+)
+def test_same_clause_stated_conversion_formula_requires_derived_output(source: str):
     content = """\
 format: rulespec/v1
 module:
@@ -1594,6 +1613,33 @@ rules:
         "formula-output" in issue and "parameter-only" in issue
         for issue in _pipeline_issues(content, source, test_cases=[])
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Nach den §§ 10 bis 12 umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+        "Am 1. Januar 2025 gilt: Umgerechnet auf den Monat ergeben sich 6 150 Euro.",
+    ),
+)
+def test_metadata_only_numbers_do_not_activate_stated_conversion_hint(source: str):
+    citation_path = "de/regulation/example/1"
+    content = _stated_conversion_rulespec_with_divisor(
+        citation_path,
+        (("monthly_amount", "6150"),),
+        annual_parameter="annual_amount",
+        divisor="52",
+    )
+
+    assert find_ungrounded_numeric_issues(
+        content,
+        source_text=source,
+        source_citation_path=citation_path,
+        require_complete_source_unit=True,
+    ) == [
+        "Ungrounded generated numeric literal: 52 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
 
 
 def test_scalar_amount_language_is_not_computation():
