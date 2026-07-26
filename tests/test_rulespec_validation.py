@@ -15265,6 +15265,21 @@ def test_validation_staging_normalization_respects_unicode_token_boundaries(tmp_
     ) == (f"{prefixed} {suffixed} (<rulespec-validation-root>/compiled.json)")
 
 
+def test_validation_staging_normalization_respects_decomposed_unicode_boundaries(
+    tmp_path,
+):
+    staging_root = tmp_path / "stage"
+    combining_mark = "\N{COMBINING ACUTE ACCENT}"
+    prefixed = f"cafe{combining_mark}{staging_root}/compiled.json"
+    suffixed = f"{staging_root}{combining_mark}"
+    standalone = f"({staging_root}/compiled.json)"
+
+    assert _normalize_validation_staging_text(
+        f"{prefixed} {suffixed} {standalone}",
+        staging_root,
+    ) == (f"{prefixed} {suffixed} (<rulespec-validation-root>/compiled.json)")
+
+
 def test_rule_name_path_suffix_allows_semantic_numbers(tmp_path):
     repo = tmp_path / "rulespec-us"
     rules_file = repo / "statutes" / "7" / "2015" / "b" / "1.yaml"
