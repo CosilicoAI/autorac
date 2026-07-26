@@ -81,7 +81,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: targeted-signed-reencode
+  group: targeted-signed-reencode-${{ github.actor == 'github-actions[bot]' && inputs.queue_id && inputs.queue_item_generation_sha256 || github.run_id }}
   cancel-in-progress: false
 
 jobs:
