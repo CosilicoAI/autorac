@@ -30,6 +30,7 @@ class NumericOccurrenceLike(Protocol):
     raw: str
     has_rate_context: bool
     has_temporal_context: bool
+    has_structural_context: bool
     source_value: float | None
     requires_rate_context: bool
     is_word_number: bool
@@ -46,6 +47,7 @@ class _NumericOccurrenceView:
     raw: str
     has_rate_context: bool
     has_temporal_context: bool
+    has_structural_context: bool
     source_value: float | None
     requires_rate_context: bool
     is_word_number: bool
@@ -842,9 +844,7 @@ def _analyze_rulespec_payload(
             "parameter-only representation is invalid."
         )
 
-    source_occurrences = tuple(
-        extract_numeric_occurrences(authoritative_numeric_recall_text(source_text))
-    )
+    source_occurrences = tuple(extract_numeric_occurrences(source_text))
     named_values = (
         tuple(float(value) for value in artifact_numeric_values)
         if artifact_numeric_values is not None
@@ -3391,6 +3391,7 @@ def _numeric_occurrences_are_equivalent(
         math.isclose(float(left.value), float(right.value))
         and left.has_rate_context == right.has_rate_context
         and left.has_temporal_context == right.has_temporal_context
+        and left.has_structural_context == right.has_structural_context
         and left.source_value == right.source_value
         and left.requires_rate_context == right.requires_rate_context
         and left.is_word_number == right.is_word_number
@@ -4708,6 +4709,7 @@ def _shift_numeric_occurrence(
         raw=occurrence.raw,
         has_rate_context=occurrence.has_rate_context,
         has_temporal_context=occurrence.has_temporal_context,
+        has_structural_context=occurrence.has_structural_context,
         source_value=occurrence.source_value,
         requires_rate_context=occurrence.requires_rate_context,
         is_word_number=occurrence.is_word_number,
@@ -7000,6 +7002,8 @@ def _source_boundary_obligations(
                 branch.path,
                 float(occurrence.value),
                 occurrence.has_rate_context,
+                occurrence.has_temporal_context,
+                occurrence.has_structural_context,
                 occurrence.source_value,
                 occurrence.requires_rate_context,
                 occurrence.is_word_number,

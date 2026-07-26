@@ -1778,6 +1778,33 @@ _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
     rf"(?P<year>{_TEMPORAL_YEAR_BODY}){_TEMPORAL_YEAR_END}",
     re.IGNORECASE,
 )
+_GERMAN_STRUCTURAL_LABEL_PATTERN = re.compile(
+    r"\b(?:Regelbedarfsstufe(?:n)?|Stufe(?:n)?|Anlage(?:n)?)\s+"
+    r"\d+[a-z]?(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*",
+    re.IGNORECASE,
+)
+_GERMAN_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    r"(?:§{1,2}\s*|"
+    r"\b(?:Artikel(?:s|n)?|Art\.|Absatz(?:es)?|Absätze(?:n)?|Abs\.|"
+    r"Satz(?:es)?|Sätze(?:n)?|Nummer(?:n)?|Nr\.)\s*)"
+    r"\d+[a-z]?(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*",
+    re.IGNORECASE,
+)
+_ENGLISH_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    r"\b(?:articles?|sections?|secs?\.?|subsections?|paragraphs?|regulations?)"
+    r"\s+\d+(?:\.\d+)*(?:\s*(?:,|and|through|to|[-–—])\s*"
+    r"\d+(?:\.\d+)*)*",
+    re.IGNORECASE,
+)
+_STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?:"
+    r"\(\d+[a-z]?\)(?:[ \t]+bis[ \t]+\(\d+[a-z]?\))?"
+    r"|\d+[a-z]?\.)",
+    re.IGNORECASE,
+)
+_STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN = re.compile(
+    r"(?<![\w])(?:[1-9]\d?)(?=[A-ZÄÖÜ])"
+)
 _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
     r"(?:[$£€¥₹]|(?:euros?|eur|usd|gbp|cad|aud|chf)\b)\s*$",
     re.IGNORECASE,
@@ -1874,6 +1901,7 @@ class NumericOccurrence:
     raw: str
     has_rate_context: bool = False
     has_temporal_context: bool = False
+    has_structural_context: bool = False
     source_value: float | None = None
     requires_rate_context: bool = False
     is_word_number: bool = False
@@ -5755,11 +5783,15 @@ class _LegacyNumericCollector:
     rate_table_cell_spans: tuple[tuple[int, int], ...] = field(init=False)
     shared_rate_spans: tuple[tuple[int, int], ...] = field(init=False)
     temporal_component_spans: tuple[tuple[int, int], ...] = field(init=False)
+    structural_component_spans: tuple[tuple[int, int], ...] = field(init=False)
     money_spans: tuple[tuple[int, int], ...] = field(init=False)
 
     def __post_init__(self) -> None:
         self.rate_table_cell_spans = _pipe_table_rate_cell_spans(self.source)
         self.temporal_component_spans = _temporal_numeric_component_spans(self.source)
+        self.structural_component_spans = _structural_numeric_component_spans(
+            self.source
+        )
         money_spans = {
             span for span, _value in _iter_raw_european_money_value_matches(self.source)
         }
@@ -5846,6 +5878,14 @@ class _LegacyNumericCollector:
                 for temporal_start, temporal_end in self.temporal_component_spans
             )
         )
+        has_structural_context = (
+            not has_rate_context
+            and not has_money_context
+            and any(
+                start >= structural_start and end <= structural_end
+                for structural_start, structural_end in self.structural_component_spans
+            )
+        )
         return NumericOccurrence(
             value=value,
             start=start,
@@ -5853,6 +5893,7 @@ class _LegacyNumericCollector:
             raw=self.source[start:end],
             has_rate_context=has_rate_context,
             has_temporal_context=has_temporal_context,
+            has_structural_context=has_structural_context,
             source_value=value if source_value is None else source_value,
             requires_rate_context=requires_rate_context,
             is_word_number=is_word_number,
@@ -6328,6 +6369,24 @@ def _temporal_numeric_component_spans(
     return tuple(sorted(spans))
 
 
+def _structural_numeric_component_spans(
+    text: str,
+) -> tuple[tuple[int, int], ...]:
+    """Classify source spans whose numbers are only legal structural labels."""
+    spans = {
+        match.span()
+        for pattern in (
+            _GERMAN_STRUCTURAL_LABEL_PATTERN,
+            _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
+            _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
+            _STRUCTURAL_LINE_MARKER_PATTERN,
+            _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
+        )
+        for match in pattern.finditer(text)
+    }
+    return tuple(sorted(spans))
+
+
 def _has_malformed_profiled_numeric_envelope(
     text: str,
     *,
@@ -6456,12 +6515,14 @@ def _german_word_number_occurrences(
     return grounding, inventory
 
 
-def _non_temporal_numeric_inventory(
+def _scalar_recall_numeric_inventory(
     occurrences: Iterable[NumericOccurrence],
 ) -> tuple[NumericOccurrence, ...]:
     """Project typed grounding evidence into scalar-recall obligations."""
     return tuple(
-        occurrence for occurrence in occurrences if not occurrence.has_temporal_context
+        occurrence
+        for occurrence in occurrences
+        if not occurrence.has_temporal_context and not occurrence.has_structural_context
     )
 
 
@@ -6568,7 +6629,7 @@ def _tokenize_profiled_numeric_occurrences(
     )
     return _NumericTokenization(
         grounding=tuple(grounding_occurrences),
-        inventory=_non_temporal_numeric_inventory(inventory_occurrences),
+        inventory=_scalar_recall_numeric_inventory(inventory_occurrences),
     )
 
 
@@ -7185,7 +7246,7 @@ def _tokenize_numeric_occurrences_from_text(
         _complete_typed_year_occurrences(collector, collector.inventory)
     )
     occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
-    normalized_inventory = _non_temporal_numeric_inventory(
+    normalized_inventory = _scalar_recall_numeric_inventory(
         occurrence
         for occurrence in collector.inventory
         if not (

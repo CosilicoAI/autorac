@@ -21,6 +21,7 @@ from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
     extract_named_scalar_occurrences,
     extract_typed_numeric_inventory_occurrences_from_text,
+    extract_typed_numeric_occurrences_from_text,
     find_ungrounded_numeric_issues,
     find_ungrounded_numeric_issues_scoped,
     numeric_value_is_grounded,
@@ -1765,6 +1766,133 @@ rules:
     result = _analyze(content, source, test_cases=[])
 
     assert _has_issue(result, "73", "numeric-recall")
+
+
+RELEASED_RBEG_2021_8_BODY = """\
+Die Regelbedarfsstufen nach der Anlage zu § 28 des Zwölften Buches Sozialgesetzbuch belaufen sich zum 1. Januar 2021
+1. in der Regelbedarfsstufe 1 auf 446 Euro für jede erwachsene Person, die in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch lebt und für die nicht Nummer 2 gilt,
+2. in der Regelbedarfsstufe 2 auf 401 Euro für jede erwachsene Person, die
+a) in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch mit einem Ehegatten oder Lebenspartner oder in eheähnlicher oder lebenspartnerschaftsähnlicher Gemeinschaft mit einem Partner zusammenlebt oder
+b) nicht in einer Wohnung lebt, weil ihr allein oder mit einer weiteren Person ein persönlicher Wohnraum und mit weiteren Personen zusätzliche Räumlichkeiten nach § 42a Absatz 2 Satz 3 des Zwölften Buches Sozialgesetzbuch zur gemeinschaftlichen Nutzung überlassen sind,
+3. in der Regelbedarfsstufe 3 auf 357 Euro für eine erwachsene Person, deren notwendiger Lebensunterhalt sich nach § 27b des Zwölften Buches Sozialgesetzbuch bestimmt (Unterbringung in einer stationären Einrichtung),
+4. in der Regelbedarfsstufe 4 auf 373 Euro für eine Jugendliche oder einen Jugendlichen vom Beginn des 15. bis zur Vollendung des 18. Lebensjahres,
+5. in der Regelbedarfsstufe 5 auf 309 Euro für ein Kind vom Beginn des siebten bis zur Vollendung des 14. Lebensjahres und
+6. in der Regelbedarfsstufe 6 auf 283 Euro für ein Kind bis zur Vollendung des sechsten Lebensjahres."""
+
+
+def test_released_rbeg_stage_and_reference_labels_stay_out_of_numeric_recall():
+    assert (
+        hashlib.sha256(RELEASED_RBEG_2021_8_BODY.encode()).hexdigest()
+        == "0783343f3ce3c3b691ea8bee3047e3a818af42b0da4902c6ff3b28c372e4a964"
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        RELEASED_RBEG_2021_8_BODY,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        RELEASED_RBEG_2021_8_BODY,
+        profile="de-DE",
+    )
+
+    assert any(
+        occurrence.raw == "1" and occurrence.has_structural_context
+        for occurrence in grounding
+    )
+    assert [occurrence.value for occurrence in inventory] == [
+        446.0,
+        401.0,
+        357.0,
+        373.0,
+        15.0,
+        18.0,
+        309.0,
+        14.0,
+        283.0,
+    ]
+
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/rbeg-2021/8
+rules: []
+"""
+    result = _analyze(
+        content,
+        RELEASED_RBEG_2021_8_BODY,
+        corpus_citation_path="de/statute/rbeg-2021/8",
+        artifact_numeric_values=tuple(occurrence.value for occurrence in inventory),
+    )
+
+    assert not _has_issue(result, "numeric-recall")
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Die Leistung richtet sich nach Stufe 1.",
+        "Die Einzelheiten stehen in Anlage 1.",
+        "Die Verweisung lautet §1 Absatz 2 Satz 3 Nummer 4.",
+    ),
+)
+def test_structural_labels_are_typed_grounding_only(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="de-DE",
+    )
+
+    assert grounding
+    assert all(occurrence.has_structural_context for occurrence in grounding)
+    assert not inventory
+
+
+def test_structural_range_markers_stay_out_of_numeric_recall():
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        "(1) bis (3) gelten entsprechend.",
+        profile="de-DE",
+    )
+
+    assert not inventory
+
+
+def test_structural_stage_label_does_not_exempt_one_euro_from_numeric_recall():
+    source = "Regelbedarfsstufe 1: Die Leistung beträgt 1 Euro."
+    grounding = extract_typed_numeric_occurrences_from_text(source, profile="de-DE")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="de-DE",
+    )
+
+    assert [
+        (occurrence.value, occurrence.has_structural_context)
+        for occurrence in grounding
+    ] == [
+        (1.0, True),
+        (1.0, False),
+    ]
+    assert [(occurrence.value, occurrence.raw) for occurrence in inventory] == [
+        (1.0, "1")
+    ]
+
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/rbeg-2021/8
+rules: []
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/rbeg-2021/8",
+        artifact_numeric_values=(),
+    )
+
+    assert _has_issue(result, "numeric-recall", "value 1")
 
 
 def test_imported_numeric_recall_only_credits_explicit_imported_scalar():
