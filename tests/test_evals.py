@@ -3439,6 +3439,38 @@ class TestCorpusSourceResolution:
 
 
 class TestClaudePromptEval:
+    def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
+        runner = parse_runner_spec("claude:opus")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        prompt = "full prompt bytes\n" + ("x" * 600_000)
+        observed: dict[str, object] = {}
+
+        def fake_run(command, **kwargs):
+            observed["command"] = command
+            observed["prompt"] = kwargs["stdin"].read()
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps({"result": "review complete", "usage": {}}),
+                stderr="",
+            )
+
+        with patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=fake_run,
+        ):
+            _run_claude_prompt_eval(runner, workspace, prompt)
+
+        command = observed["command"]
+        assert isinstance(command, list)
+        assert command.count("-p") == 1
+        assert prompt not in command
+        assert observed["prompt"] == prompt
+
     @pytest.mark.parametrize(
         ("spec", "expected_effort"),
         [
@@ -3717,6 +3749,47 @@ class TestClaudePromptEval:
 
 
 class TestCodexPromptEval:
+    def test_prompt_eval_streams_exact_prompt_over_stdin(self, tmp_path):
+        runner = parse_runner_spec("codex:gpt-5.4")
+        workspace = EvalWorkspace(
+            root=tmp_path,
+            source_text_file=tmp_path / "source.txt",
+            manifest_file=tmp_path / "context-manifest.json",
+        )
+        prompt = "full prompt bytes\n" + ("x" * 600_000)
+        observed: dict[str, object] = {}
+
+        class FakePopen:
+            def __init__(self, cmd, stdout, stderr, text, cwd, stdin=None, env=None):
+                self.args = cmd
+                self.returncode = 0
+                observed["command"] = cmd
+                observed["prompt"] = stdin.read()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with (
+            patch("axiom_encode.harness.evals.subprocess.Popen", FakePopen),
+            patch(
+                "axiom_encode.harness.evals._wait_for_codex_process",
+                return_value=False,
+            ),
+        ):
+            _run_codex_prompt_eval(runner, workspace, prompt)
+
+        command = observed["command"]
+        assert isinstance(command, list)
+        assert command[-1] == "-"
+        assert prompt not in command
+        assert observed["prompt"] == prompt
+
     def test_prompt_eval_uses_the_preflight_verified_executable(self, tmp_path):
         runner = parse_runner_spec("codex:gpt-5.4")
         workspace = EvalWorkspace(

@@ -13470,7 +13470,7 @@ def _run_claude_prompt_eval(
     _validate_eval_cli_environment(runner, cli_environment)
     cmd = [
         cli_environment.executable if cli_environment is not None else "claude",
-        "--print",
+        "-p",
         "--output-format",
         "json",
         "--permission-mode",
@@ -13493,8 +13493,6 @@ def _run_claude_prompt_eval(
         [
             "--model",
             runner.model,
-            "-p",
-            prompt,
         ]
     )
 
@@ -13513,14 +13511,18 @@ def _run_claude_prompt_eval(
     }
     start = time.time()
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=workspace.root,
-            timeout=timeout_seconds,
-            env=scrub_attestation_signing_keys(),
-        )
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as prompt_input:
+            prompt_input.write(prompt)
+            prompt_input.seek(0)
+            result = subprocess.run(
+                cmd,
+                stdin=prompt_input,
+                capture_output=True,
+                text=True,
+                cwd=workspace.root,
+                timeout=timeout_seconds,
+                env=scrub_attestation_signing_keys(),
+            )
     except subprocess.TimeoutExpired:
         duration_ms = int((time.time() - start) * 1000)
         return EvalPromptResponse(
@@ -13636,6 +13638,7 @@ def _run_codex_prompt_eval(
         ) as receiver_workspace_dir,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stdout_file,
         tempfile.NamedTemporaryFile(mode="w+", delete=False) as stderr_file,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as prompt_input,
     ):
         codex_home = _prepare_codex_eval_home(Path(codex_home_dir))
         receiver_workspace_root = Path(receiver_workspace_dir)
@@ -13662,14 +13665,16 @@ def _run_codex_prompt_eval(
         ]
         if runner.effort is not None:
             cmd.extend(["-c", f'model_reasoning_effort="{runner.effort}"'])
-        cmd.append(prompt)
+        cmd.append("-")
         codex_env = scrub_attestation_signing_keys()
         codex_env["CODEX_HOME"] = str(codex_home)
         stdout_path = Path(stdout_file.name)
         stderr_path = Path(stderr_file.name)
+        prompt_input.write(prompt)
+        prompt_input.seek(0)
         process = subprocess.Popen(
             cmd,
-            stdin=subprocess.DEVNULL,
+            stdin=prompt_input,
             stdout=stdout_file,
             stderr=stderr_file,
             text=True,
