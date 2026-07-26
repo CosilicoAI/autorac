@@ -157,6 +157,7 @@ from axiom_encode.cli import (
     _resolve_applied_manifest_placement,
     _resolve_encode_replacement_target,
     _resolve_explicit_policy_repo_for_corpus_source,
+    _result_codex_cli_provenance,
     _rewrite_gpt_runner_backend,
     _rewrite_import_output_test_input_refs,
     _rewrite_judgment_conditional_formulas,
@@ -1884,6 +1885,19 @@ def test_clean_encoder_provenance_uses_verified_workflow_checkout(
     assert provenance["dirty_tracked"] is False
     assert provenance["version"] == AXIOM_ENCODE_TEST_VERSION
     assert provenance["version_commit"] == commit
+
+
+def test_apply_provenance_adapter_projects_native_receiver_digest():
+    result = SimpleNamespace(
+        codex_cli_version="codex-cli 0.test",
+        codex_cli_launcher_sha256="a" * 64,
+        codex_cli_native_sha256="b" * 64,
+    )
+
+    assert _result_codex_cli_provenance(result) == (
+        "codex-cli 0.test",
+        "b" * 64,
+    )
 
 
 def _write_active_corpus_row(
