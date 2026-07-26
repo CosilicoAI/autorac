@@ -12848,6 +12848,7 @@ cases:
             assert suite_retry_attempts == 2
             return {
                 "schema": "test",
+                "case_timeout_seconds": 3600,
                 "rulespec_roots": [
                     {
                         "path": root,

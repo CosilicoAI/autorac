@@ -432,6 +432,12 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
             f"eval-board understands only "
             f"{SUPPORTED_EXECUTION_IDENTITY_SCHEMA!r}: {source}"
         )
+    case_timeout_seconds = identity.get("case_timeout_seconds")
+    if not _is_positive_int(case_timeout_seconds):
+        raise EvalBoardError(
+            "Suite results execution identity has a missing or malformed "
+            f"overall case timeout: {source}"
+        )
     runner_timeouts = identity.get("runner_timeouts")
     claude_timeout = (
         runner_timeouts.get("claude") if isinstance(runner_timeouts, dict) else None
@@ -888,9 +894,9 @@ def fold_eval_board(
                         "Suite results are not comparable: score-affecting "
                         f"execution identity in {source} does not match "
                         f"{reference_source} (encoder, rules engine, RuleSpec "
-                        "content/toolchain/waivers, runner timeouts, or "
-                        "PolicyEngine runtime differ; checkout locations are "
-                        "ignored). Re-run on "
+                        "content/toolchain/waivers, case budget, runner "
+                        "timeouts/retries, or PolicyEngine runtime differ; "
+                        "checkout locations are ignored). Re-run on "
                         "one toolchain, or pass --allow-mixed-toolchains to "
                         "fold anyway with the mismatch recorded."
                     )
