@@ -5657,6 +5657,63 @@ def test_result_binding_rejects_failed_row_without_failure_kind():
         evals_module._validate_eval_result_artifact_binding(payload)
 
 
+def test_policyengine_binding_rejects_artifact_without_oracle_evidence():
+    case = EvalSuiteCase(
+        kind="source",
+        name="policyengine-case",
+        mode="cold",
+        corpus_citation_path="us/statute/7/2017",
+        oracle="policyengine",
+    )
+    result = _fake_eval_result("openai-gpt-5.4", "us/statute/7/2017")
+    result.success = False
+    result.error = "oracle evidence was dropped"
+    result.failure_kind = "error"
+    result.metrics = None
+    execution_identity = {
+        "policyengine_runtime": {
+            "identity": _TEST_POLICYENGINE_RUNTIME_IDENTITY,
+            "sha256": _TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256,
+        }
+    }
+
+    with pytest.raises(ValueError, match="PolicyEngine artifact.*oracle evidence"):
+        evals_module._validate_eval_result_policyengine_binding(
+            case,
+            result,
+            execution_identity,
+        )
+
+
+def test_policyengine_binding_rejects_success_with_failed_oracle():
+    case = EvalSuiteCase(
+        kind="source",
+        name="policyengine-case",
+        mode="cold",
+        corpus_citation_path="us/statute/7/2017",
+        oracle="policyengine",
+    )
+    result = _fake_eval_result(
+        "openai-gpt-5.4",
+        "us/statute/7/2017",
+        policyengine_pass=False,
+        policyengine_score=None,
+    )
+    execution_identity = {
+        "policyengine_runtime": {
+            "identity": _TEST_POLICYENGINE_RUNTIME_IDENTITY,
+            "sha256": _TEST_POLICYENGINE_RUNTIME_IDENTITY_SHA256,
+        }
+    }
+
+    with pytest.raises(ValueError, match="succeeded.*PolicyEngine.*pass"):
+        evals_module._validate_eval_result_policyengine_binding(
+            case,
+            result,
+            execution_identity,
+        )
+
+
 def test_result_rehydration_rejects_non_boolean_success():
     payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
     payload["success"] = "false"

@@ -995,6 +995,70 @@ def test_fold_refuses_generated_output_without_trace_context_binding(tmp_path):
         fold_eval_board([path])
 
 
+def test_fold_refuses_unbound_validator_verdict_artifact(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0].update(
+        verdict_file="/eval/verdicts/terra/1.json",
+        verdict_sha256=None,
+    )
+    path = _write_payload(
+        tmp_path,
+        "unbound-verdict.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match="validator verdict evidence path"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_missing_core_artifact_digest_key(tmp_path):
+    results = [_result("terra", case) for case in CASE_IDENTITIES]
+    results[0] = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error="generation failed",
+        metrics=None,
+        failure_kind="error",
+    )
+    results[0].pop("generated_output_sha256")
+    path = _write_payload(
+        tmp_path,
+        "missing-output-digest.json",
+        _payload([("terra", "codex", "gpt-5.6-terra")], results),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match="missing immutable generated RuleSpec digest",
+    ):
+        fold_eval_board([path])
+
+
+def test_verdict_only_failure_does_not_require_generation_artifacts():
+    result = _result(
+        "terra",
+        CASE_IDENTITIES[0],
+        success=False,
+        error="generation failed",
+        metrics=None,
+        failure_kind="error",
+    )
+    result.update(
+        trace_file="",
+        trace_sha256=None,
+        context_manifest_file="",
+        context_manifest_sha256=None,
+        verdict_file="/eval/verdicts/terra/1.json",
+        verdict_sha256="ab" * 32,
+    )
+
+    eval_board_module._validate_result_artifact_bindings(
+        result,
+        context="verdict-only failure",
+    )
+
+
 def test_gate_pass_requires_all_deterministic_checks():
     passing = _result("terra", CASE_IDENTITIES[0])
     assert result_gate_pass(passing)
