@@ -744,6 +744,94 @@ def test_fold_refuses_execution_identity_without_core_field(tmp_path, field_name
         fold_eval_board([path])
 
 
+@pytest.mark.parametrize(
+    "pathspecs",
+    [
+        None,
+        ["pyproject.toml", "src/axiom_encode", "uv.lock"],
+        ["src/axiom_encode"],
+        ["src/axiom_encode", "pyproject.toml", "uv.lock", "tests"],
+    ],
+)
+def test_fold_refuses_encoder_identity_with_nonproducer_pathspecs(
+    tmp_path,
+    pathspecs,
+):
+    identity = _execution_identity()
+    if pathspecs is None:
+        identity["axiom_encode"].pop("pathspecs")
+    else:
+        identity["axiom_encode"]["pathspecs"] = pathspecs
+    path = _write_payload(
+        tmp_path,
+        "invalid-encoder-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+def test_fold_refuses_rules_engine_identity_with_pathspecs(tmp_path):
+    identity = _execution_identity()
+    identity["axiom_rules_engine"]["pathspecs"] = ["src"]
+    path = _write_payload(
+        tmp_path,
+        "invalid-engine-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "pathspecs",
+    [
+        None,
+        ["uk", ".axiom/toolchain.toml"],
+        [".axiom/toolchain.toml", "uk", "known-validation-gaps.yaml"],
+        ["us", ".axiom/toolchain.toml", "known-validation-gaps.yaml"],
+        [
+            "uk",
+            ".axiom/toolchain.toml",
+            "known-validation-gaps.yaml",
+            "README.md",
+        ],
+    ],
+)
+def test_fold_refuses_rulespec_identity_with_nonproducer_pathspecs(
+    tmp_path,
+    pathspecs,
+):
+    identity = _execution_identity()
+    checkout_identity = identity["rulespec_roots"][0]["checkout_identity"]
+    if pathspecs is None:
+        checkout_identity.pop("pathspecs")
+    else:
+        checkout_identity["pathspecs"] = pathspecs
+    path = _write_payload(
+        tmp_path,
+        "invalid-rulespec-pathspecs.json",
+        _payload(
+            [("terra", "codex", "gpt-5.6-terra")],
+            [_result("terra", case) for case in CASE_IDENTITIES],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="core toolchain fields"):
+        fold_eval_board([path])
+
+
 def test_fold_refuses_path_only_engine_identities_that_normalize_equal(tmp_path):
     left_identity = _execution_identity()
     left_identity["axiom_rules_engine"] = {"path": "/engine/left"}
