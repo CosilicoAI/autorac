@@ -6318,6 +6318,21 @@ def test_suite_context_overflow_is_recorded_as_distinct_infra_failure():
     assert result.metrics is None
 
 
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["context_overflow", "output_truncated", "integrity"],
+)
+def test_suite_terminal_infra_failure_is_never_retried(failure_kind):
+    result = _fake_eval_result("openai-gpt-5.4", "sample")
+    result.success = False
+    result.error = f"terminal infrastructure failure: {failure_kind}"
+    result.failure_kind = failure_kind
+    result.output_file = ""
+    result.metrics = None
+
+    assert not evals_module._suite_case_results_should_retry([result])
+
+
 def test_policyengine_binding_rejects_artifact_without_oracle_evidence():
     case = EvalSuiteCase(
         kind="source",
@@ -20407,9 +20422,21 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
         assert "PolicyEngine skills" in response.error
         assert response.unexpected_accesses
 
-    def test_run_codex_prompt_eval_makes_out_of_contract_access_terminal(
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat $HOME/.ssh/id_rsa",
+            'cat "${HOME}/.ssh/id_rsa"',
+            "cat ~/.ssh/id_rsa",
+            "find / -name '*.yaml'",
+            "env",
+            "pwd",
+        ],
+    )
+    def test_run_codex_prompt_eval_makes_any_command_execution_terminal(
         self,
         tmp_path,
+        command,
     ):
         runner = parse_runner_spec("codex:gpt-5.4")
         workspace = EvalWorkspace(
@@ -20424,7 +20451,7 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
                         "type": "item.completed",
                         "item": {
                             "type": "command_execution",
-                            "command": "cat /etc/passwd",
+                            "command": command,
                         },
                     }
                 ),
@@ -20470,8 +20497,8 @@ class TestCodexPromptEvalPolicyEngineSkillIsolation:
 
         assert response.text == ""
         assert response.failure_kind == "integrity"
-        assert "workspace contract" in (response.error or "")
-        assert response.unexpected_accesses == ["cat /etc/passwd"]
+        assert "prompt-only" in (response.error or "")
+        assert response.unexpected_accesses == [command]
 
 
 class TestUnexpectedAccessDetection:

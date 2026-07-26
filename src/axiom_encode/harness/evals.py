@@ -5429,6 +5429,11 @@ def _mark_suite_case_budget_timeout(
 
 def _suite_case_results_should_retry(case_results: list[EvalResult]) -> bool:
     """Return True when a suite case likely failed for a transient reason."""
+    if any(
+        result.failure_kind in _TERMINAL_INFRA_FAILURE_KINDS
+        for result in case_results
+    ):
+        return False
     if _suite_case_results_hit_usage_limit(case_results):
         return False
     if any(result.timed_out or result.timeout_attempts for result in case_results):
@@ -13625,23 +13630,22 @@ def _run_codex_prompt_eval(
             if item.get("type") == "agent_message" and item.get("text"):
                 assistant_messages.append(item["text"])
             if item.get("type") == "command_execution":
-                command = item.get("command", "")
+                command = str(item.get("command", "") or "")
+                reported_command = command or "<empty command>"
+                unexpected_accesses.append(reported_command)
                 if _command_uses_policyengine_skill(command):
-                    unexpected_accesses.append(command)
                     if not error:
                         error = (
                             "Codex eval attempted to use PolicyEngine skills, "
                             "which are disallowed for Axiom encoding"
                         )
-                    failure_kind = "integrity"
-                if _command_looks_out_of_bounds(command, receiver_workspace_root):
-                    unexpected_accesses.append(command)
-                    if not error:
-                        error = (
-                            "Codex eval violated the declared empty-workspace contract "
-                            f"with command: {command}"
-                        )
-                    failure_kind = "integrity"
+                elif not error:
+                    error = (
+                        "Codex eval attempted command execution although tools are "
+                        "disabled by the prompt-only contract: "
+                        f"{reported_command}"
+                    )
+                failure_kind = "integrity"
         elif payload.get("type") == "turn.completed":
             usage_payload = payload.get("usage") or {}
         elif payload.get("type") == "error":
