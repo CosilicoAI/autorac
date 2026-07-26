@@ -738,11 +738,17 @@ def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
         )
 
     assert run.call_count == 4
-    assert [call.args[0] for call in run.call_args_list] == [
-        ["/bin/claude", "--version"],
-        ["/bin/claude", "--help"],
-        ["/bin/codex", "--version"],
-        ["/bin/codex", "exec", "--help"],
+    assert [call.args[0][1:] for call in run.call_args_list] == [
+        ["--version"],
+        ["--help"],
+        ["--version"],
+        ["exec", "--help"],
+    ]
+    assert [call.args[0][0] for call in run.call_args_list] == [
+        environments["claude"].executable,
+        environments["claude"].executable,
+        environments["codex"].executable,
+        environments["codex"].executable,
     ]
     assert environments["claude"].version == "2.1.99 (Claude Code)"
     assert environments["codex"].version == "codex-cli 0.999.0"

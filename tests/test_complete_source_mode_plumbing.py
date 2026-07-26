@@ -275,6 +275,11 @@ def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
     result = object()
     with (
         patch.object(evals, "_validate_eval_oracle_runtime"),
+        patch.object(
+            evals,
+            "_resolve_eval_cli_environments",
+            return_value={},
+        ) as resolve_cli_environments,
         patch.object(evals, "resolve_corpus_source_unit", return_value=source_unit),
         patch.object(
             evals,
@@ -296,6 +301,9 @@ def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
         )
 
     assert actual == [result]
+    resolved_runners = resolve_cli_environments.call_args.args[0]
+    assert [runner.backend for runner in resolved_runners] == ["codex"]
+    assert resolve_cli_environments.call_args.args[1] is None
     assert run_single.call_args.kwargs["include_tests"] is True
     assert run_single.call_args.kwargs["require_complete_source_unit"] is True
     assert run_single.call_args.kwargs["validation_retry_feedback"] == (
