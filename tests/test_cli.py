@@ -4093,7 +4093,7 @@ class TestCmdEvalSuiteReport:
             cmd_eval_suite_report(args)
         assert exc_info.value.code == 1
         assert (
-            "runner evidence differs from the signed manifest declaration"
+            "malformed or mismatched receiver environment for 'openai'"
             in capsys.readouterr().out
         )
 

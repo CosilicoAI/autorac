@@ -1512,7 +1512,11 @@ def test_rulespec_target_resolution_rejects_workspace_dependency_root(tmp_path):
 def test_rulespec_target_resolution_accepts_macos_system_path_alias(tmp_path):
     if not Path("/var").is_symlink():
         pytest.skip("macOS /var system alias is unavailable")
-    with tempfile.TemporaryDirectory(dir="/var/tmp") as raw_tmpdir:
+    private_tmp_path = tmp_path.resolve()
+    if not str(private_tmp_path).startswith("/private/var/"):
+        pytest.skip("pytest temp root has no macOS /var system alias")
+    aliased_tmp_path = Path(str(private_tmp_path).removeprefix("/private"))
+    with tempfile.TemporaryDirectory(dir=aliased_tmp_path) as raw_tmpdir:
         checkout = Path(raw_tmpdir) / "rulespec-us"
         target = checkout / "us" / "statutes/1/target.yaml"
         target.parent.mkdir(parents=True)

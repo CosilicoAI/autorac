@@ -17047,6 +17047,14 @@ cases:
             assert cli_environments == {}
             return {
                 "schema": "test",
+                "receiver_environments": {
+                    "openai": {
+                        "endpoint": "https://api.openai.com/v1/responses",
+                        "requested_models": [
+                            {"name": "openai-gpt-5.4", "model": "gpt-5.4"}
+                        ],
+                    }
+                },
                 "case_timeout_seconds": 3600,
                 "rulespec_roots": [
                     {
