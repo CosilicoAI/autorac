@@ -2167,6 +2167,46 @@ def test_generation_prompt_sha256_is_location_independent_for_volumes_root(tmp_p
     assert "Fast Disk" not in prompts[0]
 
 
+def test_generation_prompt_sha256_redacts_output_root_sibling_feedback(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("The source amount is 12.")
+    prompts: list[str] = []
+    generation_prompt_sha256s: list[str] = []
+    suite_roots = (
+        Path("/Volumes/Fast Disk/evals/machine-a"),
+        Path("/opt/axiom-evals/machine-b"),
+    )
+
+    for suite_root in suite_roots:
+        output_root = suite_root / "out"
+        workspace_root = (
+            output_root / "_eval_workspaces" / "api" / "case-one" / "workspace"
+        )
+        workspace = EvalWorkspace(
+            root=workspace_root,
+            source_text_file=source_file,
+            manifest_file=workspace_root / "context-manifest.json",
+        )
+        retry_error = output_root / "api" / "case-one" / "validation-error.json"
+        prompt = _build_eval_prompt(
+            "us/statute/example/section-1",
+            "cold",
+            workspace,
+            [],
+            target_file_name="target.yaml",
+            validation_retry_feedback=[f"validator error: ({retry_error})"],
+        )
+        prompts.append(prompt)
+        generation_prompt_sha256s.append(
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        )
+
+    assert prompts[0] == prompts[1]
+    assert generation_prompt_sha256s[0] == generation_prompt_sha256s[1]
+    assert all(str(root) not in prompt for root in suite_roots for prompt in prompts)
+    assert "Fast Disk" not in prompts[0]
+
+
 def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
     source_file = tmp_path / "source.txt"
     source_file.write_text("Legal source. See https://law.example/section/1.")
