@@ -4685,6 +4685,10 @@ def _archive_registry_modern_metadata(*, archive_name: str = "modern") -> dict:
         "archive_dir": f"/tmp/eval-archives/{archive_name}",
         "manifest": {
             "name": "Archive registry test",
+            "effective_runners": [
+                "codex-gpt-5.4=codex:gpt-5.4@high",
+                "claude-claude-opus-4-1=claude:claude-opus-4-1",
+            ],
             "effective_runner_identities": [
                 {
                     "name": "codex-gpt-5.4",
@@ -5044,6 +5048,13 @@ class TestCmdEvalSuiteArchive:
                     requested_effort="banana"
                 ),
                 "requested effort",
+            ),
+            (
+                lambda metadata: metadata["manifest"]["effective_runners"].__setitem__(
+                    0,
+                    "codex-gpt-5.4=codex:gpt-5.4@low",
+                ),
+                "effective runner.*effort identity",
             ),
             (
                 lambda metadata: metadata.update(unexpected=True),
