@@ -18307,6 +18307,88 @@ cases:
             for line in lines
         )
 
+    def test_run_eval_suite_resume_rejects_openai_response_model_drift(
+        self,
+        tmp_path,
+    ):
+        manifest_file = tmp_path / "suite.yaml"
+        manifest_file.write_text(
+            """
+name: Resume OpenAI identity suite
+runners:
+  - openai:gpt-5.4
+gates:
+  min_cases: 1
+  min_success_rate: 1.0
+  min_compile_pass_rate: 1.0
+  min_ci_pass_rate: 1.0
+  min_zero_ungrounded_rate: 1.0
+  min_generalist_review_pass_rate: 1.0
+  min_policyengine_pass_rate: 1.0
+cases:
+  - kind: source
+    name: case-one
+    corpus_citation_path: us/statute/7/2017
+  - kind: source
+    name: case-two
+    corpus_citation_path: us/statute/7/2017
+            """.strip()
+        )
+        manifest = load_eval_suite_manifest(manifest_file)
+        output_root = tmp_path / "out"
+        corpus_release = _write_test_corpus_provision(tmp_path)
+
+        def bound_result(response_model_id: str, **kwargs):
+            result = _fake_eval_result("openai-gpt-5.4", "case")
+            [result] = _bind_fake_source_results([result], kwargs)
+            result.openai_response_model_id = response_model_id
+            return [result]
+
+        first_outcomes = iter(
+            [
+                "gpt-5.4-2026-06-01",
+                KeyboardInterrupt(),
+            ]
+        )
+
+        def first_run(**kwargs):
+            outcome = next(first_outcomes)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return bound_result(outcome, **kwargs)
+
+        with patch(
+            "axiom_encode.harness.evals.run_source_eval",
+            side_effect=first_run,
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                run_eval_suite(
+                    manifest=manifest,
+                    output_root=output_root,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    policy_repo_path=tmp_path / "rulespec-us",
+                    corpus_release=corpus_release,
+                )
+
+        with (
+            patch(
+                "axiom_encode.harness.evals.run_source_eval",
+                side_effect=lambda **kwargs: bound_result(
+                    "gpt-5.4-2026-07-01",
+                    **kwargs,
+                ),
+            ),
+            pytest.raises(ValueError, match="response model.*changed"),
+        ):
+            run_eval_suite(
+                manifest=manifest,
+                output_root=output_root,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                policy_repo_path=tmp_path / "rulespec-us",
+                corpus_release=corpus_release,
+                resume_existing=True,
+            )
+
     def test_run_eval_suite_requires_validated_local_corpus_release(self, tmp_path):
         manifest = EvalSuiteManifest(
             name="Bound release suite",
@@ -18781,7 +18863,7 @@ cases:
 
         identity = _test_eval_suite_execution_identity()
 
-        assert identity["schema"] == "axiom-encode/eval-execution-identity/v5"
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v6"
         assert identity["runner_efforts"] == [
             {
                 "name": "test",
@@ -18877,18 +18959,27 @@ cases:
                 },
             )
 
-        assert identity["schema"] == "axiom-encode/eval-execution-identity/v5"
+        assert identity["schema"] == "axiom-encode/eval-execution-identity/v6"
         assert identity["receiver_environments"] == {
             "codex": {
                 "cli_version": "codex 9.9.9",
                 "launcher_sha256": "c" * 64,
                 "native_sha256": "d" * 64,
-            }
+            },
+            "openai": {
+                "endpoint": "https://api.openai.com/v1/responses",
+                "requested_models": [
+                    {
+                        "name": "remote",
+                        "model": "gpt-5.4",
+                    }
+                ],
+            },
         }
         rendered = json.dumps(identity["receiver_environments"], sort_keys=True)
         assert "/verified/" not in rendered
 
-    def test_execution_identity_openai_only_has_no_local_receiver_environment(self):
+    def test_execution_identity_records_openai_request_environment(self):
         with patch(
             "axiom_encode.harness.evals._git_checkout_execution_identity",
             side_effect=lambda *_args, **_kwargs: {
@@ -18906,7 +18997,154 @@ cases:
                 },
             )
 
-        assert identity["receiver_environments"] == {}
+        assert identity["receiver_environments"] == {
+            "openai": {
+                "endpoint": "https://api.openai.com/v1/responses",
+                "requested_models": [
+                    {
+                        "name": "openai-gpt-5.4",
+                        "model": "gpt-5.4",
+                    }
+                ],
+            }
+        }
+
+    @pytest.mark.parametrize(
+        ("field_name", "replacement"),
+        [
+            ("endpoint", "https://api.openai.example/v1/responses"),
+            (
+                "requested_models",
+                [{"name": "openai-gpt-5.4", "model": "gpt-5.4-pro"}],
+            ),
+        ],
+    )
+    def test_resume_identity_rejects_changed_openai_request_environment(
+        self,
+        field_name,
+        replacement,
+    ):
+        with patch(
+            "axiom_encode.harness.evals._git_checkout_execution_identity",
+            side_effect=lambda *_args, **_kwargs: {
+                "kind": "tree",
+                "tree_sha256": "1" * 64,
+            },
+        ):
+            persisted_identity = _build_eval_suite_execution_identity(
+                Path("/tmp/axiom-rules"),
+                (),
+                parsed_runners=(parse_runner_spec("openai:gpt-5.4"),),
+                cli_environments={},
+            )
+        payload = {
+            "execution_identity": persisted_identity,
+            "execution_identity_sha256": _eval_suite_execution_identity_sha256(
+                persisted_identity
+            ),
+        }
+        current_identity = copy.deepcopy(persisted_identity)
+        current_identity["receiver_environments"]["openai"][field_name] = replacement
+
+        with pytest.raises(ValueError, match="receiver.*environment"):
+            _validate_eval_suite_execution_identity(payload, current_identity)
+
+    def test_openai_result_identity_rejects_unrelated_response_model(self):
+        identity = {
+            "receiver_environments": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/responses",
+                    "requested_models": [
+                        {"name": "openai-gpt-5.4", "model": "gpt-5.4"}
+                    ],
+                }
+            }
+        }
+        result = _fake_eval_result("openai-gpt-5.4", "case-one")
+        result.openai_endpoint = "https://api.openai.com/v1/responses"
+        result.openai_response_model_id = "gpt-4o"
+        result.openai_service_tier = "default"
+        result.openai_max_output_tokens = 128_000
+
+        with pytest.raises(ValueError, match="response model.*requested model"):
+            evals_module._validate_openai_result_receiver_identities(
+                [result],
+                execution_identity=identity,
+                artifact_name="test suite",
+            )
+
+    @pytest.mark.parametrize(
+        ("field_name", "replacement", "expected_error"),
+        [
+            (
+                "openai_response_model_id",
+                "gpt-5.4-2026-07-01",
+                "response model.*changed",
+            ),
+            ("openai_service_tier", "priority", "service tier.*changed"),
+        ],
+    )
+    def test_openai_result_identity_rejects_server_identity_drift(
+        self,
+        field_name,
+        replacement,
+        expected_error,
+    ):
+        identity = {
+            "receiver_environments": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/responses",
+                    "requested_models": [
+                        {"name": "openai-gpt-5.4", "model": "gpt-5.4"}
+                    ],
+                }
+            }
+        }
+        first = _fake_eval_result("openai-gpt-5.4", "case-one")
+        first.openai_endpoint = "https://api.openai.com/v1/responses"
+        first.openai_response_model_id = "gpt-5.4-2026-06-01"
+        first.openai_service_tier = "default"
+        first.openai_max_output_tokens = 128_000
+        second = replace(first, citation="case-two")
+        setattr(second, field_name, replacement)
+
+        with pytest.raises(ValueError, match=expected_error):
+            evals_module._validate_openai_result_receiver_identities(
+                [first, second],
+                execution_identity=identity,
+                artifact_name="test suite",
+            )
+
+    def test_openai_result_identity_allows_unknown_then_consistent_server_identity(
+        self,
+    ):
+        identity = {
+            "receiver_environments": {
+                "openai": {
+                    "endpoint": "https://api.openai.com/v1/responses",
+                    "requested_models": [
+                        {"name": "openai-gpt-5.4", "model": "gpt-5.4"}
+                    ],
+                }
+            }
+        }
+        before_response = _fake_eval_result("openai-gpt-5.4", "case-one")
+        before_response.openai_endpoint = "https://api.openai.com/v1/responses"
+        before_response.openai_response_model_id = None
+        before_response.openai_service_tier = None
+        before_response.openai_max_output_tokens = 128_000
+        completed = replace(
+            before_response,
+            citation="case-two",
+            openai_response_model_id="gpt-5.4-2026-06-01",
+            openai_service_tier="default",
+        )
+
+        evals_module._validate_openai_result_receiver_identities(
+            [before_response, completed],
+            execution_identity=identity,
+            artifact_name="test suite",
+        )
 
     @pytest.mark.parametrize(
         ("field_name", "replacement"),
