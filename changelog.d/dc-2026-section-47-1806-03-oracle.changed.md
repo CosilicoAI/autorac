@@ -1,0 +1,1 @@
+Bundle the District of Columbia canonical tax-year-2026 section 47-1806.03(a)(11) joint-method schedule-before-credits mappings and pin their durable reviewed oracle-main merge without claiming filing-method selection or complete D-40 liability.
