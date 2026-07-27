@@ -4781,6 +4781,10 @@ class TestCmdEvalSuiteArchive:
                 {
                     "manifest": {
                         "name": "Versioned archive",
+                        "effective_runners": [
+                            "claude-claude-opus-4-1=claude:claude-opus-4-1",
+                            "codex-gpt-5.4=codex:gpt-5.4@xhigh",
+                        ],
                         "effective_runner_identities": [
                             {
                                 "name": "claude-claude-opus-4-1",

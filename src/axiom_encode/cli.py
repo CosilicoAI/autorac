@@ -49067,10 +49067,19 @@ def _validate_eval_suite_archive_effort_identity(
     manifest: object,
     runner_efforts: list[dict],
 ) -> None:
-    """Bind archived effort choices to the manifest's exact receiver roster."""
+    """Bind archived effort choices to the manifest's exact runner specs."""
 
     if not isinstance(manifest, dict):
         raise ValueError("Eval-suite archive metadata has malformed manifest")
+    effective_runners = manifest.get("effective_runners")
+    if (
+        not isinstance(effective_runners, list)
+        or not effective_runners
+        or any(not isinstance(spec, str) or not spec for spec in effective_runners)
+    ):
+        raise ValueError(
+            "Eval-suite archive metadata is missing effective runner specs"
+        )
     runner_identities = manifest.get("effective_runner_identities")
     if not isinstance(runner_identities, list) or not runner_identities:
         raise ValueError(
@@ -49128,6 +49137,37 @@ def _validate_eval_suite_archive_effort_identity(
         ):
             raise ValueError(
                 "Eval-suite archive metadata runner effort identity is inconsistent"
+            )
+    if len(effective_runners) != len(validated_runners):
+        raise ValueError(
+            "Eval-suite archive metadata effective runner specs differ from "
+            "its effective runner identities"
+        )
+    for spec, runner, effort in zip(
+        effective_runners,
+        validated_runners,
+        runner_efforts,
+        strict=True,
+    ):
+        try:
+            parsed_runner = parse_runner_spec(spec)
+        except ValueError as exc:
+            raise ValueError(
+                "Eval-suite archive metadata has malformed effective runner spec"
+            ) from exc
+        if (
+            parsed_runner.name != runner["name"]
+            or parsed_runner.backend != runner["backend"]
+            or parsed_runner.model != runner["model"]
+        ):
+            raise ValueError(
+                "Eval-suite archive metadata effective runner specs differ from "
+                "its effective runner identities"
+            )
+        if parsed_runner.effort != effort["requested_effort"]:
+            raise ValueError(
+                "Eval-suite archive metadata effective runner effort identity "
+                "differs from its recorded execution identity"
             )
 
 
