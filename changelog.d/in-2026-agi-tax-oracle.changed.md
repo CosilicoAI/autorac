@@ -1,0 +1,1 @@
+Bundle Indiana's bounded tax-year-2026 adjusted-gross-income tax mapping and pin its durable reviewed oracle-main merge without claiming AGI construction, county tax, credits, or final annual liability.
