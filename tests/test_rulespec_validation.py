@@ -5425,8 +5425,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     bundled_document = yaml.safe_load(bundled_path.read_text())
     runtime_document = yaml.safe_load(runtime_path.read_text())
     schedule_prefix = (
-        "us-ut:policies/income_tax/"
-        "2026_full_year_resident_before_credit_schedule#"
+        "us-ut:policies/income_tax/2026_full_year_resident_before_credit_schedule#"
     )
 
     def schedule_records(document):
