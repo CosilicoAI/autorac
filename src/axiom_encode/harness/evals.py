@@ -10091,6 +10091,56 @@ def _prompt_root_path_variants(root: Path) -> tuple[str, ...]:
     )
 
 
+def _eval_prompt_root_path_variants(
+    workspace: EvalWorkspace,
+    context_files: Sequence[EvalContextFile],
+) -> tuple[str, ...]:
+    """Return every known workspace, attested, and context root spelling."""
+
+    roots: set[Path] = {Path(workspace.root)}
+
+    def add_absolute_metadata_paths(value: object) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                add_absolute_metadata_paths(key)
+                add_absolute_metadata_paths(item)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                add_absolute_metadata_paths(item)
+            return
+        if not isinstance(value, str):
+            return
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            roots.update({candidate, candidate.parent})
+
+    add_absolute_metadata_paths(workspace.source_metadata)
+
+    seen_context_paths: set[str] = set()
+    for item in (
+        *workspace.context_files,
+        *context_files,
+        *workspace.review_findings_files,
+    ):
+        if item.source_path in seen_context_paths:
+            continue
+        seen_context_paths.add(item.source_path)
+        source_path = Path(item.source_path).expanduser()
+        if not source_path.is_absolute():
+            continue
+        roots.update({source_path, source_path.parent})
+        with contextlib.suppress(OSError, ValueError):
+            policy_root = find_policy_repo_root(source_path)
+            if policy_root is not None:
+                roots.add(policy_root)
+
+    variants: set[str] = set()
+    for root in roots:
+        variants.update(_prompt_root_path_variants(root))
+    return tuple(sorted(variants, key=len, reverse=True))
+
+
 def _replace_prompt_root_paths(
     value: str,
     root_variants: Sequence[str],
@@ -11622,7 +11672,7 @@ def _build_eval_prompt(
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
     opaque_roots_token = _EVAL_PROMPT_OPAQUE_ROOTS.set(
-        _prompt_root_path_variants(workspace.root)
+        _eval_prompt_root_path_variants(workspace, context_files)
     )
     try:
         return _build_rulespec_eval_prompt(
