@@ -5577,8 +5577,7 @@ def test_packaged_kansas_2026_k40es_registry_is_exactly_synchronized():
 
 def _dc_2026_section_47_1806_03_records(document):
     schedule_prefix = (
-        "us-dc:policies/income_tax/"
-        "2026_section_47_1806_03_schedule_before_credits#"
+        "us-dc:policies/income_tax/2026_section_47_1806_03_schedule_before_credits#"
     )
     return {
         item["legal_id"].removeprefix(schedule_prefix): item
@@ -5594,8 +5593,7 @@ def _dc_2026_shared_mapping_material(text):
         return text[start_index:end_index]
 
     schedule = exact_section(
-        "  # The canonical section 47-1806.03(a)(11) module is a narrow "
-        "joint-method",
+        "  # The canonical section 47-1806.03(a)(11) module is a narrow joint-method",
         "    rationale: Both outputs apply the post-2021 seven-band District "
         "schedule to completed joint-method District taxable income before "
         "credits. The exact joint-method target intentionally excludes "
@@ -5644,19 +5642,13 @@ def test_packaged_dc_2026_section_47_1806_03_has_exact_bounded_slice():
         assert output["candidate_priority"] == "P4"
         assert "policyengine_variable" not in output
 
-    boundary = bundled[
-        "dc_pit_2026_section_47_1806_03_taxable_income_boundary"
-    ]
+    boundary = bundled["dc_pit_2026_section_47_1806_03_taxable_income_boundary"]
     assert boundary["policyengine_variable"] == "dc_taxable_income_joint"
     assert "potentially negative" in boundary["rationale"]
     assert "independently floor it at zero" in boundary["rationale"]
 
-    schedule = bundled[
-        "dc_pit_2026_section_47_1806_03_schedule_before_credits"
-    ]
-    assert schedule["policyengine_variable"] == (
-        "dc_income_tax_before_credits_joint"
-    )
+    schedule = bundled["dc_pit_2026_section_47_1806_03_schedule_before_credits"]
+    assert schedule["policyengine_variable"] == ("dc_income_tax_before_credits_joint")
     assert "joint-method" in schedule["rationale"]
     assert "before credits" in schedule["rationale"]
     assert "broader filing-method selector" in schedule["rationale"]
@@ -5722,8 +5714,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert bundled_fallbacks == runtime_fallbacks
 
     prefix = (
-        "us-dc:policies/income_tax/"
-        "2026_section_47_1806_03_schedule_before_credits#"
+        "us-dc:policies/income_tax/2026_section_47_1806_03_schedule_before_credits#"
     )
     registry = load_policyengine_registry()
     boundary = registry.mapping_for_legal_id(
@@ -5745,9 +5736,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert schedule is not None
     assert schedule.match_type == "exact"
     assert schedule.mapping_type == "direct_variable"
-    assert schedule.policyengine_variable == (
-        "dc_income_tax_before_credits_joint"
-    )
+    assert schedule.policyengine_variable == ("dc_income_tax_before_credits_joint")
     assert fallback is not None
     assert fallback.legal_id == "us-dc:"
     assert fallback.match_type == "prefix"
@@ -5761,8 +5750,10 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
     assert pin == durable_oracle_merge
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
-    assert (root / "src/axiom_encode/__init__.py").read_text().startswith(
-        '__version__ = "0.2.1398"'
+    assert (
+        (root / "src/axiom_encode/__init__.py")
+        .read_text()
+        .startswith('__version__ = "0.2.1398"')
     )
 
 

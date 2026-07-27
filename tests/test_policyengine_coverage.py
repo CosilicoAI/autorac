@@ -514,9 +514,7 @@ outputs:
 
 def test_policyengine_coverage_classifies_bounded_dc_2026_schedule(tmp_path):
     _write_rulespec_file(
-        tmp_path
-        / "rulespec-us-dc"
-        / "policies/income_tax/"
+        tmp_path / "rulespec-us-dc" / "policies/income_tax/"
         "2026_section_47_1806_03_schedule_before_credits.yaml",
         """format: rulespec/v1
 rules:
@@ -566,12 +564,18 @@ rules:
         "known_not_comparable": 5,
     }
     items = {item["rule_name"]: item for item in report["items"]}
-    assert items[
-        "dc_pit_2026_section_47_1806_03_taxable_income_boundary"
-    ]["policyengine_variable"] == "dc_taxable_income_joint"
-    assert items[
-        "dc_pit_2026_section_47_1806_03_schedule_before_credits"
-    ]["policyengine_variable"] == "dc_income_tax_before_credits_joint"
+    assert (
+        items["dc_pit_2026_section_47_1806_03_taxable_income_boundary"][
+            "policyengine_variable"
+        ]
+        == "dc_taxable_income_joint"
+    )
+    assert (
+        items["dc_pit_2026_section_47_1806_03_schedule_before_credits"][
+            "policyengine_variable"
+        ]
+        == "dc_income_tax_before_credits_joint"
+    )
     assert {
         item["candidate_priority"]
         for name, item in items.items()
