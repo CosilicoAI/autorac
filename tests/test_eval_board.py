@@ -191,6 +191,7 @@ def _execution_identity(
     suite_max_attempts=3,
     runner_efforts=None,
     receiver_backends=("codex",),
+    openai_requested_models=(),
 ):
     """A payload execution identity mirroring the current producer shape."""
     rulespec_checkout = f"{checkout.rsplit('/', 1)[0]}/rulespec-uk"
@@ -204,6 +205,24 @@ def _execution_identity(
         if isinstance(runtime_identity, dict)
         else None
     )
+    receiver_environments = {
+        backend: {
+            "cli_version": (
+                "Claude Code 2.test" if backend == "claude" else "codex-cli 0.test"
+            ),
+            "launcher_sha256": ("a" if backend == "claude" else "c") * 64,
+            "native_sha256": ("b" if backend == "claude" else "d") * 64,
+        }
+        for backend in receiver_backends
+    }
+    if openai_requested_models:
+        receiver_environments["openai"] = {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "requested_models": [
+                {"name": name, "model": model}
+                for name, model in openai_requested_models
+            ],
+        }
     return {
         "schema": SUPPORTED_EXECUTION_IDENTITY_SCHEMA,
         "runner_efforts": (
@@ -217,16 +236,7 @@ def _execution_identity(
             if runner_efforts is None
             else copy.deepcopy(runner_efforts)
         ),
-        "receiver_environments": {
-            backend: {
-                "cli_version": (
-                    "Claude Code 2.test" if backend == "claude" else "codex-cli 0.test"
-                ),
-                "launcher_sha256": ("a" if backend == "claude" else "c") * 64,
-                "native_sha256": ("b" if backend == "claude" else "d") * 64,
-            }
-            for backend in receiver_backends
-        },
+        "receiver_environments": receiver_environments,
         "case_timeout_seconds": case_timeout_seconds,
         "runner_timeouts": {
             "claude": {"wall_seconds": claude_timeout_seconds},
@@ -514,7 +524,12 @@ def _payload(
                         if backend in {"claude", "codex"}
                     }
                 )
-            )
+            ),
+            openai_requested_models=tuple(
+                (name, model)
+                for name, backend, model in runners
+                if backend == "openai"
+            ),
         )
     execution_identity = copy.deepcopy(execution_identity)
     requested_efforts = {} if requested_efforts is None else requested_efforts
@@ -691,7 +706,7 @@ def test_supported_schema_matches_producer():
     assert SUPPORTED_RESULTS_SCHEMA == cli._EVAL_SUITE_RESULTS_SCHEMA
     assert SUPPORTED_RESULTS_SCHEMA == "axiom-encode/eval-suite-results/v8"
     assert (
-        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v5"
+        SUPPORTED_EXECUTION_IDENTITY_SCHEMA == "axiom-encode/eval-execution-identity/v6"
     )
     assert (
         eval_board_module.SUPPORTED_EVIDENCE_SCHEMA == cli._EVAL_SUITE_EVIDENCE_SCHEMA
@@ -774,6 +789,88 @@ def test_payload_execution_identity_refuses_unexercised_receiver_environment(
     path = _write_payload(tmp_path, "extra-receiver-environment.json", payload)
 
     with pytest.raises(EvalBoardError, match="receiver environments"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "requested_models",
+    [
+        [{"name": "api", "model": "gpt-5.4-pro"}],
+        [{"name": "other", "model": "gpt-5.4"}],
+        [
+            {"name": "api", "model": "gpt-5.4"},
+            {"name": "undeclared", "model": "gpt-5.4"},
+        ],
+    ],
+)
+def test_payload_execution_identity_requires_exact_openai_requested_model_roster(
+    tmp_path,
+    requested_models,
+):
+    identity = _execution_identity(
+        receiver_backends=(),
+        openai_requested_models=(("api", "gpt-5.4"),),
+    )
+    identity["receiver_environments"]["openai"]["requested_models"] = requested_models
+    path = _write_payload(
+        tmp_path,
+        "mismatched-openai-roster.json",
+        _payload(
+            [("api", "openai", "gpt-5.4")],
+            [
+                _result("api", case, backend="openai", model="gpt-5.4")
+                for case in CASE_IDENTITIES
+            ],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="receiver environment"):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {},
+        {
+            "endpoint": "",
+            "requested_models": [{"name": "api", "model": "gpt-5.4"}],
+        },
+        {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "requested_models": "gpt-5.4",
+        },
+        {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "requested_models": [{"name": "api", "model": "gpt-5.4"}],
+            "extra": True,
+        },
+    ],
+)
+def test_payload_execution_identity_refuses_malformed_openai_environment(
+    tmp_path,
+    mutation,
+):
+    identity = _execution_identity(
+        receiver_backends=(),
+        openai_requested_models=(("api", "gpt-5.4"),),
+    )
+    identity["receiver_environments"]["openai"] = mutation
+    path = _write_payload(
+        tmp_path,
+        "malformed-openai-environment.json",
+        _payload(
+            [("api", "openai", "gpt-5.4")],
+            [
+                _result("api", case, backend="openai", model="gpt-5.4")
+                for case in CASE_IDENTITIES
+            ],
+            execution_identity=identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match="receiver environment"):
         fold_eval_board([path])
 
 
@@ -1090,6 +1187,79 @@ def test_fold_two_single_runner_payloads(tmp_path):
     assert "ungrounded=2" in board.cells[(2, "terra")].detail
     assert board.cells[(1, "terra")].state == "pass"
     assert board.mixed_toolchain_sources == []
+
+
+def test_fold_allows_distinct_openai_requested_rosters_at_one_endpoint(tmp_path):
+    first = _write_payload(
+        tmp_path,
+        "openai-gpt-5.4.json",
+        _payload(
+            [("api-54", "openai", "gpt-5.4")],
+            [
+                _result("api-54", case, backend="openai", model="gpt-5.4")
+                for case in CASE_IDENTITIES
+            ],
+        ),
+    )
+    second = _write_payload(
+        tmp_path,
+        "openai-gpt-5.5.json",
+        _payload(
+            [("api-55", "openai", "gpt-5.5")],
+            [
+                _result("api-55", case, backend="openai", model="gpt-5.5")
+                for case in CASE_IDENTITIES
+            ],
+        ),
+    )
+
+    board = fold_eval_board([first, second])
+
+    assert {runner.runner for runner in board.runners} == {"api-54", "api-55"}
+    assert board.mixed_toolchain_sources == []
+
+
+def test_fold_refuses_openai_endpoint_drift_across_payloads(tmp_path):
+    first = _write_payload(
+        tmp_path,
+        "openai-primary-endpoint.json",
+        _payload(
+            [("api-54", "openai", "gpt-5.4")],
+            [
+                _result("api-54", case, backend="openai", model="gpt-5.4")
+                for case in CASE_IDENTITIES
+            ],
+        ),
+    )
+    alternate_endpoint = "https://api.openai.example/v1/responses"
+    alternate_identity = _execution_identity(
+        receiver_backends=(),
+        openai_requested_models=(("api-55", "gpt-5.5"),),
+    )
+    alternate_identity["receiver_environments"]["openai"][
+        "endpoint"
+    ] = alternate_endpoint
+    second = _write_payload(
+        tmp_path,
+        "openai-alternate-endpoint.json",
+        _payload(
+            [("api-55", "openai", "gpt-5.5")],
+            [
+                _result(
+                    "api-55",
+                    case,
+                    backend="openai",
+                    model="gpt-5.5",
+                    openai_endpoint=alternate_endpoint,
+                )
+                for case in CASE_IDENTITIES
+            ],
+            execution_identity=alternate_identity,
+        ),
+    )
+
+    with pytest.raises(EvalBoardError, match=r"receiver environment.*openai"):
+        fold_eval_board([first, second])
 
 
 def test_board_distinguishes_timeout_validation_failure_and_plain_error(tmp_path):
@@ -1451,6 +1621,102 @@ def test_fold_allows_pre_response_openai_metadata(tmp_path):
     )
 
     assert fold_eval_board([openai_path]).cells[(1, "openai")].state == "error"
+
+
+def test_fold_requires_openai_row_endpoint_to_match_execution_identity(tmp_path):
+    results = [
+        _result("api", case, backend="openai", model="gpt-5.4")
+        for case in CASE_IDENTITIES
+    ]
+    results[0]["openai_endpoint"] = "https://api.openai.example/v1/responses"
+    path = _write_payload(
+        tmp_path,
+        "openai-row-endpoint-mismatch.json",
+        _payload([("api", "openai", "gpt-5.4")], results),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match=r"openai_endpoint.*execution identity",
+    ):
+        fold_eval_board([path])
+
+
+def test_fold_requires_openai_response_model_to_match_requested_model(tmp_path):
+    results = [
+        _result("api", case, backend="openai", model="gpt-5.4")
+        for case in CASE_IDENTITIES
+    ]
+    results[0]["openai_response_model_id"] = "gpt-4o"
+    path = _write_payload(
+        tmp_path,
+        "openai-response-model-mismatch.json",
+        _payload([("api", "openai", "gpt-5.4")], results),
+    )
+
+    with pytest.raises(
+        EvalBoardError,
+        match=r"response model.*requested model",
+    ):
+        fold_eval_board([path])
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement", "message"),
+    [
+        (
+            "openai_response_model_id",
+            "gpt-5.4-2026-07-01",
+            r"response model.*changed",
+        ),
+        ("openai_service_tier", "priority", r"service tier.*changed"),
+    ],
+)
+def test_fold_refuses_openai_server_identity_drift(
+    tmp_path,
+    field_name,
+    replacement,
+    message,
+):
+    results = [
+        _result(
+            "api",
+            case,
+            backend="openai",
+            model="gpt-5.4",
+            openai_response_model_id="gpt-5.4-2026-06-01",
+        )
+        for case in CASE_IDENTITIES
+    ]
+    results[1][field_name] = replacement
+    path = _write_payload(
+        tmp_path,
+        f"openai-{field_name}-drift.json",
+        _payload([("api", "openai", "gpt-5.4")], results),
+    )
+
+    with pytest.raises(EvalBoardError, match=message):
+        fold_eval_board([path])
+
+
+def test_fold_allows_versioned_openai_response_model_identity(tmp_path):
+    results = [
+        _result(
+            "api",
+            case,
+            backend="openai",
+            model="gpt-5.4",
+            openai_response_model_id="gpt-5.4-2026-06-01",
+        )
+        for case in CASE_IDENTITIES
+    ]
+    path = _write_payload(
+        tmp_path,
+        "openai-versioned-response-model.json",
+        _payload([("api", "openai", "gpt-5.4")], results),
+    )
+
+    assert fold_eval_board([path]).runners[0].runner == "api"
 
 
 @pytest.mark.parametrize(
