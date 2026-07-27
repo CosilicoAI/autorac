@@ -669,8 +669,18 @@ def _fake_verified_eval_suite_artifacts(
         for backend, environment in _test_eval_cli_environments().items()
         if any(identity["backend"] == backend for identity in runner_identities)
     }
+    openai_runners = [
+        {"name": identity["name"], "model": identity["model"]}
+        for identity in runner_identities
+        if identity["backend"] == "openai"
+    ]
+    if openai_runners:
+        receiver_environments["openai"] = {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "requested_models": openai_runners,
+        }
     execution_identity = {
-        "schema": "axiom-encode/eval-execution-identity/v5",
+        "schema": "axiom-encode/eval-execution-identity/v6",
         "runner_efforts": [
             {
                 "name": identity["name"],
@@ -4704,7 +4714,7 @@ def _archive_registry_modern_metadata(*, archive_name: str = "modern") -> dict:
         },
         "results_schema": "axiom-encode/eval-suite-results/v8",
         "summary_schema": "axiom-encode/eval-suite-summary/v8",
-        "execution_identity_schema": ("axiom-encode/eval-execution-identity/v5"),
+        "execution_identity_schema": ("axiom-encode/eval-execution-identity/v6"),
         "execution_identity_sha256": "c" * 64,
         "runner_efforts": [
             {
@@ -4744,7 +4754,7 @@ class TestCmdEvalSuiteArchive:
         source_root = tmp_path / "source"
         published_archive_dir = tmp_path / "archives" / "suite"
         execution_identity = {
-            "schema": "axiom-encode/eval-execution-identity/v5",
+            "schema": "axiom-encode/eval-execution-identity/v6",
             "receiver_environments": {
                 "claude": {
                     "cli_version": "2.1.test (Claude Code)",
@@ -4844,7 +4854,7 @@ class TestCmdEvalSuiteArchive:
         assert metadata["results_schema"] == ("axiom-encode/eval-suite-results/v8")
         assert metadata["summary_schema"] == ("axiom-encode/eval-suite-summary/v8")
         assert metadata["execution_identity_schema"] == (
-            "axiom-encode/eval-execution-identity/v5"
+            "axiom-encode/eval-execution-identity/v6"
         )
         assert metadata["execution_identity_sha256"] == (execution_identity_sha256)
         assert metadata["runner_efforts"] == execution_identity["runner_efforts"]
@@ -4860,7 +4870,7 @@ class TestCmdEvalSuiteArchive:
         evidence = {
             "sha256": "a" * 64,
             "execution_identity": {
-                "schema": "axiom-encode/eval-execution-identity/v5",
+                "schema": "axiom-encode/eval-execution-identity/v6",
                 "receiver_environments": {
                     "codex": {
                         "cli_version": "codex-cli 0.test",
