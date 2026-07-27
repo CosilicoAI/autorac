@@ -7918,6 +7918,37 @@ def test_retry_timeout_history_before_http_error_is_not_terminal_timeout():
     }
 
 
+@pytest.mark.parametrize(
+    ("field_name", "replacement", "expected_error"),
+    [
+        (
+            "openai_response_model_id",
+            "gpt-5.4-2026-07-01",
+            "response model.*changed",
+        ),
+        ("openai_service_tier", "priority", "service tier.*changed"),
+    ],
+)
+def test_empty_artifact_retry_rejects_openai_server_identity_drift(
+    field_name,
+    replacement,
+    expected_error,
+):
+    initial = EvalPromptResponse(
+        text="",
+        duration_ms=10,
+        openai_endpoint="https://api.openai.com/v1/responses",
+        openai_response_model_id="gpt-5.4-2026-06-01",
+        openai_service_tier="default",
+        openai_max_output_tokens=128_000,
+    )
+    retry = replace(initial, text="format: rulespec/v1\nrules: []\n")
+    setattr(retry, field_name, replacement)
+
+    with pytest.raises(ValueError, match=expected_error):
+        evals_module._combine_retry_response(initial, retry, "retry")
+
+
 def test_result_binding_rejects_failed_row_without_failure_kind():
     payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
     payload["success"] = False
