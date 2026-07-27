@@ -5329,9 +5329,7 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     bundled_document = yaml.safe_load(bundled_path.read_text())
     runtime_document = yaml.safe_load(runtime_path.read_text())
-    schedule_prefix = (
-        "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
-    )
+    schedule_prefix = "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
 
     def schedule_records(document):
         return {
