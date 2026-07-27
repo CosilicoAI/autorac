@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "525cd57166283db01810798ed89ca0c75449a6d4"
+    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "525cd57166283db01810798ed89ca0c75449a6d4"
+    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
