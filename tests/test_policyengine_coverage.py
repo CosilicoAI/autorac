@@ -590,6 +590,90 @@ rules:
     } == {"P4"}
 
 
+def test_policyengine_coverage_classifies_bounded_ca_2026_bhst(tmp_path):
+    output_names = (
+        "ca_pit_pilot_rate_schedule_threshold",
+        "ca_pit_pilot_schedule_x_upper",
+        "ca_pit_pilot_schedule_x_floor",
+        "ca_pit_pilot_schedule_x_base",
+        "ca_pit_pilot_schedule_x_rate",
+        "ca_pit_pilot_schedule_y_upper",
+        "ca_pit_pilot_schedule_y_floor",
+        "ca_pit_pilot_schedule_y_base",
+        "ca_pit_pilot_schedule_y_rate",
+        "ca_pit_pilot_schedule_z_upper",
+        "ca_pit_pilot_schedule_z_floor",
+        "ca_pit_pilot_schedule_z_base",
+        "ca_pit_pilot_schedule_z_rate",
+        "ca_pit_pilot_behavioral_health_services_tax_threshold",
+        "ca_pit_pilot_behavioral_health_services_tax_rate",
+        "ca_pit_pilot_completed_taxable_income",
+        "ca_pit_pilot_rate_schedule_applicable",
+        "ca_pit_pilot_schedule_x_bracket",
+        "ca_pit_pilot_schedule_y_bracket",
+        "ca_pit_pilot_schedule_z_bracket",
+        "ca_pit_pilot_schedule_x_top_bracket_base",
+        "ca_pit_pilot_schedule_y_top_bracket_base",
+        "ca_pit_pilot_schedule_z_top_bracket_base",
+        "ca_pit_pilot_schedule_x_tax",
+        "ca_pit_pilot_schedule_y_tax",
+        "ca_pit_pilot_schedule_z_tax",
+        "ca_pit_pilot_estimated_tax_rate_schedule_amount",
+        "ca_pit_pilot_behavioral_health_services_tax",
+        "ca_pit_pilot_estimated_tax_schedule_branch_total",
+    )
+    rules = "\n".join(
+        "  - name: "
+        f"{name}\n"
+        "    kind: derived\n"
+        "    versions:\n"
+        "      - effective_from: '2026-01-01'\n"
+        "        formula: 0"
+        for name in output_names
+    )
+    _write_rulespec_file(
+        tmp_path
+        / "rulespec-us-ca"
+        / "policies/income_tax/pilot_liability_pipeline.yaml",
+        f"format: rulespec/v1\nrules:\n{rules}\n",
+    )
+
+    report = build_policyengine_coverage_report(tmp_path, program="tax")
+
+    assert report["total_outputs"] == 29
+    assert report["status_counts"] == {
+        "comparable": 4,
+        "known_not_comparable": 25,
+    }
+    items = {item["rule_name"]: item for item in report["items"]}
+    assert set(items) == set(output_names)
+    assert {name for name, item in items.items() if item["status"] == "comparable"} == {
+        "ca_pit_pilot_behavioral_health_services_tax_threshold",
+        "ca_pit_pilot_behavioral_health_services_tax_rate",
+        "ca_pit_pilot_completed_taxable_income",
+        "ca_pit_pilot_behavioral_health_services_tax",
+    }
+    assert (
+        items["ca_pit_pilot_behavioral_health_services_tax_threshold"][
+            "policyengine_parameter"
+        ]
+        == "gov.states.ca.tax.income.mental_health_services"
+    )
+    assert (
+        items["ca_pit_pilot_completed_taxable_income"]["policyengine_variable"]
+        == "ca_taxable_income"
+    )
+    assert (
+        items["ca_pit_pilot_behavioral_health_services_tax"]["policyengine_variable"]
+        == "ca_mental_health_services_tax"
+    )
+    assert {
+        item["candidate_priority"]
+        for item in items.values()
+        if item["status"] == "known_not_comparable"
+    } == {"P4"}
+
+
 def test_policyengine_coverage_classifies_new_york_tanf_program_output(tmp_path):
     checkout = tmp_path / "rulespec-us"
     _write_rulespec_file(
