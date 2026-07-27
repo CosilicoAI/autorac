@@ -286,7 +286,7 @@ _OPENAI_REASONING_EFFORTS_BY_MODEL_PREFIX = (
     ("gpt-5.4-pro", frozenset({"medium", "high", "xhigh"})),
     ("gpt-5.4", frozenset({"none", "low", "medium", "high", "xhigh"})),
 )
-EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v5"
+EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v6"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
     default=None,
@@ -2560,6 +2560,26 @@ def _combine_retry_response(
     retry_prompt: str,
 ) -> EvalPromptResponse:
     """Return the retry response while preserving aggregate accounting."""
+    openai_endpoint = _consistent_retry_receiver_value(
+        initial.openai_endpoint,
+        retry.openai_endpoint,
+        label="OpenAI endpoint",
+    )
+    openai_response_model_id = _consistent_retry_receiver_value(
+        initial.openai_response_model_id,
+        retry.openai_response_model_id,
+        label="OpenAI response model",
+    )
+    openai_service_tier = _consistent_retry_receiver_value(
+        initial.openai_service_tier,
+        retry.openai_service_tier,
+        label="OpenAI service tier",
+    )
+    openai_max_output_tokens = _consistent_retry_receiver_value(
+        initial.openai_max_output_tokens,
+        retry.openai_max_output_tokens,
+        label="OpenAI max output tokens",
+    )
     initial_timeout = _prompt_response_timeout_evidence(initial)
     retry_timeout = _prompt_response_timeout_evidence(retry)
     timeout_attempts = initial_timeout[0] + retry_timeout[0]
@@ -2594,11 +2614,24 @@ def _combine_retry_response(
         timeout_reason=latest_timeout[2],
         timeout_seconds=latest_timeout[3],
         timeout_attempts=timeout_attempts,
-        openai_endpoint=retry.openai_endpoint,
-        openai_response_model_id=retry.openai_response_model_id,
-        openai_service_tier=retry.openai_service_tier,
-        openai_max_output_tokens=retry.openai_max_output_tokens,
+        openai_endpoint=openai_endpoint,
+        openai_response_model_id=openai_response_model_id,
+        openai_service_tier=openai_service_tier,
+        openai_max_output_tokens=openai_max_output_tokens,
     )
+
+
+def _consistent_retry_receiver_value(
+    initial: str | int | None,
+    retry: str | int | None,
+    *,
+    label: str,
+) -> str | int | None:
+    """Keep one receiver value across attempts, refusing identity drift."""
+
+    if initial is not None and retry is not None and initial != retry:
+        raise ValueError(f"{label} changed across empty-artifact retry attempts")
+    return retry if retry is not None else initial
 
 
 def _timeout_traces(trace: object) -> list[dict]:
@@ -3242,6 +3275,11 @@ def _run_eval_suite_with_signer(
                 parsed_runners,
                 expected_source_attestation=expected_source_attestation,
                 cli_environments=cli_environments,
+            )
+            _validate_openai_result_receiver_identities(
+                [*results, *case_results],
+                execution_identity=execution_identity,
+                artifact_name=f"eval suite through case '{case.name}'",
             )
             _append_eval_suite_case_results(
                 output_root,
@@ -4010,14 +4048,19 @@ def _eval_receiver_execution_environments(
     cli_environments: Mapping[str, EvalCliEnvironment] | None,
     *,
     receiver_environments: Mapping[str, object] | None = None,
-) -> dict[str, dict[str, str]]:
-    """Return path-free identities for only the local receivers a suite uses."""
+) -> dict[str, dict[str, object]]:
+    """Return path-free identities for every receiver a suite exercises."""
 
     expected_backends = {
         runner.backend
         for runner in parsed_runners
-        if runner.backend in {"claude", "codex"}
+        if runner.backend in {"claude", "codex", "openai"}
     }
+    expected_openai_models = [
+        {"name": runner.name, "model": runner.model}
+        for runner in parsed_runners
+        if runner.backend == "openai"
+    ]
     if receiver_environments is not None:
         if cli_environments is not None:
             raise ValueError(
@@ -4029,9 +4072,9 @@ def _eval_receiver_execution_environments(
         if set(receiver_environments) != expected_backends:
             raise ValueError(
                 "Persisted receiver execution identity does not exactly match "
-                "the suite's local backends"
+                "the suite's receiver backends"
             )
-        persisted_result: dict[str, dict[str, str]] = {}
+        persisted_result: dict[str, dict[str, object]] = {}
         expected_fields = {
             "cli_version",
             "launcher_sha256",
@@ -4070,10 +4113,35 @@ def _eval_receiver_execution_environments(
                 "launcher_sha256": launcher_sha256,
                 "native_sha256": native_sha256,
             }
+        if "openai" in expected_backends:
+            raw_environment = receiver_environments.get("openai")
+            if not isinstance(raw_environment, Mapping):
+                raise ValueError(
+                    "Persisted openai receiver execution identity must be an object"
+                )
+            if set(raw_environment) != {"endpoint", "requested_models"}:
+                raise ValueError(
+                    "Persisted openai receiver execution identity has unexpected "
+                    "or missing fields"
+                )
+            endpoint = raw_environment.get("endpoint")
+            requested_models = raw_environment.get("requested_models")
+            if (
+                endpoint != _OPENAI_RESPONSES_ENDPOINT
+                or requested_models != expected_openai_models
+            ):
+                raise ValueError(
+                    "Persisted openai receiver execution identity differs from "
+                    "the current endpoint or requested runner models"
+                )
+            persisted_result["openai"] = {
+                "endpoint": endpoint,
+                "requested_models": expected_openai_models,
+            }
         return persisted_result
 
     environments = {} if cli_environments is None else cli_environments
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, object]] = {}
     for backend in ("claude", "codex"):
         runner = next(
             (candidate for candidate in parsed_runners if candidate.backend == backend),
@@ -4094,6 +4162,11 @@ def _eval_receiver_execution_environments(
             "cli_version": environment.version,
             "launcher_sha256": environment.launcher_sha256,
             "native_sha256": environment.native_sha256,
+        }
+    if expected_openai_models:
+        result["openai"] = {
+            "endpoint": _OPENAI_RESPONSES_ENDPOINT,
+            "requested_models": expected_openai_models,
         }
     return result
 
@@ -4119,7 +4192,7 @@ def _suite_retry_attempts_from_execution_identity(
     *,
     artifact_name: str,
 ) -> int:
-    """Recover the suite retry count from a persisted v5 execution identity."""
+    """Recover the suite retry count from a persisted v6 execution identity."""
 
     if not isinstance(identity, dict):
         raise ValueError(f"{artifact_name} is missing its timeout retry policy")
@@ -4239,6 +4312,124 @@ def _expected_eval_suite_runners(
             )
         expected[runner.name] = runner
     return expected
+
+
+def _validate_openai_result_receiver_identities(
+    results: Sequence[EvalResult],
+    *,
+    execution_identity: Mapping[str, object],
+    artifact_name: str,
+) -> None:
+    """Bind OpenAI result rows to one request and server identity per runner."""
+
+    openai_results = [result for result in results if result.backend == "openai"]
+    receiver_environments = execution_identity.get("receiver_environments")
+    openai_environment = (
+        receiver_environments.get("openai")
+        if isinstance(receiver_environments, Mapping)
+        else None
+    )
+    if not openai_results and openai_environment is None:
+        return
+    if not isinstance(openai_environment, Mapping):
+        raise ValueError(
+            f"{artifact_name} is missing its OpenAI receiver execution identity"
+        )
+    if set(openai_environment) != {"endpoint", "requested_models"}:
+        raise ValueError(
+            f"{artifact_name} has a malformed OpenAI receiver execution identity"
+        )
+    endpoint = openai_environment.get("endpoint")
+    raw_requested_models = openai_environment.get("requested_models")
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint.strip()
+        or not isinstance(raw_requested_models, list)
+    ):
+        raise ValueError(
+            f"{artifact_name} has a malformed OpenAI receiver execution identity"
+        )
+
+    requested_models: dict[str, str] = {}
+    for raw_requested in raw_requested_models:
+        if not isinstance(raw_requested, Mapping) or set(raw_requested) != {
+            "name",
+            "model",
+        }:
+            raise ValueError(
+                f"{artifact_name} has a malformed OpenAI requested model identity"
+            )
+        name = raw_requested.get("name")
+        model = raw_requested.get("model")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(model, str)
+            or not model.strip()
+            or name in requested_models
+        ):
+            raise ValueError(
+                f"{artifact_name} has a malformed OpenAI requested model identity"
+            )
+        requested_models[name] = model
+
+    response_models: dict[str, str] = {}
+    service_tiers: dict[str, str] = {}
+    seen_runners: set[str] = set()
+    for result in openai_results:
+        requested_model = requested_models.get(result.runner)
+        if requested_model is None:
+            raise ValueError(
+                f"{artifact_name} has OpenAI row for unrequested runner "
+                f"'{result.runner}'"
+            )
+        seen_runners.add(result.runner)
+        if result.model != requested_model:
+            raise ValueError(
+                f"{artifact_name} OpenAI runner '{result.runner}' uses model "
+                f"'{result.model}' instead of requested model '{requested_model}'"
+            )
+        if (
+            result.openai_endpoint != endpoint
+            or result.openai_max_output_tokens != _OPENAI_MAX_OUTPUT_TOKENS
+        ):
+            raise ValueError(
+                f"{artifact_name} OpenAI runner '{result.runner}' differs from "
+                "its requested endpoint or output envelope"
+            )
+        response_model = result.openai_response_model_id
+        if response_model is not None:
+            if response_model != requested_model and not response_model.startswith(
+                f"{requested_model}-"
+            ):
+                raise ValueError(
+                    f"{artifact_name} OpenAI response model '{response_model}' "
+                    f"does not identify requested model '{requested_model}'"
+                )
+            prior_response_model = response_models.setdefault(
+                result.runner, response_model
+            )
+            if prior_response_model != response_model:
+                raise ValueError(
+                    f"{artifact_name} OpenAI response model changed for runner "
+                    f"'{result.runner}' from '{prior_response_model}' to "
+                    f"'{response_model}'"
+                )
+        service_tier = result.openai_service_tier
+        if service_tier is not None:
+            prior_service_tier = service_tiers.setdefault(result.runner, service_tier)
+            if prior_service_tier != service_tier:
+                raise ValueError(
+                    f"{artifact_name} OpenAI service tier changed for runner "
+                    f"'{result.runner}' from '{prior_service_tier}' to "
+                    f"'{service_tier}'"
+                )
+    missing_rows = set(requested_models) - seen_runners
+    if openai_results and missing_rows:
+        raise ValueError(
+            f"{artifact_name} is missing OpenAI result rows for requested runners: "
+            f"{', '.join(sorted(missing_rows))}"
+        )
 
 
 def _validate_new_eval_suite_case_results(
@@ -5095,6 +5286,11 @@ def _load_eval_suite_resume_state(
                 policyengine_runtime=policyengine_runtime,
                 rulespec_dependency_roots=manifest.rulespec_dependency_roots,
             )
+        _validate_openai_result_receiver_identities(
+            [*results, *case_results],
+            execution_identity=execution_identity,
+            artifact_name="persisted eval suite ledger",
+        )
         completed_case_indexes.add(case_index)
         results.extend(case_results)
 
