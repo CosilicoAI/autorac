@@ -18921,7 +18921,7 @@ cases:
 
         def identity(runtime: PolicyEngineRuntime) -> dict[str, object]:
             return {
-                "schema": "axiom-encode/eval-execution-identity/v5",
+                "schema": "axiom-encode/eval-execution-identity/v6",
                 "runner_efforts": [
                     {
                         "name": "test",
