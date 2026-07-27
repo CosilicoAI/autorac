@@ -1,0 +1,1 @@
+Bundle Georgia's two exact TY2026 section 48-7-20 annual-tax-before-nonrefundable-credits oracle mappings and pin their durable reviewed oracle-main merge without claiming taxable-income construction or final Form 500 liability.

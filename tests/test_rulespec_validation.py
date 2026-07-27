@@ -5120,7 +5120,544 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "67fea9c9a7afdb5d8eaf7a99971cfd9be578d7f3"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ct:policies/income_tax/2026_resident_ordinary_tax_before_personal_credit#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    not_comparable = {
+        "ct_pit_2026_ordinary_tax_filing_status_is_valid",
+        "ct_pit_2026_ordinary_tax_input_domain_is_valid",
+        "ct_pit_2026_ordinary_tax_schedule_scale",
+    }
+    parameter_values = {
+        "ct_pit_2026_ordinary_tax_head_first_ceiling",
+        "ct_pit_2026_ordinary_tax_joint_first_ceiling",
+        *(f"ct_pit_2026_ordinary_tax_rate_{index}" for index in range(1, 8)),
+        *(f"ct_pit_2026_ordinary_tax_single_floor_{index}" for index in range(2, 8)),
+        "ct_pit_2026_ordinary_tax_single_phaseout_start",
+        "ct_pit_2026_ordinary_tax_head_phaseout_start",
+        "ct_pit_2026_ordinary_tax_joint_phaseout_start",
+        "ct_pit_2026_ordinary_tax_separate_phaseout_start",
+        "ct_pit_2026_ordinary_tax_single_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_head_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_separate_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_single_phaseout_amount",
+        "ct_pit_2026_ordinary_tax_single_phaseout_maximum",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_recapture_increment",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_head_middle_recapture_amount",
+        "ct_pit_2026_ordinary_tax_head_middle_recapture_maximum",
+    }
+    direct_variables = {
+        "ct_pit_2026_ordinary_low_rate_phaseout_addback",
+        "ct_pit_2026_ordinary_low_recapture",
+        "ct_pit_2026_ordinary_middle_recapture",
+        "ct_pit_2026_ordinary_high_recapture",
+    }
+    derived_expressions = {
+        "ct_pit_2026_ordinary_schedule_tax",
+        "ct_pit_2026_resident_ordinary_tax_before_personal_credit",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        **dict.fromkeys(parameter_values, "parameter_value"),
+        **dict.fromkeys(direct_variables, "direct_variable"),
+        **dict.fromkeys(derived_expressions, "derived_expression"),
+    }
+
+    assert len(expected_types) == 45
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    assert bundled == runtime
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ct_pit_2026_ordinary_tax_rate_1",
+        country="us",
+    )
+    final_component = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ct_pit_2026_resident_ordinary_tax_before_personal_credit",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ct:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "parameter_value"
+    assert final_component is not None
+    assert final_component.match_type == "exact"
+    assert final_component.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ga:policies/income_tax/2026_annual_tax_before_nonrefundable_credits#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+
+    assert set(bundled) == {
+        "ga_pit_2026_annual_input_is_nonnegative",
+        "ga_pit_2026_annual_tax_before_nonrefundable_credits",
+    }
+    assert bundled == runtime
+
+    private = bundled["ga_pit_2026_annual_input_is_nonnegative"]
+    assert private["mapping_type"] == "not_comparable"
+    assert private["candidate_priority"] == "P4"
+    assert "policyengine_variable" not in private
+
+    public = bundled["ga_pit_2026_annual_tax_before_nonrefundable_credits"]
+    assert public["mapping_type"] == "direct_variable"
+    assert (
+        public["policyengine_variable"] == "ga_income_tax_before_non_refundable_credits"
+    )
+    assert public["entity"] == "tax_unit"
+    assert public["period"] == "year"
+    assert public["unit"] == "USD"
+    assert public["comparison"] == "money"
+    assert "candidate_priority" not in public
+    assert "final Form 500 liability" in public["rationale"]
+
+    registry = load_policyengine_registry()
+    exact_private = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ga_pit_2026_annual_input_is_nonnegative",
+        country="us",
+    )
+    exact_public = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ga_pit_2026_annual_tax_before_nonrefundable_credits",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ga:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact_private is not None
+    assert exact_private.match_type == "exact"
+    assert exact_private.mapping_type == "not_comparable"
+    assert exact_private.candidate_priority == "P4"
+    assert exact_public is not None
+    assert exact_public.match_type == "exact"
+    assert exact_public.mapping_type == "direct_variable"
+    assert (
+        exact_public.policyengine_variable
+        == "ga_income_tax_before_non_refundable_credits"
+    )
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    assert set(bundled) == {
+        "ms_pit_2026_zero_tax_ceiling",
+        "ms_pit_2026_rate",
+        "ms_pit_2026_schedule_taxable_income",
+        "ms_pit_2026_section_27_7_5_schedule_tax",
+    }
+    assert bundled == runtime
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ms:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ms:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    ceiling = bundled["ms_pit_2026_zero_tax_ceiling"]
+    assert ceiling["mapping_type"] == "parameter_value"
+    assert ceiling["policyengine_parameter"] == "gov.states.ms.tax.income.rate"
+    assert ceiling["parameter_key_path"] == ["thresholds", 1]
+    assert ceiling["comparison"] == "money"
+
+    rate = bundled["ms_pit_2026_rate"]
+    assert rate["mapping_type"] == "parameter_value"
+    assert rate["policyengine_parameter"] == "gov.states.ms.tax.income.rate"
+    assert rate["parameter_key_path"] == ["rates", 1]
+    assert rate["comparison"] == "rate"
+
+    taxable_income = bundled["ms_pit_2026_schedule_taxable_income"]
+    assert taxable_income["mapping_type"] == "not_comparable"
+    assert taxable_income["candidate_priority"] == "P4"
+    assert "policyengine_variable" not in taxable_income
+
+    schedule_tax = bundled["ms_pit_2026_section_27_7_5_schedule_tax"]
+    assert schedule_tax["mapping_type"] == "direct_variable"
+    assert schedule_tax["policyengine_variable"] == (
+        "ms_income_tax_before_credits_joint"
+    )
+    assert schedule_tax["entity"] == "person"
+    assert schedule_tax["period"] == "year"
+    assert schedule_tax["unit"] == "USD"
+    assert schedule_tax["comparison"] == "money"
+    assert "final liability" in schedule_tax["rationale"]
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ms_pit_2026_section_27_7_5_schedule_tax",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ms:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "direct_variable"
+    assert exact.policyengine_variable == "ms_income_tax_before_credits_joint"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def _ohio_2026_schedule_records(document):
+    schedule_prefix = "us-oh:policies/income_tax/pilot_liability_pipeline#"
+    return {
+        item["legal_id"].removeprefix(schedule_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(schedule_prefix)
+    }
+
+
+def test_packaged_ohio_2026_schedule_registry_has_exact_bounded_slice():
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    bundled = _ohio_2026_schedule_records(bundled_document)
+    not_comparable = {
+        "oh_pit_pilot_nonbusiness_taxable_income_construction_source_hold_applies",
+        "oh_pit_pilot_business_income_and_excess_exemption_source_hold_applies",
+        "oh_pit_pilot_credit_surface_source_hold_applies",
+        "oh_pit_pilot_final_return_ordering_source_hold_applies",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        "oh_pit_pilot_taxable_income": "direct_variable",
+        "oh_pit_pilot_schedule_tax": "derived_expression",
+        "oh_pit_pilot_income_tax_liability": "derived_expression",
+    }
+
+    assert len(expected_types) == 7
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    for output_name in not_comparable:
+        assert bundled[output_name]["candidate_priority"] == "P4"
+
+    taxable_income = bundled["oh_pit_pilot_taxable_income"]
+    assert taxable_income["policyengine_variable"] == "oh_taxable_income"
+    assert (
+        taxable_income["entity"],
+        taxable_income["period"],
+        taxable_income["unit"],
+        taxable_income["comparison"],
+    ) == ("tax_unit", "year", "USD", "money")
+
+    expression = (
+        "oh_income_tax_before_non_refundable_credits * (oh_taxable_income > 26050)"
+    )
+    for output_name in (
+        "oh_pit_pilot_schedule_tax",
+        "oh_pit_pilot_income_tax_liability",
+    ):
+        schedule = bundled[output_name]
+        assert schedule["expression"] == expression
+        assert (
+            schedule["entity"],
+            schedule["period"],
+            schedule["unit"],
+            schedule["comparison"],
+        ) == ("tax_unit", "year", "USD", "money")
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks[0]["mapping_type"] == "not_comparable"
+    assert bundled_fallbacks[0]["candidate_priority"] == "P4"
+
+
+def test_packaged_ohio_2026_schedule_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_text = bundled_path.read_text()
+    runtime_text = runtime_path.read_text()
+    bundled_document = yaml.safe_load(bundled_text)
+    runtime_document = yaml.safe_load(runtime_text)
+    bundled = _ohio_2026_schedule_records(bundled_document)
+    runtime = _ohio_2026_schedule_records(runtime_document)
+
+    assert bundled == runtime
+
+    def exact_slice(text, start, end):
+        return text[text.index(start) : text.index(end)]
+
+    assert exact_slice(
+        bundled_text,
+        "  # Ohio's bounded TY2026",
+        "  # Utah's canonical TY2026",
+    ) == exact_slice(
+        runtime_text,
+        "  # Ohio's bounded TY2026",
+        "  # Utah's canonical TY2026",
+    )
+    assert exact_slice(
+        bundled_text,
+        '  - legal_id_prefix: "us-oh:"',
+        '  - legal_id_prefix: "us-ok:"',
+    ) == exact_slice(
+        runtime_text,
+        '  - legal_id_prefix: "us-oh:"',
+        '  - legal_id_prefix: "us-ok:"',
+    )
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    schedule_prefix = "us-oh:policies/income_tax/pilot_liability_pipeline#"
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}oh_pit_pilot_schedule_tax",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-oh:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ut:policies/income_tax/2026_full_year_resident_before_credit_schedule#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    not_comparable = {
+        "ut_pit_2026_input_domain_is_valid",
+        "ut_pit_2026_before_credit_schedule_applies",
+        "ut_pit_2026_resident_state_taxable_income_boundary",
+        "ut_pit_2026_taxpayer_credit_source_hold_applies",
+        "ut_pit_2026_final_resident_liability_source_hold_applies",
+        "ut_pit_2026_taxpayer_tax_credit",
+        "ut_pit_2026_final_resident_income_tax_liability_before_payments",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        "ut_pit_2026_income_tax_rate": "parameter_value",
+        "ut_pit_2026_resident_income_tax_before_credits": "derived_expression",
+    }
+    assert len(expected_types) == 9
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    assert bundled == runtime
+
+    for output_name in not_comparable:
+        assert bundled[output_name]["candidate_priority"] == "P4"
+
+    rate = bundled["ut_pit_2026_income_tax_rate"]
+    assert rate["policyengine_parameter"] == "gov.states.ut.tax.income.rate"
+    assert rate["period"] == "year"
+    assert rate["comparison"] == "rate"
+
+    before_credits = bundled["ut_pit_2026_resident_income_tax_before_credits"]
+    assert before_credits["expression"] == (
+        "ut_income_tax_before_credits * (1 - ut_income_tax_exempt)"
+    )
+    assert before_credits["entity"] == "tax_unit"
+    assert before_credits["period"] == "year"
+    assert before_credits["unit"] == "USD"
+    assert before_credits["comparison"] == "money"
+    assert "final liability" in before_credits["rationale"]
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ut:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ut:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ut_pit_2026_resident_income_tax_before_credits",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ut:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
