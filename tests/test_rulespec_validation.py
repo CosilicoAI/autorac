@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,7 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5571,7 +5571,7 @@ def test_packaged_kansas_2026_k40es_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5676,7 +5676,7 @@ def test_packaged_dc_2026_section_47_1806_03_has_exact_bounded_slice():
 def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    durable_oracle_merge = "9e6d93662da32ad423c177b8265720eed40e6660"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1399"')
+        .startswith('__version__ = "0.2.1400"')
     )
 
 
@@ -5879,7 +5879,7 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
 
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    durable_oracle_merge = "9e6d93662da32ad423c177b8265720eed40e6660"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -5985,13 +5985,281 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1399"
+    assert encoder_package["version"] == "0.2.1400"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1399"
+    assert project["project"]["version"] == "0.2.1400"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1399"')
+        .startswith('__version__ = "0.2.1400"')
+    )
+
+
+def _ny_2026_main_income_tax_records(document):
+    module_prefix = "us-ny:policies/income_tax/pilot_liability_pipeline#"
+    return {
+        item["legal_id"].removeprefix(module_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(module_prefix)
+    }
+
+
+def _ny_2026_main_income_tax_expected_parameters():
+    ordinals = (
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "sixth",
+        "seventh",
+        "eighth",
+    )
+    filing_scales = {
+        "joint_or_surviving": "gov.states.ny.tax.income.main.joint",
+        "head_of_household": "gov.states.ny.tax.income.main.head_of_household",
+        "single_or_separate": "gov.states.ny.tax.income.main.single",
+    }
+    return {
+        f"ny_pit_pilot_{filing_status}_{ordinal}_upper_bound": (
+            parameter,
+            ["thresholds", index],
+        )
+        for filing_status, parameter in filing_scales.items()
+        for index, ordinal in enumerate(ordinals, start=1)
+    }
+
+
+def _ny_2026_main_income_tax_shared_mapping_material(text):
+    def exact_section(start, end):
+        start_index = text.index(start)
+        end_index = text.index(end, start_index) + len(end)
+        return text[start_index:end_index]
+
+    exact_records = exact_section(
+        "  # New York Tax Law section 601's bounded TY2026 main resident schedule.",
+        "  - legal_id: us-ny:policies/income_tax/pilot_liability_pipeline"
+        "#ny_pit_pilot_single_or_separate_bracket_rate\n"
+        "    country: us\n"
+        "    program: tax\n"
+        "    mapping_type: not_comparable\n"
+        "    candidate_priority: P4\n"
+        "    rationale: Axiom exposes the complete statutory rate table as one "
+        "RuleSpec output; PolicyEngine's registry supports scalar scale-cell "
+        "comparison but has no one-to-one whole-table oracle target.",
+    )
+    fallback = exact_section(
+        '  - legal_id_prefix: "us-ny:"',
+        "    rationale: PolicyEngine-US does not model NY agency policy manuals "
+        "or state regulations at output granularity; comparable state outputs "
+        "carry exact mappings which take precedence over this prefix.",
+    )
+    return f"{exact_records}\n\n{fallback}".replace("\r\n", "\n").replace("\r", "\n")
+
+
+def test_packaged_ny_2026_main_income_tax_registry_has_exact_bounded_slice():
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    bundled = _ny_2026_main_income_tax_records(bundled_document)
+    expected_parameters = _ny_2026_main_income_tax_expected_parameters()
+    expected_direct_variables = {
+        "ny_pit_pilot_taxable_income": "ny_taxable_income",
+        "ny_pit_pilot_main_income_tax": "ny_main_income_tax",
+    }
+    filing_statuses = (
+        "joint_or_surviving",
+        "head_of_household",
+        "single_or_separate",
+    )
+    expected_not_comparable = {
+        *(
+            f"ny_pit_pilot_{filing_status}_bracket_selector"
+            for filing_status in filing_statuses
+        ),
+        *(
+            f"ny_pit_pilot_{filing_status}_bracket_{table}"
+            for filing_status in filing_statuses
+            for table in ("floor", "base", "rate")
+        ),
+    }
+    comparable = {
+        name: item
+        for name, item in bundled.items()
+        if item["mapping_type"] != "not_comparable"
+    }
+    not_comparable = {
+        name: item
+        for name, item in bundled.items()
+        if item["mapping_type"] == "not_comparable"
+    }
+
+    assert len(bundled) == 38
+    assert set(comparable) == {*expected_parameters, *expected_direct_variables}
+    assert set(not_comparable) == expected_not_comparable
+    assert len(comparable) == 26
+    assert len(not_comparable) == 12
+    assert {item["program"] for item in bundled.values()} == {"tax"}
+
+    for output_name, (parameter, key_path) in expected_parameters.items():
+        output = bundled[output_name]
+        assert output["mapping_type"] == "parameter_value"
+        assert output["policyengine_parameter"] == parameter
+        assert output["parameter_key_path"] == key_path
+        assert (output["period"], output["unit"], output["comparison"]) == (
+            "year",
+            "USD",
+            "money",
+        )
+
+    for output_name, variable in expected_direct_variables.items():
+        output = bundled[output_name]
+        assert output["mapping_type"] == "direct_variable"
+        assert output["policyengine_variable"] == variable
+        assert (
+            output["entity"],
+            output["period"],
+            output["unit"],
+            output["comparison"],
+        ) == ("tax_unit", "year", "USD", "money")
+
+    for output in not_comparable.values():
+        assert output["candidate_priority"] == "P4"
+        assert "policyengine_variable" not in output
+        assert "policyengine_parameter" not in output
+        assert output["rationale"]
+
+    main_tax = bundled["ny_pit_pilot_main_income_tax"]
+    for excluded_scope in (
+        "supplemental tax",
+        "credits",
+        "local taxes",
+        "payments",
+        "final liability",
+    ):
+        assert excluded_scope in main_tax["rationale"]
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ny:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks[0]["mapping_type"] == "not_comparable"
+    assert bundled_fallbacks[0]["candidate_priority"] == "P4"
+    assert "take precedence" in bundled_fallbacks[0]["rationale"]
+
+
+def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
+    import tomllib
+
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    durable_oracle_merge = "9e6d93662da32ad423c177b8265720eed40e6660"
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_text = bundled_path.read_text()
+    runtime_text = runtime_path.read_text()
+    bundled_document = yaml.safe_load(bundled_text)
+    runtime_document = yaml.safe_load(runtime_text)
+    bundled = _ny_2026_main_income_tax_records(bundled_document)
+    runtime = _ny_2026_main_income_tax_records(runtime_document)
+    bundled_material = _ny_2026_main_income_tax_shared_mapping_material(bundled_text)
+    runtime_material = _ny_2026_main_income_tax_shared_mapping_material(runtime_text)
+    encoded_material = bundled_material.encode()
+
+    assert bundled == runtime
+    assert bundled_material == runtime_material
+    assert len(bundled_material.splitlines()) == 379
+    assert len(encoded_material) == 17_869
+    assert hashlib.sha256(encoded_material).hexdigest() == (
+        "843aab529936dd09cfbdba58a2ff8857a3ffefa7df28369fd28dbed7d89aed61"
+    )
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ny:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ny:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    prefix = "us-ny:policies/income_tax/pilot_liability_pipeline#"
+    registry = load_policyengine_registry()
+    taxable_income = registry.mapping_for_legal_id(
+        f"{prefix}ny_pit_pilot_taxable_income",
+        country="us",
+    )
+    main_tax = registry.mapping_for_legal_id(
+        f"{prefix}ny_pit_pilot_main_income_tax",
+        country="us",
+    )
+    joint_eighth_upper = registry.mapping_for_legal_id(
+        f"{prefix}ny_pit_pilot_joint_or_surviving_eighth_upper_bound",
+        country="us",
+    )
+    selector = registry.mapping_for_legal_id(
+        f"{prefix}ny_pit_pilot_head_of_household_bracket_selector",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        f"{prefix}future_unmapped_output",
+        country="us",
+    )
+
+    assert taxable_income is not None
+    assert taxable_income.match_type == "exact"
+    assert taxable_income.mapping_type == "direct_variable"
+    assert taxable_income.policyengine_variable == "ny_taxable_income"
+    assert main_tax is not None
+    assert main_tax.match_type == "exact"
+    assert main_tax.mapping_type == "direct_variable"
+    assert main_tax.policyengine_variable == "ny_main_income_tax"
+    assert joint_eighth_upper is not None
+    assert joint_eighth_upper.match_type == "exact"
+    assert joint_eighth_upper.mapping_type == "parameter_value"
+    assert joint_eighth_upper.policyengine_parameter == (
+        "gov.states.ny.tax.income.main.joint"
+    )
+    assert joint_eighth_upper.parameter_key_path == ("thresholds", 8)
+    assert selector is not None
+    assert selector.match_type == "exact"
+    assert selector.mapping_type == "not_comparable"
+    assert selector.candidate_priority == "P4"
+    assert fallback is not None
+    assert fallback.legal_id == "us-ny:"
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+    assert fallback.candidate_priority == "P4"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == durable_oracle_merge
+    lock_text = (root / "uv.lock").read_text()
+    assert lock_text.count(f"?rev={pin}") == 2
+    assert f"?rev={pin}#{pin}" in lock_text
+    lock = tomllib.loads(lock_text)
+    encoder_package = next(
+        package for package in lock["package"] if package["name"] == "axiom-encode"
+    )
+    assert encoder_package["version"] == "0.2.1400"
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    assert project["project"]["version"] == "0.2.1400"
+    assert (
+        (root / "src/axiom_encode/__init__.py")
+        .read_text()
+        .startswith('__version__ = "0.2.1400"')
     )
 
 
@@ -6238,7 +6506,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    assert pin == "9e6d93662da32ad423c177b8265720eed40e6660"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 

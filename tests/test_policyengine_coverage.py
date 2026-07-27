@@ -674,6 +674,106 @@ def test_policyengine_coverage_classifies_bounded_ca_2026_bhst(tmp_path):
     } == {"P4"}
 
 
+def test_policyengine_coverage_classifies_bounded_ny_2026_main_income_tax(tmp_path):
+    filing_statuses = (
+        "joint_or_surviving",
+        "head_of_household",
+        "single_or_separate",
+    )
+    ordinals = (
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "sixth",
+        "seventh",
+        "eighth",
+    )
+    direct_variables = {
+        "ny_pit_pilot_taxable_income": "ny_taxable_income",
+        "ny_pit_pilot_main_income_tax": "ny_main_income_tax",
+    }
+    parameter_outputs = {
+        f"ny_pit_pilot_{filing_status}_{ordinal}_upper_bound"
+        for filing_status in filing_statuses
+        for ordinal in ordinals
+    }
+    not_comparable_outputs = {
+        *(
+            f"ny_pit_pilot_{filing_status}_bracket_selector"
+            for filing_status in filing_statuses
+        ),
+        *(
+            f"ny_pit_pilot_{filing_status}_bracket_{table}"
+            for filing_status in filing_statuses
+            for table in ("floor", "base", "rate")
+        ),
+    }
+    output_names = (
+        *direct_variables,
+        *sorted(parameter_outputs),
+        *sorted(not_comparable_outputs),
+    )
+    rules = "\n".join(
+        "  - name: "
+        f"{name}\n"
+        "    kind: derived\n"
+        "    versions:\n"
+        "      - effective_from: '2026-01-01'\n"
+        "        formula: 0"
+        for name in output_names
+    )
+    _write_rulespec_file(
+        tmp_path
+        / "rulespec-us-ny"
+        / "policies/income_tax/pilot_liability_pipeline.yaml",
+        f"format: rulespec/v1\nrules:\n{rules}\n",
+    )
+
+    report = build_policyengine_coverage_report(tmp_path, program="tax")
+
+    assert report["total_outputs"] == 38
+    assert report["status_counts"] == {
+        "comparable": 26,
+        "known_not_comparable": 12,
+    }
+    items = {item["rule_name"]: item for item in report["items"]}
+    assert set(items) == set(output_names)
+    assert {name for name, item in items.items() if item["status"] == "comparable"} == {
+        *direct_variables,
+        *parameter_outputs,
+    }
+    for output_name, variable in direct_variables.items():
+        assert items[output_name]["policyengine_variable"] == variable
+    assert (
+        items["ny_pit_pilot_joint_or_surviving_first_upper_bound"][
+            "policyengine_parameter"
+        ]
+        == "gov.states.ny.tax.income.main.joint"
+    )
+    assert (
+        items["ny_pit_pilot_head_of_household_eighth_upper_bound"][
+            "policyengine_parameter"
+        ]
+        == "gov.states.ny.tax.income.main.head_of_household"
+    )
+    assert (
+        items["ny_pit_pilot_single_or_separate_fourth_upper_bound"][
+            "policyengine_parameter"
+        ]
+        == "gov.states.ny.tax.income.main.single"
+    )
+    assert {
+        name for name, item in items.items() if item["status"] == "known_not_comparable"
+    } == not_comparable_outputs
+    assert {
+        item["candidate_priority"]
+        for item in items.values()
+        if item["status"] == "known_not_comparable"
+    } == {"P4"}
+
+
 def test_policyengine_coverage_classifies_new_york_tanf_program_output(tmp_path):
     checkout = tmp_path / "rulespec-us"
     _write_rulespec_file(
