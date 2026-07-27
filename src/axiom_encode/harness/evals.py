@@ -1673,12 +1673,47 @@ def _codex_npm_package_root(executable: str) -> Path | None:
     return package_root
 
 
+_CODEX_NATIVE_EXECUTABLE_MAGICS = frozenset(
+    {
+        b"\x7fELF",
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    }
+)
+
+
+def _is_direct_codex_native_executable(executable: str) -> bool:
+    """Recognize a direct Codex native binary by canonical name and file magic."""
+
+    candidate = Path(executable)
+    expected_name = "codex.exe" if sys.platform == "win32" else "codex"
+    if candidate.name != expected_name:
+        return False
+    try:
+        magic = candidate.read_bytes()[:4]
+    except OSError:
+        return False
+    return magic in _CODEX_NATIVE_EXECUTABLE_MAGICS or magic.startswith(b"MZ")
+
+
 def _resolve_codex_native_executable(executable: str) -> str:
     """Resolve the native binary dispatched by the official npm launcher."""
 
     package_root = _codex_npm_package_root(executable)
     if package_root is None:
-        return executable
+        if _is_direct_codex_native_executable(executable):
+            return executable
+        raise RuntimeError(
+            "Codex CLI preflight found an unrecognized Codex launcher layout "
+            f"at {executable}; expected the official npm launcher or a direct "
+            "native Codex executable"
+        )
     platform_package, target = _codex_vendor_layout()
     binary_name = "codex.exe" if sys.platform == "win32" else "codex"
     candidates = (

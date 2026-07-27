@@ -672,7 +672,16 @@ class TestParseRunnerSpec:
 
 def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
     monkeypatch,
+    tmp_path,
 ):
+    claude = _write_fake_eval_executable(
+        tmp_path / "bin" / "claude",
+        b"#!/bin/sh\n",
+    )
+    codex = _write_fake_eval_executable(
+        tmp_path / "bin" / "codex",
+        b"\x7fELFdirect-native-codex-receiver",
+    )
     help_text = {
         "claude": " ".join(
             (
@@ -726,12 +735,16 @@ def test_eval_cli_preflight_probes_each_backend_once_for_duplicate_runners(
             stderr="",
         )
 
-    monkeypatch.setattr(evals_module.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        evals_module.shutil,
+        "which",
+        lambda name: str(claude if name == "claude" else codex),
+    )
     with (
         patch("axiom_encode.harness.evals.subprocess.run", side_effect=probe) as run,
         patch(
             "axiom_encode.harness.evals.resolve_codex_cli",
-            return_value="/bin/codex",
+            return_value=str(codex),
         ),
         patch(
             "axiom_encode.harness.evals._eval_cli_executable_sha256",
@@ -924,7 +937,7 @@ def test_eval_cli_preflight_fails_closed_for_unrecognized_codex_launcher_layout(
 ):
     launcher = _write_fake_eval_executable(
         tmp_path / "custom-launchers" / "codex-wrapper",
-        b"#!/bin/sh\nexec /private/receiver/codex \"$@\"\n",
+        b'#!/bin/sh\nexec /private/receiver/codex "$@"\n',
     )
 
     with (
@@ -989,6 +1002,10 @@ def test_eval_cli_preflight_canonicalizes_relative_executables_before_use(
         backend: str((tmp_path / path).resolve())
         for backend, path in relative_paths.items()
     }
+    _write_fake_eval_executable(
+        tmp_path / relative_paths["codex"],
+        b"\x7fELFdirect-native-codex-receiver",
+    )
     help_text = " ".join(
         (
             "--print",
