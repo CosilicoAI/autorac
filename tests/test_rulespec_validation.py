@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
+    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,91 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
+    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ga:policies/income_tax/2026_annual_tax_before_nonrefundable_credits#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+
+    assert set(bundled) == {
+        "ga_pit_2026_annual_input_is_nonnegative",
+        "ga_pit_2026_annual_tax_before_nonrefundable_credits",
+    }
+    assert bundled == runtime
+
+    private = bundled["ga_pit_2026_annual_input_is_nonnegative"]
+    assert private["mapping_type"] == "not_comparable"
+    assert private["candidate_priority"] == "P4"
+    assert "policyengine_variable" not in private
+
+    public = bundled["ga_pit_2026_annual_tax_before_nonrefundable_credits"]
+    assert public["mapping_type"] == "direct_variable"
+    assert (
+        public["policyengine_variable"] == "ga_income_tax_before_non_refundable_credits"
+    )
+    assert public["entity"] == "tax_unit"
+    assert public["period"] == "year"
+    assert public["unit"] == "USD"
+    assert public["comparison"] == "money"
+    assert "candidate_priority" not in public
+    assert "final Form 500 liability" in public["rationale"]
+
+    registry = load_policyengine_registry()
+    exact_private = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ga_pit_2026_annual_input_is_nonnegative",
+        country="us",
+    )
+    exact_public = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ga_pit_2026_annual_tax_before_nonrefundable_credits",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ga:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact_private is not None
+    assert exact_private.match_type == "exact"
+    assert exact_private.mapping_type == "not_comparable"
+    assert exact_private.candidate_priority == "P4"
+    assert exact_public is not None
+    assert exact_public.match_type == "exact"
+    assert exact_public.mapping_type == "direct_variable"
+    assert (
+        exact_public.policyengine_variable
+        == "ga_income_tax_before_non_refundable_credits"
+    )
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
