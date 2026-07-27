@@ -512,6 +512,80 @@ outputs:
     assert fallback.candidate_priority == "P4"
 
 
+def test_policyengine_coverage_classifies_bounded_dc_2026_schedule(tmp_path):
+    _write_rulespec_file(
+        tmp_path
+        / "rulespec-us-dc"
+        / "policies/income_tax/"
+        "2026_section_47_1806_03_schedule_before_credits.yaml",
+        """format: rulespec/v1
+rules:
+  - name: dc_pit_2026_section_47_1806_03_bracket_upper
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_bracket_floor
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_bracket_base
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_bracket_rate
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_taxable_income_boundary
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_bracket_selector
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+  - name: dc_pit_2026_section_47_1806_03_schedule_before_credits
+    kind: derived
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+""",
+    )
+
+    report = build_policyengine_coverage_report(tmp_path, program="tax")
+
+    assert report["total_outputs"] == 7
+    assert report["status_counts"] == {
+        "comparable": 2,
+        "known_not_comparable": 5,
+    }
+    items = {item["rule_name"]: item for item in report["items"]}
+    assert items[
+        "dc_pit_2026_section_47_1806_03_taxable_income_boundary"
+    ]["policyengine_variable"] == "dc_taxable_income_joint"
+    assert items[
+        "dc_pit_2026_section_47_1806_03_schedule_before_credits"
+    ]["policyengine_variable"] == "dc_income_tax_before_credits_joint"
+    assert {
+        item["candidate_priority"]
+        for name, item in items.items()
+        if name
+        in {
+            "dc_pit_2026_section_47_1806_03_bracket_upper",
+            "dc_pit_2026_section_47_1806_03_bracket_floor",
+            "dc_pit_2026_section_47_1806_03_bracket_base",
+            "dc_pit_2026_section_47_1806_03_bracket_rate",
+            "dc_pit_2026_section_47_1806_03_bracket_selector",
+        }
+    } == {"P4"}
+
+
 def test_policyengine_coverage_classifies_new_york_tanf_program_output(tmp_path):
     checkout = tmp_path / "rulespec-us"
     _write_rulespec_file(
