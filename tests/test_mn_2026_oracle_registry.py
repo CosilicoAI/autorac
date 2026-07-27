@@ -7,20 +7,16 @@ import yaml
 from axiom_oracles.bridges.coverage import build_policyengine_coverage_report
 from axiom_oracles.bridges.registry import load_policyengine_registry
 
-MODULE = "us-il:policies/income_tax/pilot_liability_pipeline"
-DIRECT_VARIABLES = {
-    "il_pit_pilot_taxable_income": "il_taxable_income",
-    "il_pit_pilot_income_tax_liability": (
-        "il_income_tax_before_non_refundable_credits"
-    ),
-}
+MODULE = "us-mn:policies/income_tax/pilot_liability_pipeline"
+OUTPUT = "mn_pit_pilot_schedule_tax"
+POLICYENGINE_VARIABLE = "mn_basic_tax"
 ORACLE_MERGE = "e81e68e054f6166a719f993d2bf5fe2841bc9fde"
 ENCODER_VERSION = "0.2.1402"
-FALLBACK_TEXT = """  - legal_id_prefix: "us-il:"
+FALLBACK_TEXT = """  - legal_id_prefix: "us-mn:"
     country: us
     mapping_type: not_comparable
     candidate_priority: P4
-    rationale: PolicyEngine-US does not model IL statutes, agency policy manuals, or state regulations at output granularity; comparable state outputs carry exact mappings which take precedence over this prefix."""
+    rationale: PolicyEngine-US does not model every Minnesota statute, agency policy manual, or state regulation at output granularity; independently reviewed comparable outputs carry exact mappings which take precedence over this jurisdiction-wide fallback."""
 
 
 def _module_mappings(document):
@@ -34,13 +30,17 @@ def _module_mappings(document):
 
 def _shared_material(text: str) -> str:
     start = text.index(
-        "  # Illinois's bounded TY2026 annual tax before nonrefundable credits."
+        "  # Minnesota's tax-year-2026 pilot exposes a source-faithful continuous"
     )
     exact_end_marker = (
-        "    rationale: Both outputs apply the 4.95 percent tax to completed "
-        "Illinois taxable income and add completed investment-credit recapture "
-        "before nonrefundable credits; this mapping excludes taxable-income "
-        "construction, credit computation, payments, and final annual liability."
+        "    rationale: Both outputs apply Minnesota's four-rate individual "
+        "schedule to completed Minnesota taxable income selected by filing "
+        "status. The final official tax-year-2026 RuleSpec thresholds are $10 "
+        "to $30 above PolicyEngine-US 1.752.2's thresholds, producing only a "
+        "reviewed sub-dollar residual under the preserved $1 absolute "
+        "tolerance. This narrow mapping makes no claim about taxable-income "
+        "construction, tax-table rounding, alternative minimum tax, net "
+        "investment income tax, credits, payments, or final liability."
     )
     exact_end = text.index(exact_end_marker, start) + len(exact_end_marker)
     fallback_start = text.index(FALLBACK_TEXT)
@@ -49,52 +49,50 @@ def _shared_material(text: str) -> str:
 
 
 def _write_synthetic_module(root: Path) -> None:
-    path = root / "us-il/policies/income_tax/pilot_liability_pipeline.yaml"
+    path = root / "us-mn/policies/income_tax/pilot_liability_pipeline.yaml"
     path.parent.mkdir(parents=True)
-    rules = "\n".join(
-        "  - name: "
-        f"{name}\n"
+    path.write_text(
+        "format: rulespec/v1\n"
+        "rules:\n"
+        f"  - name: {OUTPUT}\n"
         "    kind: derived\n"
         "    versions:\n"
         "      - effective_from: '2026-01-01'\n"
-        "        formula: 0"
-        for name in DIRECT_VARIABLES
+        "        formula: 0\n"
     )
-    path.write_text(f"format: rulespec/v1\nrules:\n{rules}\n")
 
 
-def test_packaged_il_2026_registry_has_exact_two_direct_mappings() -> None:
+def test_packaged_mn_2026_registry_has_one_exact_direct_mapping() -> None:
     root = Path(__file__).parents[1]
     path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     document = yaml.safe_load(path.read_text())
     mappings = _module_mappings(document)
 
-    assert len(mappings) == 2
-    assert set(mappings) == set(DIRECT_VARIABLES)
-    for output_name, variable in DIRECT_VARIABLES.items():
-        mapping = mappings[output_name]
-        assert mapping["mapping_type"] == "direct_variable"
-        assert mapping["policyengine_variable"] == variable
-        assert (
-            mapping["program"],
-            mapping["entity"],
-            mapping["period"],
-            mapping["unit"],
-            mapping["comparison"],
-        ) == ("tax", "tax_unit", "year", "USD", "money")
-        assert "candidate_priority" not in mapping
-
-    liability = mappings["il_pit_pilot_income_tax_liability"]
+    assert set(mappings) == {OUTPUT}
+    mapping = mappings[OUTPUT]
+    assert mapping["mapping_type"] == "direct_variable"
+    assert mapping["policyengine_variable"] == POLICYENGINE_VARIABLE
+    assert (
+        mapping["program"],
+        mapping["entity"],
+        mapping["period"],
+        mapping["unit"],
+        mapping["comparison"],
+    ) == ("tax", "tax_unit", "year", "USD", "money")
+    assert "candidate_priority" not in mapping
     for excluded_scope in (
         "taxable-income construction",
-        "credit computation",
+        "tax-table rounding",
+        "alternative minimum tax",
+        "net investment income tax",
+        "credits",
         "payments",
-        "final annual liability",
+        "final liability",
     ):
-        assert excluded_scope in liability["rationale"]
+        assert excluded_scope in mapping["rationale"]
 
 
-def test_packaged_il_2026_runtime_pin_version_and_precedence_are_exact() -> None:
+def test_packaged_mn_2026_runtime_pin_version_and_precedence_are_exact() -> None:
     import axiom_oracles.bridges.registry as runtime_registry_module
 
     root = Path(__file__).parents[1]
@@ -111,31 +109,30 @@ def test_packaged_il_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert _shared_material(bundled_text) == _shared_material(runtime_text)
     assert bundled_text.count(FALLBACK_TEXT) == 1
     assert runtime_text.count(FALLBACK_TEXT) == 1
+    assert hashlib.sha256(FALLBACK_TEXT.encode()).hexdigest() == (
+        "a1922806d932ae93464931b656c5e38db6cf808ec10a3e85694ffc5831956f2b"
+    )
     assert hashlib.sha256(_shared_material(bundled_text).encode()).hexdigest() == (
-        "dd8f49a26f8eb5186f90fcf15bc8c5d230ca6cc10590166c228736638d057ab8"
+        "8e4b30d18da4483a19a6d641244f70b806eebdc952efdd8fcba0beb6a83cf74d"
     )
 
     registry = load_policyengine_registry()
-    for output_name, variable in DIRECT_VARIABLES.items():
-        mapping = registry.mapping_for_legal_id(
-            f"{MODULE}#{output_name}",
-            country="us",
-        )
-        assert mapping is not None
-        assert mapping.match_type == "exact"
-        assert mapping.mapping_type == "direct_variable"
-        assert mapping.policyengine_variable == variable
-        assert mapping.entity == "tax_unit"
-        assert mapping.period == "year"
-        assert mapping.unit == "USD"
-        assert mapping.comparison == "money"
+    mapping = registry.mapping_for_legal_id(f"{MODULE}#{OUTPUT}", country="us")
+    assert mapping is not None
+    assert mapping.match_type == "exact"
+    assert mapping.mapping_type == "direct_variable"
+    assert mapping.policyengine_variable == POLICYENGINE_VARIABLE
+    assert mapping.entity == "tax_unit"
+    assert mapping.period == "year"
+    assert mapping.unit == "USD"
+    assert mapping.comparison == "money"
 
     fallback = registry.mapping_for_legal_id(
         f"{MODULE}#future_unmapped_output",
         country="us",
     )
     assert fallback is not None
-    assert fallback.legal_id == "us-il:"
+    assert fallback.legal_id == "us-mn:"
     assert fallback.match_type == "prefix"
     assert fallback.mapping_type == "not_comparable"
     assert fallback.candidate_priority == "P4"
@@ -163,7 +160,7 @@ def test_packaged_il_2026_runtime_pin_version_and_precedence_are_exact() -> None
     )
 
 
-def test_policyengine_coverage_classifies_only_bounded_il_2026_outputs(
+def test_policyengine_coverage_classifies_only_bounded_mn_2026_output(
     tmp_path: Path,
 ) -> None:
     rulespec_root = tmp_path / "rulespec-us"
@@ -171,10 +168,8 @@ def test_policyengine_coverage_classifies_only_bounded_il_2026_outputs(
 
     report = build_policyengine_coverage_report(rulespec_root, program="tax")
 
-    assert report["total_outputs"] == 2
-    assert report["status_counts"] == {"comparable": 2}
-    items = {item["rule_name"]: item for item in report["items"]}
-    assert set(items) == set(DIRECT_VARIABLES)
-    assert {
-        name: item["policyengine_variable"] for name, item in items.items()
-    } == DIRECT_VARIABLES
+    assert report["total_outputs"] == 1
+    assert report["status_counts"] == {"comparable": 1}
+    item = report["items"][0]
+    assert item["rule_name"] == OUTPUT
+    assert item["policyengine_variable"] == POLICYENGINE_VARIABLE
