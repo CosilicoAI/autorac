@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
+    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
+    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,104 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "c33a805098cb7a7c7f0dfada68b2f24cf67f588e"
+    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    assert set(bundled) == {
+        "ms_pit_2026_zero_tax_ceiling",
+        "ms_pit_2026_rate",
+        "ms_pit_2026_schedule_taxable_income",
+        "ms_pit_2026_section_27_7_5_schedule_tax",
+    }
+    assert bundled == runtime
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ms:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ms:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    ceiling = bundled["ms_pit_2026_zero_tax_ceiling"]
+    assert ceiling["mapping_type"] == "parameter_value"
+    assert ceiling["policyengine_parameter"] == "gov.states.ms.tax.income.rate"
+    assert ceiling["parameter_key_path"] == ["thresholds", 1]
+    assert ceiling["comparison"] == "money"
+
+    rate = bundled["ms_pit_2026_rate"]
+    assert rate["mapping_type"] == "parameter_value"
+    assert rate["policyengine_parameter"] == "gov.states.ms.tax.income.rate"
+    assert rate["parameter_key_path"] == ["rates", 1]
+    assert rate["comparison"] == "rate"
+
+    taxable_income = bundled["ms_pit_2026_schedule_taxable_income"]
+    assert taxable_income["mapping_type"] == "not_comparable"
+    assert taxable_income["candidate_priority"] == "P4"
+    assert "policyengine_variable" not in taxable_income
+
+    schedule_tax = bundled["ms_pit_2026_section_27_7_5_schedule_tax"]
+    assert schedule_tax["mapping_type"] == "direct_variable"
+    assert schedule_tax["policyengine_variable"] == (
+        "ms_income_tax_before_credits_joint"
+    )
+    assert schedule_tax["entity"] == "person"
+    assert schedule_tax["period"] == "year"
+    assert schedule_tax["unit"] == "USD"
+    assert schedule_tax["comparison"] == "money"
+    assert "final liability" in schedule_tax["rationale"]
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ms_pit_2026_section_27_7_5_schedule_tax",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ms:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "direct_variable"
+    assert exact.policyengine_variable == "ms_income_tax_before_credits_joint"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
