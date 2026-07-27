@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,168 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def _kansas_2026_k40es_records(document):
+    schedule_prefix = "us-ks:policies/income_tax/2026_k40es_schedule_before_credits#"
+    return {
+        item["legal_id"].removeprefix(schedule_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(schedule_prefix)
+    }
+
+
+def _kansas_2026_shared_mapping_material(text):
+    def exact_section(start, end):
+        start_index = text.index(start)
+        end_index = text.index(end, start_index) + len(end)
+        return text[start_index:end_index]
+
+    schedule = exact_section(
+        "  # The official Kansas K-40ES",
+        "    rationale: Both outputs select the joint or all-other Kansas "
+        "schedule and apply it to completed Kansas taxable income before "
+        "credits. The Populace runner fails closed if PolicyEngine's separate "
+        "adjusted-gross-income gate would suppress an otherwise positive "
+        "K-40ES schedule domain.",
+    )
+    fallback = exact_section(
+        '  - legal_id_prefix: "us-ks:"',
+        "    rationale: PolicyEngine-US does not model every Kansas statute, "
+        "agency manual, regulation, or source-level output one to one; "
+        "independently reviewed comparable outputs carry exact mappings which "
+        "take precedence over this jurisdiction-wide fallback.",
+    )
+    return f"{schedule}\n\n{fallback}".replace("\r\n", "\n").replace("\r", "\n")
+
+
+def test_packaged_kansas_2026_k40es_registry_has_exact_bounded_slice():
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    bundled = _kansas_2026_k40es_records(bundled_document)
+    expected_types = {
+        "ks_pit_2026_k40es_lower_rate": "parameter_value",
+        "ks_pit_2026_k40es_upper_rate": "parameter_value",
+        "ks_pit_2026_k40es_joint_lower_bracket_ceiling": "not_comparable",
+        "ks_pit_2026_k40es_other_lower_bracket_ceiling": "not_comparable",
+        "ks_pit_2026_k40es_taxable_income_boundary": "direct_variable",
+        "ks_pit_2026_k40es_schedule_before_credits": "direct_variable",
+    }
+
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+
+    for output_name, index in (
+        ("ks_pit_2026_k40es_lower_rate", 0),
+        ("ks_pit_2026_k40es_upper_rate", 1),
+    ):
+        rate = bundled[output_name]
+        assert rate["policyengine_parameter"] == (
+            "gov.states.ks.tax.income.rates.joint"
+        )
+        assert rate["parameter_key_path"] == ["rates", index]
+        assert rate["period"] == "year"
+        assert rate["comparison"] == "rate"
+
+    for output_name, scale in (
+        ("ks_pit_2026_k40es_joint_lower_bracket_ceiling", "joint"),
+        ("ks_pit_2026_k40es_other_lower_bracket_ceiling", "other"),
+    ):
+        ceiling = bundled[output_name]
+        assert ceiling["candidate_priority"] == "P4"
+        assert ceiling["policyengine_parameter"] == (
+            f"gov.states.ks.tax.income.rates.{scale}"
+        )
+        assert "first dollar of the upper bracket" in ceiling["rationale"]
+
+    for output_name, variable in (
+        ("ks_pit_2026_k40es_taxable_income_boundary", "ks_taxable_income"),
+        (
+            "ks_pit_2026_k40es_schedule_before_credits",
+            "ks_income_tax_before_credits",
+        ),
+    ):
+        output = bundled[output_name]
+        assert output["policyengine_variable"] == variable
+        assert (
+            output["entity"],
+            output["period"],
+            output["unit"],
+            output["comparison"],
+        ) == ("tax_unit", "year", "USD", "money")
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ks:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks[0]["mapping_type"] == "not_comparable"
+    assert bundled_fallbacks[0]["candidate_priority"] == "P4"
+
+
+def test_packaged_kansas_2026_k40es_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_text = bundled_path.read_text()
+    runtime_text = runtime_path.read_text()
+    bundled_document = yaml.safe_load(bundled_text)
+    runtime_document = yaml.safe_load(runtime_text)
+    bundled = _kansas_2026_k40es_records(bundled_document)
+    runtime = _kansas_2026_k40es_records(runtime_document)
+
+    assert bundled == runtime
+    assert _kansas_2026_shared_mapping_material(
+        bundled_text
+    ) == _kansas_2026_shared_mapping_material(runtime_text)
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ks:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ks:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        "us-ks:policies/income_tax/2026_k40es_schedule_before_credits"
+        "#ks_pit_2026_k40es_schedule_before_credits",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ks:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "direct_variable"
+    assert exact.policyengine_variable == "ks_income_tax_before_credits"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5657,7 +5818,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert pin == "8d949d44d62b931a02e0e03f156af054e0ddf55e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
