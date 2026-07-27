@@ -2084,9 +2084,7 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
 
 def test_prompt_root_path_substitution_uses_literal_path_boundaries_and_aliases():
     unresolved_root = Path("/Volumes/Fast Disk/checkouts/axiom-encode")
-    resolved_root = Path(
-        "/private/var/folders/build roots/checkouts/axiom-encode"
-    )
+    resolved_root = Path("/private/var/folders/build roots/checkouts/axiom-encode")
     var_alias = Path("/var/folders/build roots/checkouts/axiom-encode")
 
     with patch.object(Path, "resolve", return_value=resolved_root):
@@ -2111,6 +2109,57 @@ def test_prompt_root_path_substitution_uses_literal_path_boundaries_and_aliases(
         f"suffix={unresolved_root}-cache "
         f"extension={resolved_root}.bak"
     )
+
+
+def test_generation_prompt_sha256_is_location_independent_for_volumes_root(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("The source amount is 12.")
+    prompts: list[str] = []
+    generation_prompt_sha256s: list[str] = []
+    roots = (
+        Path("/Volumes/Fast Disk/evals/machine-a"),
+        Path("/opt/axiom-evals/machine-b"),
+    )
+
+    for root in roots:
+        workspace = EvalWorkspace(
+            root=root,
+            source_text_file=source_file,
+            manifest_file=root / "context-manifest.json",
+            provision_metadata_text=f"cache: {root}/manifest/provision.json",
+            source_metadata={
+                "source_attestation": {
+                    "requested_corpus_citation_path": "us/statute/example/section-1",
+                    "rulespec_root": str(root / "rulespec-us" / "us"),
+                    "row": {
+                        "citation_path": (
+                            "us/statute/example/section-1 "
+                            f"({root}/citations/section-1.json)"
+                        ),
+                        "source_path": str(root / "corpus" / "source.json"),
+                    },
+                }
+            },
+        )
+        prompt = _build_eval_prompt(
+            "us/statute/example/section-1",
+            "cold",
+            workspace,
+            [],
+            target_file_name="target.yaml",
+            validation_retry_feedback=[
+                f"validator error: ({root}/errors/validation.txt)"
+            ],
+        )
+        prompts.append(prompt)
+        generation_prompt_sha256s.append(
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        )
+
+    assert prompts[0] == prompts[1]
+    assert generation_prompt_sha256s[0] == generation_prompt_sha256s[1]
+    assert all(str(root) not in prompt for root in roots for prompt in prompts)
+    assert "Fast Disk" not in prompts[0]
 
 
 def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):

@@ -303,6 +303,10 @@ _RULESPEC_VALIDATION_STAGING_ROOT: ContextVar[Path | None] = ContextVar(
     "_RULESPEC_VALIDATION_STAGING_ROOT",
     default=None,
 )
+_EVAL_PROMPT_OPAQUE_ROOTS: ContextVar[tuple[str, ...]] = ContextVar(
+    "_EVAL_PROMPT_OPAQUE_ROOTS",
+    default=(),
+)
 _POLICYENGINE_HINT_BROAD_PLACEHOLDER_RE = re.compile(
     r"\b(?:"
     r"person_is_described_in_[A-Za-z0-9_]*"
@@ -10055,8 +10059,80 @@ _PROMPT_POSIX_HOST_PATH_PATTERN = re.compile(
 _OPAQUE_HOST_PATH = "<opaque-host-path>"
 
 
+def _prompt_root_path_variants(root: Path) -> tuple[str, ...]:
+    """Return lexical, resolved, and macOS-alias spellings of one prompt root."""
+
+    raw_root = Path(root).expanduser()
+    absolute_root = Path(os.path.abspath(raw_root))
+    root_variants = {
+        str(raw_root),
+        raw_root.as_posix(),
+        str(absolute_root),
+        absolute_root.as_posix(),
+    }
+    with contextlib.suppress(OSError):
+        resolved_root = absolute_root.resolve()
+        root_variants.update({str(resolved_root), resolved_root.as_posix()})
+
+    for root_text in tuple(root_variants):
+        for source_prefix, alias_prefix in (
+            ("/var", "/private/var"),
+            ("/private/var", "/var"),
+        ):
+            if root_text == source_prefix or root_text.startswith(f"{source_prefix}/"):
+                root_variants.add(f"{alias_prefix}{root_text[len(source_prefix) :]}")
+
+    return tuple(
+        sorted(
+            (item for item in root_variants if item and item not in {".", "/"}),
+            key=len,
+            reverse=True,
+        )
+    )
+
+
+def _replace_prompt_root_paths(
+    value: str,
+    root_variants: Sequence[str],
+) -> str:
+    """Replace exact prompt-root spellings only at literal path boundaries."""
+
+    def is_path_token_character(character: str) -> bool:
+        return (
+            character == "_"
+            or character.isalnum()
+            or unicodedata.category(character).startswith("M")
+            or character in "./\\-"
+        )
+
+    normalized = value
+    for root_text in sorted(set(root_variants), key=len, reverse=True):
+        if not root_text or root_text in {".", "/"}:
+            continue
+
+        def replace_if_path_boundary(match: re.Match[str]) -> str:
+            left = normalized[match.start() - 1] if match.start() else ""
+            right = normalized[match.end()] if match.end() < len(normalized) else ""
+            left_boundary = not left or not is_path_token_character(left)
+            right_boundary = (
+                not right or right in "/\\" or not is_path_token_character(right)
+            )
+            return (
+                _OPAQUE_HOST_PATH if left_boundary and right_boundary else match.group()
+            )
+
+        normalized = re.sub(
+            re.escape(root_text),
+            replace_if_path_boundary,
+            normalized,
+        )
+    return normalized
+
+
 def _prompt_safe_dynamic_text(value: str) -> str:
     """Redact embedded host paths while leaving HTTP(S) URLs byte-identical."""
+
+    value = _replace_prompt_root_paths(value, _EVAL_PROMPT_OPAQUE_ROOTS.get())
 
     def redact_non_url(segment: str) -> str:
         redacted = _PROMPT_FILE_URI_PATTERN.sub(
@@ -11499,6 +11575,7 @@ rules:
 {output_rules}
 Do not respond with summaries, markdown prose, or file-write confirmations.
 """
+    prompt = _replace_prompt_root_paths(prompt, _EVAL_PROMPT_OPAQUE_ROOTS.get())
     return _enforce_eval_prompt_limit(prompt)
 
 
@@ -11544,20 +11621,26 @@ def _build_eval_prompt(
     validation_retry_feedback: Sequence[str] = (),
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
-    return _build_rulespec_eval_prompt(
-        citation=citation,
-        mode=mode,
-        workspace=workspace,
-        context_files=context_files,
-        target_file_name=target_file_name,
-        target_ref_prefix=target_ref_prefix,
-        include_tests=include_tests,
-        runner_backend=runner_backend,
-        policyengine_rule_hint=policyengine_rule_hint,
-        include_corpus_context_injection=include_corpus_context_injection,
-        require_complete_source_unit=require_complete_source_unit,
-        validation_retry_feedback=validation_retry_feedback,
+    opaque_roots_token = _EVAL_PROMPT_OPAQUE_ROOTS.set(
+        _prompt_root_path_variants(workspace.root)
     )
+    try:
+        return _build_rulespec_eval_prompt(
+            citation=citation,
+            mode=mode,
+            workspace=workspace,
+            context_files=context_files,
+            target_file_name=target_file_name,
+            target_ref_prefix=target_ref_prefix,
+            include_tests=include_tests,
+            runner_backend=runner_backend,
+            policyengine_rule_hint=policyengine_rule_hint,
+            include_corpus_context_injection=include_corpus_context_injection,
+            require_complete_source_unit=require_complete_source_unit,
+            validation_retry_feedback=validation_retry_feedback,
+        )
+    finally:
+        _EVAL_PROMPT_OPAQUE_ROOTS.reset(opaque_roots_token)
 
 
 def _is_single_amount_table_slice(source_text: str) -> bool:
