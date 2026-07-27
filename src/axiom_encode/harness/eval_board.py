@@ -1713,10 +1713,9 @@ def _validate_result_receiver_identity_binding(
                 f"{context} requested model does not match its execution identity"
             )
         response_model = result.get("openai_response_model_id")
-        if (
-            response_model is not None
-            and response_model != requested_model
-            and not response_model.startswith(f"{requested_model}-")
+        if response_model is not None and not _openai_response_model_matches_request(
+            response_model,
+            requested_model,
         ):
             raise EvalBoardError(
                 f"{context} response model {response_model!r} does not match "
@@ -1741,6 +1740,22 @@ def _validate_result_receiver_identity_binding(
             raise EvalBoardError(
                 f"{context} {field_name} does not match its execution identity"
             )
+
+
+def _openai_response_model_matches_request(
+    response_model: str,
+    requested_model: str,
+) -> bool:
+    """Allow only the requested OpenAI model or its dated server snapshot."""
+
+    return (
+        response_model == requested_model
+        or re.fullmatch(
+            rf"{re.escape(requested_model)}-[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}",
+            response_model,
+        )
+        is not None
+    )
 
 
 def _validate_openai_server_identity_stability(

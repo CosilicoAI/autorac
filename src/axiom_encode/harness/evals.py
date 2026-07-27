@@ -4403,8 +4403,9 @@ def _validate_openai_result_receiver_identities(
             )
         response_model = result.openai_response_model_id
         if response_model is not None:
-            if response_model != requested_model and not response_model.startswith(
-                f"{requested_model}-"
+            if not _openai_response_model_matches_request(
+                response_model,
+                requested_model,
             ):
                 raise ValueError(
                     f"{artifact_name} OpenAI response model '{response_model}' "
@@ -4434,6 +4435,22 @@ def _validate_openai_result_receiver_identities(
             f"{artifact_name} is missing OpenAI result rows for requested runners: "
             f"{', '.join(sorted(missing_rows))}"
         )
+
+
+def _openai_response_model_matches_request(
+    response_model: str,
+    requested_model: str,
+) -> bool:
+    """Allow only the requested OpenAI model or its dated server snapshot."""
+
+    return (
+        response_model == requested_model
+        or re.fullmatch(
+            rf"{re.escape(requested_model)}-[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}",
+            response_model,
+        )
+        is not None
+    )
 
 
 def _validate_new_eval_suite_case_results(
