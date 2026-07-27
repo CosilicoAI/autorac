@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,154 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def _ohio_2026_schedule_records(document):
+    schedule_prefix = "us-oh:policies/income_tax/pilot_liability_pipeline#"
+    return {
+        item["legal_id"].removeprefix(schedule_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(schedule_prefix)
+    }
+
+
+def test_packaged_ohio_2026_schedule_registry_has_exact_bounded_slice():
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    bundled = _ohio_2026_schedule_records(bundled_document)
+    not_comparable = {
+        "oh_pit_pilot_nonbusiness_taxable_income_construction_source_hold_applies",
+        "oh_pit_pilot_business_income_and_excess_exemption_source_hold_applies",
+        "oh_pit_pilot_credit_surface_source_hold_applies",
+        "oh_pit_pilot_final_return_ordering_source_hold_applies",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        "oh_pit_pilot_taxable_income": "direct_variable",
+        "oh_pit_pilot_schedule_tax": "derived_expression",
+        "oh_pit_pilot_income_tax_liability": "derived_expression",
+    }
+
+    assert len(expected_types) == 7
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    for output_name in not_comparable:
+        assert bundled[output_name]["candidate_priority"] == "P4"
+
+    taxable_income = bundled["oh_pit_pilot_taxable_income"]
+    assert taxable_income["policyengine_variable"] == "oh_taxable_income"
+    assert (
+        taxable_income["entity"],
+        taxable_income["period"],
+        taxable_income["unit"],
+        taxable_income["comparison"],
+    ) == ("tax_unit", "year", "USD", "money")
+
+    expression = (
+        "oh_income_tax_before_non_refundable_credits * (oh_taxable_income > 26050)"
+    )
+    for output_name in (
+        "oh_pit_pilot_schedule_tax",
+        "oh_pit_pilot_income_tax_liability",
+    ):
+        schedule = bundled[output_name]
+        assert schedule["expression"] == expression
+        assert (
+            schedule["entity"],
+            schedule["period"],
+            schedule["unit"],
+            schedule["comparison"],
+        ) == ("tax_unit", "year", "USD", "money")
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks[0]["mapping_type"] == "not_comparable"
+    assert bundled_fallbacks[0]["candidate_priority"] == "P4"
+
+
+def test_packaged_ohio_2026_schedule_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_text = bundled_path.read_text()
+    runtime_text = runtime_path.read_text()
+    bundled_document = yaml.safe_load(bundled_text)
+    runtime_document = yaml.safe_load(runtime_text)
+    bundled = _ohio_2026_schedule_records(bundled_document)
+    runtime = _ohio_2026_schedule_records(runtime_document)
+
+    assert bundled == runtime
+
+    def exact_slice(text, start, end):
+        return text[text.index(start) : text.index(end)]
+
+    assert exact_slice(
+        bundled_text,
+        "  # Ohio's bounded TY2026",
+        "  # Utah's canonical TY2026",
+    ) == exact_slice(
+        runtime_text,
+        "  # Ohio's bounded TY2026",
+        "  # Utah's canonical TY2026",
+    )
+    assert exact_slice(
+        bundled_text,
+        '  - legal_id_prefix: "us-oh:"',
+        '  - legal_id_prefix: "us-ok:"',
+    ) == exact_slice(
+        runtime_text,
+        '  - legal_id_prefix: "us-oh:"',
+        '  - legal_id_prefix: "us-ok:"',
+    )
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-oh:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    schedule_prefix = "us-oh:policies/income_tax/pilot_liability_pipeline#"
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}oh_pit_pilot_schedule_tax",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-oh:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5510,7 +5657,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert pin == "5dbc6ecaae03897e6a1d3598fe6c41f07af1b8c6"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
