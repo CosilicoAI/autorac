@@ -10114,7 +10114,14 @@ def _eval_prompt_root_path_variants(
 ) -> tuple[str, ...]:
     """Return every known workspace, attested, and context root spelling."""
 
-    roots: set[Path] = {Path(workspace.root)}
+    workspace_root = Path(workspace.root)
+    roots: set[Path] = {workspace_root}
+    for parent in workspace_root.parents:
+        if parent.name == "_eval_workspaces":
+            # Generated artifacts and retry diagnostics are siblings of the
+            # workspace bundle beneath the suite output root.
+            roots.add(parent.parent)
+            break
 
     def add_absolute_metadata_paths(value: object) -> None:
         if isinstance(value, Mapping):
