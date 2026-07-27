@@ -1940,14 +1940,19 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
     prompts: list[str] = []
     prompt_digests: list[str] = []
     roots: list[Path] = []
-    for machine_name in ("machine-a", "Fast Disk/machine-b"):
-        machine_root = tmp_path / machine_name
+    locations = (
+        ("machine-a", "policy-a"),
+        ("machine-b", "Fast Disk/policy-b"),
+    )
+    for machine_name, policy_location in locations:
+        machine_root = tmp_path / "workspaces" / machine_name
         machine_root.mkdir(parents=True)
         source_file = machine_root / "source.txt"
         source_file.write_text(
             "The source amount is 12. See https://law.example/legal/section-1."
         )
-        rulespec_root = _canonical_rulespec_content_root(machine_root, "us")
+        policy_root = tmp_path / "policies" / policy_location
+        rulespec_root = _canonical_rulespec_content_root(policy_root, "us")
         roots.append(rulespec_root)
         existing_target = rulespec_root / "statutes" / "26" / "63" / "f.yaml"
         existing_target.parent.mkdir(parents=True)
