@@ -71,7 +71,7 @@ SUPPORTED_RESULTS_SCHEMA = "axiom-encode/eval-suite-results/v8"
 
 # The one execution-identity schema whose field semantics the normalizer
 # below understands; test_eval_board locks this to the producer constant.
-SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v5"
+SUPPORTED_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v6"
 
 # The evidence schema this consumer understands; locked to the producer
 # constant by test_eval_board.
@@ -1302,20 +1302,38 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
                 f"effort for runner {runner_identity['name']!r}: {source}"
             )
     receiver_environments = identity.get("receiver_environments")
-    expected_local_backends = {
-        runner_identity["backend"]
-        for runner_identity in runner_identities
-        if runner_identity["backend"] in {"claude", "codex"}
+    expected_backends = {
+        runner_identity["backend"] for runner_identity in runner_identities
     }
     if (
         not isinstance(receiver_environments, dict)
-        or set(receiver_environments) != expected_local_backends
+        or set(receiver_environments) != expected_backends
     ):
         raise EvalBoardError(
             "Suite results execution identity has missing, extra, or mismatched "
             f"receiver environments: {source}"
         )
     for backend, environment in receiver_environments.items():
+        if backend == "openai":
+            expected_requested_models = [
+                {
+                    "name": runner_identity["name"],
+                    "model": runner_identity["model"],
+                }
+                for runner_identity in runner_identities
+                if runner_identity["backend"] == "openai"
+            ]
+            if (
+                not isinstance(environment, dict)
+                or set(environment) != {"endpoint", "requested_models"}
+                or not _is_nonempty_string(environment.get("endpoint"))
+                or environment.get("requested_models") != expected_requested_models
+            ):
+                raise EvalBoardError(
+                    "Suite results execution identity has a malformed or "
+                    f"mismatched receiver environment for {backend!r}: {source}"
+                )
+            continue
         if (
             not isinstance(environment, dict)
             or set(environment) != {"cli_version", "launcher_sha256", "native_sha256"}
@@ -1340,7 +1358,7 @@ def _payload_execution_identity(payload: dict, source: str) -> tuple[dict, str]:
         "rulespec_roots",
     }:
         raise EvalBoardError(
-            f"Suite results execution identity has unexpected v5 fields: {source}"
+            f"Suite results execution identity has unexpected v6 fields: {source}"
         )
     if not isinstance(digest, str) or not digest:
         raise EvalBoardError(
@@ -1648,10 +1666,10 @@ def _validate_result_receiver_identity_binding(
     execution_identity: dict,
     context: str,
 ) -> None:
-    """Require each local row to match its suite-preflighted receiver."""
+    """Require each row to match its suite-preflighted receiver."""
 
     backend = result.get("backend")
-    if backend not in {"claude", "codex"}:
+    if backend not in {"claude", "codex", "openai"}:
         return
     receiver_environments = execution_identity.get("receiver_environments")
     environment = (
@@ -1659,6 +1677,52 @@ def _validate_result_receiver_identity_binding(
         if isinstance(receiver_environments, dict)
         else None
     )
+    if backend == "openai":
+        expected_endpoint = (
+            environment.get("endpoint") if isinstance(environment, dict) else None
+        )
+        if result.get("openai_endpoint") != expected_endpoint:
+            raise EvalBoardError(
+                f"{context} openai_endpoint does not match its execution identity"
+            )
+        requested_models = (
+            environment.get("requested_models")
+            if isinstance(environment, dict)
+            else None
+        )
+        runner = result.get("runner")
+        requested_identity = (
+            next(
+                (
+                    requested
+                    for requested in requested_models
+                    if isinstance(requested, dict) and requested.get("name") == runner
+                ),
+                None,
+            )
+            if isinstance(requested_models, list)
+            else None
+        )
+        requested_model = (
+            requested_identity.get("model")
+            if isinstance(requested_identity, dict)
+            else None
+        )
+        if result.get("model") != requested_model:
+            raise EvalBoardError(
+                f"{context} requested model does not match its execution identity"
+            )
+        response_model = result.get("openai_response_model_id")
+        if (
+            response_model is not None
+            and response_model != requested_model
+            and not response_model.startswith(f"{requested_model}-")
+        ):
+            raise EvalBoardError(
+                f"{context} response model {response_model!r} does not match "
+                f"requested model {requested_model!r}"
+            )
+        return
     expected = {
         f"{backend}_cli_version": (
             environment.get("cli_version") if isinstance(environment, dict) else None
@@ -1677,6 +1741,48 @@ def _validate_result_receiver_identity_binding(
             raise EvalBoardError(
                 f"{context} {field_name} does not match its execution identity"
             )
+
+
+def _validate_openai_server_identity_stability(
+    result: dict,
+    *,
+    response_models: dict[str, str],
+    service_tiers: dict[str, str],
+    context: str,
+) -> None:
+    """Refuse server-reported OpenAI identity drift within one runner."""
+
+    if result.get("backend") != "openai":
+        return
+    runner = result.get("runner")
+    assert isinstance(runner, str)
+    for field_name, label, recorded in (
+        ("openai_response_model_id", "response model", response_models),
+        ("openai_service_tier", "service tier", service_tiers),
+    ):
+        value = result.get(field_name)
+        if value is None:
+            continue
+        prior = recorded.get(runner)
+        if prior is not None and prior != value:
+            raise EvalBoardError(
+                f"{context} OpenAI {label} changed for runner {runner!r} "
+                f"from {prior!r} to {value!r}"
+            )
+        recorded[runner] = value
+
+
+def _receiver_environment_comparison_identity(
+    backend: str,
+    environment: dict,
+) -> object:
+    """Return the receiver fields that must agree between board payloads."""
+
+    if backend == "openai":
+        # Each single-runner payload legitimately carries its own requested
+        # model roster. The endpoint is the shared request environment.
+        return environment["endpoint"]
+    return environment
 
 
 def _validate_result_types(result: dict, *, context: str) -> None:
@@ -2180,6 +2286,8 @@ def fold_eval_board(
     runner_effort_identities: dict[str, dict] = {}
     receiver_environment_identities: dict[str, dict] = {}
     receiver_environment_sources: dict[str, str] = {}
+    openai_response_model_identities: dict[str, str] = {}
+    openai_service_tier_identities: dict[str, str] = {}
     runner_results: dict[str, dict[int, dict]] = {}
     sources: dict[str, str] = {}
     incomplete_sources: list[str] = []
@@ -2208,20 +2316,24 @@ def fold_eval_board(
         }
         for backend, environment in execution_identity["receiver_environments"].items():
             prior_environment = receiver_environment_identities.get(backend)
-            if (
+            environment_changed = (
                 prior_environment is not None
-                and prior_environment != environment
-                and not allow_mixed_toolchains
-            ):
+                and _receiver_environment_comparison_identity(
+                    backend,
+                    prior_environment,
+                )
+                != _receiver_environment_comparison_identity(backend, environment)
+            )
+            if environment_changed and not allow_mixed_toolchains:
                 raise EvalBoardError(
                     "Suite results are not comparable: receiver environment "
                     f"for {backend!r} in {source} does not match "
                     f"{receiver_environment_sources[backend]}"
                 )
-            if prior_environment is not None and prior_environment != environment:
+            if environment_changed:
                 if source not in mixed_toolchain_sources:
                     mixed_toolchain_sources.append(source)
-            else:
+            elif prior_environment is None:
                 receiver_environment_identities[backend] = environment
                 receiver_environment_sources[backend] = source
         execution_identity_sha256s[source] = execution_digest
@@ -2351,6 +2463,12 @@ def fold_eval_board(
                     f"Duplicate result for runner {runner!r} case "
                     f"#{case_index} in {source}"
                 )
+            _validate_openai_server_identity_stability(
+                result,
+                response_models=openai_response_model_identities,
+                service_tiers=openai_service_tier_identities,
+                context=context,
+            )
             runner_results[runner][case_index] = result
 
         complete = _payload_completeness(

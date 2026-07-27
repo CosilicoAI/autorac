@@ -526,9 +526,7 @@ def _payload(
                 )
             ),
             openai_requested_models=tuple(
-                (name, model)
-                for name, backend, model in runners
-                if backend == "openai"
+                (name, model) for name, backend, model in runners if backend == "openai"
             ),
         )
     execution_identity = copy.deepcopy(execution_identity)
@@ -1236,9 +1234,9 @@ def test_fold_refuses_openai_endpoint_drift_across_payloads(tmp_path):
         receiver_backends=(),
         openai_requested_models=(("api-55", "gpt-5.5"),),
     )
-    alternate_identity["receiver_environments"]["openai"][
-        "endpoint"
-    ] = alternate_endpoint
+    alternate_identity["receiver_environments"]["openai"]["endpoint"] = (
+        alternate_endpoint
+    )
     second = _write_payload(
         tmp_path,
         "openai-alternate-endpoint.json",
