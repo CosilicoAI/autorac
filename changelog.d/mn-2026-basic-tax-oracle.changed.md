@@ -1,0 +1,1 @@
+Bundle Minnesota's bounded tax-year-2026 section 290.06 continuous schedule mapping and pin its durable reviewed oracle-main merge without claiming taxable-income construction, tax-table rounding, alternative minimum tax, credits, payments, or final liability.
