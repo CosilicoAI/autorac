@@ -1938,10 +1938,11 @@ def test_build_eval_prompt_excludes_amendments_when_corpus_injection_disabled(
 
 def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_path):
     prompts: list[str] = []
+    prompt_digests: list[str] = []
     roots: list[Path] = []
-    for machine_name in ("machine-a", "machine-b"):
+    for machine_name in ("machine-a", "Fast Disk/machine-b"):
         machine_root = tmp_path / machine_name
-        machine_root.mkdir()
+        machine_root.mkdir(parents=True)
         source_file = machine_root / "source.txt"
         source_file.write_text(
             "The source amount is 12. See https://law.example/legal/section-1."
@@ -1973,6 +1974,19 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
         copied_target = machine_root / "context" / "existing-target.yaml"
         copied_target.parent.mkdir()
         copied_target.write_text(existing_target.read_text())
+        definition_context = machine_root / "context" / "definition.yaml"
+        definition_context.write_text(
+            "format: rulespec/v1\n"
+            "rules:\n"
+            "  - name: canonical_amount\n"
+            "    kind: parameter\n"
+            "    dtype: Money\n"
+            "    unit: USD\n"
+            "    period: Year\n"
+            "    versions:\n"
+            "      - effective_from: '2025-01-01'\n"
+            "        value: 12\n"
+        )
         review_findings = machine_root / "review-findings" / "01-findings.md"
         review_findings.parent.mkdir()
         review_findings.write_text(
@@ -1985,7 +1999,14 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
                 workspace_path="context/existing-target.yaml",
                 import_path="us:statutes/26/63/f",
                 kind="existing_target",
-            )
+            ),
+            EvalContextFile(
+                source_path=str(definition_context),
+                workspace_path="context/definition.yaml",
+                import_path="us:statutes/26/151",
+                kind="definition_stub",
+                label=f"citation cache ({machine_root}/private/citation.json)",
+            ),
         ]
         workspace = EvalWorkspace(
             root=machine_root,
@@ -2010,31 +2031,35 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
                     "requested_corpus_citation_path": "us/statute/example/section-1",
                     "rulespec_root": str(rulespec_root),
                     "row": {
-                        "citation_path": "us/statute/example/section-1",
+                        "citation_path": (
+                            "us/statute/example/section-1 "
+                            f"({machine_root}/private/citation-cache.json)"
+                        ),
                         "source_path": str(machine_root / "corpus" / "source.json"),
                         "diagnostic": (
                             f"loaded from {machine_root}/private/source-cache.json"
                         ),
                         "authority_url": "https://metadata.example/source/one",
                     },
-                }
+                },
+                f"metadata ({machine_root}/private/key.json)": "location-bound key",
             },
         )
-        prompts.append(
-            _build_eval_prompt(
-                "us/statute/example/section-1",
-                "repo-augmented",
-                workspace,
-                context_files,
-                target_file_name="target.yaml",
-                include_tests=True,
-                runner_backend="codex",
-                validation_retry_feedback=[
-                    f"validator cache: {machine_root}/private/validator.json",
-                    "docs: https://validator.example/errors/unresolved-import",
-                ],
-            )
+        prompt = _build_eval_prompt(
+            "us/statute/example/section-1",
+            "repo-augmented",
+            workspace,
+            context_files,
+            target_file_name="target.yaml",
+            include_tests=True,
+            runner_backend="codex",
+            validation_retry_feedback=[
+                f"validator error ({machine_root}/private/validator.json)",
+                "docs: https://validator.example/errors/unresolved-import",
+            ],
         )
+        prompts.append(prompt)
+        prompt_digests.append(hashlib.sha256(prompt.encode("utf-8")).hexdigest())
 
         assert workspace.source_metadata is not None
         assert workspace.source_metadata["source_attestation"]["rulespec_root"] == str(
@@ -2042,9 +2067,11 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
         )
 
     assert prompts[0] == prompts[1]
+    assert prompt_digests[0] == prompt_digests[1]
     assert "<opaque-host-path>" in prompts[0]
-    assert all(str(root) not in prompts[0] for root in roots)
-    assert str(tmp_path) not in prompts[0]
+    assert all(str(root) not in prompt for root in roots for prompt in prompts)
+    assert all(str(tmp_path) not in prompt for prompt in prompts)
+    assert "Fast Disk" not in prompts[1]
     for expected_url in (
         "https://law.example/legal/section-1",
         "https://review.example/findings/one",
@@ -2053,6 +2080,37 @@ def test_build_eval_prompt_is_location_independent_and_uses_opaque_paths(tmp_pat
         "https://validator.example/errors/unresolved-import",
     ):
         assert expected_url in prompts[0]
+
+
+def test_prompt_root_path_substitution_uses_literal_path_boundaries_and_aliases():
+    unresolved_root = Path("/Volumes/Fast Disk/checkouts/axiom-encode")
+    resolved_root = Path(
+        "/private/var/folders/build roots/checkouts/axiom-encode"
+    )
+    var_alias = Path("/var/folders/build roots/checkouts/axiom-encode")
+
+    with patch.object(Path, "resolve", return_value=resolved_root):
+        root_variants = evals_module._prompt_root_path_variants(unresolved_root)
+
+    text = (
+        f"unresolved='{unresolved_root}' "
+        f"child={unresolved_root}/metadata.json "
+        f"resolved=({resolved_root}/citation.json) "
+        f"alias=[{var_alias}/error.txt] "
+        f"embedded=token{unresolved_root}/keep.json "
+        f"suffix={unresolved_root}-cache "
+        f"extension={resolved_root}.bak"
+    )
+
+    assert evals_module._replace_prompt_root_paths(text, root_variants) == (
+        "unresolved='<opaque-host-path>' "
+        "child=<opaque-host-path>/metadata.json "
+        "resolved=(<opaque-host-path>/citation.json) "
+        "alias=[<opaque-host-path>/error.txt] "
+        f"embedded=token{unresolved_root}/keep.json "
+        f"suffix={unresolved_root}-cache "
+        f"extension={resolved_root}.bak"
+    )
 
 
 def test_build_eval_prompt_sanitizes_dynamic_non_authority_channels(tmp_path):
