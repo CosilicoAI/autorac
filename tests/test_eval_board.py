@@ -1640,12 +1640,16 @@ def test_fold_requires_openai_row_endpoint_to_match_execution_identity(tmp_path)
         fold_eval_board([path])
 
 
-def test_fold_requires_openai_response_model_to_match_requested_model(tmp_path):
+@pytest.mark.parametrize("response_model_id", ["gpt-4o", "gpt-5.4-pro"])
+def test_fold_requires_openai_response_model_to_match_requested_model(
+    tmp_path,
+    response_model_id,
+):
     results = [
         _result("api", case, backend="openai", model="gpt-5.4")
         for case in CASE_IDENTITIES
     ]
-    results[0]["openai_response_model_id"] = "gpt-4o"
+    results[0]["openai_response_model_id"] = response_model_id
     path = _write_payload(
         tmp_path,
         "openai-response-model-mismatch.json",

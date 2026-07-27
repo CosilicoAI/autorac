@@ -19200,7 +19200,14 @@ cases:
         with pytest.raises(ValueError, match="receiver.*environment"):
             _validate_eval_suite_execution_identity(payload, current_identity)
 
-    def test_openai_result_identity_rejects_unrelated_response_model(self):
+    @pytest.mark.parametrize(
+        "response_model_id",
+        ["gpt-4o", "gpt-5.4-pro"],
+    )
+    def test_openai_result_identity_rejects_unrelated_response_model(
+        self,
+        response_model_id,
+    ):
         identity = {
             "receiver_environments": {
                 "openai": {
@@ -19213,7 +19220,7 @@ cases:
         }
         result = _fake_eval_result("openai-gpt-5.4", "case-one")
         result.openai_endpoint = "https://api.openai.com/v1/responses"
-        result.openai_response_model_id = "gpt-4o"
+        result.openai_response_model_id = response_model_id
         result.openai_service_tier = "default"
         result.openai_max_output_tokens = 128_000
 
