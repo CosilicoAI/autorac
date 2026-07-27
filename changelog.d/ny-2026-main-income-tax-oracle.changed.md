@@ -1,0 +1,1 @@
+Bundle New York's bounded tax-year-2026 Tax Law section 601 main resident income-tax schedule mappings and pin their durable reviewed oracle-main merge without claiming supplemental tax, credits, local taxes, payments, or final annual liability.
