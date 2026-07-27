@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,7 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5571,7 +5571,7 @@ def test_packaged_kansas_2026_k40es_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5676,7 +5676,7 @@ def test_packaged_dc_2026_section_47_1806_03_has_exact_bounded_slice():
 def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "9b889a27432e84804938bd3b374b4f5f7466792e"
+    durable_oracle_merge = "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -5753,7 +5753,245 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1398"')
+        .startswith('__version__ = "0.2.1399"')
+    )
+
+
+def _ca_2026_bhst_records(document):
+    module_prefix = "us-ca:policies/income_tax/pilot_liability_pipeline#"
+    return {
+        item["legal_id"].removeprefix(module_prefix): item
+        for item in document["mappings"]
+        if item.get("legal_id", "").startswith(module_prefix)
+    }
+
+
+def _ca_2026_bhst_shared_mapping_material(text):
+    def exact_section(start, end):
+        start_index = text.index(start)
+        end_index = text.index(end, start_index) + len(end)
+        return text[start_index:end_index]
+
+    exact_records = exact_section(
+        "  # California's TY2026 pilot contains one independently comparable subgraph:",
+        "    rationale: This estimated-tax worksheet total combines RuleSpec's "
+        "bounded rate-schedule branch with Behavioral Health Services Tax. "
+        "PolicyEngine exposes broader California income-tax totals with "
+        "different tax-table, credit, and liability scope, so only the BHST "
+        "component is directly comparable.",
+    )
+    fallback = exact_section(
+        '  - legal_id_prefix: "us-ca:"',
+        "    rationale: PolicyEngine-US does not model CA agency policy manuals "
+        "or state regulations at output granularity; comparable state outputs "
+        "carry exact mappings which take precedence over this prefix.",
+    )
+    return f"{exact_records}\n\n{fallback}".replace("\r\n", "\n").replace("\r", "\n")
+
+
+def test_packaged_ca_2026_bhst_registry_has_exact_bounded_slice():
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    bundled = _ca_2026_bhst_records(bundled_document)
+    expected_parameter_values = {
+        "ca_pit_pilot_behavioral_health_services_tax_threshold": (
+            "gov.states.ca.tax.income.mental_health_services",
+            ["thresholds", 1],
+            "money",
+        ),
+        "ca_pit_pilot_behavioral_health_services_tax_rate": (
+            "gov.states.ca.tax.income.mental_health_services",
+            ["rates", 1],
+            "rate",
+        ),
+    }
+    expected_direct_variables = {
+        "ca_pit_pilot_completed_taxable_income": "ca_taxable_income",
+        "ca_pit_pilot_behavioral_health_services_tax": (
+            "ca_mental_health_services_tax"
+        ),
+    }
+    comparable = {
+        name: item
+        for name, item in bundled.items()
+        if item["mapping_type"] != "not_comparable"
+    }
+    not_comparable = {
+        name: item
+        for name, item in bundled.items()
+        if item["mapping_type"] == "not_comparable"
+    }
+
+    assert len(bundled) == 29
+    assert set(comparable) == {
+        *expected_parameter_values,
+        *expected_direct_variables,
+    }
+    assert len(not_comparable) == 25
+    assert {item["candidate_priority"] for item in not_comparable.values()} == {"P4"}
+    assert {item["program"] for item in bundled.values()} == {"tax"}
+    for output in not_comparable.values():
+        assert "policyengine_variable" not in output
+        assert "policyengine_parameter" not in output
+        assert output["rationale"]
+
+    for output_name, (
+        parameter,
+        key_path,
+        comparison,
+    ) in expected_parameter_values.items():
+        output = bundled[output_name]
+        assert output["mapping_type"] == "parameter_value"
+        assert output["policyengine_parameter"] == parameter
+        assert output["parameter_key_path"] == key_path
+        assert output["period"] == "year"
+        assert output["comparison"] == comparison
+    assert (
+        bundled["ca_pit_pilot_behavioral_health_services_tax_threshold"]["unit"]
+        == "USD"
+    )
+
+    for output_name, variable in expected_direct_variables.items():
+        output = bundled[output_name]
+        assert output["mapping_type"] == "direct_variable"
+        assert output["policyengine_variable"] == variable
+        assert (
+            output["entity"],
+            output["period"],
+            output["unit"],
+            output["comparison"],
+        ) == ("tax_unit", "year", "USD", "money")
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ca:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks[0]["mapping_type"] == "not_comparable"
+    assert bundled_fallbacks[0]["candidate_priority"] == "P4"
+    assert "take precedence" in bundled_fallbacks[0]["rationale"]
+
+
+def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
+    import tomllib
+
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    durable_oracle_merge = "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_text = bundled_path.read_text()
+    runtime_text = runtime_path.read_text()
+    bundled_document = yaml.safe_load(bundled_text)
+    runtime_document = yaml.safe_load(runtime_text)
+    bundled = _ca_2026_bhst_records(bundled_document)
+    runtime = _ca_2026_bhst_records(runtime_document)
+    bundled_material = _ca_2026_bhst_shared_mapping_material(bundled_text)
+    runtime_material = _ca_2026_bhst_shared_mapping_material(runtime_text)
+    encoded_material = bundled_material.encode()
+
+    assert bundled == runtime
+    assert bundled_material == runtime_material
+    assert len(bundled_material.splitlines()) == 227
+    assert len(encoded_material) == 12_886
+    assert hashlib.sha256(encoded_material).hexdigest() == (
+        "5d6b30fed74d8f16dbd8296b997a9f4bddca4a3de2ff052f297e196ba7757ec3"
+    )
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ca:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ca:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    prefix = "us-ca:policies/income_tax/pilot_liability_pipeline#"
+    registry = load_policyengine_registry()
+    threshold = registry.mapping_for_legal_id(
+        f"{prefix}ca_pit_pilot_behavioral_health_services_tax_threshold",
+        country="us",
+    )
+    rate = registry.mapping_for_legal_id(
+        f"{prefix}ca_pit_pilot_behavioral_health_services_tax_rate",
+        country="us",
+    )
+    completed_income = registry.mapping_for_legal_id(
+        f"{prefix}ca_pit_pilot_completed_taxable_income",
+        country="us",
+    )
+    bhst = registry.mapping_for_legal_id(
+        f"{prefix}ca_pit_pilot_behavioral_health_services_tax",
+        country="us",
+    )
+    internal = registry.mapping_for_legal_id(
+        f"{prefix}ca_pit_pilot_rate_schedule_threshold",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        f"{prefix}future_unmapped_output",
+        country="us",
+    )
+
+    assert threshold is not None
+    assert threshold.match_type == "exact"
+    assert threshold.mapping_type == "parameter_value"
+    assert threshold.policyengine_parameter == (
+        "gov.states.ca.tax.income.mental_health_services"
+    )
+    assert threshold.parameter_key_path == ("thresholds", 1)
+    assert rate is not None
+    assert rate.match_type == "exact"
+    assert rate.mapping_type == "parameter_value"
+    assert rate.parameter_key_path == ("rates", 1)
+    assert completed_income is not None
+    assert completed_income.match_type == "exact"
+    assert completed_income.mapping_type == "direct_variable"
+    assert completed_income.policyengine_variable == "ca_taxable_income"
+    assert bhst is not None
+    assert bhst.match_type == "exact"
+    assert bhst.mapping_type == "direct_variable"
+    assert bhst.policyengine_variable == "ca_mental_health_services_tax"
+    assert internal is not None
+    assert internal.match_type == "exact"
+    assert internal.mapping_type == "not_comparable"
+    assert internal.candidate_priority == "P4"
+    assert fallback is not None
+    assert fallback.legal_id == "us-ca:"
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+    assert fallback.candidate_priority == "P4"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == durable_oracle_merge
+    lock_text = (root / "uv.lock").read_text()
+    assert lock_text.count(f"?rev={pin}") == 2
+    assert f"?rev={pin}#{pin}" in lock_text
+    lock = tomllib.loads(lock_text)
+    encoder_package = next(
+        package for package in lock["package"] if package["name"] == "axiom-encode"
+    )
+    assert encoder_package["version"] == "0.2.1399"
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    assert project["project"]["version"] == "0.2.1399"
+    assert (
+        (root / "src/axiom_encode/__init__.py")
+        .read_text()
+        .startswith('__version__ = "0.2.1399"')
     )
 
 
@@ -6000,7 +6238,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "9b889a27432e84804938bd3b374b4f5f7466792e"
+    assert pin == "076ad9d458e5539db8d71cd4a06a43ad9b632d19"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
