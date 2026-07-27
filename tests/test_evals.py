@@ -895,7 +895,7 @@ def test_eval_cli_preflight_fails_closed_for_codex_wrapper_without_vendor_receiv
 def test_eval_cli_preflight_accepts_direct_codex_native_binary(monkeypatch, tmp_path):
     native = _write_fake_eval_executable(
         tmp_path / "bin" / "codex",
-        b"direct-native-codex-receiver",
+        b"\x7fELFdirect-native-codex-receiver",
     )
 
     with (
@@ -916,6 +916,32 @@ def test_eval_cli_preflight_accepts_direct_codex_native_binary(monkeypatch, tmp_
     assert environment.launcher_sha256 == expected_digest
     assert environment.native_executable == str(native.resolve())
     assert environment.native_sha256 == expected_digest
+
+
+def test_eval_cli_preflight_fails_closed_for_unrecognized_codex_launcher_layout(
+    monkeypatch,
+    tmp_path,
+):
+    launcher = _write_fake_eval_executable(
+        tmp_path / "custom-launchers" / "codex-wrapper",
+        b"#!/bin/sh\nexec /private/receiver/codex \"$@\"\n",
+    )
+
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_codex_cli",
+            return_value=str(launcher),
+        ),
+        patch(
+            "axiom_encode.harness.evals.subprocess.run",
+            side_effect=_successful_eval_cli_probe,
+        ),
+        pytest.raises(
+            RuntimeError,
+            match=r"unrecognized Codex launcher layout.*codex-wrapper",
+        ),
+    ):
+        evals_module._preflight_eval_cli_runners([parse_runner_spec("codex:gpt-5.4")])
 
 
 def test_eval_cli_preflight_resolves_claude_symlink_to_native_receiver(
