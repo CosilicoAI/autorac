@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
+    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
+    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
+    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,107 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "89d2a710f070a421b29f18fdec22df983250d19b"
+    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ut:policies/income_tax/2026_full_year_resident_before_credit_schedule#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    not_comparable = {
+        "ut_pit_2026_input_domain_is_valid",
+        "ut_pit_2026_before_credit_schedule_applies",
+        "ut_pit_2026_resident_state_taxable_income_boundary",
+        "ut_pit_2026_taxpayer_credit_source_hold_applies",
+        "ut_pit_2026_final_resident_liability_source_hold_applies",
+        "ut_pit_2026_taxpayer_tax_credit",
+        "ut_pit_2026_final_resident_income_tax_liability_before_payments",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        "ut_pit_2026_income_tax_rate": "parameter_value",
+        "ut_pit_2026_resident_income_tax_before_credits": "derived_expression",
+    }
+    assert len(expected_types) == 9
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    assert bundled == runtime
+
+    for output_name in not_comparable:
+        assert bundled[output_name]["candidate_priority"] == "P4"
+
+    rate = bundled["ut_pit_2026_income_tax_rate"]
+    assert rate["policyengine_parameter"] == "gov.states.ut.tax.income.rate"
+    assert rate["period"] == "year"
+    assert rate["comparison"] == "rate"
+
+    before_credits = bundled["ut_pit_2026_resident_income_tax_before_credits"]
+    assert before_credits["expression"] == (
+        "ut_income_tax_before_credits * (1 - ut_income_tax_exempt)"
+    )
+    assert before_credits["entity"] == "tax_unit"
+    assert before_credits["period"] == "year"
+    assert before_credits["unit"] == "USD"
+    assert before_credits["comparison"] == "money"
+    assert "final liability" in before_credits["rationale"]
+
+    bundled_fallbacks = [
+        item
+        for item in bundled_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ut:"
+    ]
+    runtime_fallbacks = [
+        item
+        for item in runtime_document["prefixes"]
+        if item.get("legal_id_prefix") == "us-ut:"
+    ]
+    assert len(bundled_fallbacks) == 1
+    assert bundled_fallbacks == runtime_fallbacks
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ut_pit_2026_resident_income_tax_before_credits",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ut:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "51d0930ed337ecbb6d345ea6f36c9fe8243ee40d"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
