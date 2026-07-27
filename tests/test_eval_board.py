@@ -698,6 +698,15 @@ def test_supported_schema_matches_producer():
     )
 
 
+def test_effort_changelog_names_current_execution_identity_generation():
+    generation = SUPPORTED_EXECUTION_IDENTITY_SCHEMA.rsplit("/", 1)[-1]
+    changelog = (
+        REPO_ROOT / "changelog.d" / "1189-eval-effort-axis.changed.md"
+    ).read_text()
+
+    assert f"Execution identity {generation} binds" in changelog
+
+
 def test_canonical_digest_matches_both_producer_functions():
     sample = {
         "zeta": [1, {"nested": "väl"}],
