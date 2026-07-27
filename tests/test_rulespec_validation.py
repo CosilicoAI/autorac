@@ -5120,7 +5120,118 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "67fea9c9a7afdb5d8eaf7a99971cfd9be578d7f3"
+    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
+    assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
+
+
+def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized():
+    import axiom_oracles.bridges.registry as runtime_registry_module
+
+    root = Path(__file__).parents[1]
+    bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
+    runtime_path = (
+        Path(runtime_registry_module.__file__).with_name("mappings") / "us.yaml"
+    )
+    bundled_document = yaml.safe_load(bundled_path.read_text())
+    runtime_document = yaml.safe_load(runtime_path.read_text())
+    schedule_prefix = (
+        "us-ct:policies/income_tax/2026_resident_ordinary_tax_before_personal_credit#"
+    )
+
+    def schedule_records(document):
+        return {
+            item["legal_id"].removeprefix(schedule_prefix): item
+            for item in document["mappings"]
+            if item.get("legal_id", "").startswith(schedule_prefix)
+        }
+
+    bundled = schedule_records(bundled_document)
+    runtime = schedule_records(runtime_document)
+    not_comparable = {
+        "ct_pit_2026_ordinary_tax_filing_status_is_valid",
+        "ct_pit_2026_ordinary_tax_input_domain_is_valid",
+        "ct_pit_2026_ordinary_tax_schedule_scale",
+    }
+    parameter_values = {
+        "ct_pit_2026_ordinary_tax_head_first_ceiling",
+        "ct_pit_2026_ordinary_tax_joint_first_ceiling",
+        *(f"ct_pit_2026_ordinary_tax_rate_{index}" for index in range(1, 8)),
+        *(f"ct_pit_2026_ordinary_tax_single_floor_{index}" for index in range(2, 8)),
+        "ct_pit_2026_ordinary_tax_single_phaseout_start",
+        "ct_pit_2026_ordinary_tax_head_phaseout_start",
+        "ct_pit_2026_ordinary_tax_joint_phaseout_start",
+        "ct_pit_2026_ordinary_tax_separate_phaseout_start",
+        "ct_pit_2026_ordinary_tax_single_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_head_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_separate_phaseout_increment",
+        "ct_pit_2026_ordinary_tax_single_phaseout_amount",
+        "ct_pit_2026_ordinary_tax_single_phaseout_maximum",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_start",
+        "ct_pit_2026_ordinary_tax_single_recapture_increment",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_amount",
+        "ct_pit_2026_ordinary_tax_single_low_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_single_middle_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_single_high_recapture_maximum",
+        "ct_pit_2026_ordinary_tax_head_middle_recapture_amount",
+        "ct_pit_2026_ordinary_tax_head_middle_recapture_maximum",
+    }
+    direct_variables = {
+        "ct_pit_2026_ordinary_low_rate_phaseout_addback",
+        "ct_pit_2026_ordinary_low_recapture",
+        "ct_pit_2026_ordinary_middle_recapture",
+        "ct_pit_2026_ordinary_high_recapture",
+    }
+    derived_expressions = {
+        "ct_pit_2026_ordinary_schedule_tax",
+        "ct_pit_2026_resident_ordinary_tax_before_personal_credit",
+    }
+    expected_types = {
+        **dict.fromkeys(not_comparable, "not_comparable"),
+        **dict.fromkeys(parameter_values, "parameter_value"),
+        **dict.fromkeys(direct_variables, "direct_variable"),
+        **dict.fromkeys(derived_expressions, "derived_expression"),
+    }
+
+    assert len(expected_types) == 45
+    assert set(bundled) == set(expected_types)
+    assert {name: item["mapping_type"] for name, item in bundled.items()} == (
+        expected_types
+    )
+    assert bundled == runtime
+
+    registry = load_policyengine_registry()
+    exact = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ct_pit_2026_ordinary_tax_rate_1",
+        country="us",
+    )
+    final_component = registry.mapping_for_legal_id(
+        f"{schedule_prefix}ct_pit_2026_resident_ordinary_tax_before_personal_credit",
+        country="us",
+    )
+    fallback = registry.mapping_for_legal_id(
+        "us-ct:policies/income_tax/unrelated#future_output",
+        country="us",
+    )
+    assert exact is not None
+    assert exact.match_type == "exact"
+    assert exact.mapping_type == "parameter_value"
+    assert final_component is not None
+    assert final_component.match_type == "exact"
+    assert final_component.mapping_type == "derived_expression"
+    assert fallback is not None
+    assert fallback.match_type == "prefix"
+    assert fallback.mapping_type == "not_comparable"
+
+    dependency_pin = re.search(
+        r"axiom-oracles@[0-9a-f]{40}", (root / "pyproject.toml").read_text()
+    )
+    assert dependency_pin is not None
+    pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
+    assert pin == "abe2520193439467d5fd1ada46476fc7f05d0611"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
