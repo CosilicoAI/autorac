@@ -162,6 +162,7 @@ from axiom_encode.cli import (
     _rewrite_judgment_conditional_formulas,
     _rewrite_judgment_numeric_comparisons,
     _rulespec_anchor_base_for_output,
+    _rulespec_apply_checkout_root,
     _rulespec_apply_content_root,
     _rulespec_base_for_file,
     _rulespec_checkout_root,
@@ -14402,17 +14403,25 @@ rules: []
         assert manifest_relative == relative_output
 
     @pytest.mark.parametrize(
-        ("checkout_name", "jurisdiction", "relative_output", "citation"),
+        (
+            "checkout_name",
+            "jurisdiction",
+            "checkout_source_root",
+            "relative_output",
+            "citation",
+        ),
         (
             (
                 "rulespec-us",
                 "us-sc",
+                "policies",
                 Path("us-sc/policies/dss/snap-policy-manual/page-159.yaml"),
                 "us-sc:policies/dss/snap-policy-manual/page-159",
             ),
             (
                 "rulespec-uk",
                 "uk",
+                "statutes",
                 Path("uk/statutes/26/36B.yaml"),
                 "uk:statutes/26/36B",
             ),
@@ -14423,11 +14432,13 @@ rules: []
         tmp_path,
         checkout_name,
         jurisdiction,
+        checkout_source_root,
         relative_output,
         citation,
     ):
         checkout = tmp_path / checkout_name
         (checkout / jurisdiction).mkdir(parents=True)
+        (checkout / checkout_source_root).mkdir()
 
         content_root = _rulespec_apply_content_root(checkout, relative_output)
         manifest_root, manifest_relative = _resolve_applied_manifest_placement(
@@ -14453,6 +14464,11 @@ rules: []
 
         with pytest.raises(ValueError, match="canonical"):
             _rulespec_apply_content_root(
+                alias,
+                Path("programs/us-sc/snap/fy-2026.yaml"),
+            )
+        with pytest.raises(ValueError, match="canonical"):
+            _rulespec_apply_checkout_root(
                 alias,
                 Path("programs/us-sc/snap/fy-2026.yaml"),
             )
