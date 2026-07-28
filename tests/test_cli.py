@@ -33280,8 +33280,7 @@ class TestGuardGenerated:
         )
 
         assert any(
-            "migrated live file us/statutes/26/1.yaml must have mode 0644"
-            in issue
+            "migrated live file us/statutes/26/1.yaml must have mode 0644" in issue
             for issue in issues
         )
 

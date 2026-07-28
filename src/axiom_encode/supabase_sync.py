@@ -418,9 +418,7 @@ def sync_applied_manifest_runs(
     runs: list["EncodingRun"] = []
     for repo_path in repo_paths:
         repo_path = Path(repo_path).resolve()
-        path_migration_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for manifest_path in find_apply_manifests(repo_path):
             stats["total"] += 1
             try:

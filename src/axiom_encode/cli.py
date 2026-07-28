@@ -6433,26 +6433,20 @@ def _manifest_census(
             raise
         entries, coverage = {}, {}
     else:
-        path_migration_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         entries, _issues = _load_applied_encoding_manifest_entries(
             repo_path,
             surviving,
             roots=roots,
             expected_encoder_identity=expected_encoder_identity,
-            path_migration_receipt_proof_cache=(
-                path_migration_receipt_proof_cache
-            ),
+            path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
         coverage = _manifest_coverage_by_file(
             repo_path,
             surviving,
             roots=roots,
             expected_encoder_identity=expected_encoder_identity,
-            path_migration_receipt_proof_cache=(
-                path_migration_receipt_proof_cache
-            ),
+            path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
     encoder = unmanifested = 0
     unmanifested_paths: list[str] = []
@@ -10232,18 +10226,14 @@ def _applied_manifest_paths_for_files(
         expected_encoder_identity = _current_guard_encoder_execution_identity()
     except RuntimeError:
         return manifest_paths
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ] = {}
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
     for relative_manifest_path in _all_applied_encoding_manifest_paths(repo_path):
         payload, _root_prefix, _manifest_sha256, issues = (
             _load_verified_applied_encoding_manifest_payload(
                 repo_path,
                 relative_manifest_path,
                 expected_encoder_identity=expected_encoder_identity,
-                path_migration_receipt_proof_cache=(
-                    path_migration_receipt_proof_cache
-                ),
+                path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
             )
         )
         if issues or payload is None:
@@ -17322,9 +17312,7 @@ def _cmd_migrate_rulespec_paths(args) -> None:
         raise SystemExit("Migration plan produces no file changes")
 
     all_manifest_paths = _all_applied_encoding_manifest_paths(repo_path, roots=roots)
-    planning_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ] = {}
+    planning_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
     coverage = _manifest_coverage_by_file(
         repo_path,
         all_manifest_paths,
@@ -17545,9 +17533,7 @@ def _cmd_migrate_rulespec_paths(args) -> None:
         locked_head, locked_tree = _rulespec_migration_base_identity(repo_path)
         if (locked_head, locked_tree) != (head_commit, base_tree):
             raise RuntimeError("RuleSpec base identity changed after planning")
-        pre_install_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        pre_install_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for owner_path, (
             expected_payload,
             expected_digest,
@@ -17574,9 +17560,7 @@ def _cmd_migrate_rulespec_paths(args) -> None:
 
     def post_install_check() -> None:
         locked_release = locked_contract()
-        post_install_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        post_install_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         verified_receipt, digest, issues = _load_verified_path_migration_receipt(
             repo_path,
             receipt_relative.as_posix(),
@@ -17675,9 +17659,7 @@ def cmd_retire(args):
             unique_selected_targets.append(target)
 
     all_manifest_paths = _all_applied_encoding_manifest_paths(repo_path, roots=roots)
-    planning_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ] = {}
+    planning_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
     retirement_groups: dict[
         Path,
         tuple[list[Path], dict[str, object], str],
@@ -17713,9 +17695,7 @@ def cmd_retire(args):
                     expected_waiver_set_sha256=waiver_sha256,
                     local_corpus_release=local_corpus_release,
                     expected_encoder_identity=expected_encoder_identity,
-                    path_migration_receipt_proof_cache=(
-                        planning_receipt_proof_cache
-                    ),
+                    path_migration_receipt_proof_cache=(planning_receipt_proof_cache),
                 )
             )
             if issues or payload is None or manifest_sha256 is None:
@@ -17875,9 +17855,7 @@ def cmd_retire(args):
 
     def pre_install_check() -> None:
         locked_waiver, locked_release = locked_retirement_contract()
-        pre_install_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        pre_install_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for manifest_path, (
             _covered,
             expected_payload,
@@ -17904,9 +17882,7 @@ def cmd_retire(args):
 
     def post_install_check() -> None:
         locked_waiver, locked_release = locked_retirement_contract()
-        post_install_receipt_proof_cache: dict[
-            tuple[str, str], tuple[str, ...]
-        ] = {}
+        post_install_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for manifest_path in manifest_paths:
             verified, _root_prefix, _digest, issues = (
                 _load_verified_applied_encoding_manifest_payload(
@@ -18071,9 +18047,7 @@ def guard_generated_change_issues(
     # immutable-base/live-file proof is intentionally snapshotted once for
     # this guard operation; the cache is discarded before the next operation,
     # and its digest key invalidates a changed receipt within this operation.
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ] = {}
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
     manifest_entries, manifest_issues = _load_applied_encoding_manifest_entries(
         repo_path,
         surviving_manifest_paths,
@@ -18125,9 +18099,7 @@ def guard_generated_change_issues(
             local_corpus_release=local_corpus_release,
             expected_encoder_identity=expected_encoder_identity,
             expected_waiver_set_sha256=expected_manifest_waiver_set_sha256,
-            path_migration_receipt_proof_cache=(
-                path_migration_receipt_proof_cache
-            ),
+            path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
     )
 
@@ -18262,9 +18234,7 @@ def _generated_provenance_gate_issues(
     local_corpus_release: LocalCorpusRelease,
     expected_encoder_identity: Mapping[str, str],
     expected_waiver_set_sha256: str,
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ],
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]],
 ) -> list[str]:
     """Reject protected files authorized only by manual attestations."""
 
@@ -18473,9 +18443,7 @@ def _manifest_coverage_by_file(
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
     expected_waiver_set_sha256: str | None = None,
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ]
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
     | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Map each non-deleted covered file to a list of covering-manifest records.
@@ -18502,9 +18470,7 @@ def _manifest_coverage_by_file(
                 local_corpus_release=local_corpus_release,
                 expected_encoder_identity=expected_encoder_identity,
                 expected_waiver_set_sha256=expected_waiver_set_sha256,
-                path_migration_receipt_proof_cache=(
-                    path_migration_receipt_proof_cache
-                ),
+                path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
             )
         )
         if issues or payload is None or root_prefix is None:
@@ -19942,10 +19908,7 @@ def _migrated_model_manifest_issues(
     signing_broker: SigningBroker | Ed25519PublicKey,
     expected_waiver_set_sha256: str,
     local_corpus_release: LocalCorpusRelease | None,
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ]
-    | None,
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] | None,
 ) -> list[str]:
     """Verify nested model provenance and the signed path-only receipt."""
 
@@ -20161,9 +20124,7 @@ def _load_verified_applied_encoding_manifest_payload(
     expected_waiver_set_sha256: str | None = None,
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ]
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
     | None = None,
 ) -> tuple[dict[str, object] | None, str | None, str | None, list[str]]:
     """Load one canonical v5 apply manifest and verify every binding."""
@@ -20388,9 +20349,7 @@ def _load_verified_applied_encoding_manifest_payload(
             signing_broker=signing_broker,
             expected_waiver_set_sha256=expected_waiver_set_sha256,
             local_corpus_release=local_corpus_release,
-            path_migration_receipt_proof_cache=(
-                path_migration_receipt_proof_cache
-            ),
+            path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
     )
     issues.extend(
@@ -20440,9 +20399,7 @@ def _load_applied_encoding_manifest_entries(
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
     expected_waiver_set_sha256: str | None = None,
-    path_migration_receipt_proof_cache: dict[
-        tuple[str, str], tuple[str, ...]
-    ]
+    path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
     | None = None,
 ) -> tuple[dict[str, set[str]], list[str]]:
     entries: dict[str, set[str]] = defaultdict(set)
@@ -20486,9 +20443,7 @@ def _load_applied_encoding_manifest_entries(
                 expected_waiver_set_sha256=expected_waiver_set_sha256,
                 local_corpus_release=local_corpus_release,
                 expected_encoder_identity=expected_encoder_identity,
-                path_migration_receipt_proof_cache=(
-                    path_migration_receipt_proof_cache
-                ),
+                path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
             )
         )
         issues.extend(manifest_issues)
