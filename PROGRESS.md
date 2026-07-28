@@ -2,12 +2,13 @@
 
 ## State
 
-The checkout-root routing and ProgramSpec citation fix is implemented,
-verified end to end, and strengthened after independent review. Actual
-checkout-root atomic directories now use a narrow source-checkout admission
-mode without weakening normal canonical routing, symlink rejection is
-preserved, and direct signer-style US/UK controls pass. Version and remaining
-broad-gate work remain.
+The checkout-root routing and ProgramSpec citation fix is implemented and
+verified end to end. Actual checkout-root source directories use a narrow
+source-checkout admission mode without weakening normal canonical routing;
+mixed root/jurisdiction layouts and symlink rejection are covered. The
+terminal version is 0.2.1407, focused checks pass, and the independent
+review-fix cycle has no remaining actionable findings. Only the untracked
+worker report and final origin-diff handoff remain.
 
 ## Done
 
@@ -62,12 +63,28 @@ broad-gate work remain.
   symlink-rejection, direct `us-sc/policies/...`, and direct `uk/statutes/...`
   coverage.
 - Passed all 14 strengthened focused routing/writer/compatibility tests.
+- The second review pass found two additional mixed-layout safety gaps:
+  jurisdiction-prefixed files failed when the same checkout also had a
+  root-level atomic source directory, and the checkout-root helper resolved a
+  symlink alias before admission. Captured both as three failing cases, then
+  fixed them with scoped direct-child routing and lexical validation.
+- Passed the final routing, writer, issue-1078, repository-routing, and version
+  provenance matrix: 57 tests passed.
+- Coordinated the terminal encoder version as 0.2.1407 in `pyproject.toml`,
+  `src/axiom_encode/__init__.py`, and `uv.lock`, after all encoder-affecting
+  commits.
+- Passed full Ruff, `compileall`, and `git diff --check`.
+- Ran all 6,091 repository tests with an available offline compatible
+  environment and writable scratch Go cache: 6,024 passed and 31 skipped.
+  Of 36 failures, the sole branch-caused version-provenance failure was fixed
+  and rerun green; the other 35 are confined to the environment's stale
+  `axiom-oracles`/editable install and sandbox-dependent system/provisioning
+  checks.
+- Completed the final independent review pass after the mixed-layout fix and
+  terminal version bump; both reviewers reported no remaining actionable
+  findings.
 
 ## Next
 
-- Commit the required coordinated encoder version bump and rerun its gate.
-- Rerun broad repository tests, Ruff, and compile checks, distinguishing
-  sandbox/dependency failures from branch-caused failures.
-- Repeat independent review after the substantive routing hardening.
-- Finalize this progress ledger, verify the origin/main diff, and write the
-  untracked worker report.
+- Verify the exact `origin/main..HEAD` name-only diff and clean tracked state.
+- Write the untracked `WORKER-REPORT.md` and deliver the final handoff.
