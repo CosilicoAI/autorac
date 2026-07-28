@@ -2,11 +2,11 @@
 
 ## State
 
-The checkout-root routing and ProgramSpec citation fix is implemented and
-passes its focused current-main regression and compatibility controls. Current
-`main` removed the public `sign-applied-files` command in the signing hard cut,
-so literal command-level failure/pass and the held-out SC change are next being
-verified against a scratch copy of the pinned bridge.
+The checkout-root routing and ProgramSpec citation fix is implemented, passes
+its focused current-main regression and compatibility controls, and is
+verified end to end against the held-out SC change through a disposable
+backport to the pinned signing bridge. Full gates and the independent
+review-fix cycle remain.
 
 ## Done
 
@@ -36,10 +36,26 @@ verified against a scratch copy of the pinned bridge.
 - Added the issue 1312 changelog entry.
 - Passed the focused current-main regression plus the jurisdiction-prefixed and
   UK issue-1078 controls: nine tests passed; focused Ruff also passed.
+- Reconstructed the exact two-file SC change on rulespec-us base
+  `187d8d8e`: page 159 entered/page 369 left the ProgramSpec scope and all
+  three `SNAP-SC-UTIL` worklist rows changed to `merged`.
+- Captured the literal pinned-bridge fail-first: exit 1 at the reported
+  `path.relative_to(manifest_root)` line because the root ProgramSpec was
+  rebased against `<scratch>/us`.
+- Applied the minimal routing/citation backport to a disposable pinned checkout,
+  followed by a scratch-only version bump required by its clean-provenance
+  gate; the campaign interpreter then signed the reconstructed diff.
+- Confirmed the v1 output shape: checkout-root
+  `.axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json`, bare
+  `programs/us-sc/snap/fy-2026` citation, and checkout-relative applied path.
+- Committed the manifest only in the disposable rulespec clone and passed the
+  separate external `guard-generated --roots programs` check.
+- Confirmed the source `wt-snap-sc` worktree remains unchanged apart from its
+  two pre-existing untracked report files.
 
 ## Next
 
-- Port the minimal fix into a scratch pinned bridge and capture literal
-  `sign-applied-files` fail/pass evidence.
-- Reconstruct the held-out SC ProgramSpec/worklist change in a scratch
-  rulespec-us checkout, sign it, and run `guard-generated`.
+- Run the full repository test, Ruff, compile, and changelog/version gates.
+- Complete the independent review-fix cycle and rerun affected checks.
+- Finalize this progress ledger, verify the origin/main diff, and write the
+  untracked worker report.
