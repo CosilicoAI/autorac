@@ -7,8 +7,8 @@ verified end to end. Actual checkout-root source directories use a narrow
 source-checkout admission mode without weakening normal canonical routing;
 mixed root/jurisdiction layouts and symlink rejection are covered. The
 terminal version is 0.2.1407, focused checks pass, and the independent
-review-fix cycle has no remaining actionable findings. Only the untracked
-worker report and final origin-diff handoff remain.
+review-fix cycle has no remaining actionable findings. The exact origin diff
+has been audited and the required untracked worker report is complete.
 
 ## Done
 
@@ -83,8 +83,9 @@ worker report and final origin-diff handoff remain.
 - Completed the final independent review pass after the mixed-layout fix and
   terminal version bump; both reviewers reported no remaining actionable
   findings.
+- Verified the exact `origin/main..HEAD` name-only diff and clean tracked
+  state, then wrote the required untracked `WORKER-REPORT.md`.
 
 ## Next
 
-- Verify the exact `origin/main..HEAD` name-only diff and clean tracked state.
-- Write the untracked `WORKER-REPORT.md` and deliver the final handoff.
+- No implementation work remains; deliver the local head and report.
