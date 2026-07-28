@@ -13,8 +13,8 @@ DIRECT_VARIABLES = {
     "pa_pit_pilot_taxable_income": "pa_adjusted_taxable_income",
     "pa_pit_pilot_income_tax_liability": "pa_income_tax_before_forgiveness",
 }
-ORACLE_MERGE = "a62340d2f1e2873b43404478835de5577e685736"
-ENCODER_VERSION = "0.2.1406"
+ORACLE_MERGE = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
+ENCODER_VERSION = "0.2.1407"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-pa:"
     country: us
     mapping_type: not_comparable

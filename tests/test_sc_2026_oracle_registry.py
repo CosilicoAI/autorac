@@ -11,8 +11,8 @@ MODULE = "us-sc:policies/income_tax/pilot_liability_pipeline"
 OUTPUT_NAME = "sc_pit_pilot_income_tax_liability"
 INPUT_NAME = "sc_pit_pilot_state_taxable_income"
 POLICYENGINE_VARIABLE = "sc_income_tax_before_non_refundable_credits"
-ORACLE_MERGE = "a62340d2f1e2873b43404478835de5577e685736"
-ENCODER_VERSION = "0.2.1406"
+ORACLE_MERGE = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
+ENCODER_VERSION = "0.2.1407"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-sc:"
     country: us
     mapping_type: not_comparable

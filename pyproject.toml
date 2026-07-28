@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axiom-encode"
-version = "0.2.1406"
+version = "0.2.1407"
 description = "AI-assisted RuleSpec encoding infrastructure - fully self-contained"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -24,7 +24,7 @@ dependencies = [
     # src/axiom_encode/oracles/policyengine/ are thin re-export shims over
     # axiom_oracles.bridges (axiom-oracles#124). Pinned to a commit because
     # axiom-oracles is not on PyPI; bump the SHA to pull bridge changes.
-    "axiom-oracles @ git+https://github.com/TheAxiomFoundation/axiom-oracles@a62340d2f1e2873b43404478835de5577e685736",
+    "axiom-oracles @ git+https://github.com/TheAxiomFoundation/axiom-oracles@cee703f34ad367534b2d50debc2bcd9dfdf9c29e",
     "cryptography>=46.0",
     "pydantic>=2.0",
     "pypdf>=6.4.0",
