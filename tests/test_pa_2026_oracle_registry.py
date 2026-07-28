@@ -81,8 +81,8 @@ def test_packaged_pa_2026_registry_has_exact_two_direct_mappings() -> None:
             mapping["comparison"],
         ) == ("tax", "tax_unit", "year", "USD", "money")
         assert "candidate_priority" not in mapping
-        assert "reviewed nonnegative completed-return boundary" in (
-            mapping["rationale"]
+        assert (
+            "reviewed nonnegative completed-return boundary" in (mapping["rationale"])
         )
 
     liability = mappings["pa_pit_pilot_income_tax_liability"]
