@@ -1,0 +1,1 @@
+Bundle Arkansas's bounded tax-year-2026 Person-grain individual schedule component before nonrefundable credits and pin its durable reviewed oracle-main merge without claiming taxable-income construction, filing-unit aggregation or method selection, low-income tables, credits, payments, or final liability.

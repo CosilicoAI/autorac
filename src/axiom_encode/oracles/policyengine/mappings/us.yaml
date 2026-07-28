@@ -28871,6 +28871,20 @@ mappings:
     comparison: money
     rationale: Both outputs compose Montana's complete temporary tax-year-2026 ordinary-income and net-long-term-capital-gain schedules under MCA 15-30-2103 from the same completed-return boundaries, before nonrefundable credits; this narrow mapping excludes credits, payments, and final annual liability.
 
+  # Arkansas Act 2 of 2026 supplies this bounded Person-grain individual
+  # schedule component. Person-to-TaxUnit summation belongs only to the
+  # reviewed Populace comparison accounting and does not change its entity.
+  - legal_id: us-ar:policies/income_tax/pilot_liability_pipeline#ar_pit_pilot_income_tax_before_non_refundable_credits_indiv
+    country: us
+    program: tax
+    mapping_type: direct_variable
+    policyengine_variable: ar_income_tax_before_non_refundable_credits_indiv
+    entity: person
+    period: year
+    unit: USD
+    comparison: money
+    rationale: Both outputs apply Arkansas Act 2 of 2026 section 1's complete tax-year-2026 individual schedule, including the high-income bracket-adjustment table, to completed-return individual taxable income at Person grain before nonrefundable credits; this narrow mapping excludes taxable-income construction, filing-unit aggregation or method selection, low-income tables, credits, payments, and final liability.
+
   # Pennsylvania's bounded TY2026 resident tax before forgiveness. The
   # completed-return adjusted-taxable-income input remains a caller boundary;
   # these exact output mappings are promoted only with a runtime proof that the
