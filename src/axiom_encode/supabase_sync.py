@@ -418,6 +418,7 @@ def sync_applied_manifest_runs(
     runs: list["EncodingRun"] = []
     for repo_path in repo_paths:
         repo_path = Path(repo_path).resolve()
+        path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for manifest_path in find_apply_manifests(repo_path):
             stats["total"] += 1
             try:
@@ -427,6 +428,9 @@ def sync_applied_manifest_runs(
                     _load_verified_applied_encoding_manifest_payload(
                         repo_path,
                         manifest_path.relative_to(repo_path).as_posix(),
+                        path_migration_receipt_proof_cache=(
+                            path_migration_receipt_proof_cache
+                        ),
                     )
                 )
                 if issues or payload is None:

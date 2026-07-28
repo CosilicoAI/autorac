@@ -301,6 +301,7 @@ def build_manifest_index(repo_paths: Iterable[Path]) -> dict[str, dict[str, Any]
         root = repo_path / APPLY_MANIFEST_GLOB
         if not root.is_dir():
             continue
+        path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         for manifest_path in root.rglob("*.json"):
             from .cli import _load_verified_applied_encoding_manifest_payload
 
@@ -308,6 +309,9 @@ def build_manifest_index(repo_paths: Iterable[Path]) -> dict[str, dict[str, Any]
                 _load_verified_applied_encoding_manifest_payload(
                     repo_path,
                     manifest_path.relative_to(repo_path).as_posix(),
+                    path_migration_receipt_proof_cache=(
+                        path_migration_receipt_proof_cache
+                    ),
                 )
             )
             if issues or payload is None:

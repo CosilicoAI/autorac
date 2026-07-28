@@ -7,17 +7,16 @@ import yaml
 from axiom_oracles.bridges.coverage import build_policyengine_coverage_report
 from axiom_oracles.bridges.registry import load_policyengine_registry
 
-MODULE = "us-sc:policies/income_tax/pilot_liability_pipeline"
-OUTPUT_NAME = "sc_pit_pilot_income_tax_liability"
-INPUT_NAME = "sc_pit_pilot_state_taxable_income"
-POLICYENGINE_VARIABLE = "sc_income_tax_before_non_refundable_credits"
+MODULE = "us-ok:policies/income_tax/pilot_liability_pipeline"
+OUTPUT_NAME = "ok_pit_pilot_income_tax_liability"
+POLICYENGINE_VARIABLE = "ok_income_tax_before_credits"
 ORACLE_MERGE = "678dd840b4c64e54c63805b0183f05c0f769b399"
 ENCODER_VERSION = "0.2.1413"
-FALLBACK_TEXT = """  - legal_id_prefix: "us-sc:"
+FALLBACK_TEXT = """  - legal_id_prefix: "us-ok:"
     country: us
     mapping_type: not_comparable
     candidate_priority: P4
-    rationale: PolicyEngine-US does not model SC agency policy manuals or state regulations at output granularity; comparable state outputs carry exact mappings which take precedence over this prefix."""
+    rationale: PolicyEngine-US does not model OK agency policy manuals or state regulations at output granularity; comparable state outputs carry exact mappings which take precedence over this prefix."""
 
 
 def _module_mappings(document):
@@ -31,13 +30,14 @@ def _module_mappings(document):
 
 def _shared_material(text: str) -> str:
     start = text.index(
-        "  # South Carolina's bounded TY2026 individual income tax before"
+        "  # Oklahoma's bounded TY2026 individual income tax before credits."
     )
     exact_end_marker = (
         "    rationale: On the reviewed nonnegative completed-return boundary, "
-        "both outputs apply South Carolina's enacted tax-year-2026 1.99 percent "
-        "and 5.21 percent-minus-$966 schedule to South Carolina taxable income "
-        "before nonrefundable credits, payments, or final annual liability."
+        "both outputs apply Oklahoma's enacted tax-year-2026 four-band schedule "
+        "to Oklahoma taxable income using the statutory single-or-separate "
+        "versus joint, surviving-spouse, or head-of-household schedule branch, "
+        "before credits, payments, or final annual liability."
     )
     exact_end = text.index(exact_end_marker, start) + len(exact_end_marker)
     fallback_start = text.index(FALLBACK_TEXT)
@@ -46,7 +46,7 @@ def _shared_material(text: str) -> str:
 
 
 def _write_synthetic_module(root: Path) -> None:
-    path = root / "us-sc/policies/income_tax/pilot_liability_pipeline.yaml"
+    path = root / "us-ok/policies/income_tax/pilot_liability_pipeline.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "format: rulespec/v1\n"
@@ -59,7 +59,7 @@ def _write_synthetic_module(root: Path) -> None:
     )
 
 
-def test_packaged_sc_2026_registry_has_one_exact_direct_mapping() -> None:
+def test_packaged_ok_2026_registry_has_one_exact_direct_mapping() -> None:
     root = Path(__file__).parents[1]
     path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     document = yaml.safe_load(path.read_text())
@@ -80,17 +80,22 @@ def test_packaged_sc_2026_registry_has_one_exact_direct_mapping() -> None:
     assert "reviewed nonnegative completed-return boundary" in mapping["rationale"]
     for bounded_scope in (
         "tax-year-2026",
-        "before nonrefundable credits",
+        "four-band schedule",
+        "before credits",
         "payments",
         "final annual liability",
     ):
         assert bounded_scope in mapping["rationale"]
-    assert f"input.{INPUT_NAME}" not in mappings
-    assert "sc_pit_pilot_taxable_income" not in mappings
-    assert "sc_pit_pilot_schedule_tax" not in mappings
+    for excluded_name in (
+        "input.ok_pit_pilot_state_taxable_income",
+        "input.ok_pit_pilot_filing_status_uses_wide_schedule",
+        "ok_pit_pilot_taxable_income",
+        "ok_pit_pilot_schedule_tax",
+    ):
+        assert excluded_name not in mappings
 
 
-def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None:
+def test_packaged_ok_2026_runtime_pin_version_and_precedence_are_exact() -> None:
     import axiom_oracles.bridges.registry as runtime_registry_module
 
     root = Path(__file__).parents[1]
@@ -108,10 +113,10 @@ def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert bundled_text.count(FALLBACK_TEXT) == 1
     assert runtime_text.count(FALLBACK_TEXT) == 1
     assert hashlib.sha256(FALLBACK_TEXT.encode()).hexdigest() == (
-        "31484c10dd215ae94df62a526db8d6d5e5276967ba4094ab8c19cb1dc8c218dd"
+        "1c977a456afdb80469308da94b9dda0e630c53f79e504706ae11ebd8f5a3057a"
     )
     assert hashlib.sha256(_shared_material(bundled_text).encode()).hexdigest() == (
-        "933fda9c31f5450ac251865b31943cc100490ff4d394723fb520e2e9cebd73f4"
+        "971de99c5084eda2a4de0ebc1fd763605d58524d81279033128c3b8d1db70fde"
     )
 
     registry = load_policyengine_registry()
@@ -129,8 +134,10 @@ def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert mapping.comparison == "money"
 
     for output_name in (
-        "sc_pit_pilot_taxable_income",
-        "sc_pit_pilot_schedule_tax",
+        "input.ok_pit_pilot_state_taxable_income",
+        "input.ok_pit_pilot_filing_status_uses_wide_schedule",
+        "ok_pit_pilot_taxable_income",
+        "ok_pit_pilot_schedule_tax",
         "future_unmapped_output",
     ):
         fallback = registry.mapping_for_legal_id(
@@ -138,7 +145,7 @@ def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None
             country="us",
         )
         assert fallback is not None
-        assert fallback.legal_id == "us-sc:"
+        assert fallback.legal_id == "us-ok:"
         assert fallback.match_type == "prefix"
         assert fallback.mapping_type == "not_comparable"
         assert fallback.candidate_priority == "P4"
@@ -166,7 +173,7 @@ def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None
     )
 
 
-def test_policyengine_coverage_classifies_only_bounded_sc_2026_output(
+def test_policyengine_coverage_classifies_only_bounded_ok_2026_output(
     tmp_path: Path,
 ) -> None:
     rulespec_root = tmp_path / "rulespec-us"

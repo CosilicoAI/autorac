@@ -1237,6 +1237,35 @@ class TestSyncAppliedManifestRuns:
         assert "5c8705fb" in output
         assert "aa11bb22" in output
 
+    def test_scan_reuses_one_receipt_proof_cache(self, tmp_path, monkeypatch):
+        import axiom_encode.cli as cli_module
+        from axiom_encode.supabase_sync import sync_applied_manifest_runs
+
+        repo = self._write_repo(tmp_path)
+        original = cli_module._load_verified_applied_encoding_manifest_payload
+        proof_calls = 0
+
+        def counted_loader(*args, **kwargs):
+            nonlocal proof_calls
+            cache = kwargs["path_migration_receipt_proof_cache"]
+            proof_key = (str(repo.resolve()), "shared-receipt")
+            if proof_key not in cache:
+                proof_calls += 1
+                cache[proof_key] = ()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_verified_applied_encoding_manifest_payload",
+            counted_loader,
+        )
+
+        stats = sync_applied_manifest_runs([repo], dry_run=True)
+
+        assert stats["total"] == 2
+        assert stats["failed"] == 0
+        assert proof_calls == 1
+
     def test_syncs_manifest_runs_with_apply_manifest_source(self, tmp_path):
         from axiom_encode.supabase_sync import sync_applied_manifest_runs
 

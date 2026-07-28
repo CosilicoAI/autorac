@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -743,6 +744,40 @@ def test_build_manifest_index_accepts_verified_v4(tmp_path, monkeypatch):
 
     assert set(index) == {"abc12345"}
     assert len(index["abc12345"]["_manifest_sha256"]) == 64
+
+
+def test_build_manifest_index_reuses_one_receipt_proof_cache(tmp_path, monkeypatch):
+    import axiom_encode.cli as cli_module
+
+    repo, _rule, manifest = _write_verified_run_log_manifest(tmp_path, monkeypatch)
+    second = manifest.with_name("second.json")
+    second.write_bytes(manifest.read_bytes())
+    original = cli_module._load_verified_applied_encoding_manifest_payload
+    proof_calls = 0
+
+    def counted_loader(*args, **kwargs):
+        nonlocal proof_calls
+        cache = kwargs["path_migration_receipt_proof_cache"]
+        proof_key = (str(repo), "shared-receipt")
+        if proof_key not in cache:
+            proof_calls += 1
+            cache[proof_key] = ()
+        payload, root_prefix, digest, issues = original(*args, **kwargs)
+        if payload is not None and Path(args[1]).name == "second.json":
+            payload = dict(payload)
+            payload["run_id"] = "second-run"
+        return payload, root_prefix, digest, issues
+
+    monkeypatch.setattr(
+        cli_module,
+        "_load_verified_applied_encoding_manifest_payload",
+        counted_loader,
+    )
+
+    index = rx.build_manifest_index([repo])
+
+    assert set(index) == {"abc12345", "second-run"}
+    assert proof_calls == 1
 
 
 def test_build_manifest_index_rejects_stale_or_tampered_manifest(tmp_path, monkeypatch):
