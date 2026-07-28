@@ -2,11 +2,11 @@
 
 ## State
 
-The root/placement/citation failure is reproduced and regression coverage is
-red before implementation. Current `main` removed the public
-`sign-applied-files` command in the signing hard cut, so the committed tests
-cover its surviving shared helpers/writer and the literal command-level
-failure/pass is being verified against a scratch copy of the pinned bridge.
+The checkout-root routing and ProgramSpec citation fix is implemented and
+passes its focused current-main regression and compatibility controls. Current
+`main` removed the public `sign-applied-files` command in the signing hard cut,
+so literal command-level failure/pass and the held-out SC change are next being
+verified against a scratch copy of the pinned bridge.
 
 ## Done
 
@@ -29,10 +29,17 @@ failure/pass is being verified against a scratch copy of the pinned bridge.
   `programs/us-sc/snap/fy-2026.yaml` writer case.
 - Recorded that `uv run` cannot access `~/.cache/uv` in the sandbox; focused
   current-main tests run with an existing compatible project environment.
+- Routed checkout-owned `policies/`, `programs/`, `regulations/`, and
+  `statutes/` outputs through the exact checkout root, taught manifest
+  placement to accept that root, and made ProgramSpec citations bare
+  `programs/...` paths.
+- Added the issue 1312 changelog entry.
+- Passed the focused current-main regression plus the jurisdiction-prefixed and
+  UK issue-1078 controls: nine tests passed; focused Ruff also passed.
 
 ## Next
 
-- Implement checkout-owned source-root placement and bare ProgramSpec citation
-  without changing jurisdiction-prefixed or UK country-monorepo behavior.
-- Add the changelog entry, rerun focused tests, and port the minimal fix into a
-  scratch pinned bridge for literal command and real-checkout verification.
+- Port the minimal fix into a scratch pinned bridge and capture literal
+  `sign-applied-files` fail/pass evidence.
+- Reconstruct the held-out SC ProgramSpec/worklist change in a scratch
+  rulespec-us checkout, sign it, and run `guard-generated`.
