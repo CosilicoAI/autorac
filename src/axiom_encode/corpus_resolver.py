@@ -3762,6 +3762,7 @@ def read_bounded_regular_file(
     *,
     label: str,
     max_bytes: int,
+    required_mode: int | None = None,
 ) -> bytes:
     """Atomically open a contained regular file without following symlinks.
 
@@ -3807,6 +3808,12 @@ def read_bounded_regular_file(
         file_stat = os.fstat(file_descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise UnsafeCorpusPathError(f"{label} is not a regular file: {candidate}")
+        actual_mode = stat.S_IMODE(file_stat.st_mode)
+        if required_mode is not None and actual_mode != required_mode:
+            raise UnsafeCorpusPathError(
+                f"{label} must have mode {required_mode:04o}, found "
+                f"{actual_mode:04o}: {candidate}"
+            )
         if file_stat.st_size > max_bytes:
             raise UnsafeCorpusPathError(
                 f"{label} exceeds the {max_bytes}-byte safety limit: {candidate}"
