@@ -42753,9 +42753,8 @@ def _source_checkout_jurisdiction_content_root(
         checkout_root = repo_path.parent
     else:
         return None
-    if (
-        checkout_root.name != expected_checkout
-        or not is_rulespec_source_checkout_root(checkout_root)
+    if checkout_root.name != expected_checkout or not is_rulespec_source_checkout_root(
+        checkout_root
     ):
         return None
     content_root = checkout_root / jurisdiction
@@ -42803,13 +42802,10 @@ def _rulespec_apply_content_root(
             repo_path,
             _repo_jurisdiction_prefix(repo_path),
         )
-    if (
-        not content_root.is_dir()
-        or (
-            canonical_rulespec_root_identity(content_root) is None
-            and not is_rulespec_source_checkout_root(content_root)
-            and not _is_source_checkout_jurisdiction_content_root(content_root)
-        )
+    if not content_root.is_dir() or (
+        canonical_rulespec_root_identity(content_root) is None
+        and not is_rulespec_source_checkout_root(content_root)
+        and not _is_source_checkout_jurisdiction_content_root(content_root)
     ):
         raise ValueError(
             "RuleSpec apply target must be an existing canonical "

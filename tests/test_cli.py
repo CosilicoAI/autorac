@@ -15515,13 +15515,9 @@ rules: []
         assert content_root == checkout / jurisdiction
         assert manifest_root == checkout
         assert manifest_relative == relative_output
-        assert (
-            _rulespec_anchor_base_for_output(checkout, relative_output) == citation
-        )
+        assert _rulespec_anchor_base_for_output(checkout, relative_output) == citation
 
-    def test_checkout_root_source_output_rejects_symlinked_checkout(
-        self, tmp_path
-    ):
+    def test_checkout_root_source_output_rejects_symlinked_checkout(self, tmp_path):
         real_checkout = tmp_path / "real" / "rulespec-us"
         (real_checkout / "us").mkdir(parents=True)
         (real_checkout / "programs/us-sc/snap").mkdir(parents=True)
@@ -15539,9 +15535,7 @@ rules: []
                 Path("programs/us-sc/snap/fy-2026.yaml"),
             )
 
-    def test_write_applied_manifest_places_checkout_root_program_spec(
-        self, tmp_path
-    ):
+    def test_write_applied_manifest_places_checkout_root_program_spec(self, tmp_path):
         checkout = tmp_path / "rulespec-us"
         (checkout / "us").mkdir(parents=True)
         relative_output = Path("programs/us-sc/snap/fy-2026.yaml")
@@ -15600,8 +15594,7 @@ rules: []
             )
 
         assert manifest == (
-            checkout
-            / ".axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json"
+            checkout / ".axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json"
         )
         payload = json.loads(manifest.read_text())
         assert payload["citation"] == "programs/us-sc/snap/fy-2026"

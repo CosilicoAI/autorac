@@ -89,9 +89,9 @@ class _CheckoutAdmissionSnapshot:
 class _RuleSpecRoutingCache:
     """Successful checkout identity probes admitted for one bounded operation."""
 
-    checkout_inspections: dict[
-        tuple[Path, bool, bool], _CachedCheckoutInspection
-    ] = field(default_factory=dict)
+    checkout_inspections: dict[tuple[Path, bool, bool], _CachedCheckoutInspection] = (
+        field(default_factory=dict)
+    )
 
 
 _RULESPEC_ROUTING_CACHE: ContextVar[_RuleSpecRoutingCache | None] = ContextVar(
