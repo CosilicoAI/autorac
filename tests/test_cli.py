@@ -14377,6 +14377,101 @@ rules: []
             "us/statutes/26/36B.test.yaml",
         ]
 
+    @pytest.mark.parametrize(
+        "source_root",
+        ("policies", "programs", "regulations", "statutes"),
+    )
+    def test_checkout_root_source_outputs_use_checkout_manifest_root(
+        self, tmp_path, source_root
+    ):
+        checkout = tmp_path / "rulespec-us"
+        (checkout / "us").mkdir(parents=True)
+        relative_output = Path(source_root) / "example.yaml"
+
+        content_root = _rulespec_apply_content_root(checkout, relative_output)
+        manifest_root, manifest_relative = _resolve_applied_manifest_placement(
+            content_root=content_root,
+            relative_output=relative_output,
+        )
+
+        assert content_root == checkout
+        assert manifest_root == checkout
+        assert manifest_relative == relative_output
+
+    def test_write_applied_manifest_places_checkout_root_program_spec(
+        self, tmp_path
+    ):
+        checkout = tmp_path / "rulespec-us"
+        (checkout / "us").mkdir(parents=True)
+        relative_output = Path("programs/us-sc/snap/fy-2026.yaml")
+        program = checkout / relative_output
+        program.parent.mkdir(parents=True)
+        program.write_text("program: us-sc/snap\nperiod: 2026-01\n")
+        output_root = tmp_path / "out"
+        generated = output_root / "manual-attestation" / relative_output
+        generated.parent.mkdir(parents=True)
+        generated.write_text(program.read_text())
+        result = SimpleNamespace(
+            output_file=str(generated),
+            context_manifest_file=None,
+            trace_file=None,
+            generation_prompt_sha256=None,
+            tool=APPLIED_ENCODING_MODEL_TOOL,
+            citation=_rulespec_anchor_base_for_output(checkout, relative_output),
+            runner="openai",
+            backend="openai",
+            model="program-placement-test",
+            source_attestation={},
+        )
+        setattr(
+            result,
+            _APPLY_VALIDATION_SNAPSHOT_ATTR,
+            {
+                "manifest_validation_execution": {
+                    "axiom_encode": dict(TEST_PINNED_ENCODER_IDENTITY)
+                }
+            },
+        )
+
+        with (
+            patch(
+                "axiom_encode.cli.load_rulespec_local_corpus_release",
+                return_value=object(),
+            ),
+            patch(
+                "axiom_encode.cli._resolver_owned_manifest_source_attestation",
+                return_value={"rulespec_root": "rulespec-us/us-sc"},
+            ),
+            patch(
+                "axiom_encode.cli.verify_rulespec_validation_waiver_set",
+                return_value="b" * 64,
+            ),
+        ):
+            manifest = _write_applied_encoding_manifest(
+                result,
+                output_root=output_root,
+                policy_repo_path=checkout,
+                corpus_path=tmp_path / "axiom-corpus",
+                relative_output=relative_output,
+                applied_files=[program],
+                axiom_encode_git={"commit": "a" * 40},
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+            )
+
+        assert manifest == (
+            checkout
+            / ".axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json"
+        )
+        payload = json.loads(manifest.read_text())
+        assert payload["citation"] == "programs/us-sc/snap/fy-2026"
+        assert payload["applied_files"] == [
+            {
+                "path": relative_output.as_posix(),
+                "sha256": _sha256_file(program),
+            }
+        ]
+        assert payload["signature"]["value"]
+
     def test_resolve_applied_manifest_placement_always_uses_checkout_root(
         self, tmp_path
     ):
@@ -14405,10 +14500,20 @@ rules: []
         assert manifest_root == repo
         assert manifest_rel == Path("uk/statutes/26/36B.yaml")
 
-        # Flat/legacy roots have no fallback placement.
+        # A checkout-root source path remains rooted at the checkout.
+        manifest_root, manifest_rel = _resolve_applied_manifest_placement(
+            content_root=repo,
+            relative_output=Path("statutes/26/36B.yaml"),
+        )
+        assert manifest_root == repo
+        assert manifest_rel == Path("statutes/26/36B.yaml")
+
+        # Anonymous and legacy roots still have no fallback placement.
+        anonymous = tmp_path / "somewhere"
+        anonymous.mkdir()
         with pytest.raises(ValueError, match="canonical"):
             _resolve_applied_manifest_placement(
-                content_root=repo,
+                content_root=anonymous,
                 relative_output=Path("statutes/26/36B.yaml"),
             )
 
