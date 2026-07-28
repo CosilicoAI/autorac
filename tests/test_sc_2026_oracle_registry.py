@@ -7,16 +7,17 @@ import yaml
 from axiom_oracles.bridges.coverage import build_policyengine_coverage_report
 from axiom_oracles.bridges.registry import load_policyengine_registry
 
-MODULE = "us-in:policies/income_tax/pilot_liability_pipeline"
-OUTPUT_NAME = "in_pit_pilot_income_tax_liability"
-POLICYENGINE_VARIABLE = "in_agi_tax"
+MODULE = "us-sc:policies/income_tax/pilot_liability_pipeline"
+OUTPUT_NAME = "sc_pit_pilot_income_tax_liability"
+INPUT_NAME = "sc_pit_pilot_state_taxable_income"
+POLICYENGINE_VARIABLE = "sc_income_tax_before_non_refundable_credits"
 ORACLE_MERGE = "c95aac78835375d31390d1e430d1608fee2b3b93"
 ENCODER_VERSION = "0.2.1405"
-FALLBACK_TEXT = """  - legal_id_prefix: "us-in:"
+FALLBACK_TEXT = """  - legal_id_prefix: "us-sc:"
     country: us
     mapping_type: not_comparable
     candidate_priority: P4
-    rationale: PolicyEngine-US does not model IN agency policy manuals or state regulations at output granularity; comparable state outputs carry exact mappings which take precedence over this prefix."""
+    rationale: PolicyEngine-US does not model SC agency policy manuals or state regulations at output granularity; comparable state outputs carry exact mappings which take precedence over this prefix."""
 
 
 def _module_mappings(document):
@@ -30,12 +31,13 @@ def _module_mappings(document):
 
 def _shared_material(text: str) -> str:
     start = text.index(
-        "  # Indiana's bounded TY2026 adjusted-gross-income tax before credits and"
+        "  # South Carolina's bounded TY2026 individual income tax before"
     )
     exact_end_marker = (
-        "    rationale: Both outputs apply Indiana's tax-year-2026 2.95 percent "
-        "state rate to completed Indiana adjusted gross income with a zero floor, "
-        "before credits and excluding the separate county tax."
+        "    rationale: On the reviewed nonnegative completed-return boundary, "
+        "both outputs apply South Carolina's enacted tax-year-2026 1.99 percent "
+        "and 5.21 percent-minus-$966 schedule to South Carolina taxable income "
+        "before nonrefundable credits, payments, or final annual liability."
     )
     exact_end = text.index(exact_end_marker, start) + len(exact_end_marker)
     fallback_start = text.index(FALLBACK_TEXT)
@@ -44,7 +46,7 @@ def _shared_material(text: str) -> str:
 
 
 def _write_synthetic_module(root: Path) -> None:
-    path = root / "us-in/policies/income_tax/pilot_liability_pipeline.yaml"
+    path = root / "us-sc/policies/income_tax/pilot_liability_pipeline.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "format: rulespec/v1\n"
@@ -57,7 +59,7 @@ def _write_synthetic_module(root: Path) -> None:
     )
 
 
-def test_packaged_in_2026_registry_has_exact_bounded_direct_mapping() -> None:
+def test_packaged_sc_2026_registry_has_one_exact_direct_mapping() -> None:
     root = Path(__file__).parents[1]
     path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     document = yaml.safe_load(path.read_text())
@@ -75,13 +77,20 @@ def test_packaged_in_2026_registry_has_exact_bounded_direct_mapping() -> None:
         mapping["comparison"],
     ) == ("tax", "tax_unit", "year", "USD", "money")
     assert "candidate_priority" not in mapping
-    assert "completed Indiana adjusted gross income" in mapping["rationale"]
-    assert "before credits" in mapping["rationale"]
-    assert "excluding the separate county tax" in mapping["rationale"]
-    assert "final" not in mapping["rationale"].lower()
+    assert "reviewed nonnegative completed-return boundary" in mapping["rationale"]
+    for bounded_scope in (
+        "tax-year-2026",
+        "before nonrefundable credits",
+        "payments",
+        "final annual liability",
+    ):
+        assert bounded_scope in mapping["rationale"]
+    assert f"input.{INPUT_NAME}" not in mappings
+    assert "sc_pit_pilot_taxable_income" not in mappings
+    assert "sc_pit_pilot_schedule_tax" not in mappings
 
 
-def test_packaged_in_2026_runtime_pin_version_and_precedence_are_exact() -> None:
+def test_packaged_sc_2026_runtime_pin_version_and_precedence_are_exact() -> None:
     import axiom_oracles.bridges.registry as runtime_registry_module
 
     root = Path(__file__).parents[1]
@@ -98,12 +107,18 @@ def test_packaged_in_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert _shared_material(bundled_text) == _shared_material(runtime_text)
     assert bundled_text.count(FALLBACK_TEXT) == 1
     assert runtime_text.count(FALLBACK_TEXT) == 1
+    assert hashlib.sha256(FALLBACK_TEXT.encode()).hexdigest() == (
+        "31484c10dd215ae94df62a526db8d6d5e5276967ba4094ab8c19cb1dc8c218dd"
+    )
     assert hashlib.sha256(_shared_material(bundled_text).encode()).hexdigest() == (
-        "52a78f849cdab4bc9de9f4f3caffade7a6f4af161fb7e199f32fb1685b8aa342"
+        "933fda9c31f5450ac251865b31943cc100490ff4d394723fb520e2e9cebd73f4"
     )
 
     registry = load_policyengine_registry()
-    mapping = registry.mapping_for_legal_id(f"{MODULE}#{OUTPUT_NAME}", country="us")
+    mapping = registry.mapping_for_legal_id(
+        f"{MODULE}#{OUTPUT_NAME}",
+        country="us",
+    )
     assert mapping is not None
     assert mapping.match_type == "exact"
     assert mapping.mapping_type == "direct_variable"
@@ -113,15 +128,20 @@ def test_packaged_in_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert mapping.unit == "USD"
     assert mapping.comparison == "money"
 
-    fallback = registry.mapping_for_legal_id(
-        f"{MODULE}#completed_indiana_adjusted_gross_income",
-        country="us",
-    )
-    assert fallback is not None
-    assert fallback.legal_id == "us-in:"
-    assert fallback.match_type == "prefix"
-    assert fallback.mapping_type == "not_comparable"
-    assert fallback.candidate_priority == "P4"
+    for output_name in (
+        "sc_pit_pilot_taxable_income",
+        "sc_pit_pilot_schedule_tax",
+        "future_unmapped_output",
+    ):
+        fallback = registry.mapping_for_legal_id(
+            f"{MODULE}#{output_name}",
+            country="us",
+        )
+        assert fallback is not None
+        assert fallback.legal_id == "us-sc:"
+        assert fallback.match_type == "prefix"
+        assert fallback.mapping_type == "not_comparable"
+        assert fallback.candidate_priority == "P4"
 
     dependency_pin = re.search(
         r"axiom-oracles@[0-9a-f]{40}",
@@ -146,7 +166,7 @@ def test_packaged_in_2026_runtime_pin_version_and_precedence_are_exact() -> None
     )
 
 
-def test_policyengine_coverage_classifies_only_bounded_in_2026_output(
+def test_policyengine_coverage_classifies_only_bounded_sc_2026_output(
     tmp_path: Path,
 ) -> None:
     rulespec_root = tmp_path / "rulespec-us"
