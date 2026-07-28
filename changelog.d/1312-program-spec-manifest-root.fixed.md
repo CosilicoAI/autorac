@@ -1,0 +1,1 @@
+Resolve checkout-root RuleSpec source outputs against the checkout so ProgramSpec signing writes `.axiom/encoding-manifests/programs/...` manifests with `programs/...` citations. (`axiom-encode#1312`)

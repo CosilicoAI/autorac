@@ -312,6 +312,7 @@ from .repo_routing import (
     find_policy_repo_root,
     inspect_canonical_rulespec_checkout,
     is_composition_policy_repo_root,
+    is_rulespec_source_checkout_root,
     jurisdiction_content_dir,
     jurisdiction_subdir_names,
     monorepo_checkout_name,
@@ -42731,16 +42732,66 @@ def _relative_output_jurisdiction_prefix(relative_output: Path) -> str | None:
     return None
 
 
+def _is_checkout_root_source_output(relative_output: Path) -> bool:
+    """Return whether an output starts at a checkout-owned RuleSpec source root."""
+    parts = Path(relative_output).parts
+    return bool(parts and parts[0] in RULESPEC_FILESYSTEM_ROOTS)
+
+
+def _source_checkout_jurisdiction_content_root(
+    policy_repo_path: Path,
+    jurisdiction: str,
+) -> Path | None:
+    """Return one direct jurisdiction root under an admitted source checkout."""
+    if re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+)*", jurisdiction) is None:
+        return None
+    repo_path = Path(policy_repo_path)
+    expected_checkout = monorepo_checkout_name(jurisdiction)
+    if repo_path.name == expected_checkout:
+        checkout_root = repo_path
+    elif repo_path.name == jurisdiction:
+        checkout_root = repo_path.parent
+    else:
+        return None
+    if checkout_root.name != expected_checkout or not is_rulespec_source_checkout_root(
+        checkout_root
+    ):
+        return None
+    content_root = checkout_root / jurisdiction
+    if repo_path != checkout_root and repo_path != content_root:
+        return None
+    return content_root
+
+
+def _is_source_checkout_jurisdiction_content_root(path: Path) -> bool:
+    """Return whether ``path`` is a real direct child of a source checkout."""
+    path = Path(path)
+    return (
+        path.is_dir()
+        and not path.is_symlink()
+        and _source_checkout_jurisdiction_content_root(path, path.name) == path
+    )
+
+
 def _rulespec_apply_content_root(
     policy_repo_path: Path,
     relative_output: Path | None = None,
 ) -> Path:
-    """Return the jurisdiction content root for live generated writes."""
+    """Return the exact content or checkout root for live generated writes."""
     repo_path = Path(policy_repo_path)
-    if relative_output is not None:
+    if (
+        relative_output is not None
+        and _is_checkout_root_source_output(relative_output)
+        and is_rulespec_source_checkout_root(repo_path)
+    ):
+        content_root = repo_path
+    elif relative_output is not None:
         output_jurisdiction = _relative_output_jurisdiction_prefix(relative_output)
         if output_jurisdiction is not None:
-            content_root = jurisdiction_content_dir(repo_path, output_jurisdiction)
+            content_root = _source_checkout_jurisdiction_content_root(
+                repo_path,
+                output_jurisdiction,
+            ) or jurisdiction_content_dir(repo_path, output_jurisdiction)
         else:
             content_root = jurisdiction_content_dir(
                 repo_path,
@@ -42751,12 +42802,14 @@ def _rulespec_apply_content_root(
             repo_path,
             _repo_jurisdiction_prefix(repo_path),
         )
-    if (
-        not content_root.is_dir()
-        or canonical_rulespec_root_identity(content_root) is None
+    if not content_root.is_dir() or (
+        canonical_rulespec_root_identity(content_root) is None
+        and not is_rulespec_source_checkout_root(content_root)
+        and not _is_source_checkout_jurisdiction_content_root(content_root)
     ):
         raise ValueError(
             "RuleSpec apply target must be an existing canonical "
+            "rulespec-<country> checkout or "
             f"rulespec-<country>/<jurisdiction> content root: {content_root}"
         )
     return content_root
@@ -42767,15 +42820,19 @@ def _rulespec_apply_checkout_root(
     relative_output: Path | None = None,
 ) -> Path:
     """Return the canonical country checkout for an apply target."""
-    repo_path = Path(policy_repo_path).resolve()
+    repo_path = Path(policy_repo_path)
     content_root = _rulespec_apply_content_root(repo_path, relative_output)
-    checkout_root = content_root.parent
-    if canonical_rulespec_repo_name(checkout_root) != checkout_root.name:
+    checkout_root = (
+        content_root
+        if is_rulespec_source_checkout_root(content_root)
+        else content_root.parent
+    )
+    if not is_rulespec_source_checkout_root(checkout_root):
         raise ValueError(
             "RuleSpec apply target must belong to a canonical "
             f"rulespec-<country> checkout: {repo_path}"
         )
-    return checkout_root
+    return checkout_root.resolve()
 
 
 def _relative_to_rulespec_apply_content_root(
@@ -46824,14 +46881,19 @@ def _applied_encoding_manifest_path(relative_output: Path) -> Path:
 
 
 def _rulespec_checkout_root(content_root: Path) -> Path:
-    """Return the country checkout for one exact canonical content root."""
+    """Return the country checkout for one exact content or checkout root."""
 
-    resolved = Path(content_root).resolve()
+    root = Path(content_root)
+    if is_rulespec_source_checkout_root(root):
+        return root.resolve()
+    if _is_source_checkout_jurisdiction_content_root(root):
+        return root.parent.resolve()
+    resolved = root.resolve()
     identity = canonical_rulespec_root_identity(resolved)
     if identity is None:
         raise ValueError(
-            "RuleSpec content root must use the canonical "
-            f"rulespec-<country>/<jurisdiction> layout: {resolved}"
+            "RuleSpec root must use the canonical rulespec-<country> checkout "
+            f"or rulespec-<country>/<jurisdiction> layout: {resolved}"
         )
     return resolved.parent
 
@@ -46843,6 +46905,8 @@ def _resolve_applied_manifest_placement(
     content_root = Path(content_root).resolve()
     checkout_root = _rulespec_checkout_root(content_root)
     relative_output = Path(relative_output)
+    if content_root == checkout_root:
+        return checkout_root, relative_output
     if relative_output.parts and relative_output.parts[0] == content_root.name:
         relative_output = Path(*relative_output.parts[1:])
     return checkout_root, Path(content_root.name) / relative_output
@@ -50783,6 +50847,8 @@ def _relative_rulespec_import_target(relative_output: Path) -> str:
 def _rulespec_anchor_base_for_output(repo_path: Path, relative_output: Path) -> str:
     target_path = relative_output.with_suffix("")
     parts = target_path.parts
+    if parts and parts[0] == RULESPEC_COMPOSITION_SPEC_ROOT:
+        return target_path.as_posix()
     if len(parts) > 1 and parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS:
         jurisdiction = parts[0]
         target = Path(*parts[1:]).as_posix()

@@ -1,77 +1,91 @@
-# Receipt.sign adoption progress
+# Issue 1312 progress
 
 ## State
 
-Implementation and validation are complete within the binding allowed-file
-scope. Handoff is blocked on one repository provenance requirement: the changed
-encoder paths must be behind a version bump, but a valid bump must also change
-`src/axiom_encode/__init__.py`, which this task explicitly forbids touching.
-Independent reviewers reproduced the conflict and found no other correctness
-issue. No configured final-report output path exists, so the report will be
-written outside the repository under `/private/tmp` at handoff.
+The checkout-root routing and ProgramSpec citation fix is implemented and
+verified end to end. Actual checkout-root source directories use a narrow
+source-checkout admission mode without weakening normal canonical routing;
+mixed root/jurisdiction layouts and symlink rejection are covered. The
+terminal version is 0.2.1407, focused checks pass, and the independent
+review-fix cycle has no remaining actionable findings. The exact origin diff
+has been audited and the required untracked worker report is complete.
 
 ## Done
 
-- Confirmed the worktree and branch match the requested starting point.
-- Read the repository instructions and the GitNexus exploration/impact workflows.
-- Established the implementation, test, review, and reporting plan.
-- Traced all three production callers and every existing issue-string branch.
-- Read `signing_broker.py`, the relevant unchanged tests and fixtures, and the
-  full `receipt.sign` source at the clean local `v0.2.0` tag.
-- Ran the nine-test focused behavior baseline: 9 passed.
-- Replaced the final direct Ed25519 verification with receipt's 1-of-1 keyring;
-  signing and every preceding envelope/trust-root check remain untouched.
-- Refreshed `uv.lock` with receipt 0.2.0 using uv's offline cached resolver;
-  the wheel and sdist SHA-256 hashes exactly match the task's known-good values.
-- Installed the resolved wheel without dependencies in an isolated temporary
-  environment and read its complete 459-line `receipt.sign` source. Confirmed
-  the installed version is 0.2.0 and its `verify_threshold` API matches the
-  implementation (with no 0.3.0-only `allow_legacy` parameter).
-- Completed read-only implementation, packaging, and test-design audits; no
-  correctness defect was found in the interrupted shim.
-- Added seven dedicated receipt-adoption tests covering the real signing path,
-  four cryptographic refusal cases, exact receipt delegation inputs, and every
-  unchanged envelope/trust-root issue class and relevant check ordering.
-- Added the `ops#3` changelog fragment without claiming a trust-model change.
-- Ran the new test file against the installed receipt 0.2.0 wheel: 7 passed.
-- Ran the unchanged focused behavior oracle together with the new tests:
-  16 passed.
-- Ran repository lint, formatting, and compilation checks: Ruff check passed,
-  Ruff format check passed after applying its one-line domain-expression fix,
-  and `compileall` passed.
-- Ran the broadest locally runnable suite. After correcting an isolated test
-  environment that initially imported the parent checkout and rerunning two
-  temp-root-sensitive tests in the normal system temp directory, the runnable
-  tests total 4,427 passed and 31 skipped. Eleven host/provenance nodes cannot
-  pass locally: one task-caused version guard, one set-id semantics check, eight
-  root-owned Homebrew Git/provisioning checks, and one sandboxed `/var/tmp`
-  write check.
-- Reproduced the task-caused guard independently:
-  `test_current_encoder_affecting_changes_are_behind_version_bump` reports that
-  `pyproject.toml`, `src/axiom_encode/cli.py`, and `uv.lock` changed after
-  `fc04012d30d0`. The guard itself requires matching versions in
-  `pyproject.toml`, `src/axiom_encode/__init__.py`, and `uv.lock`.
-- Cross-checked the locked receipt wheel and sdist hashes again against the
-  supplied known-good values; both match exactly.
-- Completed independent code, packaging, and test reviews. All reviewers found
-  the receipt mechanics, domain bytes, issue behavior, tests, hashes, scope,
-  and changelog correct. The packaging review's only actionable formatting
-  finding was fixed and rechecked. The remaining version conflict was confirmed
-  by two reviewers as a blocker requiring a scope decision.
-- Reran the changed-path focused set after the review fix: 10 passed, with Ruff
-  check, Ruff format check, `compileall`, hash assertions, and `git diff --check`
-  all passing.
-- Ran the final post-review broad runnable-suite command without the temporary
-  root override: 4,427 passed, 31 skipped, 11 explicitly documented host/scope
-  checks deselected, and 12 dependency deprecation warnings in 109.06 seconds.
-- Repeated the independent review after the formatting fix. The code and
-  packaging reviewers reported no actionable findings; both retained only the
-  documented version-provenance scope blocker.
+- Created the requested local branch and isolated worktree from `origin/main`.
+- Read the repository instructions and applicable debugging/GitHub workflows.
+- Established the fail-first, implementation, real-checkout, compatibility,
+  validation, and independent-review plan.
+- Read issue 1312, rulespec-us PR 1139, issue 1078, and the committed Arizona
+  ProgramSpec manifest that establishes checkout-root placement and a bare
+  `programs/...` citation.
+- Confirmed the pinned bridge mechanism: the ProgramSpec has no leading
+  jurisdiction prefix, falls back to `<checkout>/us`, and fails while rebasing
+  `<checkout>/programs/...`; its anchor is also incorrectly `us:programs/...`.
+- Located the exact held-out SC change in rulespec-us reflog commit `f93f556c`:
+  add page 159/remove page 369 in the ProgramSpec and drain three worklist rows.
+- Added current-main regressions for the signed ProgramSpec manifest, the four
+  requested checkout-root source roots, and checkout-root placement while
+  retaining the UK and jurisdiction-content-root controls.
+- Captured the fail-first focused run: six failures, including the exact
+  `programs/us-sc/snap/fy-2026.yaml` writer case.
+- Recorded that `uv run` cannot access `~/.cache/uv` in the sandbox; focused
+  current-main tests run with an existing compatible project environment.
+- Routed checkout-owned `policies/`, `programs/`, `regulations/`, and
+  `statutes/` outputs through the exact checkout root, taught manifest
+  placement to accept that root, and made ProgramSpec citations bare
+  `programs/...` paths.
+- Added the issue 1312 changelog entry.
+- Passed the focused current-main regression plus the jurisdiction-prefixed and
+  UK issue-1078 controls: nine tests passed; focused Ruff also passed.
+- Reconstructed the exact two-file SC change on rulespec-us base
+  `187d8d8e`: page 159 entered/page 369 left the ProgramSpec scope and all
+  three `SNAP-SC-UTIL` worklist rows changed to `merged`.
+- Captured the literal pinned-bridge fail-first: exit 1 at the reported
+  `path.relative_to(manifest_root)` line because the root ProgramSpec was
+  rebased against `<scratch>/us`.
+- Applied the minimal routing/citation backport to a disposable pinned checkout,
+  followed by a scratch-only version bump required by its clean-provenance
+  gate; the campaign interpreter then signed the reconstructed diff.
+- Confirmed the v1 output shape: checkout-root
+  `.axiom/encoding-manifests/programs/us-sc/snap/fy-2026.json`, bare
+  `programs/us-sc/snap/fy-2026` citation, and checkout-relative applied path.
+- Committed the manifest only in the disposable rulespec clone and passed the
+  separate external `guard-generated --roots programs` check.
+- Confirmed the source `wt-snap-sc` worktree remains unchanged apart from its
+  two pre-existing untracked report files.
+- Completed the first independent review pass. It found that the initial
+  four-root test did not create real atomic roots and that resolving the input
+  path before admission weakened symlink rejection.
+- Added a narrowly scoped checkout inspection mode for manifest-owned source
+  roots while preserving the normal rule that only ProgramSpecs are admitted
+  at checkout root, restored lexical admission, and added real-file,
+  symlink-rejection, direct `us-sc/policies/...`, and direct `uk/statutes/...`
+  coverage.
+- Passed all 14 strengthened focused routing/writer/compatibility tests.
+- The second review pass found two additional mixed-layout safety gaps:
+  jurisdiction-prefixed files failed when the same checkout also had a
+  root-level atomic source directory, and the checkout-root helper resolved a
+  symlink alias before admission. Captured both as three failing cases, then
+  fixed them with scoped direct-child routing and lexical validation.
+- Passed the final routing, writer, issue-1078, repository-routing, and version
+  provenance matrix: 57 tests passed.
+- Coordinated the terminal encoder version as 0.2.1407 in `pyproject.toml`,
+  `src/axiom_encode/__init__.py`, and `uv.lock`, after all encoder-affecting
+  commits.
+- Passed full Ruff, `compileall`, and `git diff --check`.
+- Ran all 6,091 repository tests with an available offline compatible
+  environment and writable scratch Go cache: 6,024 passed and 31 skipped.
+  Of 36 failures, the sole branch-caused version-provenance failure was fixed
+  and rerun green; the other 35 are confined to the environment's stale
+  `axiom-oracles`/editable install and sandbox-dependent system/provisioning
+  checks.
+- Completed the final independent review pass after the mixed-layout fix and
+  terminal version bump; both reviewers reported no remaining actionable
+  findings.
+- Verified the exact `origin/main..HEAD` name-only diff and clean tracked
+  state, then wrote the required untracked `WORKER-REPORT.md`.
 
 ## Next
 
-- Obtain explicit maintainer/user permission to add the required coordinated
-  version bump in `pyproject.toml`, `src/axiom_encode/__init__.py`, and `uv.lock`,
-  then rerun the provenance guard and the full suite. Without that scope
-  exception, retain this documented blocker and do not mark the branch ready or
-  merge it.
+- No implementation work remains; deliver the local head and report.

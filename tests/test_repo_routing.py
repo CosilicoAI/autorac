@@ -29,6 +29,7 @@ from axiom_encode.repo_routing import (
     inspect_canonical_rulespec_checkout,
     is_composition_policy_repo_root,
     is_policy_repo_root,
+    is_rulespec_source_checkout_root,
     jurisdiction_subdir_names,
 )
 
@@ -72,6 +73,7 @@ def test_composition_checkout_identity_admits_only_top_level_programs(tmp_path):
 
     assert is_policy_repo_root(checkout) is False
     assert is_composition_policy_repo_root(checkout) is True
+    assert is_rulespec_source_checkout_root(checkout) is True
     assert inspect_canonical_rulespec_checkout(
         checkout, allow_composition_specs=True
     ) == ("rulespec-us", None)
@@ -79,6 +81,7 @@ def test_composition_checkout_identity_admits_only_top_level_programs(tmp_path):
 
     (checkout / "statutes").mkdir()
     assert is_composition_policy_repo_root(checkout) is False
+    assert is_rulespec_source_checkout_root(checkout) is True
     assert inspect_canonical_rulespec_checkout(
         checkout, allow_composition_specs=True
     ) == (None, "atomic-root-at-checkout")
@@ -92,6 +95,7 @@ def test_composition_checkout_identity_rejects_symlinked_programs(tmp_path):
     (checkout / "programs").symlink_to(external_programs, target_is_directory=True)
 
     assert is_composition_policy_repo_root(checkout) is False
+    assert is_rulespec_source_checkout_root(checkout) is False
 
 
 def test_composition_checkout_preserves_atomic_jurisdiction_identity(tmp_path):
