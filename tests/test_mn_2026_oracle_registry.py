@@ -10,8 +10,8 @@ from axiom_oracles.bridges.registry import load_policyengine_registry
 MODULE = "us-mn:policies/income_tax/pilot_liability_pipeline"
 OUTPUT = "mn_pit_pilot_schedule_tax"
 POLICYENGINE_VARIABLE = "mn_basic_tax"
-ORACLE_MERGE = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
-ENCODER_VERSION = "0.2.1407"
+ORACLE_MERGE = "678dd840b4c64e54c63805b0183f05c0f769b399"
+ENCODER_VERSION = "0.2.1408"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-mn:"
     country: us
     mapping_type: not_comparable
