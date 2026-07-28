@@ -262,6 +262,43 @@ build/axiom-encode-signing-supervisor \
 `retire` accepts only a module already covered by a verified model
 `encode --apply` manifest and includes its companion test automatically.
 
+Canonicalize paths of already-authenticated v5 model encodings with the
+separate path-only workflow. The plan is deliberately minimal and binds one
+clean RuleSpec HEAD:
+
+```json
+{
+  "schema_version": "axiom-encode/rulespec-path-migration-plan/v1",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "moves": [
+    {
+      "from": "us-la/statutes/47:32.yaml",
+      "to": "us-la/statutes/47/32.yaml"
+    }
+  ]
+}
+```
+
+Run it under the same protected apply-signing supervisor:
+
+```bash
+axiom-encode migrate-rulespec-paths \
+  --plan /tmp/canonical-paths.json \
+  --policy-repo-path ~/TheAxiomFoundation/rulespec-us \
+  --corpus-path ~/TheAxiomFoundation/axiom-corpus
+```
+
+The destination must be the command's unique normalization of colon, whitespace,
+case, or non-ASCII-dash path components. Companion tests and exact durable
+RuleSpec references are derived rather than caller-authored. Legal
+`corpus_citation_path` strings are preserved. The command accepts only files
+with exactly one valid current-v5 model owner; legacy HMAC, manual,
+deterministic, unmanifested, overlapping, or stale provenance fails closed.
+It signs a plan/HEAD/tree/corpus/waiver/hash-bound receipt under
+`.axiom/path-migrations/`, embeds the prior signed model manifest in each
+replacement manifest, and installs moves, reference rewrites, receipts, and
+manifests in one recoverable transaction.
+
 Repository CI should run:
 
 ```bash

@@ -39,6 +39,7 @@ from axiom_encode.cli import (
     APPLIED_ENCODING_OFFICIAL_REPOSITORY,
     APPLIED_ENCODING_RETIRE_TOOL,
     APPLIED_ENCODING_SIGNATURE_ALGORITHM,
+    _all_applied_encoding_manifest_paths,
     _append_exception_positive_companion_tests_if_missing,
     _append_generated_derived_output_tests_if_missing,
     _append_generated_judgment_positive_tests_if_missing,
@@ -89,6 +90,7 @@ from axiom_encode.cli import (
     _load_verified_applied_encoding_manifest_payload,
     _local_factual_input_names_from_rules_content,
     _looks_like_absolute_rulespec_output_target,
+    _manifest_coverage_by_file,
     _medicaid_magi_income_helper_issue_names,
     _normalize_invalid_proof_atom_kinds,
     _normalize_invalid_proof_atom_kinds_file,
@@ -240,6 +242,7 @@ from axiom_encode.cli import (
     cmd_log,
     cmd_log_event,
     cmd_manifest_census,
+    cmd_migrate_rulespec_paths,
     cmd_normalize_proof_atom_kinds,
     cmd_oracle_candidates,
     cmd_oracle_coverage,
@@ -33025,6 +33028,586 @@ class TestGuardGenerated:
                 ],
             }
         )
+
+    def _path_migration_repo(
+        self,
+        tmp_path: Path,
+    ) -> tuple[Path, Path, str]:
+        repo = self._canonical_guard_repo(tmp_path)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test User")
+        primary = repo / "us/statutes/26:1.yaml"
+        companion = repo / "us/statutes/26:1.test.yaml"
+        dependent = repo / "us/policies/example.yaml"
+        self._source_backed_rule(primary)
+        self._source_backed_rule(companion)
+        self._source_backed_rule(dependent)
+        dependent.write_text(
+            dependent.read_text() + "imports:\n" + "  - us:statutes/26:1#test_output\n"
+        )
+        manifest = repo / ".axiom/encoding-manifests/us/statutes/26:1.json"
+        manifest.parent.mkdir(parents=True)
+        payload = self._model_manifest(
+            [
+                {
+                    "path": "us/statutes/26:1.yaml",
+                    "sha256": _sha256_file(primary),
+                },
+                {
+                    "path": "us/statutes/26:1.test.yaml",
+                    "sha256": _sha256_file(companion),
+                },
+            ]
+        )
+        manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        dependent_manifest = repo / ".axiom/encoding-manifests/us/policies/example.json"
+        dependent_manifest.parent.mkdir(parents=True, exist_ok=True)
+        dependent_payload = self._model_manifest(
+            [
+                {
+                    "path": "us/policies/example.yaml",
+                    "sha256": _sha256_file(dependent),
+                }
+            ]
+        )
+        dependent_manifest.write_text(
+            json.dumps(dependent_payload, indent=2, sort_keys=True) + "\n"
+        )
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "add v5 encoded rules")
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        plan = repo.parent / "migration-plan.json"
+        plan.write_text(
+            json.dumps(
+                {
+                    "schema_version": ("axiom-encode/rulespec-path-migration-plan/v1"),
+                    "base_commit": head,
+                    "moves": [
+                        {
+                            "from": "us/statutes/26:1.yaml",
+                            "to": "us/statutes/26/1.yaml",
+                        }
+                    ],
+                }
+            )
+        )
+        return repo, plan, head
+
+    def _enable_path_migration(
+        self,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_applied_encoding_manifest_signer",
+            lambda: TEST_APPLY_SIGNING_BROKER,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._current_guard_encoder_execution_identity",
+            lambda: TEST_PINNED_ENCODER_IDENTITY,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_clean_axiom_encode_git_provenance",
+            lambda: {
+                "root": "/repo/axiom-encode",
+                "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                "dirty_tracked": False,
+                "version": AXIOM_ENCODE_TEST_VERSION,
+                "version_commit": "b" * 40,
+                "identity_source": "git",
+            },
+        )
+
+    def test_authenticated_v5_path_migration_is_transactional_and_generated(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        provenance = {
+            "root": "/repo/axiom-encode",
+            "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+            "dirty_tracked": False,
+            "version": AXIOM_ENCODE_TEST_VERSION,
+            "version_commit": "b" * 40,
+            "identity_source": "git",
+        }
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_applied_encoding_manifest_signer",
+            lambda: TEST_APPLY_SIGNING_BROKER,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._current_guard_encoder_execution_identity",
+            lambda: TEST_PINNED_ENCODER_IDENTITY,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_clean_axiom_encode_git_provenance",
+            lambda: provenance,
+        )
+        monkeypatch.setenv("GIT_DIR", str(repo / "redirected.git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(repo.parent / "redirected-tree"))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(repo / "redirected.index"))
+
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+        monkeypatch.delenv("GIT_DIR")
+        monkeypatch.delenv("GIT_WORK_TREE")
+        monkeypatch.delenv("GIT_INDEX_FILE")
+
+        assert not (repo / "us/statutes/26:1.yaml").exists()
+        assert not (repo / "us/statutes/26:1.test.yaml").exists()
+        assert (repo / "us/statutes/26/1.yaml").is_file()
+        assert (repo / "us/statutes/26/1.test.yaml").is_file()
+        dependent = repo / "us/policies/example.yaml"
+        assert "us:statutes/26/1#test_output" in dependent.read_text()
+        assert "us:statutes/26:1" not in dependent.read_text()
+        migrated_manifest = repo / ".axiom/encoding-manifests/us/statutes/26/1.json"
+        assert migrated_manifest.is_file()
+        assert not (repo / ".axiom/encoding-manifests/us/statutes/26:1.json").exists()
+        payload = json.loads(migrated_manifest.read_text())
+        assert payload["tool"] == "axiom-encode migrate-rulespec-paths"
+        assert payload["backend"] if "backend" in payload else None is None
+        assert payload["migrated_manifest"]["backend"] == "codex"
+        receipt_path = repo / payload["migration"]["receipt_path"]
+        assert receipt_path.is_file()
+        receipt = json.loads(receipt_path.read_text())
+        assert (
+            receipt["repository"]["base_commit"]
+            == _git(repo, "rev-parse", "HEAD").stdout.strip()
+        )
+        coverage = _manifest_coverage_by_file(
+            repo,
+            _all_applied_encoding_manifest_paths(repo),
+            local_corpus_release=self.corpus_release,
+            expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+            expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+        )
+        assert coverage["us/statutes/26/1.yaml"][0]["is_generated"] is True
+        assert coverage["us/policies/example.yaml"][0]["is_generated"] is True
+        receipt["moves"][0]["to_sha256"] = "f" * 64
+        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        forged_coverage = _manifest_coverage_by_file(
+            repo,
+            _all_applied_encoding_manifest_paths(repo),
+            local_corpus_release=self.corpus_release,
+            expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+            expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+        )
+        assert "us/statutes/26/1.yaml" not in forged_coverage
+        assert "us/policies/example.yaml" not in forged_coverage
+
+    def test_path_migration_recomputes_signed_dependent_rewrite_from_base(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+
+        dependent = repo / "us/policies/example.yaml"
+        dependent.write_text(dependent.read_text() + "arbitrary: injected\n")
+        dependent_hash = _sha256_file(dependent)
+        dependent_manifest = repo / ".axiom/encoding-manifests/us/policies/example.json"
+        manifest_payload = json.loads(dependent_manifest.read_text())
+        receipt_path = repo / manifest_payload["migration"]["receipt_path"]
+        receipt_payload = json.loads(receipt_path.read_text())
+        dependent_rewrite = next(
+            item
+            for item in receipt_payload["rewrites"]
+            if item["path"] == "us/policies/example.yaml"
+        )
+        dependent_rewrite["after_sha256"] = dependent_hash
+        _sign_applied_encoding_manifest(
+            receipt_payload,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        receipt_path.write_text(
+            json.dumps(receipt_payload, indent=2, sort_keys=True) + "\n"
+        )
+        manifest_payload["migration"]["receipt_sha256"] = _sha256_file(receipt_path)
+        manifest_payload["applied_files"][0]["sha256"] = dependent_hash
+        _sign_applied_encoding_manifest(
+            manifest_payload,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        dependent_manifest.write_text(
+            json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n"
+        )
+
+        coverage = _manifest_coverage_by_file(
+            repo,
+            _all_applied_encoding_manifest_paths(repo),
+            local_corpus_release=self.corpus_release,
+            expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+            expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+        )
+        assert "us/policies/example.yaml" not in coverage
+
+    def test_path_migration_guard_rejects_live_mode_change_after_migration(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+
+        destination = repo / "us/statutes/26/1.yaml"
+        destination.chmod(0o755)
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            all_files=True,
+        )
+
+        assert any(
+            "migrated live file us/statutes/26/1.yaml must have mode 0644"
+            in issue
+            for issue in issues
+        )
+
+        destination.chmod(0o644)
+        _git(repo, "add", "-A")
+        _git(repo, "update-index", "--chmod=+x", "us/statutes/26/1.yaml")
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            all_files=True,
+        )
+        assert any(
+            "live index mode for us/statutes/26/1.yaml must be 100644, found 100755"
+            in issue
+            for issue in issues
+        )
+
+    def test_path_migration_guard_reuses_one_receipt_content_proof(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import axiom_encode.cli as cli_module
+
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+        original = cli_module._path_migration_receipt_content_issues
+        proof_calls = 0
+
+        def counted_proof(*args, **kwargs):
+            nonlocal proof_calls
+            proof_calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            cli_module,
+            "_path_migration_receipt_content_issues",
+            counted_proof,
+        )
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            all_files=True,
+        )
+
+        assert issues == []
+        assert proof_calls == 1
+
+    def test_path_migration_postcheck_reuses_one_receipt_content_proof(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import axiom_encode.cli as cli_module
+
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        original = cli_module._path_migration_receipt_content_issues
+        proof_calls = 0
+
+        def counted_proof(*args, **kwargs):
+            nonlocal proof_calls
+            proof_calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            cli_module,
+            "_path_migration_receipt_content_issues",
+            counted_proof,
+        )
+
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+
+        assert proof_calls == 1
+
+    def test_path_migration_census_reuses_one_receipt_content_proof(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import axiom_encode.cli as cli_module
+
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+        original = cli_module._path_migration_receipt_content_issues
+        proof_calls = 0
+
+        def counted_proof(*args, **kwargs):
+            nonlocal proof_calls
+            proof_calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            cli_module,
+            "_path_migration_receipt_content_issues",
+            counted_proof,
+        )
+
+        census = cli_module._manifest_census(
+            repo,
+            roots=tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS)),
+        )
+
+        assert census["unmanifested"] == 0
+        assert proof_calls == 1
+
+    def test_path_migration_rejects_resigned_historical_nested_model(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        cmd_migrate_rulespec_paths(
+            SimpleNamespace(
+                policy_repo_path=repo,
+                corpus_path=self.corpus_path,
+                plan=plan,
+            )
+        )
+
+        dependent_manifest = repo / ".axiom/encoding-manifests/us/policies/example.json"
+        manifest_payload = json.loads(dependent_manifest.read_text())
+        nested = manifest_payload["migrated_manifest"]
+        historical_version = "0.1.0"
+        historical_commit = "c" * 40
+        nested["axiom_encode_version"] = historical_version
+        nested["axiom_encode_git"]["commit"] = historical_commit
+        nested["axiom_encode_git"]["version"] = historical_version
+        nested["validation_execution"]["axiom_encode"]["commit"] = historical_commit
+        nested["validation_execution"]["axiom_encode"]["version"] = historical_version
+        _sign_applied_encoding_manifest(nested, TEST_APPLY_SIGNING_BROKER)
+        nested_bytes = (json.dumps(nested, indent=2, sort_keys=True) + "\n").encode()
+        nested_hash = hashlib.sha256(nested_bytes).hexdigest()
+
+        receipt_path = repo / manifest_payload["migration"]["receipt_path"]
+        receipt_payload = json.loads(receipt_path.read_text())
+        receipt_entry = next(
+            item
+            for item in receipt_payload["manifests"]
+            if item["replacement_path"]
+            == ".axiom/encoding-manifests/us/policies/example.json"
+        )
+        receipt_entry["prior_sha256"] = nested_hash
+        _sign_applied_encoding_manifest(
+            receipt_payload,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        receipt_path.write_text(
+            json.dumps(receipt_payload, indent=2, sort_keys=True) + "\n"
+        )
+        manifest_payload["migration"]["prior_manifest_sha256"] = nested_hash
+        manifest_payload["migration"]["receipt_sha256"] = _sha256_file(receipt_path)
+        _sign_applied_encoding_manifest(
+            manifest_payload,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        dependent_manifest.write_text(
+            json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n"
+        )
+
+        coverage = _manifest_coverage_by_file(
+            repo,
+            _all_applied_encoding_manifest_paths(repo),
+            local_corpus_release=self.corpus_release,
+            expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+            expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+        )
+        assert "us/policies/example.yaml" not in coverage
+
+    def test_path_migration_rejects_symlinked_plan_ancestor_and_executable_source(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        self._enable_path_migration(monkeypatch)
+        real_plan_dir = tmp_path / "real-plan"
+        real_plan_dir.mkdir()
+        real_plan = real_plan_dir / plan.name
+        plan.replace(real_plan)
+        linked_plan_dir = tmp_path / "linked-plan"
+        linked_plan_dir.symlink_to(real_plan_dir, target_is_directory=True)
+
+        with pytest.raises(SystemExit, match="Cannot read migration plan safely"):
+            cmd_migrate_rulespec_paths(
+                SimpleNamespace(
+                    policy_repo_path=repo,
+                    corpus_path=self.corpus_path,
+                    plan=linked_plan_dir / real_plan.name,
+                )
+            )
+        assert (repo / "us/statutes/26:1.yaml").is_file()
+
+        source = repo / "us/statutes/26:1.yaml"
+        source.chmod(source.stat().st_mode | stat.S_IXUSR)
+        _git(repo, "add", "us/statutes/26:1.yaml")
+        _git(repo, "commit", "-m", "make source executable")
+        plan_payload = json.loads(real_plan.read_text())
+        plan_payload["base_commit"] = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        real_plan.write_text(json.dumps(plan_payload))
+        with pytest.raises(SystemExit, match="regular 0644"):
+            cmd_migrate_rulespec_paths(
+                SimpleNamespace(
+                    policy_repo_path=repo,
+                    corpus_path=self.corpus_path,
+                    plan=real_plan,
+                )
+            )
+        assert (repo / "us/statutes/26:1.yaml").is_file()
+        assert not (repo / "us/statutes/26/1.yaml").exists()
+
+    def test_path_migration_rejects_missing_generated_owner_without_mutation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        (repo / ".axiom/encoding-manifests/us/statutes/26:1.json").unlink()
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "remove source provenance")
+        payload = json.loads(plan.read_text())
+        payload["base_commit"] = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        plan.write_text(json.dumps(payload))
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_applied_encoding_manifest_signer",
+            lambda: TEST_APPLY_SIGNING_BROKER,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._current_guard_encoder_execution_identity",
+            lambda: TEST_PINNED_ENCODER_IDENTITY,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_clean_axiom_encode_git_provenance",
+            lambda: {
+                "root": "/repo/axiom-encode",
+                "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                "dirty_tracked": False,
+                "version": AXIOM_ENCODE_TEST_VERSION,
+                "version_commit": "b" * 40,
+                "identity_source": "git",
+            },
+        )
+
+        with pytest.raises(SystemExit, match="exactly one authenticated generated"):
+            cmd_migrate_rulespec_paths(
+                SimpleNamespace(
+                    policy_repo_path=repo,
+                    corpus_path=self.corpus_path,
+                    plan=plan,
+                )
+            )
+
+        assert (repo / "us/statutes/26:1.yaml").is_file()
+        assert not (repo / "us/statutes/26/1.yaml").exists()
+        assert not (repo / ".axiom/path-migrations").exists()
+
+    def test_path_migration_rolls_back_when_receipt_postcheck_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo, plan, _head = self._path_migration_repo(tmp_path)
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_applied_encoding_manifest_signer",
+            lambda: TEST_APPLY_SIGNING_BROKER,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._current_guard_encoder_execution_identity",
+            lambda: TEST_PINNED_ENCODER_IDENTITY,
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._require_clean_axiom_encode_git_provenance",
+            lambda: {
+                "root": "/repo/axiom-encode",
+                "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                "dirty_tracked": False,
+                "version": AXIOM_ENCODE_TEST_VERSION,
+                "version_commit": "b" * 40,
+                "identity_source": "git",
+            },
+        )
+        monkeypatch.setattr(
+            "axiom_encode.cli._load_verified_path_migration_receipt",
+            lambda *_args, **_kwargs: (None, None, ["injected receipt failure"]),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="Migration receipt failed post-install verification",
+        ):
+            cmd_migrate_rulespec_paths(
+                SimpleNamespace(
+                    policy_repo_path=repo,
+                    corpus_path=self.corpus_path,
+                    plan=plan,
+                )
+            )
+
+        assert (repo / "us/statutes/26:1.yaml").is_file()
+        assert (repo / "us/statutes/26:1.test.yaml").is_file()
+        assert not (repo / "us/statutes/26/1.yaml").exists()
+        assert not (repo / ".axiom/path-migrations").exists()
+        assert (repo / ".axiom/encoding-manifests/us/statutes/26:1.json").is_file()
+        assert not (repo / ".axiom/.apply-transaction").exists()
 
     def test_empty_diff_still_verifies_signed_release_binding(self, tmp_path):
         toolchain = tmp_path / ".axiom/toolchain.toml"
