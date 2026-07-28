@@ -5120,7 +5120,7 @@ def test_packaged_alabama_2026_schedule_registry_and_fallback_are_synchronized()
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5231,7 +5231,7 @@ def test_packaged_connecticut_2026_ordinary_tax_registry_is_exactly_synchronized
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5315,7 +5315,7 @@ def test_packaged_georgia_2026_annual_tax_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5410,7 +5410,7 @@ def test_packaged_mississippi_2026_schedule_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5571,7 +5571,7 @@ def test_packaged_kansas_2026_k40es_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 
@@ -5676,7 +5676,7 @@ def test_packaged_dc_2026_section_47_1806_03_has_exact_bounded_slice():
 def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "a62340d2f1e2873b43404478835de5577e685736"
+    durable_oracle_merge = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1406"')
+        .startswith('__version__ = "0.2.1407"')
     )
 
 
@@ -5879,7 +5879,7 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
 
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "a62340d2f1e2873b43404478835de5577e685736"
+    durable_oracle_merge = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1406"
+    assert encoder_package["version"] == "0.2.1407"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1406"
+    assert project["project"]["version"] == "0.2.1407"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1406"')
+        .startswith('__version__ = "0.2.1407"')
     )
 
 
@@ -6155,7 +6155,7 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
 
     import axiom_oracles.bridges.registry as runtime_registry_module
 
-    durable_oracle_merge = "a62340d2f1e2873b43404478835de5577e685736"
+    durable_oracle_merge = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     root = Path(__file__).parents[1]
     bundled_path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     runtime_path = (
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1406"
+    assert encoder_package["version"] == "0.2.1407"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1406"
+    assert project["project"]["version"] == "0.2.1407"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1406"')
+        .startswith('__version__ = "0.2.1407"')
     )
 
 
@@ -6506,7 +6506,7 @@ def test_packaged_utah_2026_before_credit_registry_is_exactly_synchronized():
     )
     assert dependency_pin is not None
     pin = dependency_pin.group(0).removeprefix("axiom-oracles@")
-    assert pin == "a62340d2f1e2873b43404478835de5577e685736"
+    assert pin == "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
     assert f"?rev={pin}#{pin}" in (root / "uv.lock").read_text()
 
 

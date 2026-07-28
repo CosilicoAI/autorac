@@ -1,0 +1,1 @@
+Bundle Montana's bounded tax-year-2026 income-tax-before-nonrefundable-credits mapping and pin its durable reviewed oracle-main merge without claiming taxable-income construction, section 1222 net-long-term-capital-gain inputs, filing-status classification, schedule internals, credits, payments, or final annual liability.

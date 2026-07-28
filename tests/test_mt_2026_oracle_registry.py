@@ -7,16 +7,16 @@ import yaml
 from axiom_oracles.bridges.coverage import build_policyengine_coverage_report
 from axiom_oracles.bridges.registry import load_policyengine_registry
 
-MODULE = "us-mn:policies/income_tax/pilot_liability_pipeline"
-OUTPUT = "mn_pit_pilot_schedule_tax"
-POLICYENGINE_VARIABLE = "mn_basic_tax"
+MODULE = "us-mt:policies/income_tax/pilot_liability_pipeline"
+OUTPUT_NAME = "mt_pit_pilot_income_tax_liability"
+POLICYENGINE_VARIABLE = "mt_income_tax_before_non_refundable_credits_joint"
 ORACLE_MERGE = "cee703f34ad367534b2d50debc2bcd9dfdf9c29e"
 ENCODER_VERSION = "0.2.1407"
-FALLBACK_TEXT = """  - legal_id_prefix: "us-mn:"
+FALLBACK_TEXT = """  - legal_id_prefix: "us-mt:"
     country: us
     mapping_type: not_comparable
     candidate_priority: P4
-    rationale: PolicyEngine-US does not model every Minnesota statute, agency policy manual, or state regulation at output granularity; independently reviewed comparable outputs carry exact mappings which take precedence over this jurisdiction-wide fallback."""
+    rationale: PolicyEngine-US does not model every Montana statute, agency policy manual, or state regulation at output granularity; independently reviewed comparable outputs carry exact mappings which take precedence over this jurisdiction-wide fallback."""
 
 
 def _module_mappings(document):
@@ -29,18 +29,13 @@ def _module_mappings(document):
 
 
 def _shared_material(text: str) -> str:
-    start = text.index(
-        "  # Minnesota's tax-year-2026 pilot exposes a source-faithful continuous"
-    )
+    start = text.index("  # Montana's bounded TY2026 tax before nonrefundable credits.")
     exact_end_marker = (
-        "    rationale: Both outputs apply Minnesota's four-rate individual "
-        "schedule to completed Minnesota taxable income selected by filing "
-        "status. The final official tax-year-2026 RuleSpec thresholds are $10 "
-        "to $30 above PolicyEngine-US 1.752.2's thresholds, producing only a "
-        "reviewed sub-dollar residual under the preserved $1 absolute "
-        "tolerance. This narrow mapping makes no claim about taxable-income "
-        "construction, tax-table rounding, alternative minimum tax, net "
-        "investment income tax, credits, payments, or final liability."
+        "    rationale: Both outputs compose Montana's complete temporary "
+        "tax-year-2026 ordinary-income and net-long-term-capital-gain schedules "
+        "under MCA 15-30-2103 from the same completed-return boundaries, before "
+        "nonrefundable credits; this narrow mapping excludes credits, payments, "
+        "and final annual liability."
     )
     exact_end = text.index(exact_end_marker, start) + len(exact_end_marker)
     fallback_start = text.index(FALLBACK_TEXT)
@@ -49,12 +44,12 @@ def _shared_material(text: str) -> str:
 
 
 def _write_synthetic_module(root: Path) -> None:
-    path = root / "us-mn/policies/income_tax/pilot_liability_pipeline.yaml"
+    path = root / "us-mt/policies/income_tax/pilot_liability_pipeline.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "format: rulespec/v1\n"
         "rules:\n"
-        f"  - name: {OUTPUT}\n"
+        f"  - name: {OUTPUT_NAME}\n"
         "    kind: derived\n"
         "    versions:\n"
         "      - effective_from: '2026-01-01'\n"
@@ -62,14 +57,14 @@ def _write_synthetic_module(root: Path) -> None:
     )
 
 
-def test_packaged_mn_2026_registry_has_one_exact_direct_mapping() -> None:
+def test_packaged_mt_2026_registry_has_one_exact_direct_mapping() -> None:
     root = Path(__file__).parents[1]
     path = root / "src/axiom_encode/oracles/policyengine/mappings/us.yaml"
     document = yaml.safe_load(path.read_text())
     mappings = _module_mappings(document)
 
-    assert set(mappings) == {OUTPUT}
-    mapping = mappings[OUTPUT]
+    assert set(mappings) == {OUTPUT_NAME}
+    mapping = mappings[OUTPUT_NAME]
     assert mapping["mapping_type"] == "direct_variable"
     assert mapping["policyengine_variable"] == POLICYENGINE_VARIABLE
     assert (
@@ -80,19 +75,35 @@ def test_packaged_mn_2026_registry_has_one_exact_direct_mapping() -> None:
         mapping["comparison"],
     ) == ("tax", "tax_unit", "year", "USD", "money")
     assert "candidate_priority" not in mapping
-    for excluded_scope in (
-        "taxable-income construction",
-        "tax-table rounding",
-        "alternative minimum tax",
-        "net investment income tax",
+    for bounded_scope in (
+        "complete temporary tax-year-2026",
+        "ordinary-income",
+        "net-long-term-capital-gain",
+        "MCA 15-30-2103",
+        "completed-return boundaries",
+        "before nonrefundable credits",
         "credits",
         "payments",
-        "final liability",
+        "final annual liability",
     ):
-        assert excluded_scope in mapping["rationale"]
+        assert bounded_scope in mapping["rationale"]
+    for excluded_name in (
+        "input.mt_pit_pilot_state_taxable_income",
+        "input.mt_pit_pilot_section_1222_net_long_term_capital_gain",
+        "input.mt_pit_pilot_filing_status_joint_or_surviving_spouse",
+        "input.mt_pit_pilot_filing_status_head_of_household",
+        "mt_pit_pilot_taxable_income",
+        "mt_pit_pilot_net_long_term_capital_gain",
+        "mt_pit_pilot_nonqualified_taxable_income",
+        "mt_pit_pilot_filing_status_threshold",
+        "mt_pit_pilot_ordinary_income_tax",
+        "mt_pit_pilot_capital_gain_lower_band",
+        "mt_pit_pilot_capital_gains_tax",
+    ):
+        assert excluded_name not in mappings
 
 
-def test_packaged_mn_2026_runtime_pin_version_and_precedence_are_exact() -> None:
+def test_packaged_mt_2026_runtime_pin_version_and_precedence_are_exact() -> None:
     import axiom_oracles.bridges.registry as runtime_registry_module
 
     root = Path(__file__).parents[1]
@@ -110,14 +121,17 @@ def test_packaged_mn_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert bundled_text.count(FALLBACK_TEXT) == 1
     assert runtime_text.count(FALLBACK_TEXT) == 1
     assert hashlib.sha256(FALLBACK_TEXT.encode()).hexdigest() == (
-        "a1922806d932ae93464931b656c5e38db6cf808ec10a3e85694ffc5831956f2b"
+        "e87e011316a69dac2f45fee3e33d3340d57e0b5d9bb8f3a74f2fe719d4211efb"
     )
     assert hashlib.sha256(_shared_material(bundled_text).encode()).hexdigest() == (
-        "8e4b30d18da4483a19a6d641244f70b806eebdc952efdd8fcba0beb6a83cf74d"
+        "9c92210f6d6e63d7dfe46c22da19c8fc7a9149640efcb0cadd6b86d73f7a2cf0"
     )
 
     registry = load_policyengine_registry()
-    mapping = registry.mapping_for_legal_id(f"{MODULE}#{OUTPUT}", country="us")
+    mapping = registry.mapping_for_legal_id(
+        f"{MODULE}#{OUTPUT_NAME}",
+        country="us",
+    )
     assert mapping is not None
     assert mapping.match_type == "exact"
     assert mapping.mapping_type == "direct_variable"
@@ -127,15 +141,29 @@ def test_packaged_mn_2026_runtime_pin_version_and_precedence_are_exact() -> None
     assert mapping.unit == "USD"
     assert mapping.comparison == "money"
 
-    fallback = registry.mapping_for_legal_id(
-        f"{MODULE}#future_unmapped_output",
-        country="us",
-    )
-    assert fallback is not None
-    assert fallback.legal_id == "us-mn:"
-    assert fallback.match_type == "prefix"
-    assert fallback.mapping_type == "not_comparable"
-    assert fallback.candidate_priority == "P4"
+    for output_name in (
+        "input.mt_pit_pilot_state_taxable_income",
+        "input.mt_pit_pilot_section_1222_net_long_term_capital_gain",
+        "input.mt_pit_pilot_filing_status_joint_or_surviving_spouse",
+        "input.mt_pit_pilot_filing_status_head_of_household",
+        "mt_pit_pilot_taxable_income",
+        "mt_pit_pilot_net_long_term_capital_gain",
+        "mt_pit_pilot_nonqualified_taxable_income",
+        "mt_pit_pilot_filing_status_threshold",
+        "mt_pit_pilot_ordinary_income_tax",
+        "mt_pit_pilot_capital_gain_lower_band",
+        "mt_pit_pilot_capital_gains_tax",
+        "future_unmapped_output",
+    ):
+        fallback = registry.mapping_for_legal_id(
+            f"{MODULE}#{output_name}",
+            country="us",
+        )
+        assert fallback is not None
+        assert fallback.legal_id == "us-mt:"
+        assert fallback.match_type == "prefix"
+        assert fallback.mapping_type == "not_comparable"
+        assert fallback.candidate_priority == "P4"
 
     dependency_pin = re.search(
         r"axiom-oracles@[0-9a-f]{40}",
@@ -160,7 +188,7 @@ def test_packaged_mn_2026_runtime_pin_version_and_precedence_are_exact() -> None
     )
 
 
-def test_policyengine_coverage_classifies_only_bounded_mn_2026_output(
+def test_policyengine_coverage_classifies_only_bounded_mt_2026_output(
     tmp_path: Path,
 ) -> None:
     rulespec_root = tmp_path / "rulespec-us"
@@ -170,6 +198,7 @@ def test_policyengine_coverage_classifies_only_bounded_mn_2026_output(
 
     assert report["total_outputs"] == 1
     assert report["status_counts"] == {"comparable": 1}
+    assert len(report["items"]) == 1
     item = report["items"][0]
-    assert item["rule_name"] == OUTPUT
+    assert item["rule_name"] == OUTPUT_NAME
     assert item["policyengine_variable"] == POLICYENGINE_VARIABLE
