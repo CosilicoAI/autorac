@@ -14,8 +14,8 @@ DIRECT_VARIABLES = {
         "il_income_tax_before_non_refundable_credits"
     ),
 }
-ORACLE_MERGE = "8a49395fb38f748c72733e05bdbf8d768b2bf77d"
-ENCODER_VERSION = "0.2.1404"
+ORACLE_MERGE = "c95aac78835375d31390d1e430d1608fee2b3b93"
+ENCODER_VERSION = "0.2.1405"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-il:"
     country: us
     mapping_type: not_comparable

@@ -1,0 +1,1 @@
+Bundle South Carolina's bounded tax-year-2026 income-tax-before-nonrefundable-credits mapping and pin its durable reviewed oracle-main merge without claiming taxable-income construction, credits, payments, or final annual liability.
