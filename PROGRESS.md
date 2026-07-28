@@ -2,11 +2,12 @@
 
 ## State
 
-The checkout-root routing and ProgramSpec citation fix is implemented, passes
-its focused current-main regression and compatibility controls, and is
-verified end to end against the held-out SC change through a disposable
-backport to the pinned signing bridge. Full gates and the independent
-review-fix cycle remain.
+The checkout-root routing and ProgramSpec citation fix is implemented,
+verified end to end, and strengthened after independent review. Actual
+checkout-root atomic directories now use a narrow source-checkout admission
+mode without weakening normal canonical routing, symlink rejection is
+preserved, and direct signer-style US/UK controls pass. Version and remaining
+broad-gate work remain.
 
 ## Done
 
@@ -52,10 +53,21 @@ review-fix cycle remain.
   separate external `guard-generated --roots programs` check.
 - Confirmed the source `wt-snap-sc` worktree remains unchanged apart from its
   two pre-existing untracked report files.
+- Completed the first independent review pass. It found that the initial
+  four-root test did not create real atomic roots and that resolving the input
+  path before admission weakened symlink rejection.
+- Added a narrowly scoped checkout inspection mode for manifest-owned source
+  roots while preserving the normal rule that only ProgramSpecs are admitted
+  at checkout root, restored lexical admission, and added real-file,
+  symlink-rejection, direct `us-sc/policies/...`, and direct `uk/statutes/...`
+  coverage.
+- Passed all 14 strengthened focused routing/writer/compatibility tests.
 
 ## Next
 
-- Run the full repository test, Ruff, compile, and changelog/version gates.
-- Complete the independent review-fix cycle and rerun affected checks.
+- Commit the required coordinated encoder version bump and rerun its gate.
+- Rerun broad repository tests, Ruff, and compile checks, distinguishing
+  sandbox/dependency failures from branch-caused failures.
+- Repeat independent review after the substantive routing hardening.
 - Finalize this progress ledger, verify the origin/main diff, and write the
   untracked worker report.

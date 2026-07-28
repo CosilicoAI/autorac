@@ -14387,6 +14387,9 @@ rules: []
         checkout = tmp_path / "rulespec-us"
         (checkout / "us").mkdir(parents=True)
         relative_output = Path(source_root) / "example.yaml"
+        output = checkout / relative_output
+        output.parent.mkdir(parents=True)
+        output.write_text("format: rulespec/v1\nrules: []\n")
 
         content_root = _rulespec_apply_content_root(checkout, relative_output)
         manifest_root, manifest_relative = _resolve_applied_manifest_placement(
@@ -14397,6 +14400,62 @@ rules: []
         assert content_root == checkout
         assert manifest_root == checkout
         assert manifest_relative == relative_output
+
+    @pytest.mark.parametrize(
+        ("checkout_name", "jurisdiction", "relative_output", "citation"),
+        (
+            (
+                "rulespec-us",
+                "us-sc",
+                Path("us-sc/policies/dss/snap-policy-manual/page-159.yaml"),
+                "us-sc:policies/dss/snap-policy-manual/page-159",
+            ),
+            (
+                "rulespec-uk",
+                "uk",
+                Path("uk/statutes/26/36B.yaml"),
+                "uk:statutes/26/36B",
+            ),
+        ),
+    )
+    def test_checkout_relative_jurisdiction_outputs_keep_manifest_routing(
+        self,
+        tmp_path,
+        checkout_name,
+        jurisdiction,
+        relative_output,
+        citation,
+    ):
+        checkout = tmp_path / checkout_name
+        (checkout / jurisdiction).mkdir(parents=True)
+
+        content_root = _rulespec_apply_content_root(checkout, relative_output)
+        manifest_root, manifest_relative = _resolve_applied_manifest_placement(
+            content_root=content_root,
+            relative_output=relative_output,
+        )
+
+        assert content_root == checkout / jurisdiction
+        assert manifest_root == checkout
+        assert manifest_relative == relative_output
+        assert (
+            _rulespec_anchor_base_for_output(checkout, relative_output) == citation
+        )
+
+    def test_checkout_root_source_output_rejects_symlinked_checkout(
+        self, tmp_path
+    ):
+        real_checkout = tmp_path / "real" / "rulespec-us"
+        (real_checkout / "us").mkdir(parents=True)
+        (real_checkout / "programs/us-sc/snap").mkdir(parents=True)
+        alias = tmp_path / "rulespec-us"
+        alias.symlink_to(real_checkout, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="canonical"):
+            _rulespec_apply_content_root(
+                alias,
+                Path("programs/us-sc/snap/fy-2026.yaml"),
+            )
 
     def test_write_applied_manifest_places_checkout_root_program_spec(
         self, tmp_path

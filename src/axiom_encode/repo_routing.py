@@ -89,9 +89,9 @@ class _CheckoutAdmissionSnapshot:
 class _RuleSpecRoutingCache:
     """Successful checkout identity probes admitted for one bounded operation."""
 
-    checkout_inspections: dict[tuple[Path, bool], _CachedCheckoutInspection] = field(
-        default_factory=dict
-    )
+    checkout_inspections: dict[
+        tuple[Path, bool, bool], _CachedCheckoutInspection
+    ] = field(default_factory=dict)
 
 
 _RULESPEC_ROUTING_CACHE: ContextVar[_RuleSpecRoutingCache | None] = ContextVar(
@@ -221,12 +221,14 @@ def _canonical_country_checkout_name(
     path: Path,
     *,
     allow_composition_specs: bool = False,
+    allow_checkout_source_roots: bool = False,
 ) -> str | None:
     """Return the exact canonical country-checkout name for ``path``."""
 
     return inspect_canonical_rulespec_checkout(
         path,
         allow_composition_specs=allow_composition_specs,
+        allow_checkout_source_roots=allow_checkout_source_roots,
     ).name
 
 
@@ -234,6 +236,7 @@ def inspect_canonical_rulespec_checkout(
     path: Path,
     *,
     allow_composition_specs: bool = False,
+    allow_checkout_source_roots: bool = False,
 ) -> CanonicalRuleSpecCheckoutInspection:
     """Inspect one exact country checkout without weakening route acceptance."""
 
@@ -241,6 +244,7 @@ def inspect_canonical_rulespec_checkout(
     cache_key = (
         Path(os.path.abspath(Path(path).expanduser())),
         allow_composition_specs,
+        allow_checkout_source_roots,
     )
     cached = cache.checkout_inspections.get(cache_key) if cache is not None else None
     if cached is not None:
@@ -256,6 +260,7 @@ def inspect_canonical_rulespec_checkout(
         return _inspect_canonical_rulespec_checkout_uncached(
             path,
             allow_composition_specs=allow_composition_specs,
+            allow_checkout_source_roots=allow_checkout_source_roots,
         )
 
     for _attempt in range(2):
@@ -263,6 +268,7 @@ def inspect_canonical_rulespec_checkout(
         inspection = _inspect_canonical_rulespec_checkout_uncached(
             path,
             allow_composition_specs=allow_composition_specs,
+            allow_checkout_source_roots=allow_checkout_source_roots,
         )
         if inspection.name is None or before is None:
             return inspection
@@ -471,6 +477,7 @@ def _inspect_canonical_rulespec_checkout_uncached(
     path: Path,
     *,
     allow_composition_specs: bool = False,
+    allow_checkout_source_roots: bool = False,
 ) -> CanonicalRuleSpecCheckoutInspection:
     """Inspect one checkout before it is admitted to an operation cache."""
 
@@ -487,7 +494,17 @@ def _inspect_canonical_rulespec_checkout_uncached(
     if re.fullmatch(r"[a-z]{2}", country) is None:
         return CanonicalRuleSpecCheckoutInspection(None, "checkout-country-name")
     blocked_roots = RULESPEC_FILESYSTEM_ROOTS
-    if allow_composition_specs:
+    if allow_checkout_source_roots:
+        for root_name in RULESPEC_FILESYSTEM_ROOTS:
+            source_root = checkout / root_name
+            if (source_root.exists() or source_root.is_symlink()) and (
+                source_root.is_symlink() or not source_root.is_dir()
+            ):
+                return CanonicalRuleSpecCheckoutInspection(
+                    None, "checkout-source-root-not-directory"
+                )
+        blocked_roots = frozenset()
+    elif allow_composition_specs:
         composition_root = checkout / RULESPEC_COMPOSITION_SPEC_ROOT
         if (composition_root.exists() or composition_root.is_symlink()) and (
             composition_root.is_symlink() or not composition_root.is_dir()
@@ -574,6 +591,18 @@ def is_composition_policy_repo_root(path: Path) -> bool:
 
     return (
         _canonical_country_checkout_name(Path(path), allow_composition_specs=True)
+        is not None
+    )
+
+
+def is_rulespec_source_checkout_root(path: Path) -> bool:
+    """Return True for an exact checkout that may own RuleSpec source roots."""
+
+    return (
+        _canonical_country_checkout_name(
+            Path(path),
+            allow_checkout_source_roots=True,
+        )
         is not None
     )
 

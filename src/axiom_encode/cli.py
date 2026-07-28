@@ -278,6 +278,7 @@ from .repo_routing import (
     find_policy_repo_root,
     inspect_canonical_rulespec_checkout,
     is_composition_policy_repo_root,
+    is_rulespec_source_checkout_root,
     jurisdiction_content_dir,
     jurisdiction_subdir_names,
     monorepo_checkout_name,
@@ -38862,11 +38863,11 @@ def _rulespec_apply_content_root(
     relative_output: Path | None = None,
 ) -> Path:
     """Return the exact content or checkout root for live generated writes."""
-    repo_path = Path(policy_repo_path).resolve()
+    repo_path = Path(policy_repo_path)
     if (
         relative_output is not None
         and _is_checkout_root_source_output(relative_output)
-        and is_composition_policy_repo_root(repo_path)
+        and is_rulespec_source_checkout_root(repo_path)
     ):
         content_root = repo_path
     elif relative_output is not None:
@@ -38887,7 +38888,7 @@ def _rulespec_apply_content_root(
         not content_root.is_dir()
         or (
             canonical_rulespec_root_identity(content_root) is None
-            and not is_composition_policy_repo_root(content_root)
+            and not is_rulespec_source_checkout_root(content_root)
         )
     ):
         raise ValueError(
@@ -38907,10 +38908,10 @@ def _rulespec_apply_checkout_root(
     content_root = _rulespec_apply_content_root(repo_path, relative_output)
     checkout_root = (
         content_root
-        if is_composition_policy_repo_root(content_root)
+        if is_rulespec_source_checkout_root(content_root)
         else content_root.parent
     )
-    if canonical_rulespec_repo_name(checkout_root) != checkout_root.name:
+    if not is_rulespec_source_checkout_root(checkout_root):
         raise ValueError(
             "RuleSpec apply target must belong to a canonical "
             f"rulespec-<country> checkout: {repo_path}"
@@ -42601,9 +42602,10 @@ def _applied_encoding_manifest_path(relative_output: Path) -> Path:
 def _rulespec_checkout_root(content_root: Path) -> Path:
     """Return the country checkout for one exact content or checkout root."""
 
-    resolved = Path(content_root).resolve()
-    if is_composition_policy_repo_root(resolved):
-        return resolved
+    root = Path(content_root)
+    if is_rulespec_source_checkout_root(root):
+        return root.resolve()
+    resolved = root.resolve()
     identity = canonical_rulespec_root_identity(resolved)
     if identity is None:
         raise ValueError(
