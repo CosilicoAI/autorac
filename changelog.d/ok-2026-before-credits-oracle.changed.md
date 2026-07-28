@@ -1,0 +1,1 @@
+Bundle Oklahoma's bounded tax-year-2026 income-tax-before-credits mapping and pin its durable reviewed oracle-main merge without claiming taxable-income construction, schedule internals, credits, payments, or final annual liability.
