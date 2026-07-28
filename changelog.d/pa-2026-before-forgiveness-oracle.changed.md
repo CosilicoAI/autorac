@@ -1,0 +1,1 @@
+Bundle Pennsylvania's bounded tax-year-2026 adjusted-taxable-income and income-tax-before-forgiveness mappings and pin their durable reviewed oracle-main merge without claiming input construction, tax forgiveness, credits, payments, or final annual liability.
