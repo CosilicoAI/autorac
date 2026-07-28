@@ -108,18 +108,11 @@ def legacy_manual_manifest_issues(
     if payload.get("runner") != "manual-attestation":
         issues.append("legacy ownership manifest runner is not manual-attestation")
     manual_exception = payload.get("manual_exception")
-    if (
-        "manual_exception" not in payload
-        or (
-            not (
-                allow_unmarked_manual_exception
-                and manual_exception is None
-            )
-            and (
-                not isinstance(manual_exception, str)
-                or not manual_exception.strip()
-            )
-        )
+    unmarked_exception_admitted = allow_unmarked_manual_exception and (
+        "manual_exception" not in payload or manual_exception is None
+    )
+    if not unmarked_exception_admitted and (
+        not isinstance(manual_exception, str) or not manual_exception.strip()
     ):
         issues.append("legacy ownership manifest has no manual exception")
     if any(

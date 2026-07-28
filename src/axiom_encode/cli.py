@@ -6793,14 +6793,18 @@ def _legacy_replacement_reference_inventory_issues(
         classifications[path] = owner
 
     live_files = replacement.get("live_files")
-    live_paths = {
-        str(item["path"])
-        for item in live_files
-        if isinstance(item, dict)
-        and set(item) == {"path", "sha256"}
-        and isinstance(item.get("path"), str)
-        and isinstance(item.get("sha256"), str)
-    } if isinstance(live_files, list) else set()
+    live_paths = (
+        {
+            str(item["path"])
+            for item in live_files
+            if isinstance(item, dict)
+            and set(item) == {"path", "sha256"}
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
+        }
+        if isinstance(live_files, list)
+        else set()
+    )
     source = replacement.get("source")
     destination = replacement.get("destination")
     in_place = (
@@ -21534,24 +21538,25 @@ def _legacy_replacement_manifest_issues(
             issues.append(f"{manifest_label} legacy evidence hash is stale")
         live = repo_path / evidence_path
         nested_files = nested.get("applied_files")
-        replacement_hashes = {
-            str(item["path"]): str(item["sha256"])
-            for item in nested_files
-            if isinstance(item, dict)
-            and set(item) == {"path", "sha256"}
-            and isinstance(item.get("path"), str)
-            and isinstance(item.get("sha256"), str)
-        } if isinstance(nested_files, list) else {}
+        replacement_hashes = (
+            {
+                str(item["path"]): str(item["sha256"])
+                for item in nested_files
+                if isinstance(item, dict)
+                and set(item) == {"path", "sha256"}
+                and isinstance(item.get("path"), str)
+                and isinstance(item.get("sha256"), str)
+            }
+            if isinstance(nested_files, list)
+            else {}
+        )
         replacement_digest = replacement_hashes.get(evidence_path.as_posix())
         if replacement_digest is None:
             replaces_manifest_in_place = (
                 replacement.get("source") == replacement.get("destination")
                 and evidence_path.as_posix() == manifest_label
             )
-            if (
-                not replaces_manifest_in_place
-                and (live.exists() or live.is_symlink())
-            ):
+            if not replaces_manifest_in_place and (live.exists() or live.is_symlink()):
                 issues.append(f"{manifest_label} legacy evidence path still exists")
         else:
             try:
@@ -21588,8 +21593,7 @@ def _legacy_replacement_manifest_issues(
             and normalized_destination != Path(destination)
         )
         or (
-            Path(source) == Path(destination)
-            and normalized_destination != Path(source)
+            Path(source) == Path(destination) and normalized_destination != Path(source)
         )
     ):
         issues.append(f"{manifest_label} replacement path normalization is invalid")
@@ -21869,7 +21873,8 @@ def _legacy_replacement_manifest_issues(
     expected_entries.extend(
         {"path": item["path"], "deleted": True}
         for item in legacy_files
-        if isinstance(item, dict) and isinstance(item.get("path"), str)
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
         and item["path"]
         not in {
             live.get("path")
@@ -23153,9 +23158,9 @@ def _resolve_legacy_replacement_contract(
         if in_place
         else exact_reference_replacements(
             [PlannedMove(source=source, destination=destination)],
-            existing_companions={
-                old_companion
-            } if old_companion in old_paths else set(),
+            existing_companions={old_companion}
+            if old_companion in old_paths
+            else set(),
         )
     )
     scheduled_groups: dict[Path, set[Path]] = {}
@@ -44744,23 +44749,24 @@ def _stage_signed_legacy_replacement_provenance(
 
     model_manifest_sha256 = hashlib.sha256(model_manifest_bytes).hexdigest()
     expected_live_hashes = {
-        (Path(content_root.name) / relative).as_posix(): hashlib.sha256(
-            raw
-        ).hexdigest()
+        (Path(content_root.name) / relative).as_posix(): hashlib.sha256(raw).hexdigest()
         for relative, raw in planned.items()
     }
     model_live_files = model_manifest.get("applied_files")
-    model_live_hashes = {
-        str(item["path"]): str(item["sha256"])
-        for item in model_live_files
-        if isinstance(item, dict)
-        and set(item) == {"path", "sha256"}
-        and isinstance(item.get("path"), str)
-        and isinstance(item.get("sha256"), str)
-    } if isinstance(model_live_files, list) else {}
-    if (
-        model_live_hashes != expected_live_hashes
-        or len(model_live_hashes) != len(model_live_files or [])
+    model_live_hashes = (
+        {
+            str(item["path"]): str(item["sha256"])
+            for item in model_live_files
+            if isinstance(item, dict)
+            and set(item) == {"path", "sha256"}
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
+        }
+        if isinstance(model_live_files, list)
+        else {}
+    )
+    if model_live_hashes != expected_live_hashes or len(model_live_hashes) != len(
+        model_live_files or []
     ):
         raise RuntimeError(
             "Fresh replacement model manifest does not bind exact planned live files"
@@ -46101,9 +46107,8 @@ def _require_apply_post_install_closure(
         }
         for deleted in legacy_replacement.deleted_files:
             target = checkout_root / deleted.path
-            if (
-                target not in live_replacement_paths
-                and (target.exists() or target.is_symlink())
+            if target not in live_replacement_paths and (
+                target.exists() or target.is_symlink()
             ):
                 raise RuntimeError(
                     f"Cannot keep legacy replacement: old path still exists: {target}"
@@ -46280,7 +46285,9 @@ def _apply_generated_encoding_result(
             (checkout_root / rewrite.path, rewrite.raw)
             for rewrite in legacy_replacement.rewrites
         )
-        written_targets = {target for target, raw in transaction_files if raw is not None}
+        written_targets = {
+            target for target, raw in transaction_files if raw is not None
+        }
         transaction_files.extend(
             (checkout_root / item.path, None)
             for item in legacy_replacement.deleted_files

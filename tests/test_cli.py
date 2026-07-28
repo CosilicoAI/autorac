@@ -13487,8 +13487,7 @@ class TestCmdEncode:
             for path in (target, target_test)
         }
         manifest = (
-            checkout
-            / ".axiom/encoding-manifests/us-me/policies/income_tax/"
+            checkout / ".axiom/encoding-manifests/us-me/policies/income_tax/"
             "pilot_liability_pipeline.json"
         )
         manifest.parent.mkdir(parents=True)
@@ -13497,7 +13496,6 @@ class TestCmdEncode:
             "tool": "axiom-encode sign-applied-files",
             "backend": "manual",
             "runner": "manual-attestation",
-            "manual_exception": None,
             "applied_files": [
                 {"path": path, "sha256": digest}
                 for path, digest in legacy_files.items()
@@ -13633,8 +13631,7 @@ class TestCmdEncode:
         assert receipt["replacement"]["source"] == checkout_relative.as_posix()
         assert receipt["replacement"]["destination"] == checkout_relative.as_posix()
         assert receipt["legacy"]["files"] == [
-            {"path": path, "sha256": digest}
-            for path, digest in legacy_files.items()
+            {"path": path, "sha256": digest} for path, digest in legacy_files.items()
         ]
         verified, _root, _digest, issues = (
             _load_verified_applied_encoding_manifest_payload(

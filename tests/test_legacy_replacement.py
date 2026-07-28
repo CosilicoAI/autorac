@@ -104,7 +104,7 @@ def test_manual_manifest_is_admitted_only_as_exact_deletion_evidence() -> None:
 
 def test_unmarked_manual_manifest_is_only_admitted_for_explicit_in_place_use() -> None:
     payload = _manual_manifest()
-    payload["manual_exception"] = None
+    payload.pop("manual_exception")
     expected = {
         "us-la/statutes/47:32.yaml": "a" * 64,
         "us-la/statutes/47:32.test.yaml": "b" * 64,
@@ -116,6 +116,15 @@ def test_unmarked_manual_manifest_is_only_admitted_for_explicit_in_place_use() -
             expected_files=expected,
         )
     )
+    assert (
+        legacy_manual_manifest_issues(
+            payload,
+            expected_files=expected,
+            allow_unmarked_manual_exception=True,
+        )
+        == []
+    )
+    payload["manual_exception"] = None
     assert (
         legacy_manual_manifest_issues(
             payload,
@@ -258,13 +267,12 @@ def _in_place_legacy_checkout(
         ).hexdigest(),
     }
     manifest = (
-        checkout
-        / ".axiom/encoding-manifests/us-me/policies/income_tax/"
+        checkout / ".axiom/encoding-manifests/us-me/policies/income_tax/"
         "pilot_liability_pipeline.json"
     )
     manifest.parent.mkdir(parents=True)
     payload = _manual_manifest()
-    payload["manual_exception"] = None
+    payload.pop("manual_exception")
     payload["applied_files"] = [
         {"path": path, "sha256": digest} for path, digest in expected_files.items()
     ]
