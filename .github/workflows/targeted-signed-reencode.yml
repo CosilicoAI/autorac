@@ -35,7 +35,11 @@ on:
         required: false
         type: string
       replace_rulespec_path:
-        description: Existing checkout-relative RuleSpec path sourced by citation
+        description: Existing target, or unique canonical destination for a legacy replacement
+        required: false
+        type: string
+      replace_legacy_rulespec_path:
+        description: Exact noncanonical legacy primary replaced by a fresh model encode
         required: false
         type: string
       dependent_citation:
@@ -511,6 +515,7 @@ jobs:
         env:
           CITATION: ${{ inputs.citation }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
@@ -530,8 +535,12 @@ jobs:
             validate-dependent-cascade
             "$RULESPEC_CHECKOUT" "$CITATION"
           )
-          if [ -n "$REPLACE_RULESPEC_PATH" ]; then
-            cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")
+          cascade_target="$REPLACE_RULESPEC_PATH"
+          if [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            cascade_target="$REPLACE_LEGACY_RULESPEC_PATH"
+          fi
+          if [ -n "$cascade_target" ]; then
+            cascade_args+=(--target-rulespec-path "$cascade_target")
           fi
           cascade_args+=("${dependent_citations[@]}")
           "${cascade_args[@]}"
@@ -543,6 +552,7 @@ jobs:
           CITATION: ${{ inputs.citation }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           QUEUE_ID: ${{ inputs.queue_id }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
@@ -553,8 +563,11 @@ jobs:
           set -euo pipefail
           : "${QUEUE_ID:=}"
           : "${REPLACE_RULESPEC_PATH:=}"
+          : "${REPLACE_LEGACY_RULESPEC_PATH:=}"
           : "${SECOND_DEPENDENT_CITATION:=}"
           : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
+          dependent_rulespec_path=""
+          second_dependent_rulespec_path=""
 
           run_signed_encode() {
             local citation="$1"
@@ -562,6 +575,7 @@ jobs:
             local target_only="$3"
             local output_lane="$4"
             local replacement_path="$5"
+            local legacy_source_path="$6"
             local review_finding_path=""
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
@@ -580,6 +594,20 @@ jobs:
             fi
             if [ -n "$replacement_path" ]; then
               args+=(--replace-rulespec-path "$replacement_path")
+            fi
+            if [ -n "$legacy_source_path" ]; then
+              args+=(--replace-legacy-rulespec-path "$legacy_source_path")
+              if [ -n "$dependent_rulespec_path" ]; then
+                args+=(
+                  --legacy-dependent-rulespec-path "$dependent_rulespec_path"
+                )
+              fi
+              if [ -n "$second_dependent_rulespec_path" ]; then
+                args+=(
+                  --legacy-dependent-rulespec-path \
+                  "$second_dependent_rulespec_path"
+                )
+              fi
             fi
             if [ -n "$review_finding" ]; then
               review_finding_dir="$(mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX")"
@@ -607,8 +635,15 @@ jobs:
             echo "dependent citation is required with dependent review finding" >&2
             exit 1
           fi
-          if [ -n "$QUEUE_ID" ] && [ -n "$REPLACE_RULESPEC_PATH" ]; then
+          if [ -n "$QUEUE_ID" ] && \
+            { [ -n "$REPLACE_RULESPEC_PATH" ] || \
+              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; }; then
             echo "queue-authorized re-encodes cannot override the RuleSpec target path" >&2
+            exit 1
+          fi
+          if [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] && \
+            [ -z "$REPLACE_RULESPEC_PATH" ]; then
+            echo "legacy source and canonical destination must be paired" >&2
             exit 1
           fi
           if [ -n "$DEPENDENT_CITATION" ] && [ -z "$DEPENDENT_REVIEW_FINDING" ]; then
@@ -640,19 +675,43 @@ jobs:
             exit 1
           fi
 
+          backfill_helper="axiom-encode/scripts/prepare_signed_backfill.py"
+          if [ ! -f "$backfill_helper" ]; then
+            backfill_helper="scripts/prepare_signed_backfill.py"
+          fi
+          workflow_python="/opt/axiom-verification/python/bin/python"
+          if [ ! -x "$workflow_python" ]; then
+            workflow_python="${AXIOM_TEST_PYTHON:-python}"
+          fi
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            dependent_rulespec_path="$("$workflow_python" "$backfill_helper" \
+              citation-rulespec-path "$DEPENDENT_CITATION")"
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            second_dependent_rulespec_path="$("$workflow_python" "$backfill_helper" \
+              citation-rulespec-path "$SECOND_DEPENDENT_CITATION")"
+          fi
+
           if [ -n "$DEPENDENT_CITATION" ]; then
             run_signed_encode \
-              "$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"
+              "$CITATION" "$REVIEW_FINDING" true target \
+              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"
+            dependent_target_only=false
+            if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+              dependent_target_only=true
+            fi
             run_signed_encode \
-              "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent ""
+              "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \
+              "$dependent_target_only" dependent "" ""
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
               run_signed_encode \
                 "$SECOND_DEPENDENT_CITATION" \
-                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""
+                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" ""
             fi
           else
             run_signed_encode \
-              "$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"
+              "$CITATION" "$REVIEW_FINDING" false target \
+              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"
           fi
 
       - name: Verify generated provenance
@@ -685,8 +744,13 @@ jobs:
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
+          workflow_python=(/opt/axiom-verification/python/bin/python -I)
+          if [ ! -x "${workflow_python[0]}" ]; then
+            workflow_python=("${AXIOM_TEST_PYTHON:-python}")
+          fi
           artifact="$RUNNER_TEMP/targeted-reencode"
           mkdir -p "$artifact"
           git -C "$RULESPEC_CHECKOUT" diff --binary --full-index HEAD > "$artifact/tracked.patch"
@@ -694,15 +758,21 @@ jobs:
             | tar -C "$RULESPEC_CHECKOUT" --null -czf "$artifact/untracked.tar.gz" --files-from -
           git -C "$RULESPEC_CHECKOUT" status --short > "$artifact/status.txt"
           cp "$RUNNER_TEMP/guard-generated.json" "$artifact/guard-generated.json"
-          python - \
+          "${workflow_python[@]}" - \
             "$artifact/context-manifest.json" \
             "$artifact/apply-manifests.json" <<'PY'
           import hashlib
           import json
           import os
+          import re
           import subprocess
           import sys
           from pathlib import Path
+
+          from axiom_encode.corpus_resolver import (
+              UnsafeCorpusPathError,
+              read_bounded_regular_file,
+          )
 
           def git_paths(*args):
               output = subprocess.check_output(
@@ -714,8 +784,32 @@ jobs:
                   if value
               }
 
+          def read_bounded_regular(root, relative, *, label, max_bytes):
+              relative = Path(relative)
+              if (
+                  relative.is_absolute()
+                  or not relative.parts
+                  or any(part in {"", ".", ".."} for part in relative.parts)
+              ):
+                  raise SystemExit(f"{label} path is not canonical")
+              root = Path(root).resolve(strict=True)
+              try:
+                  return read_bounded_regular_file(
+                      root,
+                      root / relative,
+                      label=label,
+                      max_bytes=max_bytes,
+                      required_mode=0o644,
+                  )
+              except UnsafeCorpusPathError as exc:
+                  raise SystemExit(str(exc)) from exc
+
           manifest_paths = git_paths(
-              "diff", "--name-only", "-z", "HEAD", "--",
+              "diff", "--name-only", "--diff-filter=AM", "-z", "HEAD", "--",
+              ".axiom/encoding-manifests",
+          )
+          deleted_manifest_paths = git_paths(
+              "diff", "--name-only", "--diff-filter=D", "-z", "HEAD", "--",
               ".axiom/encoding-manifests",
           )
           manifest_paths.update(
@@ -729,6 +823,9 @@ jobs:
               os.environ.get("SECOND_DEPENDENT_CITATION") or ""
           )
           replacement_path = os.environ.get("REPLACE_RULESPEC_PATH") or ""
+          legacy_source_path = (
+              os.environ.get("REPLACE_LEGACY_RULESPEC_PATH") or ""
+          )
           normalized_replacement_path = ""
           if replacement_path:
               candidate = Path(replacement_path)
@@ -749,15 +846,33 @@ jobs:
 
           matches = {}
           for relative_path in sorted(manifest_paths):
-              manifest_path = Path(os.environ["RULESPEC_CHECKOUT"]) / relative_path
-              payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-              citation = payload.get("citation")
+              payload = json.loads(
+                  read_bounded_regular(
+                      os.environ["RULESPEC_CHECKOUT"],
+                      relative_path,
+                      label="changed apply manifest",
+                      max_bytes=1024 * 1024,
+                  ).decode("utf-8")
+              )
+              effective = payload
+              if (
+                  payload.get("tool")
+                  == "axiom-encode encode --apply --replace-legacy-rulespec-path"
+              ):
+                  effective = payload.get("replacement_manifest")
+                  if not isinstance(effective, dict):
+                      raise SystemExit(
+                          "legacy replacement omits nested model manifest"
+                      )
+              citation = effective.get("citation")
               if (
                   payload.get("schema_version")
                   == "axiom-encode/applied-rulespec/v5"
                   and citation in expected_citations
               ):
-                  matches.setdefault(citation, []).append((relative_path, payload))
+                  matches.setdefault(citation, []).append(
+                      (relative_path, payload, effective)
+                  )
 
           expected = [
               (
@@ -800,9 +915,145 @@ jobs:
                       "expected exactly one changed signed apply manifest for "
                       f"{citation}; found {len(citation_matches)}"
                   )
-              relative_path, applied_manifest = citation_matches[0]
+              relative_path, applied_manifest, evidence_manifest = (
+                  citation_matches[0]
+              )
               manifest_path = Path(os.environ["RULESPEC_CHECKOUT"]) / relative_path
-              if lane == "target" and normalized_replacement_path:
+              if lane == "target" and legacy_source_path:
+                  if (
+                      applied_manifest.get("tool")
+                      != "axiom-encode encode --apply "
+                      "--replace-legacy-rulespec-path"
+                  ):
+                      raise SystemExit(
+                          "legacy replacement target is not the dedicated v5 contract"
+                      )
+                  replacement = applied_manifest.get("replacement")
+                  if not isinstance(replacement, dict):
+                      raise SystemExit("legacy replacement binding is malformed")
+                  receipt_path_raw = replacement.get("receipt_path")
+                  if not isinstance(receipt_path_raw, str):
+                      raise SystemExit("legacy replacement receipt path is malformed")
+                  receipt_path = Path(receipt_path_raw)
+                  if (
+                      receipt_path.is_absolute()
+                      or receipt_path.as_posix() != receipt_path_raw
+                      or any(part in {"", ".", ".."} for part in receipt_path.parts)
+                      or receipt_path.parent
+                      != Path(".axiom/legacy-replacements")
+                      or receipt_path.suffix != ".json"
+                      or re.fullmatch(r"[0-9a-f]{64}", receipt_path.stem) is None
+                  ):
+                      raise SystemExit(
+                          "legacy replacement receipt path is not canonical"
+                      )
+                  receipt_bytes = read_bounded_regular(
+                      os.environ["RULESPEC_CHECKOUT"],
+                      receipt_path,
+                      label="legacy replacement receipt",
+                      max_bytes=4 * 1024 * 1024,
+                  )
+                  if (
+                      hashlib.sha256(receipt_bytes).hexdigest()
+                      != replacement.get("receipt_sha256")
+                  ):
+                      raise SystemExit(
+                          "legacy replacement receipt digest does not match"
+                      )
+                  receipt = json.loads(receipt_bytes)
+                  receipt_replacement = receipt.get("replacement")
+                  if (
+                      receipt.get("schema_version")
+                      != "axiom-encode/legacy-fresh-reencode-receipt/v1"
+                      or not isinstance(receipt_replacement, dict)
+                      or receipt_replacement.get("source")
+                      != legacy_source_path
+                      or receipt_replacement.get("destination")
+                      != normalized_replacement_path
+                  ):
+                      raise SystemExit("legacy replacement receipt paths differ")
+                  scheduled = receipt_replacement.get("scheduled_dependents")
+                  if not isinstance(scheduled, list):
+                      raise SystemExit(
+                          "legacy replacement scheduled dependents are malformed"
+                      )
+                  from axiom_encode.rulespec_path_migration import (
+                      rewrite_exact_references,
+                  )
+                  for dependent in scheduled:
+                      if (
+                          not isinstance(dependent, dict)
+                          or not isinstance(dependent.get("primary"), str)
+                          or not isinstance(dependent.get("files"), list)
+                      ):
+                          raise SystemExit(
+                              "legacy replacement scheduled dependent is malformed"
+                          )
+                      dependent_manifest = (
+                          Path(".axiom/encoding-manifests")
+                          / Path(dependent["primary"]).with_suffix(".json")
+                      )
+                      if dependent_manifest not in manifest_paths:
+                          raise SystemExit(
+                              "legacy replacement scheduled dependent lacks "
+                              "a changed signed manifest"
+                          )
+                      for evidence in dependent["files"]:
+                          if not isinstance(evidence, dict):
+                              raise SystemExit(
+                                  "legacy replacement scheduled file is malformed"
+                              )
+                          pending_relative = Path(
+                              str(evidence.get("path") or "")
+                          )
+                          pending_bytes = read_bounded_regular(
+                              os.environ["RULESPEC_CHECKOUT"],
+                              pending_relative,
+                              label="legacy replacement scheduled dependent",
+                              max_bytes=16 * 1024 * 1024,
+                          )
+                          if (
+                              hashlib.sha256(pending_bytes).hexdigest()
+                              == evidence.get("before_sha256")
+                          ):
+                              raise SystemExit(
+                                  "legacy replacement scheduled dependent "
+                                  "is still pending"
+                              )
+                          replacements = {
+                              str(item["from"]): str(item["to"])
+                              for item in evidence.get("replacements", [])
+                              if isinstance(item, dict)
+                              and set(item) == {"from", "to", "count"}
+                          }
+                          _rewritten, remaining = rewrite_exact_references(
+                              pending_bytes, replacements
+                          )
+                          if (
+                              len(replacements)
+                              != len(evidence.get("replacements", []))
+                              or remaining
+                          ):
+                              raise SystemExit(
+                                  "legacy replacement scheduled dependent "
+                                  "retains an old reference"
+                              )
+                  expected_old_manifest = Path(
+                      ".axiom/encoding-manifests"
+                  ) / Path(legacy_source_path).with_suffix(".json")
+                  if deleted_manifest_paths != {expected_old_manifest}:
+                      raise SystemExit(
+                          "legacy replacement must delete exactly its old manifest"
+                      )
+                  if (
+                      Path(os.environ["RULESPEC_CHECKOUT"]) / legacy_source_path
+                  ).exists():
+                      raise SystemExit("legacy replacement old primary still exists")
+                  receipt_artifact = Path(sys.argv[1]).with_name(
+                      "legacy-replacement-receipt.json"
+                  )
+                  receipt_artifact.write_bytes(receipt_bytes)
+              elif lane == "target" and normalized_replacement_path:
                   applied_files = applied_manifest.get("applied_files")
                   if not isinstance(applied_files, list):
                       raise SystemExit(
@@ -821,16 +1072,25 @@ jobs:
                           "replacement apply manifest primary path does not "
                           "match the requested RuleSpec target"
                       )
-              context_path = Path(applied_manifest["context_manifest_file"]).resolve()
+              context_path = Path(
+                  evidence_manifest["context_manifest_file"]
+              ).resolve()
               try:
                   context_path.relative_to(generated_root / lane)
               except ValueError as exc:
                   raise SystemExit(
                       f"signed context manifest is outside assigned {lane} lane"
                   ) from exc
-              context_bytes = context_path.read_bytes()
+              context_bytes = read_bounded_regular(
+                  generated_root,
+                  context_path.relative_to(generated_root),
+                  label="signed context manifest",
+                  max_bytes=16 * 1024 * 1024,
+              )
               context_digest = hashlib.sha256(context_bytes).hexdigest()
-              if context_digest != applied_manifest.get("context_manifest_sha256"):
+              if context_digest != evidence_manifest.get(
+                  "context_manifest_sha256"
+              ):
                   raise SystemExit("signed context manifest digest does not match")
 
               context_payload = json.loads(context_bytes)
@@ -868,7 +1128,14 @@ jobs:
                   {
                       "citation": citation,
                       "path": relative_path.as_posix(),
-                      "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                      "sha256": hashlib.sha256(
+                          read_bounded_regular(
+                              os.environ["RULESPEC_CHECKOUT"],
+                              relative_path,
+                              label="packaged apply manifest",
+                              max_bytes=1024 * 1024,
+                          )
+                      ).hexdigest(),
                   }
               )
           Path(sys.argv[2]).write_text(
@@ -884,7 +1151,7 @@ jobs:
               encoding="utf-8",
           )
           PY
-          python - "$artifact/metadata.json" <<'PY'
+          "${workflow_python[@]}" - "$artifact/metadata.json" <<'PY'
           import json
           import os
           import subprocess
@@ -904,6 +1171,9 @@ jobs:
               ),
               "replace_rulespec_path": (
                   os.environ.get("REPLACE_RULESPEC_PATH") or None
+              ),
+              "replace_legacy_rulespec_path": (
+                  os.environ.get("REPLACE_LEGACY_RULESPEC_PATH") or None
               ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
               "queue_id": os.environ.get("QUEUE_ID") or None,
@@ -935,10 +1205,16 @@ jobs:
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
           set -euo pipefail
-          branch="$(python axiom-encode/scripts/prepare_signed_backfill.py branch-name \
+          workflow_python=(/opt/axiom-verification/python/bin/python -I)
+          if [ ! -x "${workflow_python[0]}" ]; then
+            workflow_python=("${AXIOM_TEST_PYTHON:-python}")
+          fi
+          branch="$("${workflow_python[@]}" \
+            axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           git -C "$RULESPEC_CHECKOUT" switch -c "$branch"
-          python axiom-encode/scripts/prepare_signed_backfill.py stage \
+          "${workflow_python[@]}" \
+            axiom-encode/scripts/prepare_signed_backfill.py stage \
             "$RULESPEC_CHECKOUT"
           git -C "$RULESPEC_CHECKOUT" \
             -c core.hooksPath=/dev/null \
@@ -964,12 +1240,17 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          workflow_python=(/opt/axiom-verification/python/bin/python -I)
+          if [ ! -x "${workflow_python[0]}" ]; then
+            workflow_python=("${AXIOM_TEST_PYTHON:-python}")
+          fi
           repo="TheAxiomFoundation/rulespec-${COUNTRY}"
           git -C "$RULESPEC_CHECKOUT" fetch --no-tags origin \
             "+refs/heads/${PR_BASE_BRANCH}:refs/remotes/origin/${PR_BASE_BRANCH}"
           test "$(git -C "$RULESPEC_CHECKOUT" rev-parse \
             "refs/remotes/origin/${PR_BASE_BRANCH}")" = "$RULESPEC_REF"
-          branch="$(python axiom-encode/scripts/prepare_signed_backfill.py branch-name \
+          branch="$("${workflow_python[@]}" \
+            axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           body="$(printf '%s\n' \
             '## Signed apply manifest' \
