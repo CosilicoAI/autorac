@@ -1863,6 +1863,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["pr_base_branch"]["type"] == "string"
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["replace_rulespec_path"]["required"] is False
+    assert inputs["replace_legacy_rulespec_path"]["required"] is False
     assert inputs["dependent_citation"]["required"] is False
     assert inputs["dependent_review_finding"]["required"] is False
     assert inputs["second_dependent_citation"]["required"] is False
@@ -2019,9 +2020,11 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert cascade_step["env"]["REPLACE_RULESPEC_PATH"] == (
         "${{ inputs.replace_rulespec_path }}"
     )
+    assert 'cascade_target="$REPLACE_RULESPEC_PATH"' in cascade_step["run"]
+    assert 'cascade_target="$REPLACE_LEGACY_RULESPEC_PATH"' in cascade_step["run"]
     assert (
-        'cascade_args+=(--target-rulespec-path "$REPLACE_RULESPEC_PATH")'
-        in (cascade_step["run"])
+        'cascade_args+=(--target-rulespec-path "$cascade_target")'
+        in cascade_step["run"]
     )
     assert 'cascade_args+=("${dependent_citations[@]}")' in cascade_step["run"]
     assert '"${cascade_args[@]}"' in cascade_step["run"]
@@ -2053,6 +2056,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
+    assert "--legacy-dependent-rulespec-path" in command
+    assert 'citation-rulespec-path "$DEPENDENT_CITATION"' in command
     assert '[ "$target_only" = "true" ]' in command
     assert (
         "queue-authorized re-encodes cannot override the RuleSpec target path"
@@ -2061,16 +2066,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '--output "$RUNNER_TEMP/generated/$output_lane"' in command
     assert '"$SECOND_DEPENDENT_CITATION"' in command
     assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""' in command
-    assert (
-        '"$CITATION" "$REVIEW_FINDING" true target "$REPLACE_RULESPEC_PATH"' in command
-    )
-    assert (
-        '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" false dependent ""'
-        in command
-    )
-    assert (
-        '"$CITATION" "$REVIEW_FINDING" false target "$REPLACE_RULESPEC_PATH"' in command
-    )
+    assert '"$CITATION" "$REVIEW_FINDING" true target \\\n' in command
+    assert '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \\\n' in command
+    assert '"$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"' in command
+    assert '"$CITATION" "$REVIEW_FINDING" false target \\\n' in command
     assert "dependent review finding is required with dependent citation" in command
     assert steps.index(cascade_step) < steps.index(apply_step)
 
@@ -2087,9 +2086,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert package_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
     assert '"$artifact/context-manifest.json"' in package_command
     assert '".axiom/encoding-manifests"' in package_command
-    assert 'citation = payload.get("citation")' in package_command
-    assert 'applied_manifest["context_manifest_file"]' in package_command
-    assert 'applied_manifest.get("context_manifest_sha256")' in package_command
+    assert 'citation = effective.get("citation")' in package_command
+    assert 'evidence_manifest["context_manifest_file"]' in package_command
+    assert "evidence_manifest.get(" in package_command
+    assert "is still pending" in package_command
     assert "primary_paths != [normalized_replacement_path]" in package_command
     assert "replacement apply manifest primary path does not " in package_command
     assert "match the requested RuleSpec target" in package_command
@@ -2105,6 +2105,21 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"queue_manifest_sha256": (' in package_command
     assert '"workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])' in (
         package_command
+    )
+    trusted_python = "/opt/axiom-verification/python/bin/python"
+    assert f"workflow_python=({trusted_python} -I)" in package_command
+    assert '"${workflow_python[@]}" - \\\n' in package_command
+
+    commit_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Commit reviewed lane changes locally"
+    )
+    assert f"workflow_python=({trusted_python} -I)" in commit_step["run"]
+    assert '"${workflow_python[@]}" \\\n' in commit_step["run"]
+    assert (
+        "axiom-encode/scripts/prepare_signed_backfill.py stage \\\n"
+        in (commit_step["run"])
     )
 
     guard_step = next(
@@ -2130,6 +2145,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert publish_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
     assert "AXIOM_ENCODE_APPLY_SIGNING_KEY" not in publish_step["env"]
     publish_command = publish_step["run"]
+    assert f"workflow_python=({trusted_python} -I)" in publish_command
     assert 'repo="TheAxiomFoundation/rulespec-${COUNTRY}"' in publish_command
     assert '"$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"' in publish_command
     assert "core.hooksPath=/dev/null" in publish_command
@@ -2497,6 +2513,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     environment = {
         **os.environ,
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "AXIOM_TEST_PYTHON": sys.executable,
         "CALLS_PATH": str(calls_path),
         "CITATION": "us/regulation/42/435/555",
         "DEPENDENT_CITATION": "",
@@ -2547,7 +2564,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     )
     if dependent_count >= 1:
         assert encode_args[1][-1] == "us/regulation/42/435/559"
-        assert "--apply-target-only" not in encode_args[1]
+        assert ("--apply-target-only" in encode_args[1]) is (dependent_count == 2)
         assert (
             Path(encode_args[1][encode_args[1].index("--review-findings") + 1])
             .read_text(encoding="utf-8")
@@ -2606,11 +2623,17 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     environment = {
         **os.environ,
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "AXIOM_TEST_PYTHON": sys.executable,
         "CALLS_PATH": str(calls_path),
         "CITATION": "us-nc/statute/105/105-153.7",
         "DEPENDENT_CITATION": dependent_citation,
         "DEPENDENT_REVIEW_FINDING": dependent_finding,
         "GITHUB_WORKSPACE": str(tmp_path),
+        "REPLACE_LEGACY_RULESPEC_PATH": (
+            "us-nc/policies/income_tax/PILOT_LIABILITY_PIPELINE.yaml"
+            if with_dependent
+            else ""
+        ),
         "REPLACE_RULESPEC_PATH": replacement_path,
         "REVIEW_FINDING": "Preserve all supported existing semantics.",
         "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
@@ -2636,6 +2659,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     )
     assert encode_args[0][-1] == "us-nc/statute/105/105-153.7"
     if with_dependent:
+        assert "--replace-legacy-rulespec-path" in encode_args[0]
+        assert "--legacy-dependent-rulespec-path" in encode_args[0]
         assert "--replace-rulespec-path" not in encode_args[1]
         assert "--apply-target-only" not in encode_args[1]
         assert encode_args[1][-1] == dependent_citation
@@ -2761,12 +2786,12 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
         if step.get("name") == "Package exact generated changes"
     )["run"]
     marker = (
-        "python - \\\n"
+        '"${workflow_python[@]}" - \\\n'
         '  "$artifact/context-manifest.json" \\\n'
         "  \"$artifact/apply-manifests.json\" <<'PY'\n"
     )
     script = package_command.split(marker, 1)[1].split(
-        '\nPY\npython - "$artifact/metadata.json"', 1
+        '\nPY\n"${workflow_python[@]}" - "$artifact/metadata.json"', 1
     )[0]
 
     rulespec = tmp_path / "rulespec-nz"
@@ -2823,6 +2848,7 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
         env={
             **os.environ,
             "CITATION": citation,
+            "PYTHONPATH": str(ROOT / "src"),
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-nz",
@@ -2882,12 +2908,12 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
         if step.get("name") == "Package exact generated changes"
     )["run"]
     marker = (
-        "python - \\\n"
+        '"${workflow_python[@]}" - \\\n'
         '  "$artifact/context-manifest.json" \\\n'
         "  \"$artifact/apply-manifests.json\" <<'PY'\n"
     )
     script = package_command.split(marker, 1)[1].split(
-        '\nPY\npython - "$artifact/metadata.json"', 1
+        '\nPY\n"${workflow_python[@]}" - "$artifact/metadata.json"', 1
     )[0]
 
     rulespec = tmp_path / "rulespec-us"
@@ -2987,6 +3013,7 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
             "CITATION": target_citation,
             "DEPENDENT_CITATION": dependent_citation,
             "DEPENDENT_REVIEW_FINDING_PRESENT": "true",
+            "PYTHONPATH": str(ROOT / "src"),
             "SECOND_DEPENDENT_CITATION": second_dependent_citation,
             "SECOND_DEPENDENT_REVIEW_FINDING_PRESENT": "true",
             "REVIEW_FINDING_PRESENT": "true",
