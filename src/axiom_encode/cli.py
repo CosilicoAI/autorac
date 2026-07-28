@@ -2148,8 +2148,9 @@ def main():
         type=Path,
         help=(
             "With --apply and --replace-rulespec-path, freshly model-reencode one "
-            "exact protected legacy v1/manual-owned primary, delete its primary, "
-            "companion, and legacy manifest atomically, and emit only signed v5 "
+            "exact protected legacy v1/manual-owned primary, retire its old primary, "
+            "companion, and legacy manifest bytes atomically at either the same "
+            "canonical path or its unique normalized path, and emit only signed v5 "
             "replacement provenance."
         ),
     )
@@ -6629,10 +6630,14 @@ def _legacy_replacement_authoritative_map(
             or path.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
         ):
             issues.append(f"legacy replacement {label} path is not canonical")
-    if expected_destination != destination_path:
+    in_place = source_path == destination_path
+    if in_place:
+        if expected_destination != source_path:
+            issues.append(
+                "in-place legacy replacement source must already be canonical"
+            )
+    elif expected_destination != destination_path:
         issues.append("legacy replacement destination is not canonical for source")
-    if source_path == destination_path:
-        issues.append("legacy replacement source and destination must differ")
     if (
         legacy.get("owner_class") != APPLIED_ENCODING_LEGACY_OWNER_CLASS
         or legacy.get("trusted_generated_provenance") is not False
@@ -6722,6 +6727,7 @@ def _legacy_replacement_authoritative_map(
             legacy_manifest_issues = _legacy_manual_manifest_issues(
                 legacy_manifest_payload,
                 expected_files=expected_files,
+                allow_unmarked_manual_exception=in_place,
             )
             issues.extend(
                 f"legacy replacement source manifest is not legacy-owned: {issue}"
@@ -6729,13 +6735,18 @@ def _legacy_replacement_authoritative_map(
             )
     if issues:
         return None, issues
-    try:
-        replacements = exact_reference_replacements(
-            [PlannedMove(source=source_path, destination=destination_path)],
-            existing_companions=existing_companions,
-        )
-    except PathMigrationPlanError as exc:
-        return None, [f"legacy replacement authority cannot be reconstructed: {exc}"]
+    if in_place:
+        replacements = {}
+    else:
+        try:
+            replacements = exact_reference_replacements(
+                [PlannedMove(source=source_path, destination=destination_path)],
+                existing_companions=existing_companions,
+            )
+        except PathMigrationPlanError as exc:
+            return None, [
+                f"legacy replacement authority cannot be reconstructed: {exc}"
+            ]
     return replacements, []
 
 
@@ -6781,11 +6792,39 @@ def _legacy_replacement_reference_inventory_issues(
             return
         classifications[path] = owner
 
+    live_files = replacement.get("live_files")
+    live_paths = (
+        {
+            str(item["path"])
+            for item in live_files
+            if isinstance(item, dict)
+            and set(item) == {"path", "sha256"}
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
+        }
+        if isinstance(live_files, list)
+        else set()
+    )
+    source = replacement.get("source")
+    destination = replacement.get("destination")
+    in_place = (
+        isinstance(source, str)
+        and isinstance(destination, str)
+        and source == destination
+    )
     legacy_files = legacy.get("files")
     if isinstance(legacy_files, list):
         for item in legacy_files:
             if isinstance(item, dict):
-                classify(item.get("path"), "deleted source")
+                path = item.get("path")
+                classify(
+                    path,
+                    (
+                        "replaced source"
+                        if in_place and path in live_paths
+                        else "deleted source"
+                    ),
+                )
     rewrites = replacement.get("rewrites")
     if isinstance(rewrites, list):
         for item in rewrites:
@@ -6812,6 +6851,16 @@ def _legacy_replacement_reference_inventory_issues(
         issues.append(
             "legacy replacement source manifest is also classified as reference input"
         )
+    if in_place:
+        if authoritative_replacements:
+            issues.append(
+                "in-place legacy replacement must not carry path reference rewrites"
+            )
+        if replacement.get("rewrites") != []:
+            issues.append("in-place legacy replacement must not rewrite metadata")
+        if replacement.get("scheduled_dependents") != []:
+            issues.append("in-place legacy replacement cannot schedule path dependents")
+        return issues
 
     try:
         listing = _rulespec_migration_git_bytes(
@@ -21294,6 +21343,17 @@ def _legacy_replacement_manifest_issues(
                 else []
             )
             if isinstance(item, dict)
+            and item.get("path")
+            not in {
+                live.get("path")
+                for live in (
+                    receipt_replacement.get("live_files", [])
+                    if isinstance(receipt_replacement, dict)
+                    and isinstance(receipt_replacement.get("live_files"), list)
+                    else []
+                )
+                if isinstance(live, dict)
+            }
         ],
         rewrites=(
             receipt_replacement.get("rewrites")
@@ -21477,8 +21537,45 @@ def _legacy_replacement_manifest_issues(
         if hashlib.sha256(base_raw).hexdigest() != evidence["sha256"]:
             issues.append(f"{manifest_label} legacy evidence hash is stale")
         live = repo_path / evidence_path
-        if live.exists() or live.is_symlink():
-            issues.append(f"{manifest_label} legacy evidence path still exists")
+        nested_files = nested.get("applied_files")
+        replacement_hashes = (
+            {
+                str(item["path"]): str(item["sha256"])
+                for item in nested_files
+                if isinstance(item, dict)
+                and set(item) == {"path", "sha256"}
+                and isinstance(item.get("path"), str)
+                and isinstance(item.get("sha256"), str)
+            }
+            if isinstance(nested_files, list)
+            else {}
+        )
+        replacement_digest = replacement_hashes.get(evidence_path.as_posix())
+        if replacement_digest is None:
+            replaces_manifest_in_place = (
+                replacement.get("source") == replacement.get("destination")
+                and evidence_path.as_posix() == manifest_label
+            )
+            if not replaces_manifest_in_place and (live.exists() or live.is_symlink()):
+                issues.append(f"{manifest_label} legacy evidence path still exists")
+        else:
+            try:
+                live_raw = read_bounded_regular_file(
+                    repo_path,
+                    live,
+                    label="in-place legacy replacement live file",
+                    max_bytes=16 * 1024 * 1024,
+                    required_mode=0o644,
+                )
+            except (OSError, UnsafeCorpusPathError):
+                issues.append(
+                    f"{manifest_label} in-place replacement live file is unreadable"
+                )
+            else:
+                if hashlib.sha256(live_raw).hexdigest() != replacement_digest:
+                    issues.append(
+                        f"{manifest_label} in-place replacement live hash is stale"
+                    )
 
     source = replacement.get("source")
     destination = replacement.get("destination")
@@ -21491,7 +21588,13 @@ def _legacy_replacement_manifest_issues(
     if (
         not isinstance(source, str)
         or not isinstance(destination, str)
-        or normalized_destination != Path(destination)
+        or (
+            Path(source) != Path(destination)
+            and normalized_destination != Path(destination)
+        )
+        or (
+            Path(source) == Path(destination) and normalized_destination != Path(source)
+        )
     ):
         issues.append(f"{manifest_label} replacement path normalization is invalid")
     if (
@@ -21770,7 +21873,14 @@ def _legacy_replacement_manifest_issues(
     expected_entries.extend(
         {"path": item["path"], "deleted": True}
         for item in legacy_files
-        if isinstance(item, dict) and isinstance(item.get("path"), str)
+        if isinstance(item, dict)
+        and isinstance(item.get("path"), str)
+        and item["path"]
+        not in {
+            live.get("path")
+            for live in replacement.get("live_files", [])
+            if isinstance(live, dict)
+        }
     )
     if outer_list != expected_entries:
         issues.append(
@@ -22895,13 +23005,22 @@ def _resolve_legacy_replacement_contract(
                 f"legacy replacement {label} must be a canonical "
                 "checkout-relative primary RuleSpec in the requested jurisdiction"
             )
-    if destination != canonical_destination(source):
+    canonical_source = canonical_destination(source)
+    in_place = source == destination
+    if in_place:
+        if source != canonical_source:
+            raise ValueError(
+                "in-place legacy replacement source must already be canonical"
+            )
+        if scheduled_dependent_paths:
+            raise ValueError(
+                "in-place legacy replacement cannot schedule path dependents"
+            )
+    elif destination != canonical_source:
         raise ValueError(
             "legacy replacement destination is not the unique canonical "
             "normalization of its source"
         )
-    if source == destination:
-        raise ValueError("legacy replacement source is already canonical")
 
     base_commit, base_tree = _rulespec_migration_base_identity(policy_checkout_path)
     _require_legacy_replacement_clean_checkout(policy_checkout_path)
@@ -22913,17 +23032,18 @@ def _resolve_legacy_replacement_contract(
         companion_path(destination),
         _applied_encoding_manifest_path(destination),
     )
-    for candidate in destination_group:
-        candidate_absolute = policy_checkout_path / candidate
-        if (
-            candidate in tracked
-            or candidate_absolute.exists()
-            or candidate_absolute.is_symlink()
-        ):
-            raise ValueError(
-                "legacy replacement destination primary/companion/manifest group "
-                f"must be absent at clean HEAD and live: {candidate}"
-            )
+    if not in_place:
+        for candidate in destination_group:
+            candidate_absolute = policy_checkout_path / candidate
+            if (
+                candidate in tracked
+                or candidate_absolute.exists()
+                or candidate_absolute.is_symlink()
+            ):
+                raise ValueError(
+                    "legacy replacement destination primary/companion/manifest group "
+                    f"must be absent at clean HEAD and live: {candidate}"
+                )
 
     old_paths = [source]
     old_companion = companion_path(source)
@@ -22974,10 +23094,16 @@ def _resolve_legacy_replacement_contract(
         else ()
     )
     requested_citation = normalize_corpus_identifier(source_unit.requested)
-    if old_citations != (requested_citation,):
+    citation_identity_matches = (
+        old_citations == (requested_citation,)
+        if not in_place
+        else bool(old_citations) and old_citations[0] == requested_citation
+    )
+    if not citation_identity_matches:
         raise ValueError(
-            "legacy replacement source must declare exactly the requested signed "
-            "corpus unit using only singular or legacy plural citation syntax"
+            "legacy replacement source must declare the requested signed corpus "
+            "unit as its sole source for a path move or its first historical source "
+            "for an in-place fresh replacement"
         )
     resolved_old = resolve_corpus_source_unit(old_citations[0], corpus_release)
     if (
@@ -23017,6 +23143,7 @@ def _resolve_legacy_replacement_contract(
     legacy_issues = _legacy_manual_manifest_issues(
         legacy_payload,
         expected_files=expected_files,
+        allow_unmarked_manual_exception=in_place,
     )
     if legacy_issues:
         raise ValueError("; ".join(legacy_issues))
@@ -23026,10 +23153,15 @@ def _resolve_legacy_replacement_contract(
         legacy_manifest_raw,
     )
 
-    move = PlannedMove(source=source, destination=destination)
-    replacements = exact_reference_replacements(
-        [move],
-        existing_companions={old_companion} if old_companion in old_paths else set(),
+    replacements = (
+        {}
+        if in_place
+        else exact_reference_replacements(
+            [PlannedMove(source=source, destination=destination)],
+            existing_companions={old_companion}
+            if old_companion in old_paths
+            else set(),
+        )
     )
     scheduled_groups: dict[Path, set[Path]] = {}
     for raw_dependent in scheduled_dependent_paths:
@@ -44568,9 +44700,13 @@ def _stage_signed_apply_manifest(
             signing_broker=signing_broker,
             axiom_encode_git=axiom_encode_git,
             existing_manifest_path=(
-                checkout_root
-                / _applied_encoding_manifest_path(
-                    Path(content_root.name) / relative_output
+                None
+                if _result_legacy_replacement_contract(result) is not None
+                else (
+                    checkout_root
+                    / _applied_encoding_manifest_path(
+                        Path(content_root.name) / relative_output
+                    )
                 )
             ),
             allow_shrink=allow_shrink,
@@ -44612,15 +44748,31 @@ def _stage_signed_legacy_replacement_provenance(
         raise RuntimeError("Fresh replacement model manifest signature is invalid")
 
     model_manifest_sha256 = hashlib.sha256(model_manifest_bytes).hexdigest()
-    live_files = [
+    expected_live_hashes = {
+        (Path(content_root.name) / relative).as_posix(): hashlib.sha256(raw).hexdigest()
+        for relative, raw in planned.items()
+    }
+    model_live_files = model_manifest.get("applied_files")
+    model_live_hashes = (
         {
-            "path": (Path(content_root.name) / relative).as_posix(),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            str(item["path"]): str(item["sha256"])
+            for item in model_live_files
+            if isinstance(item, dict)
+            and set(item) == {"path", "sha256"}
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
         }
-        for relative, raw in sorted(
-            planned.items(), key=lambda item: item[0].as_posix()
+        if isinstance(model_live_files, list)
+        else {}
+    )
+    if model_live_hashes != expected_live_hashes or len(model_live_hashes) != len(
+        model_live_files or []
+    ):
+        raise RuntimeError(
+            "Fresh replacement model manifest does not bind exact planned live files"
         )
-    ]
+    live_files = copy.deepcopy(model_live_files)
+    live_paths = {str(item["path"]) for item in live_files}
     rewrite_files = [
         {
             "path": rewrite.path.as_posix(),
@@ -44631,6 +44783,7 @@ def _stage_signed_legacy_replacement_provenance(
     deleted_files = [
         {"path": item.path.as_posix(), "deleted": True}
         for item in contract.deleted_files
+        if item.path.as_posix() not in live_paths
     ]
     scheduled_dependents = [
         {
@@ -45915,10 +46068,6 @@ def _require_apply_post_install_closure(
             )
 
     expected_post_files = dict(expected_policy_files)
-    for relative, raw in planned.items():
-        expected_post_files[_canonical_apply_relative_path(relative).as_posix()] = (
-            hashlib.sha256(raw).hexdigest()
-        )
     if legacy_replacement is not None:
         for deleted in legacy_replacement.deleted_files:
             if deleted.path.parts[:1] == (content_root.name,):
@@ -45931,6 +46080,10 @@ def _require_apply_post_install_closure(
                 expected_post_files[Path(*rewrite.path.parts[1:]).as_posix()] = (
                     rewrite.after_sha256
                 )
+    for relative, raw in planned.items():
+        expected_post_files[_canonical_apply_relative_path(relative).as_posix()] = (
+            hashlib.sha256(raw).hexdigest()
+        )
     if current_execution.get("policy_content_files") != expected_post_files:
         raise RuntimeError(
             "Cannot keep applied RuleSpec: live RuleSpec bytes changed during "
@@ -45948,14 +46101,22 @@ def _require_apply_post_install_closure(
         )
     if legacy_replacement is not None:
         checkout_root = content_root.parent
+        live_replacement_paths = {
+            content_root / _canonical_apply_relative_path(relative)
+            for relative in planned
+        }
         for deleted in legacy_replacement.deleted_files:
             target = checkout_root / deleted.path
-            if target.exists() or target.is_symlink():
+            if target not in live_replacement_paths and (
+                target.exists() or target.is_symlink()
+            ):
                 raise RuntimeError(
                     f"Cannot keep legacy replacement: old path still exists: {target}"
                 )
         old_manifest = checkout_root / legacy_replacement.legacy_manifest.path
-        if old_manifest.exists() or old_manifest.is_symlink():
+        if old_manifest != manifest_path and (
+            old_manifest.exists() or old_manifest.is_symlink()
+        ):
             raise RuntimeError(
                 "Cannot keep legacy replacement: old ownership manifest still exists"
             )
@@ -46124,16 +46285,18 @@ def _apply_generated_encoding_result(
             (checkout_root / rewrite.path, rewrite.raw)
             for rewrite in legacy_replacement.rewrites
         )
+        written_targets = {
+            target for target, raw in transaction_files if raw is not None
+        }
         transaction_files.extend(
             (checkout_root / item.path, None)
             for item in legacy_replacement.deleted_files
+            if checkout_root / item.path not in written_targets
         )
-        transaction_files.extend(
-            [
-                (checkout_root / legacy_replacement.legacy_manifest.path, None),
-                (checkout_root / receipt_relative, receipt_bytes),
-            ]
-        )
+        old_manifest_path = checkout_root / legacy_replacement.legacy_manifest.path
+        if old_manifest_path not in written_targets:
+            transaction_files.append((old_manifest_path, None))
+        transaction_files.append((checkout_root / receipt_relative, receipt_bytes))
     for target, _raw in transaction_files:
         _ensure_safe_apply_target(checkout_root, target)
 
@@ -46178,11 +46341,12 @@ def _apply_generated_encoding_result(
                 checkout_root,
                 legacy_replacement,
             )
-        _require_applied_manifest_not_shrunk(
-            manifest_path,
-            new_applied_files=new_manifest_applied_files,
-            allow_shrink=allow_shrink,
-        )
+        if legacy_replacement is None:
+            _require_applied_manifest_not_shrunk(
+                manifest_path,
+                new_applied_files=new_manifest_applied_files,
+                allow_shrink=allow_shrink,
+            )
         locked_release = load_rulespec_local_corpus_release(
             content_root,
             corpus_path,
@@ -46867,9 +47031,10 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             )
         overlay_target = overlay_content_root / relative_output
         overlay_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(output_file, overlay_target)
-        if output_test.exists():
-            shutil.copy2(output_test, _rulespec_test_path(overlay_target))
+        if legacy_replacement is None:
+            shutil.copy2(output_file, overlay_target)
+            if output_test.exists():
+                shutil.copy2(output_test, _rulespec_test_path(overlay_target))
         if legacy_replacement is not None:
             expected_relative = Path(*legacy_replacement.destination.parts[1:])
             if relative_output != expected_relative:
@@ -46882,7 +47047,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     {},
                 )
             try:
-                generated_payload = yaml.safe_load(overlay_target.read_text())
+                generated_payload = yaml.safe_load(output_file.read_text())
             except (OSError, UnicodeError, yaml.YAMLError, RecursionError):
                 generated_payload = None
             generated_module = (
@@ -46911,7 +47076,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             old_content = legacy_replacement.deleted_files[0].raw.decode("utf-8")
             preservation_issues = _source_relation_preservation_issues(
                 old_content,
-                overlay_target.read_text(),
+                output_file.read_text(),
             )
             if preservation_issues:
                 return (
@@ -46982,6 +47147,9 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                         {},
                     )
                 rewrite_target.write_bytes(rewrite.raw)
+            shutil.copy2(output_file, overlay_target)
+            if output_test.exists():
+                shutil.copy2(output_test, _rulespec_test_path(overlay_target))
         if not validate_dependents:
             _suppress_rulespec_ancestor_targets_for_subsection_overlay(
                 overlay_content_root,

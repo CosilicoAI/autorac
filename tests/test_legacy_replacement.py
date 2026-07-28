@@ -30,7 +30,7 @@ from axiom_encode.legacy_replacement import (
         {"corpus_citation_path": ""},
         {"corpus_citation_path": 1},
         {"corpus_citation_paths": []},
-        {"corpus_citation_paths": ["us-la/statute/47/32", "us-la/statute/47/33"]},
+        {"corpus_citation_paths": ["us-la/statute/47/32", "us-la/statute/47/32"]},
         {"corpus_citation_paths": [1]},
         {
             "corpus_citation_path": "us-la/statute/47/32",
@@ -52,6 +52,20 @@ def test_legacy_citation_admission_rejects_ambiguous_shapes(verification) -> Non
 def test_legacy_citation_admission_accepts_one_exclusive_source(verification) -> None:
     assert legacy_source_verification_citation_paths(verification) == (
         "us-la/statute/47/32",
+    )
+
+
+def test_legacy_citation_admission_preserves_historical_source_order() -> None:
+    assert legacy_source_verification_citation_paths(
+        {
+            "corpus_citation_paths": [
+                "us-me/guidance/revenue/rate-schedule",
+                "us-me/statute/36/5111",
+            ]
+        }
+    ) == (
+        "us-me/guidance/revenue/rate-schedule",
+        "us-me/statute/36/5111",
     )
 
 
@@ -83,6 +97,39 @@ def test_manual_manifest_is_admitted_only_as_exact_deletion_evidence() -> None:
         legacy_manual_manifest_issues(
             _manual_manifest(),
             expected_files=expected,
+        )
+        == []
+    )
+
+
+def test_unmarked_manual_manifest_is_only_admitted_for_explicit_in_place_use() -> None:
+    payload = _manual_manifest()
+    payload.pop("manual_exception")
+    expected = {
+        "us-la/statutes/47:32.yaml": "a" * 64,
+        "us-la/statutes/47:32.test.yaml": "b" * 64,
+    }
+    assert any(
+        "no manual exception" in issue
+        for issue in legacy_manual_manifest_issues(
+            payload,
+            expected_files=expected,
+        )
+    )
+    assert (
+        legacy_manual_manifest_issues(
+            payload,
+            expected_files=expected,
+            allow_unmarked_manual_exception=True,
+        )
+        == []
+    )
+    payload["manual_exception"] = None
+    assert (
+        legacy_manual_manifest_issues(
+            payload,
+            expected_files=expected,
+            allow_unmarked_manual_exception=True,
         )
         == []
     )
@@ -191,6 +238,121 @@ def _legacy_checkout(tmp_path: Path) -> tuple[Path, Path, SimpleNamespace]:
         resolved_source=object(),
     )
     return checkout, content_root, source
+
+
+def _in_place_legacy_checkout(
+    tmp_path: Path,
+) -> tuple[Path, Path, SimpleNamespace]:
+    checkout = tmp_path / "rulespec-us"
+    content_root = checkout / "us-me"
+    primary = content_root / "policies/income_tax/pilot_liability_pipeline.yaml"
+    companion = primary.with_name("pilot_liability_pipeline.test.yaml")
+    primary.parent.mkdir(parents=True)
+    primary.write_text(
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-me/guidance/revenue/rate-schedule\n"
+        "      - us-me/statute/36/5111\n"
+        "rules: []\n"
+    )
+    companion.write_text("[]\n")
+    expected_files = {
+        primary.relative_to(checkout).as_posix(): hashlib.sha256(
+            primary.read_bytes()
+        ).hexdigest(),
+        companion.relative_to(checkout).as_posix(): hashlib.sha256(
+            companion.read_bytes()
+        ).hexdigest(),
+    }
+    manifest = (
+        checkout / ".axiom/encoding-manifests/us-me/policies/income_tax/"
+        "pilot_liability_pipeline.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    payload = _manual_manifest()
+    payload.pop("manual_exception")
+    payload["applied_files"] = [
+        {"path": path, "sha256": digest} for path, digest in expected_files.items()
+    ]
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "init", "-q")
+    _git(checkout, "config", "user.email", "test@example.com")
+    _git(checkout, "config", "user.name", "Test")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "base")
+    source = SimpleNamespace(
+        requested="us-me/guidance/revenue/rate-schedule",
+        citation_path="us-me/guidance/revenue/rate-schedule",
+        body="official schedule",
+        resolved_source=object(),
+    )
+    return checkout, content_root, source
+
+
+def test_contract_binds_in_place_plural_source_and_unmarked_v1(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _in_place_legacy_checkout(tmp_path)
+    relative = Path("us-me/policies/income_tax/pilot_liability_pipeline.yaml")
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=relative,
+            destination_raw=relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+    assert contract.source == relative
+    assert contract.destination == relative
+    assert contract.rewrites == ()
+    assert contract.scheduled_dependents == ()
+    assert [item.path for item in contract.deleted_files] == [
+        relative,
+        relative.with_name("pilot_liability_pipeline.test.yaml"),
+    ]
+
+
+def test_contract_rejects_in_place_source_choice_outside_first_legacy_slot(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _in_place_legacy_checkout(tmp_path)
+    source.requested = "us-me/statute/36/5111"
+    source.citation_path = source.requested
+    relative = Path("us-me/policies/income_tax/pilot_liability_pipeline.yaml")
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="first historical source"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=relative,
+            destination_raw=relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+
+def test_contract_rejects_in_place_path_dependents(tmp_path: Path) -> None:
+    checkout, content_root, source = _in_place_legacy_checkout(tmp_path)
+    relative = Path("us-me/policies/income_tax/pilot_liability_pipeline.yaml")
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="cannot schedule path dependents"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=relative,
+            destination_raw=relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+            scheduled_dependent_paths=(relative.with_name("dependent.yaml"),),
+        )
 
 
 def test_contract_binds_clean_head_and_exact_metadata_rewrite(tmp_path: Path) -> None:

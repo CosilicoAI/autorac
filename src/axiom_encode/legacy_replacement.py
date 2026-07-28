@@ -63,7 +63,7 @@ class LegacyReplacementContract(NamedTuple):
 def legacy_source_verification_citation_paths(
     verification: Mapping[str, object],
 ) -> tuple[str, ...]:
-    """Admit exactly one exclusive singular or historical plural citation."""
+    """Parse one exclusive singular citation or a historical plural list."""
 
     admitted = {"corpus_citation_path", "corpus_citation_paths"}
     present = set(verification) & admitted
@@ -75,21 +75,24 @@ def legacy_source_verification_citation_paths(
         return ()
     if (
         not isinstance(raw_paths, list)
-        or len(raw_paths) != 1
-        or not isinstance(raw_paths[0], str)
-        or not raw_paths[0].strip()
+        or not raw_paths
+        or not all(isinstance(item, str) and item.strip() for item in raw_paths)
     ):
         return ()
     try:
-        return (normalize_corpus_identifier(raw_paths[0]),)
+        normalized = tuple(normalize_corpus_identifier(item) for item in raw_paths)
     except (TypeError, ValueError):
         return ()
+    if len(set(normalized)) != len(normalized):
+        return ()
+    return normalized
 
 
 def legacy_manual_manifest_issues(
     payload: object,
     *,
     expected_files: Mapping[str, str],
+    allow_unmarked_manual_exception: bool = False,
 ) -> list[str]:
     """Require the one known manual v1 class without trusting its signature."""
 
@@ -104,9 +107,12 @@ def legacy_manual_manifest_issues(
         issues.append("legacy ownership manifest backend is not manual")
     if payload.get("runner") != "manual-attestation":
         issues.append("legacy ownership manifest runner is not manual-attestation")
-    if (
-        not isinstance(payload.get("manual_exception"), str)
-        or not str(payload["manual_exception"]).strip()
+    manual_exception = payload.get("manual_exception")
+    unmarked_exception_admitted = allow_unmarked_manual_exception and (
+        "manual_exception" not in payload or manual_exception is None
+    )
+    if not unmarked_exception_admitted and (
+        not isinstance(manual_exception, str) or not manual_exception.strip()
     ):
         issues.append("legacy ownership manifest has no manual exception")
     if any(

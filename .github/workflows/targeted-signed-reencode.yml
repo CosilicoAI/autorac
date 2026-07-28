@@ -1041,14 +1041,35 @@ jobs:
                   expected_old_manifest = Path(
                       ".axiom/encoding-manifests"
                   ) / Path(legacy_source_path).with_suffix(".json")
-                  if deleted_manifest_paths != {expected_old_manifest}:
-                      raise SystemExit(
-                          "legacy replacement must delete exactly its old manifest"
+                  if legacy_source_path == normalized_replacement_path:
+                      if deleted_manifest_paths:
+                          raise SystemExit(
+                              "in-place legacy replacement must overwrite, not "
+                              "delete, its ownership manifest"
+                          )
+                      if expected_old_manifest != relative_path:
+                          raise SystemExit(
+                              "in-place legacy replacement manifest path differs"
+                          )
+                      live_primary = (
+                          Path(os.environ["RULESPEC_CHECKOUT"])
+                          / normalized_replacement_path
                       )
-                  if (
-                      Path(os.environ["RULESPEC_CHECKOUT"]) / legacy_source_path
-                  ).exists():
-                      raise SystemExit("legacy replacement old primary still exists")
+                      if not live_primary.is_file():
+                          raise SystemExit(
+                              "in-place legacy replacement primary is absent"
+                          )
+                  else:
+                      if deleted_manifest_paths != {expected_old_manifest}:
+                          raise SystemExit(
+                              "legacy replacement must delete exactly its old manifest"
+                          )
+                      if (
+                          Path(os.environ["RULESPEC_CHECKOUT"]) / legacy_source_path
+                      ).exists():
+                          raise SystemExit(
+                              "legacy replacement old primary still exists"
+                          )
                   receipt_artifact = Path(sys.argv[1]).with_name(
                       "legacy-replacement-receipt.json"
                   )

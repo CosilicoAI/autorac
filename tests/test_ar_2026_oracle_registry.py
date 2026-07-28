@@ -11,7 +11,7 @@ MODULE = "us-ar:policies/income_tax/pilot_liability_pipeline"
 OUTPUT_NAME = "ar_pit_pilot_income_tax_before_non_refundable_credits_indiv"
 POLICYENGINE_VARIABLE = "ar_income_tax_before_non_refundable_credits_indiv"
 ORACLE_MERGE = "678dd840b4c64e54c63805b0183f05c0f769b399"
-ENCODER_VERSION = "0.2.1411"
+ENCODER_VERSION = "0.2.1413"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-ar:"
     country: us
     mapping_type: not_comparable
