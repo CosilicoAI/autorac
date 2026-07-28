@@ -13457,6 +13457,198 @@ class TestCmdEncode:
             },
         ]
 
+    def test_apply_freshly_replaces_untrusted_v1_at_same_canonical_path(
+        self,
+        tmp_path,
+    ):
+        from axiom_encode.cli import _resolve_legacy_replacement_contract
+        from axiom_encode.toolchain import load_rulespec_local_corpus_release
+
+        output_root = tmp_path / "out"
+        checkout = tmp_path / "rulespec-us"
+        content_root = checkout / "us-me"
+        relative = Path("policies/income_tax/pilot_liability_pipeline.yaml")
+        checkout_relative = Path("us-me") / relative
+        target = content_root / relative
+        target_test = target.with_name("pilot_liability_pipeline.test.yaml")
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_paths:\n"
+            "      - us-me/guidance/revenue/rate-schedule\n"
+            "      - us-me/statute/36/5111\n"
+            "rules: []\n"
+        )
+        target_test.write_text("- name: old manual fixture\n")
+        legacy_files = {
+            path.relative_to(checkout).as_posix(): _sha256_file(path)
+            for path in (target, target_test)
+        }
+        manifest = (
+            checkout
+            / ".axiom/encoding-manifests/us-me/policies/income_tax/"
+            "pilot_liability_pipeline.json"
+        )
+        manifest.parent.mkdir(parents=True)
+        legacy_manifest = {
+            "schema_version": "axiom-encode/applied-rulespec/v1",
+            "tool": "axiom-encode sign-applied-files",
+            "backend": "manual",
+            "runner": "manual-attestation",
+            "manual_exception": None,
+            "applied_files": [
+                {"path": path, "sha256": digest}
+                for path, digest in legacy_files.items()
+            ],
+            "signature": {
+                "algorithm": "hmac-sha256",
+                "key_id": "axiom-encode-apply-v1",
+                "value": "untrusted-historical-evidence",
+            },
+        }
+        manifest.write_text(json.dumps(legacy_manifest) + "\n")
+        old_target = target.read_bytes()
+        old_manifest = manifest.read_bytes()
+
+        source_text = "authoritative Maine schedule\n"
+        corpus_path, source_attestation = self._bind_apply_source_release(
+            checkout,
+            tmp_path,
+            citation_path="us-me/guidance/revenue/rate-schedule",
+            source_text=source_text,
+        )
+        _git(checkout, "init", "-b", "main")
+        _git(checkout, "config", "user.email", "test@example.com")
+        _git(checkout, "config", "user.name", "Test User")
+        _git(checkout, "add", ".")
+        _git(checkout, "commit", "-m", "legacy v1 base")
+        with patch.dict(
+            os.environ,
+            {"AXIOM_CORPUS_RELEASE_PUBLIC_KEY": TEST_RELEASE_PUBLIC_KEY},
+        ):
+            release = load_rulespec_local_corpus_release(content_root, corpus_path)
+        source_unit = resolve_corpus_source_unit(
+            "us-me/guidance/revenue/rate-schedule",
+            release,
+        )
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=checkout_relative,
+            destination_raw=checkout_relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source_unit,
+            corpus_release=release,
+        )
+
+        generated = output_root / "codex-test-model" / relative
+        generated.parent.mkdir(parents=True)
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-me/guidance/revenue/rate-schedule\n"
+            "rules:\n"
+            "  - name: me_2026_schedule_tax\n"
+            "    kind: derived\n"
+            "    dtype: Money\n"
+            "    period: Year\n"
+            "    versions:\n"
+            "      - effective_from: '2026-01-01'\n"
+            "        formula: '0'\n"
+        )
+        generated_test = generated.with_name("pilot_liability_pipeline.test.yaml")
+        generated_test.write_text("[]\n")
+        result = self._make_eval_result(True)
+        result.output_file = str(generated)
+        result.trace_file = str(tmp_path / "trace.json")
+        Path(result.trace_file).write_text("{}\n")
+        source_file = tmp_path / "source.txt"
+        source_file.write_text(source_text)
+        context = tmp_path / "context.json"
+        context.write_text(json.dumps({"source_text_file": source_file.name}) + "\n")
+        result.context_manifest_file = str(context)
+        result.context_manifest_sha256 = hashlib.sha256(
+            context.read_bytes()
+        ).hexdigest()
+        result.generation_prompt_sha256 = "prompt-sha"
+        result.source_attestation = source_attestation
+        result._axiom_legacy_replacement_contract = contract
+        self._record_apply_validation(
+            result,
+            output_root=output_root,
+            policy_repo_path=content_root,
+            corpus_path=corpus_path,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._git_repo_provenance",
+                return_value={
+                    "root": "/repo/axiom-encode",
+                    "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                    "dirty_tracked": False,
+                },
+            ),
+            patch(
+                "axiom_encode.cli._require_axiom_encode_version_provenance",
+                return_value={
+                    "version": AXIOM_ENCODE_TEST_VERSION,
+                    "version_commit": "f" * 40,
+                    "identity_source": "git",
+                },
+            ),
+        ):
+            applied = _apply_generated_encoding_result(
+                result,
+                output_root=output_root,
+                policy_repo_path=content_root,
+                corpus_path=corpus_path,
+                run_id="in-place-v1-replacement",
+            )
+
+        assert target.read_bytes() != old_target
+        assert target_test.read_bytes() == generated_test.read_bytes()
+        assert manifest.read_bytes() != old_manifest
+        assert applied[:3] == [target, target_test, manifest]
+        assert len(applied) == 4
+        assert applied[3].parent == checkout / ".axiom/legacy-replacements"
+        outer = json.loads(manifest.read_text())
+        assert outer["tool"] == (
+            "axiom-encode encode --apply --replace-legacy-rulespec-path"
+        )
+        assert all("deleted" not in item for item in outer["applied_files"])
+        assert {item["path"] for item in outer["applied_files"]} == {
+            target.relative_to(checkout).as_posix(),
+            target_test.relative_to(checkout).as_posix(),
+        }
+        receipt = json.loads(
+            (checkout / outer["replacement"]["receipt_path"]).read_text()
+        )
+        assert receipt["replacement"]["source"] == checkout_relative.as_posix()
+        assert receipt["replacement"]["destination"] == checkout_relative.as_posix()
+        assert receipt["legacy"]["files"] == [
+            {"path": path, "sha256": digest}
+            for path, digest in legacy_files.items()
+        ]
+        verified, _root, _digest, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert issues == [], "\n".join(issues)
+        assert verified == outer
+
     def test_apply_manifest_build_failure_leaves_live_files_byte_identical(
         self, tmp_path
     ):
@@ -33848,7 +34040,8 @@ class TestResolverOwnedManifestWriter:
         )
 
         assert any(
-            "source and destination must differ" in issue for issue in no_op_issues
+            "legacy replacement manifest does not belong to source" in issue
+            for issue in no_op_issues
         ), "\n".join(no_op_issues)
 
     def test_model_writer_rejects_forged_resolver_row(self, tmp_path):
