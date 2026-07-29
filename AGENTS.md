@@ -3,6 +3,7 @@
 ## Workflow Scope
 
 - Use this repository's docs, CLI commands, RuleSpec specs, oracle registry, eval suites, and validation pipeline as the operating procedure for Axiom work.
+- Name generated concepts per the applicable section of the naming contract, `axiom-rules-engine/docs/concept-naming.md` (executable rules, relations, tables/selectors, acronyms). Nothing in `encode --apply` updates the display acronym registries: when a change introduces a new acronym token, the PR author or reviewer flags it per the contract's Acronyms section and closes the flag by updating both registries or linking an owned follow-up.
 - Do not use PolicyEngine workflow skills or PolicyEngine implementation skills for Axiom encoding, RuleSpec, corpus, or oracle-parity tasks. PolicyEngine is an oracle/comparison dependency here, not the workflow owner.
 - If a reusable workflow is missing, add or propose an Axiom-specific Codex skill or project instruction instead of borrowing a PolicyEngine skill.
 

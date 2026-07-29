@@ -183,6 +183,15 @@ policy-repo overlay, and no repair manifest is written.
 
 ## Applying generated RuleSpec
 
+Generated concept names are reviewed against the naming contract in
+[`axiom-rules-engine/docs/concept-naming.md`](https://github.com/TheAxiomFoundation/axiom-rules-engine/blob/main/docs/concept-naming.md):
+fragment patterns, the upstream-concept rule, and lowercase acronym tokens
+with uppercase reserved for source-stated legal designators (the name lint
+rejects accidental mixed case; all-uppercase tokens pass it, so casing is a
+review item). `encode --apply` does not update the display acronym
+registries described in the contract's Acronyms section; new acronym tokens
+are flagged in review and closed by registry updates or an owned follow-up.
+
 Live jurisdiction RuleSpec must be installed with `axiom-encode encode --apply`,
 not by editing YAML in place. `--apply` validates the generated main file,
 companion test, and direct dependent RuleSpec modules inside a temporary
