@@ -1,0 +1,1 @@
+Migrate v1/manual RuleSpec dependents atomically with a fresh canonical v5 source replacement, binding every exact reference and proof-import hash rewrite, unchanged companion, legacy ownership manifest, and live file to one signed base-bound receipt.

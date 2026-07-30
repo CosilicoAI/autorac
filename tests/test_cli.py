@@ -13647,6 +13647,421 @@ class TestCmdEncode:
         assert issues == [], "\n".join(issues)
         assert verified == outer
 
+    def test_apply_atomically_migrates_exact_legacy_dependent(
+        self,
+        tmp_path,
+    ):
+        from axiom_encode.cli import _resolve_legacy_replacement_contract
+        from axiom_encode.toolchain import load_rulespec_local_corpus_release
+
+        output_root = tmp_path / "out"
+        checkout = tmp_path / "rulespec-us"
+        content_root = checkout / "us-la"
+        source_relative = Path("us-la/statutes/47:32.yaml")
+        destination_relative = Path("us-la/statutes/47/32.yaml")
+        source = checkout / source_relative
+        source_test = source.with_name("47:32.test.yaml")
+        dependent_relative = Path(
+            "us-la/policies/income_tax/2026_resident_core.yaml"
+        )
+        dependent = checkout / dependent_relative
+        dependent_test = dependent.with_name("2026_resident_core.test.yaml")
+        source.parent.mkdir(parents=True)
+        dependent.parent.mkdir(parents=True)
+        source.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-la/statute/47/32\n"
+            "rules: []\n"
+        )
+        source_test.write_text("[]\n")
+        source_before_sha256 = _sha256_file(source)
+        dependent.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-la/statute/47/32\n"
+            "  proof_validation:\n"
+            "    required: true\n"
+            "imports:\n"
+            "  - us-la:statutes/47:32#amount\n"
+            "rules:\n"
+            "  - name: liability\n"
+            "    kind: derived\n"
+            "    dtype: Money\n"
+            "    period: Year\n"
+            "    metadata:\n"
+            "      proof:\n"
+            "        atoms:\n"
+            "          - path: versions[0].formula\n"
+            "            kind: import\n"
+            "            import:\n"
+            "              target: us-la:statutes/47:32#amount\n"
+            "              output: amount\n"
+            f"              hash: sha256:{source_before_sha256}\n"
+            "    versions:\n"
+            "      - effective_from: '2026-01-01'\n"
+            "        formula: amount\n"
+        )
+        dependent_test.write_text("[]\n")
+
+        def write_manual_manifest(primary: Path, files: list[Path]) -> Path:
+            manifest = checkout / _applied_encoding_manifest_path(
+                primary.relative_to(checkout)
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "axiom-encode/applied-rulespec/v1",
+                        "tool": "axiom-encode sign-applied-files",
+                        "backend": "manual",
+                        "runner": "manual-attestation",
+                        "manual_exception": "test legacy composition",
+                        "applied_files": [
+                            {
+                                "path": path.relative_to(checkout).as_posix(),
+                                "sha256": _sha256_file(path),
+                            }
+                            for path in files
+                        ],
+                        "signature": {
+                            "algorithm": "hmac-sha256",
+                            "key_id": "historical-v1",
+                            "value": "opaque-untrusted-evidence",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            return manifest
+
+        source_manifest = write_manual_manifest(source, [source, source_test])
+        dependent_manifest = write_manual_manifest(
+            dependent, [dependent, dependent_test]
+        )
+        dependent_before = dependent.read_bytes()
+        dependent_test_before = dependent_test.read_bytes()
+        dependent_manifest_before = dependent_manifest.read_bytes()
+
+        source_text = "authoritative Louisiana section 47:32\n"
+        corpus_path, source_attestation = self._bind_apply_source_release(
+            checkout,
+            tmp_path,
+            citation_path="us-la/statute/47/32",
+            source_text=source_text,
+        )
+        _git(checkout, "init", "-b", "main")
+        _git(checkout, "config", "user.email", "test@example.com")
+        _git(checkout, "config", "user.name", "Test User")
+        _git(checkout, "add", ".")
+        _git(checkout, "commit", "-m", "legacy cascade base")
+        with patch.dict(
+            os.environ,
+            {"AXIOM_CORPUS_RELEASE_PUBLIC_KEY": TEST_RELEASE_PUBLIC_KEY},
+        ):
+            release = load_rulespec_local_corpus_release(content_root, corpus_path)
+        source_unit = resolve_corpus_source_unit("us-la/statute/47/32", release)
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=source_relative,
+            destination_raw=destination_relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source_unit,
+            corpus_release=release,
+            exact_dependent_paths=(dependent_relative,),
+        )
+
+        generated = output_root / "codex-test-model/statutes/47/32.yaml"
+        generated.parent.mkdir(parents=True)
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-la/statute/47/32\n"
+            "rules:\n"
+            "  - name: amount\n"
+            "    kind: derived\n"
+            "    dtype: Money\n"
+            "    period: Year\n"
+            "    versions:\n"
+            "      - effective_from: '2026-01-01'\n"
+            "        formula: '0'\n"
+        )
+        generated_test = generated.with_name("32.test.yaml")
+        generated_test.write_text("[]\n")
+        result = self._make_eval_result(True)
+        result.output_file = str(generated)
+        result.trace_file = str(tmp_path / "trace.json")
+        Path(result.trace_file).write_text("{}\n")
+        source_file = tmp_path / "source.txt"
+        source_file.write_text(source_text)
+        context = tmp_path / "context.json"
+        context.write_text(
+            json.dumps(
+                {
+                    "source_text_file": source_file.name,
+                    "source_metadata": {
+                        "source_attestation": source_attestation,
+                    },
+                }
+            )
+            + "\n"
+        )
+        result.context_manifest_file = str(context)
+        result.context_manifest_sha256 = hashlib.sha256(
+            context.read_bytes()
+        ).hexdigest()
+        result.generation_prompt_sha256 = "prompt-sha"
+        result.source_attestation = source_attestation
+        result._axiom_legacy_replacement_contract = contract
+
+        observed_overlay: dict[str, object] = {}
+
+        def validate_exact_overlay(
+            _pipeline,
+            *,
+            dependent_pipeline,
+            overlay_target,
+            dependents,
+        ):
+            del dependent_pipeline
+            exact_path = next(
+                path
+                for path in dependents
+                if path.as_posix().endswith(dependent_relative.as_posix())
+            )
+            exact_bytes = exact_path.read_bytes()
+            observed_overlay["dependent"] = exact_path
+            observed_overlay["bytes"] = exact_bytes
+            passed = SimpleNamespace(all_passed=True, results={})
+            return [(overlay_target, passed), (exact_path, passed)]
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline"),
+            patch(
+                "axiom_encode.cli._validate_overlay_files",
+                side_effect=validate_exact_overlay,
+            ),
+            patch("axiom_encode.cli._record_successful_apply_validation"),
+        ):
+            can_apply, issues, supplemental = (
+                _validate_generated_encoding_in_policy_overlay(
+                    result,
+                    output_root=output_root,
+                    policy_repo_path=content_root,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    local_corpus_release=release,
+                )
+            )
+        assert can_apply is True, issues
+        assert issues == []
+        assert supplemental == {}
+        assert b"us-la:statutes/47/32#amount" in observed_overlay["bytes"]
+        assert b"us-la:statutes/47:32#amount" not in observed_overlay["bytes"]
+        assert (
+            f"hash: sha256:{_sha256_file(generated)}".encode()
+            in observed_overlay["bytes"]
+        )
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline"),
+            patch(
+                "axiom_encode.cli._validate_overlay_files",
+                side_effect=validate_exact_overlay,
+            ),
+            patch("axiom_encode.cli._record_successful_apply_validation"),
+        ):
+            second_can_apply, second_issues, second_supplemental = (
+                _validate_generated_encoding_in_policy_overlay(
+                    result,
+                    output_root=output_root,
+                    policy_repo_path=content_root,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    local_corpus_release=release,
+                )
+            )
+        assert second_can_apply is True, second_issues
+        assert second_issues == []
+        assert second_supplemental == {}
+
+        self._record_apply_validation(
+            result,
+            output_root=output_root,
+            policy_repo_path=content_root,
+            corpus_path=corpus_path,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._git_repo_provenance",
+                return_value={
+                    "root": "/repo/axiom-encode",
+                    "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                    "dirty_tracked": False,
+                },
+            ),
+            patch(
+                "axiom_encode.cli._require_axiom_encode_version_provenance",
+                return_value={
+                    "version": AXIOM_ENCODE_TEST_VERSION,
+                    "version_commit": "f" * 40,
+                    "identity_source": "git",
+                },
+            ),
+        ):
+            applied = _apply_generated_encoding_result(
+                result,
+                output_root=output_root,
+                policy_repo_path=content_root,
+                corpus_path=corpus_path,
+                run_id="legacy-exact-cascade",
+            )
+
+        destination = checkout / destination_relative
+        destination_test = destination.with_name("32.test.yaml")
+        destination_manifest = checkout / _applied_encoding_manifest_path(
+            destination_relative
+        )
+        assert not source.exists()
+        assert not source_test.exists()
+        assert not source_manifest.exists()
+        assert destination.exists()
+        assert destination_test.exists()
+        assert b"us-la:statutes/47/32#amount" in dependent.read_bytes()
+        assert (
+            f"hash: sha256:{_sha256_file(destination)}".encode()
+            in dependent.read_bytes()
+        )
+        assert dependent.read_bytes() != dependent_before
+        assert dependent_test.read_bytes() == dependent_test_before
+        assert dependent_manifest.read_bytes() != dependent_manifest_before
+        assert destination_manifest in applied
+        assert dependent in applied
+        assert dependent_test in applied
+        assert dependent_manifest in applied
+
+        outer = json.loads(destination_manifest.read_text())
+        receipt_path = checkout / outer["replacement"]["receipt_path"]
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["schema_version"].endswith("/v2")
+        assert len(receipt["replacement"]["exact_dependents"]) == 1
+        exact = receipt["replacement"]["exact_dependents"][0]
+        assert exact["primary"] == dependent_relative.as_posix()
+        assert exact["rewrites"][0]["proof_import_repairs"] == 1
+        exact_legacy_hashes = {
+            item["path"]: item["sha256"] for item in exact["legacy_files"]
+        }
+        exact_live_hashes = {
+            item["path"]: item["sha256"] for item in exact["live_files"]
+        }
+        assert exact_legacy_hashes[dependent_test.relative_to(checkout).as_posix()] == (
+            exact_live_hashes[dependent_test.relative_to(checkout).as_posix()]
+        )
+        exact_manifest = json.loads(dependent_manifest.read_text())
+        assert exact_manifest["tool"] == (
+            "axiom-encode encode --apply "
+            "--legacy-exact-dependent-rulespec-path"
+        )
+        assert exact_manifest["legacy_migration"]["receipt_sha256"] == (
+            hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        )
+
+        for manifest_path in (destination_manifest, dependent_manifest):
+            verified, _root, _digest, issues = (
+                _load_verified_applied_encoding_manifest_payload(
+                    checkout,
+                    manifest_path.relative_to(checkout).as_posix(),
+                    signing_broker=TEST_APPLY_SIGNING_BROKER,
+                    expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                    expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                    local_corpus_release=release,
+                )
+            )
+            assert issues == [], "\n".join(issues)
+            assert verified is not None
+
+        outer_before_tamper = destination_manifest.read_bytes()
+        receipt_before_tamper = receipt_path.read_bytes()
+        exact_manifest_before_tamper = dependent_manifest.read_bytes()
+        tampered_receipt = copy.deepcopy(receipt)
+        tampered_receipt["replacement"]["exact_dependents"][0]["rewrites"][0][
+            "proof_import_repairs"
+        ] = 0
+        _sign_applied_encoding_manifest(
+            tampered_receipt,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        receipt_path.write_text(
+            json.dumps(tampered_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        tampered_receipt_sha256 = hashlib.sha256(
+            receipt_path.read_bytes()
+        ).hexdigest()
+        tampered_outer = copy.deepcopy(outer)
+        tampered_outer["replacement"]["receipt_sha256"] = (
+            tampered_receipt_sha256
+        )
+        _sign_applied_encoding_manifest(
+            tampered_outer,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        destination_manifest.write_text(
+            json.dumps(tampered_outer, indent=2, sort_keys=True) + "\n"
+        )
+        tampered_exact_manifest = copy.deepcopy(exact_manifest)
+        tampered_exact_manifest["legacy_migration"]["receipt_sha256"] = (
+            tampered_receipt_sha256
+        )
+        _sign_applied_encoding_manifest(
+            tampered_exact_manifest,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        dependent_manifest.write_text(
+            json.dumps(tampered_exact_manifest, indent=2, sort_keys=True) + "\n"
+        )
+        verified, _root, _digest, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                destination_manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert any("rewrite proof is stale" in issue for issue in issues)
+
+        destination_manifest.write_bytes(outer_before_tamper)
+        receipt_path.write_bytes(receipt_before_tamper)
+        dependent_manifest.write_bytes(exact_manifest_before_tamper)
+        exact_manifest = json.loads(dependent_manifest.read_text())
+        exact_manifest["legacy_migration"]["receipt_sha256"] = "0" * 64
+        _sign_applied_encoding_manifest(
+            exact_manifest,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        dependent_manifest.write_text(
+            json.dumps(exact_manifest, indent=2, sort_keys=True) + "\n"
+        )
+        verified, _root, _digest, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                dependent_manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert verified is None
+        assert any("exact dependent receipt is invalid" in issue for issue in issues)
+
     def test_apply_manifest_build_failure_leaves_live_files_byte_identical(
         self, tmp_path
     ):

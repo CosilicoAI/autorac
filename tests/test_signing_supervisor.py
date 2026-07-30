@@ -2679,6 +2679,83 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     )
 
 
+def test_targeted_signed_reencode_passes_exact_legacy_dependents_atomically(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    ).replace(
+        "/opt/axiom-verification/axiom-encode-apply-signer run",
+        '"$SIGNER_STUB"',
+    )
+    calls_path = tmp_path / "calls.jsonl"
+    signer_stub = tmp_path / "signer-stub"
+    signer_stub.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+"""
+    )
+    signer_stub.chmod(0o700)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    source = "us-la/statutes/47:32.yaml"
+    destination = "us-la/statutes/47/32.yaml"
+    exact_dependents = [
+        "us-la/policies/income_tax/2026_resident_core.yaml",
+        "us-la/policies/income_tax/pilot_liability_pipeline.yaml",
+    ]
+    environment = {
+        **os.environ,
+        "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "AXIOM_TEST_PYTHON": sys.executable,
+        "CALLS_PATH": str(calls_path),
+        "CITATION": "us-la/statute/47:32",
+        "DEPENDENT_CITATION": "",
+        "DEPENDENT_REVIEW_FINDING": "",
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": exact_dependents[0],
+        "REPLACE_LEGACY_RULESPEC_PATH": source,
+        "REPLACE_RULESPEC_PATH": destination,
+        "REVIEW_FINDING": "Preserve all supported existing semantics.",
+        "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RUNNER_TEMP": str(runner_temp),
+        "SECOND_DEPENDENT_CITATION": "",
+        "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": exact_dependents[1],
+        "SIGNER_STUB": str(signer_stub),
+    }
+
+    subprocess.run(["bash", "-c", command], check=True, env=environment)
+
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(calls) == 1
+    encode_args = calls[0][calls[0].index("--") + 1 :]
+    assert encode_args[encode_args.index("--replace-rulespec-path") + 1] == destination
+    assert (
+        encode_args[encode_args.index("--replace-legacy-rulespec-path") + 1] == source
+    )
+    exact_indexes = [
+        index
+        for index, value in enumerate(encode_args)
+        if value == "--legacy-exact-dependent-rulespec-path"
+    ]
+    assert [encode_args[index + 1] for index in exact_indexes] == exact_dependents
+    assert "--apply-target-only" not in encode_args
+
+
 @pytest.mark.parametrize(
     ("overrides", "error"),
     [
@@ -2705,6 +2782,26 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
                 "SECOND_DEPENDENT_REVIEW_FINDING": "Preserve the second source.",
             },
             "second dependent citation is required with its review finding",
+        ),
+        (
+            {
+                "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": (
+                    "us-la/policies/income_tax/pilot_liability_pipeline.yaml"
+                ),
+            },
+            "exact legacy dependents require a legacy source replacement",
+        ),
+        (
+            {
+                "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": (
+                    "us-la/policies/income_tax/2026_resident_core.yaml"
+                ),
+                "REPLACE_LEGACY_RULESPEC_PATH": "us-la/statutes/47:32.yaml",
+                "REPLACE_RULESPEC_PATH": "us-la/statutes/47/32.yaml",
+                "DEPENDENT_CITATION": "us-la/statute/47:294",
+                "DEPENDENT_REVIEW_FINDING": "Preserve dependent semantics.",
+            },
+            "exact and model-regenerated dependent modes cannot be combined",
         ),
     ],
 )
