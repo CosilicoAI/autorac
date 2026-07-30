@@ -17,6 +17,11 @@ QUEUE_TRACKING_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 MANIFEST_ROOT = PurePosixPath(".axiom/encoding-manifests")
 LEGACY_REPLACEMENT_RECEIPT_ROOT = PurePosixPath(".axiom/legacy-replacements")
 LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec-path"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+LEGACY_EXACT_DEPENDENT_TOOL = (
+    "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
+)
 MODEL_APPLY_TOOL = "axiom-encode encode --apply"
 MODEL_APPLY_BACKENDS = frozenset({"claude", "codex", "openai"})
 LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
@@ -381,6 +386,336 @@ def _validate_rulespec_path(repo: Path, path: PurePosixPath, *, label: str) -> N
         raise ValueError(f"{label} is not a canonical RuleSpec YAML path")
 
 
+def _rulespec_companion_path(primary: PurePosixPath) -> PurePosixPath:
+    return primary.with_name(f"{primary.stem}.test.yaml")
+
+
+def _base_regular_blob(
+    repo: Path,
+    base_commit: str,
+    path: PurePosixPath,
+    *,
+    required: bool,
+) -> bytes | None:
+    listing = _git(
+        repo,
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        base_commit,
+        "--",
+        path.as_posix(),
+    )
+    records = [record for record in listing.split(b"\0") if record]
+    if not records and not required:
+        return None
+    if len(records) != 1:
+        raise ValueError(
+            f"legacy exact dependent base does not contain exactly one {path}"
+        )
+    try:
+        metadata, encoded_path = records[0].split(b"\t", 1)
+        mode, object_type, _object_id = metadata.decode("ascii").split(" ")
+        listed_path = encoded_path.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("legacy exact dependent base entry is malformed") from exc
+    if mode != "100644" or object_type != "blob" or listed_path != path.as_posix():
+        raise ValueError(
+            f"legacy exact dependent base path is not regular 0644: {path}"
+        )
+    return _git(repo, "show", f"{base_commit}:{path.as_posix()}")
+
+
+def _exact_file_entries(
+    repo: Path,
+    value: object,
+    *,
+    label: str,
+) -> tuple[list[dict[str, object]], list[PurePosixPath]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} is malformed")
+    entries: list[dict[str, object]] = []
+    paths: list[PurePosixPath] = []
+    for index, item in enumerate(value):
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "sha256"}
+            or not isinstance(item.get("sha256"), str)
+            or DIGEST_PATTERN.fullmatch(item["sha256"]) is None
+        ):
+            raise ValueError(f"{label}[{index}] is malformed")
+        path = _safe_relative_path(
+            item.get("path"),
+            label=f"{label}[{index}].path",
+        )
+        _validate_rulespec_path(repo, path, label=f"{label}[{index}].path")
+        if path in paths:
+            raise ValueError(f"{label} contains duplicate paths")
+        entries.append(item)
+        paths.append(path)
+    return entries, paths
+
+
+def _validate_legacy_exact_dependents(
+    repo: Path,
+    *,
+    root_manifest: PurePosixPath,
+    receipt_relative: PurePosixPath,
+    receipt_sha256: str,
+    receipt: dict[str, object],
+    receipt_replacement: dict[str, object],
+    base_commit: str,
+    authoritative_replacements: dict[str, str],
+    live_manifests: set[PurePosixPath],
+    manifest_payloads: dict[PurePosixPath, dict[str, object]],
+    changed: set[PurePosixPath],
+) -> set[PurePosixPath]:
+    """Verify every v2 exact dependent and return unchanged authorized files."""
+
+    from axiom_encode.cli import (
+        _repair_proof_import_hashes,
+        _strict_legacy_replacement_map,
+    )
+    from axiom_encode.rulespec_path_migration import (
+        PathMigrationPlanError,
+        rewrite_exact_references,
+    )
+
+    raw_dependents = receipt_replacement.get("exact_dependents")
+    if not isinstance(raw_dependents, list):
+        raise ValueError(
+            f"legacy replacement exact_dependents are malformed: {root_manifest}"
+        )
+    unchanged_authorized: set[PurePosixPath] = set()
+    seen_primaries: set[PurePosixPath] = set()
+    seen_group_paths: set[PurePosixPath] = set()
+    seen_manifests: set[PurePosixPath] = set()
+    for index, raw_dependent in enumerate(raw_dependents):
+        label = f"{root_manifest} exact_dependents[{index}]"
+        if not isinstance(raw_dependent, dict) or set(raw_dependent) != {
+            "primary",
+            "legacy_manifest",
+            "legacy_files",
+            "live_files",
+            "rewrites",
+        }:
+            raise ValueError(f"{label} is malformed")
+        primary = _safe_relative_path(
+            raw_dependent.get("primary"),
+            label=f"{label}.primary",
+        )
+        _validate_rulespec_path(repo, primary, label=f"{label}.primary")
+        if primary.name.endswith(".test.yaml") or primary in seen_primaries:
+            raise ValueError(f"{label}.primary is invalid or duplicated")
+        seen_primaries.add(primary)
+
+        manifest_evidence = raw_dependent.get("legacy_manifest")
+        expected_manifest = MANIFEST_ROOT / primary.with_suffix(".json")
+        if (
+            not isinstance(manifest_evidence, dict)
+            or set(manifest_evidence) != {"path", "sha256"}
+            or manifest_evidence.get("path") != expected_manifest.as_posix()
+            or not isinstance(manifest_evidence.get("sha256"), str)
+            or DIGEST_PATTERN.fullmatch(manifest_evidence["sha256"]) is None
+            or expected_manifest in seen_manifests
+        ):
+            raise ValueError(f"{label}.legacy_manifest is malformed")
+        seen_manifests.add(expected_manifest)
+        base_manifest_raw = _base_regular_blob(
+            repo,
+            base_commit,
+            expected_manifest,
+            required=True,
+        )
+        assert base_manifest_raw is not None
+        if hashlib.sha256(base_manifest_raw).hexdigest() != manifest_evidence["sha256"]:
+            raise ValueError(f"{label} legacy manifest base hash differs")
+
+        legacy_files, legacy_paths = _exact_file_entries(
+            repo,
+            raw_dependent.get("legacy_files"),
+            label=f"{label}.legacy_files",
+        )
+        live_files, live_paths = _exact_file_entries(
+            repo,
+            raw_dependent.get("live_files"),
+            label=f"{label}.live_files",
+        )
+        companion = _rulespec_companion_path(primary)
+        companion_raw = _base_regular_blob(
+            repo,
+            base_commit,
+            companion,
+            required=False,
+        )
+        expected_paths = sorted(
+            [primary, *([companion] if companion_raw is not None else [])],
+            key=PurePosixPath.as_posix,
+        )
+        if legacy_paths != expected_paths or live_paths != expected_paths:
+            raise ValueError(f"{label} does not bind the exact full file group")
+        overlap = set(expected_paths) & seen_group_paths
+        if overlap:
+            raise ValueError(f"{label} overlaps another exact dependent group")
+        seen_group_paths.update(expected_paths)
+
+        base_by_path: dict[PurePosixPath, bytes] = {}
+        live_by_path: dict[PurePosixPath, bytes] = {}
+        for file_index, (path, legacy_item, live_item) in enumerate(
+            zip(expected_paths, legacy_files, live_files, strict=True)
+        ):
+            base_raw = _base_regular_blob(
+                repo,
+                base_commit,
+                path,
+                required=True,
+            )
+            assert base_raw is not None
+            live_raw = _read_bounded_regular(
+                repo,
+                path,
+                label=f"{label}.live_files[{file_index}]",
+                max_bytes=16 * 1024 * 1024,
+            )
+            if hashlib.sha256(base_raw).hexdigest() != legacy_item["sha256"]:
+                raise ValueError(f"{label} legacy file base hash differs: {path}")
+            if hashlib.sha256(live_raw).hexdigest() != live_item["sha256"]:
+                raise ValueError(f"{label} live file hash differs: {path}")
+            base_by_path[path] = base_raw
+            live_by_path[path] = live_raw
+
+        raw_rewrites = raw_dependent.get("rewrites")
+        if not isinstance(raw_rewrites, list) or not raw_rewrites:
+            raise ValueError(f"{label}.rewrites is malformed")
+        rewrite_paths: set[PurePosixPath] = set()
+        for rewrite_index, rewrite in enumerate(raw_rewrites):
+            rewrite_label = f"{label}.rewrites[{rewrite_index}]"
+            if not isinstance(rewrite, dict) or set(rewrite) != {
+                "path",
+                "before_sha256",
+                "after_sha256",
+                "replacements",
+                "proof_import_repairs",
+            }:
+                raise ValueError(f"{rewrite_label} is malformed")
+            rewrite_path = _safe_relative_path(
+                rewrite.get("path"),
+                label=f"{rewrite_label}.path",
+            )
+            if rewrite_path not in base_by_path or rewrite_path in rewrite_paths:
+                raise ValueError(f"{rewrite_label}.path is invalid or duplicated")
+            before = rewrite.get("before_sha256")
+            after = rewrite.get("after_sha256")
+            replacement_records = rewrite.get("replacements")
+            if (
+                not isinstance(before, str)
+                or DIGEST_PATTERN.fullmatch(before) is None
+                or not isinstance(after, str)
+                or DIGEST_PATTERN.fullmatch(after) is None
+                or before == after
+                or _strict_legacy_replacement_map(replacement_records) is None
+                or not isinstance(rewrite.get("proof_import_repairs"), int)
+                or isinstance(rewrite.get("proof_import_repairs"), bool)
+                or rewrite["proof_import_repairs"] < 0
+            ):
+                raise ValueError(f"{rewrite_label} proof is malformed")
+            try:
+                expected_live, observed_counts = rewrite_exact_references(
+                    base_by_path[rewrite_path],
+                    authoritative_replacements,
+                )
+                observed_proof_repairs = 0
+                if rewrite_path == primary:
+                    content_root = repo / primary.parts[0]
+                    expected_text, observed_proof_repairs = _repair_proof_import_hashes(
+                        expected_live.decode("utf-8"),
+                        target_base=(
+                            f"{content_root.name}:"
+                            f"{PurePosixPath(*primary.parts[1:]).with_suffix('').as_posix()}"
+                        ),
+                        rules_file=repo.joinpath(*primary.parts),
+                        repo_path=content_root,
+                    )
+                    expected_live = expected_text.encode("utf-8")
+            except (PathMigrationPlanError, UnicodeError) as exc:
+                raise ValueError(f"{rewrite_label} is unreadable") from exc
+            if (
+                hashlib.sha256(base_by_path[rewrite_path]).hexdigest() != before
+                or hashlib.sha256(live_by_path[rewrite_path]).hexdigest() != after
+                or expected_live != live_by_path[rewrite_path]
+                or list(observed_counts) != replacement_records
+                or rewrite["proof_import_repairs"] != observed_proof_repairs
+                or rewrite_path not in changed
+            ):
+                raise ValueError(f"{rewrite_label} transformation differs")
+            rewrite_paths.add(rewrite_path)
+
+        for path in expected_paths:
+            if path in rewrite_paths:
+                continue
+            if base_by_path[path] != live_by_path[path] or path in changed:
+                raise ValueError(f"{label} unrewritten file differs: {path}")
+            unchanged_authorized.add(path)
+
+        if expected_manifest not in live_manifests or expected_manifest not in changed:
+            raise ValueError(f"{label} lacks a changed exact dependent manifest")
+        dependent_manifest = manifest_payloads[expected_manifest]
+        exact_manifest_fields = {
+            "schema_version",
+            "generated_at",
+            "tool",
+            "axiom_encode_version",
+            "axiom_encode_git",
+            "validation_waiver_set_sha256",
+            "applied_files",
+            "legacy_migration",
+            "signature",
+        }
+        signature = dependent_manifest.get("signature")
+        if (
+            set(dependent_manifest) != exact_manifest_fields
+            or dependent_manifest.get("schema_version")
+            != "axiom-encode/applied-rulespec/v5"
+            or dependent_manifest.get("tool") != LEGACY_EXACT_DEPENDENT_TOOL
+            or dependent_manifest.get("applied_files") != live_files
+            or dependent_manifest.get("axiom_encode_version")
+            != receipt.get("axiom_encode_version")
+            or dependent_manifest.get("axiom_encode_git")
+            != receipt.get("axiom_encode_git")
+            or dependent_manifest.get("validation_waiver_set_sha256")
+            != receipt.get("validation_waiver_set_sha256")
+            or not isinstance(dependent_manifest.get("axiom_encode_version"), str)
+            or not dependent_manifest["axiom_encode_version"]
+            or not isinstance(dependent_manifest.get("axiom_encode_git"), dict)
+            or not isinstance(
+                dependent_manifest.get("validation_waiver_set_sha256"), str
+            )
+            or DIGEST_PATTERN.fullmatch(
+                dependent_manifest["validation_waiver_set_sha256"]
+            )
+            is None
+            or not isinstance(dependent_manifest.get("generated_at"), str)
+            or not dependent_manifest["generated_at"]
+            or not isinstance(signature, dict)
+            or set(signature) != {"algorithm", "key_id", "value"}
+            or not all(
+                isinstance(signature.get(field), str) and signature[field]
+                for field in ("algorithm", "key_id", "value")
+            )
+        ):
+            raise ValueError(f"{label} exact dependent manifest is malformed")
+        migration = dependent_manifest.get("legacy_migration")
+        if not isinstance(migration, dict) or migration != {
+            "receipt_path": receipt_relative.as_posix(),
+            "receipt_sha256": receipt_sha256,
+            "primary": primary.as_posix(),
+            "legacy_manifest_path": expected_manifest.as_posix(),
+            "legacy_manifest_sha256": manifest_evidence["sha256"],
+        }:
+            raise ValueError(f"{label} exact dependent manifest binding differs")
+    return unchanged_authorized
+
+
 def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
     changed = _changed_paths(repo)
     manifests = {
@@ -421,6 +756,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
         )
 
     authorized = set(live_manifests)
+    authorized_unchanged: set[PurePosixPath] = set()
     for relative, payload in manifest_payloads.items():
         replacement = payload.get("replacement")
         receipt_rewrites: set[PurePosixPath] = set()
@@ -452,9 +788,13 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement receipt digest differs: {relative}"
                 )
             receipt = json.loads(receipt_raw.decode("utf-8"))
+            receipt_schema = receipt.get("schema_version")
             if (
-                receipt.get("schema_version")
-                != "axiom-encode/legacy-fresh-reencode-receipt/v1"
+                receipt_schema
+                not in {
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
                 raise ValueError(
@@ -489,6 +829,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             live_files = receipt_replacement.get("live_files")
             legacy_files = legacy.get("files")
             scheduled_dependents = receipt_replacement.get("scheduled_dependents")
+            exact_dependents = receipt_replacement.get("exact_dependents")
             if not isinstance(raw_rewrites, list):
                 raise ValueError(
                     f"legacy replacement receipt rewrites are malformed: {relative}"
@@ -500,6 +841,15 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             ):
                 raise ValueError(
                     f"legacy replacement receipt file sets are malformed: {relative}"
+                )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1:
+                if "exact_dependents" in receipt_replacement:
+                    raise ValueError(
+                        f"legacy replacement v1 receipt has v2 fields: {relative}"
+                    )
+            elif not isinstance(exact_dependents, list):
+                raise ValueError(
+                    f"legacy replacement exact_dependents are malformed: {relative}"
                 )
             nested_manifest = payload.get("replacement_manifest")
             if (
@@ -805,6 +1155,22 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement reference inventory differs: {relative}: "
                     + "; ".join(inventory_issues)
                 )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2:
+                authorized_unchanged.update(
+                    _validate_legacy_exact_dependents(
+                        repo,
+                        root_manifest=relative,
+                        receipt_relative=receipt_relative,
+                        receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+                        receipt=receipt,
+                        receipt_replacement=receipt_replacement,
+                        base_commit=str(base_commit or ""),
+                        authoritative_replacements=authoritative_replacements,
+                        live_manifests=live_manifests,
+                        manifest_payloads=manifest_payloads,
+                        changed=changed,
+                    )
+                )
             authorized.update({receipt_relative, old_manifest_path, *receipt_rewrites})
 
         applied_files = payload.get("applied_files")
@@ -827,6 +1193,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             + ", ".join(map(str, sorted(deleted_manifests - authorized)))
         )
 
+    authorized.difference_update(authorized_unchanged)
     unexpected = changed - authorized
     missing = authorized - changed
     if unexpected:

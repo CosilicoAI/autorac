@@ -42,6 +42,14 @@ on:
         description: Exact noncanonical legacy primary replaced by a fresh model encode
         required: false
         type: string
+      legacy_exact_dependent_rulespec_path:
+        description: Exact v1/manual direct dependent migrated by canonical reference rewrite
+        required: false
+        type: string
+      second_legacy_exact_dependent_rulespec_path:
+        description: Second exact v1/manual direct dependent in the same atomic migration
+        required: false
+        type: string
       dependent_citation:
         description: Direct dependent to re-encode atomically after a breaking target
         required: false
@@ -553,6 +561,8 @@ jobs:
           REVIEW_FINDING: ${{ inputs.review_finding }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           QUEUE_ID: ${{ inputs.queue_id }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
@@ -564,6 +574,8 @@ jobs:
           : "${QUEUE_ID:=}"
           : "${REPLACE_RULESPEC_PATH:=}"
           : "${REPLACE_LEGACY_RULESPEC_PATH:=}"
+          : "${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:=}"
+          : "${SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:=}"
           : "${SECOND_DEPENDENT_CITATION:=}"
           : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
           dependent_rulespec_path=""
@@ -608,6 +620,18 @@ jobs:
                   "$second_dependent_rulespec_path"
                 )
               fi
+              if [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; then
+                args+=(
+                  --legacy-exact-dependent-rulespec-path \
+                  "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+                )
+              fi
+              if [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; then
+                args+=(
+                  --legacy-exact-dependent-rulespec-path \
+                  "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+                )
+              fi
             fi
             if [ -n "$review_finding" ]; then
               review_finding_dir="$(mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX")"
@@ -637,13 +661,46 @@ jobs:
           fi
           if [ -n "$QUEUE_ID" ] && \
             { [ -n "$REPLACE_RULESPEC_PATH" ] || \
-              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; }; then
+              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
+              [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; }; then
             echo "queue-authorized re-encodes cannot override the RuleSpec target path" >&2
             exit 1
           fi
           if [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] && \
             [ -z "$REPLACE_RULESPEC_PATH" ]; then
             echo "legacy source and canonical destination must be paired" >&2
+            exit 1
+          fi
+          if { [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; } && \
+             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            echo "exact legacy dependents require a legacy source replacement" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] && \
+             [ -z "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; then
+            echo "first exact legacy dependent is required before a second" >&2
+            exit 1
+          fi
+          if { [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; } && \
+             { [ -n "$DEPENDENT_CITATION" ] || \
+               [ -n "$SECOND_DEPENDENT_CITATION" ]; }; then
+            echo "exact and model-regenerated dependent modes cannot be combined" >&2
+            exit 1
+          fi
+          if [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] && \
+             { [ "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" = "$REPLACE_RULESPEC_PATH" ] || \
+               [ "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" = "$REPLACE_LEGACY_RULESPEC_PATH" ]; }; then
+            echo "exact legacy dependent must differ from source and destination" >&2
+            exit 1
+          fi
+          if [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] && \
+             { [ "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" = "$REPLACE_RULESPEC_PATH" ] || \
+               [ "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" = "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
+               [ "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" = "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; }; then
+            echo "second exact legacy dependent must be unique" >&2
             exit 1
           fi
           if [ -n "$DEPENDENT_CITATION" ] && [ -z "$DEPENDENT_REVIEW_FINDING" ]; then
@@ -745,6 +802,8 @@ jobs:
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
           workflow_python=(/opt/axiom-verification/python/bin/python -I)
@@ -826,6 +885,16 @@ jobs:
           legacy_source_path = (
               os.environ.get("REPLACE_LEGACY_RULESPEC_PATH") or ""
           )
+          exact_dependent_paths = [
+              value
+              for value in (
+                  os.environ.get("LEGACY_EXACT_DEPENDENT_RULESPEC_PATH") or "",
+                  os.environ.get(
+                      "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+                  ) or "",
+              )
+              if value
+          ]
           normalized_replacement_path = ""
           if replacement_path:
               candidate = Path(replacement_path)
@@ -962,9 +1031,12 @@ jobs:
                       )
                   receipt = json.loads(receipt_bytes)
                   receipt_replacement = receipt.get("replacement")
+                  receipt_schema = receipt.get("schema_version")
                   if (
-                      receipt.get("schema_version")
-                      != "axiom-encode/legacy-fresh-reencode-receipt/v1"
+                      receipt_schema not in {
+                          "axiom-encode/legacy-fresh-reencode-receipt/v1",
+                          "axiom-encode/legacy-fresh-reencode-receipt/v2",
+                      }
                       or not isinstance(receipt_replacement, dict)
                       or receipt_replacement.get("source")
                       != legacy_source_path
@@ -972,6 +1044,75 @@ jobs:
                       != normalized_replacement_path
                   ):
                       raise SystemExit("legacy replacement receipt paths differ")
+                  exact_dependents = receipt_replacement.get(
+                      "exact_dependents",
+                      [],
+                  )
+                  if (
+                      not isinstance(exact_dependents, list)
+                      or [
+                          item.get("primary")
+                          for item in exact_dependents
+                          if isinstance(item, dict)
+                      ]
+                      != exact_dependent_paths
+                      or (
+                          exact_dependent_paths
+                          and receipt_schema
+                          != "axiom-encode/legacy-fresh-reencode-receipt/v2"
+                      )
+                  ):
+                      raise SystemExit(
+                          "legacy replacement exact dependents differ from inputs"
+                      )
+                  receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+                  for exact_dependent in exact_dependents:
+                      primary = exact_dependent.get("primary")
+                      if not isinstance(primary, str):
+                          raise SystemExit(
+                              "legacy replacement exact dependent is malformed"
+                          )
+                      exact_manifest_path = (
+                          Path(".axiom/encoding-manifests")
+                          / Path(primary).with_suffix(".json")
+                      )
+                      if exact_manifest_path not in manifest_paths:
+                          raise SystemExit(
+                              "legacy replacement exact dependent lacks "
+                              "a changed signed manifest"
+                          )
+                      exact_manifest_bytes = read_bounded_regular(
+                          os.environ["RULESPEC_CHECKOUT"],
+                          exact_manifest_path,
+                          label="legacy exact dependent manifest",
+                          max_bytes=1024 * 1024,
+                      )
+                      exact_manifest = json.loads(exact_manifest_bytes)
+                      migration = exact_manifest.get("legacy_migration")
+                      if (
+                          exact_manifest.get("tool")
+                          != "axiom-encode encode --apply "
+                          "--legacy-exact-dependent-rulespec-path"
+                          or not isinstance(migration, dict)
+                          or migration.get("receipt_path")
+                          != receipt_path.as_posix()
+                          or migration.get("receipt_sha256") != receipt_sha256
+                          or migration.get("primary") != primary
+                          or exact_manifest.get("applied_files")
+                          != exact_dependent.get("live_files")
+                      ):
+                          raise SystemExit(
+                              "legacy exact dependent manifest binding differs"
+                          )
+                      applied_inventory.append(
+                          {
+                              "citation": None,
+                              "path": exact_manifest_path.as_posix(),
+                              "sha256": hashlib.sha256(
+                                  exact_manifest_bytes
+                              ).hexdigest(),
+                          }
+                      )
                   scheduled = receipt_replacement.get("scheduled_dependents")
                   if not isinstance(scheduled, list):
                       raise SystemExit(
@@ -1196,6 +1337,14 @@ jobs:
               "replace_legacy_rulespec_path": (
                   os.environ.get("REPLACE_LEGACY_RULESPEC_PATH") or None
               ),
+              "legacy_exact_dependent_rulespec_path": (
+                  os.environ.get("LEGACY_EXACT_DEPENDENT_RULESPEC_PATH") or None
+              ),
+              "second_legacy_exact_dependent_rulespec_path": (
+                  os.environ.get(
+                      "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+                  ) or None
+              ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
               "queue_id": os.environ.get("QUEUE_ID") or None,
               "queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None,
@@ -1251,6 +1400,8 @@ jobs:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           QUEUE_ID: ${{ inputs.queue_id }}
@@ -1279,6 +1430,8 @@ jobs:
             "Citation: \`${CITATION}\`" \
             "Direct dependent: \`${DEPENDENT_CITATION:-n/a}\`" \
             "Second direct dependent: \`${SECOND_DEPENDENT_CITATION:-n/a}\`" \
+            "Exact legacy dependent: \`${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
+            "Second exact legacy dependent: \`${SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
             "Base commit: \`${RULESPEC_REF}\`" \
             "Base branch: \`${PR_BASE_BRANCH}\`" \
             "Queue item: \`${QUEUE_ID:-ad-hoc}/${QUEUE_ITEM_ID:-ad-hoc}\`" \

@@ -16,7 +16,11 @@ from typing import Final, Mapping, NamedTuple
 from .corpus_resolver import normalize_corpus_identifier
 
 TOOL: Final = "axiom-encode encode --apply --replace-legacy-rulespec-path"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
+EXACT_DEPENDENT_TOOL: Final = (
+    "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
+)
+RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
 LEGACY_OWNER_CLASS: Final = "v1-manual-hmac-untrusted"
@@ -36,6 +40,7 @@ class LegacyReplacementRewrite(NamedTuple):
     after_sha256: str
     replacements: tuple[dict[str, object], ...]
     raw: bytes
+    proof_import_repairs: int = 0
 
 
 class LegacyReplacementPendingFile(NamedTuple):
@@ -49,6 +54,14 @@ class LegacyReplacementScheduledDependent(NamedTuple):
     files: tuple[LegacyReplacementPendingFile, ...]
 
 
+class LegacyReplacementExactDependent(NamedTuple):
+    primary: Path
+    legacy_manifest: LegacyReplacementFile
+    legacy_files: tuple[LegacyReplacementFile, ...]
+    live_files: tuple[LegacyReplacementFile, ...]
+    rewrites: tuple[LegacyReplacementRewrite, ...]
+
+
 class LegacyReplacementContract(NamedTuple):
     base_commit: str
     base_tree: str
@@ -58,6 +71,7 @@ class LegacyReplacementContract(NamedTuple):
     deleted_files: tuple[LegacyReplacementFile, ...]
     rewrites: tuple[LegacyReplacementRewrite, ...]
     scheduled_dependents: tuple[LegacyReplacementScheduledDependent, ...]
+    exact_dependents: tuple[LegacyReplacementExactDependent, ...]
 
 
 def legacy_source_verification_citation_paths(
@@ -170,8 +184,9 @@ def receipt_identity_payload(
     deleted_files: list[dict[str, object]],
     rewrites: list[dict[str, object]],
     scheduled_dependents: list[dict[str, object]],
+    exact_dependents: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "base_commit": base_commit,
         "base_tree": base_tree,
         "legacy_manifest_sha256": legacy_manifest_sha256,
@@ -181,6 +196,9 @@ def receipt_identity_payload(
         "rewrites": rewrites,
         "scheduled_dependents": scheduled_dependents,
     }
+    if exact_dependents is not None:
+        payload["exact_dependents"] = exact_dependents
+    return payload
 
 
 def receipt_identity_sha256(payload: Mapping[str, object]) -> str:

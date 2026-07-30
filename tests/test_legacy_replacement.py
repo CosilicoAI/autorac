@@ -174,6 +174,7 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         deleted_files=[{"path": "us-la/statutes/47:32.yaml", "deleted": True}],
         rewrites=[],
         scheduled_dependents=[],
+        exact_dependents=[],
     )
     baseline = receipt_identity_sha256(payload)
     for field in (
@@ -185,6 +186,7 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         "deleted_files",
         "rewrites",
         "scheduled_dependents",
+        "exact_dependents",
     ):
         changed = copy.deepcopy(payload)
         changed[field] = f"changed-{field}"
@@ -442,6 +444,117 @@ def test_contract_binds_only_explicit_scheduled_dependent(tmp_path: Path) -> Non
             "count": 1,
         },
     )
+
+
+def _add_exact_dependent(checkout: Path, content_root: Path) -> Path:
+    dependent = content_root / "policies/income_tax/2026_resident_core.yaml"
+    companion = dependent.with_name("2026_resident_core.test.yaml")
+    dependent.parent.mkdir(parents=True)
+    dependent.write_text(
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "      - us-la/statute/47:294\n"
+        "imports:\n"
+        "  - us-la:statutes/47:32#amount\n"
+        "rules: []\n"
+    )
+    companion.write_text("[]\n")
+    expected_files = {
+        path.relative_to(checkout).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in (dependent, companion)
+    }
+    manifest = (
+        checkout / ".axiom/encoding-manifests/us-la/policies/income_tax/"
+        "2026_resident_core.json"
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    payload = _manual_manifest()
+    payload["applied_files"] = [
+        {"path": path, "sha256": digest} for path, digest in expected_files.items()
+    ]
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "exact dependent")
+    return dependent.relative_to(checkout)
+
+
+def test_contract_binds_exact_composite_dependent_to_clean_base(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _legacy_checkout(tmp_path)
+    dependent = _add_exact_dependent(checkout, content_root)
+
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path("us-la/statutes/47:32.yaml"),
+            destination_raw=Path("us-la/statutes/47/32.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+            exact_dependent_paths=(dependent,),
+        )
+
+    assert contract.scheduled_dependents == ()
+    assert len(contract.exact_dependents) == 1
+    exact = contract.exact_dependents[0]
+    assert exact.primary == dependent
+    assert {item.path for item in exact.legacy_files} == {
+        dependent,
+        dependent.with_name("2026_resident_core.test.yaml"),
+    }
+    assert {item.path for item in exact.live_files} == {
+        dependent,
+        dependent.with_name("2026_resident_core.test.yaml"),
+    }
+    assert [item.path for item in exact.rewrites] == [dependent]
+    assert b"us-la:statutes/47/32#amount" in next(
+        item.raw for item in exact.live_files if item.path == dependent
+    )
+    assert next(
+        item.sha256
+        for item in exact.legacy_files
+        if item.path.name.endswith(".test.yaml")
+    ) == next(
+        item.sha256
+        for item in exact.live_files
+        if item.path.name.endswith(".test.yaml")
+    )
+
+
+def test_contract_rejects_exact_dependent_without_v1_ownership(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _legacy_checkout(tmp_path)
+    dependent = _add_exact_dependent(checkout, content_root)
+    manifest = (
+        checkout / ".axiom/encoding-manifests/us-la/policies/income_tax/"
+        "2026_resident_core.json"
+    )
+    payload = json.loads(manifest.read_text())
+    payload["backend"] = "codex"
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "forged ownership")
+
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="not admissible"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=Path("us-la/statutes/47:32.yaml"),
+            destination_raw=Path("us-la/statutes/47/32.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+            exact_dependent_paths=(dependent,),
+        )
 
 
 def test_contract_rejects_dirty_or_existing_destination(tmp_path: Path) -> None:
