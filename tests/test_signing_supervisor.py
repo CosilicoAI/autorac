@@ -976,7 +976,7 @@ def test_subscription_tampered_binary_hard_fails_before_child(
 
 @pytest.mark.parametrize(
     "outbox_kind",
-    ["symlink", "fifo", "socket", "device", "protected-directory"],
+    ["symlink", "fifo", "socket", "device", "writable-directory"],
 )
 def test_subscription_refuses_unsafe_auth_outbox(
     signing_supervisor: Path,
@@ -1027,7 +1027,10 @@ def test_subscription_refuses_unsafe_auth_outbox(
     elif outbox_kind == "device":
         outbox = Path("/dev/null")
     else:
-        outbox = Path("/etc") / f"axiom-encode-test-{os.getpid()}.json"
+        unsafe_directory = tmp_path / "unsafe-outbox"
+        unsafe_directory.mkdir(mode=0o777)
+        unsafe_directory.chmod(0o777)
+        outbox = unsafe_directory / "out.json"
     try:
         completed = _invoke(
             signing_supervisor,
