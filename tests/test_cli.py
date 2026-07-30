@@ -13661,9 +13661,7 @@ class TestCmdEncode:
         destination_relative = Path("us-la/statutes/47/32.yaml")
         source = checkout / source_relative
         source_test = source.with_name("47:32.test.yaml")
-        dependent_relative = Path(
-            "us-la/policies/income_tax/2026_resident_core.yaml"
-        )
+        dependent_relative = Path("us-la/policies/income_tax/2026_resident_core.yaml")
         dependent = checkout / dependent_relative
         dependent_test = dependent.with_name("2026_resident_core.test.yaml")
         source.parent.mkdir(parents=True)
@@ -13960,13 +13958,13 @@ class TestCmdEncode:
         exact_live_hashes = {
             item["path"]: item["sha256"] for item in exact["live_files"]
         }
-        assert exact_legacy_hashes[dependent_test.relative_to(checkout).as_posix()] == (
-            exact_live_hashes[dependent_test.relative_to(checkout).as_posix()]
+        assert (
+            exact_legacy_hashes[dependent_test.relative_to(checkout).as_posix()]
+            == (exact_live_hashes[dependent_test.relative_to(checkout).as_posix()])
         )
         exact_manifest = json.loads(dependent_manifest.read_text())
         assert exact_manifest["tool"] == (
-            "axiom-encode encode --apply "
-            "--legacy-exact-dependent-rulespec-path"
+            "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
         )
         assert exact_manifest["legacy_migration"]["receipt_sha256"] == (
             hashlib.sha256(receipt_path.read_bytes()).hexdigest()
@@ -14000,13 +13998,9 @@ class TestCmdEncode:
         receipt_path.write_text(
             json.dumps(tampered_receipt, indent=2, sort_keys=True) + "\n"
         )
-        tampered_receipt_sha256 = hashlib.sha256(
-            receipt_path.read_bytes()
-        ).hexdigest()
+        tampered_receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
         tampered_outer = copy.deepcopy(outer)
-        tampered_outer["replacement"]["receipt_sha256"] = (
-            tampered_receipt_sha256
-        )
+        tampered_outer["replacement"]["receipt_sha256"] = tampered_receipt_sha256
         _sign_applied_encoding_manifest(
             tampered_outer,
             TEST_APPLY_SIGNING_BROKER,

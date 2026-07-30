@@ -469,8 +469,7 @@ def _add_exact_dependent(checkout: Path, content_root: Path) -> Path:
         for path in (dependent, companion)
     }
     manifest = (
-        checkout
-        / ".axiom/encoding-manifests/us-la/policies/income_tax/"
+        checkout / ".axiom/encoding-manifests/us-la/policies/income_tax/"
         "2026_resident_core.json"
     )
     manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -534,8 +533,7 @@ def test_contract_rejects_exact_dependent_without_v1_ownership(
     checkout, content_root, source = _legacy_checkout(tmp_path)
     dependent = _add_exact_dependent(checkout, content_root)
     manifest = (
-        checkout
-        / ".axiom/encoding-manifests/us-la/policies/income_tax/"
+        checkout / ".axiom/encoding-manifests/us-la/policies/income_tax/"
         "2026_resident_core.json"
     )
     payload = json.loads(manifest.read_text())

@@ -19612,8 +19612,7 @@ def _manifest_coverage_by_file(
                 and _normalized_manifest_backend(replacement_manifest)
                 in APPLIED_ENCODING_GENERATED_BACKENDS
             )
-            or payload.get("tool")
-            == APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL
+            or payload.get("tool") == APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL
         )
         applied_files = payload.get("applied_files")
         if not isinstance(applied_files, list):
@@ -20123,8 +20122,7 @@ def _applied_manifest_tool_execution_issues(
         applied_files = payload.get("applied_files")
         if tool == APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL:
             if not isinstance(applied_files, list) or any(
-                not isinstance(item, dict)
-                or set(item) != {"path", "sha256"}
+                not isinstance(item, dict) or set(item) != {"path", "sha256"}
                 for item in applied_files
             ):
                 issues.append(
@@ -21482,8 +21480,7 @@ def _legacy_replacement_manifest_issues(
         ),
         exact_dependents=(
             receipt_exact_dependents
-            if receipt_schema
-            == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
             else None
         ),
     )
@@ -21580,21 +21577,22 @@ def _legacy_replacement_manifest_issues(
         or legacy.get("trusted_generated_provenance") is not False
         or not isinstance(replacement, dict)
         or set(replacement)
-        != ({
-            "source",
-            "destination",
-            "model_manifest_path",
-            "model_manifest_sha256",
-            "live_files",
-            "rewrites",
-            "scheduled_dependents",
-        }
-        | (
-            {"exact_dependents"}
-            if receipt_schema
-            == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
-            else set()
-        ))
+        != (
+            {
+                "source",
+                "destination",
+                "model_manifest_path",
+                "model_manifest_sha256",
+                "live_files",
+                "rewrites",
+                "scheduled_dependents",
+            }
+            | (
+                {"exact_dependents"}
+                if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+                else set()
+            )
+        )
     ):
         return [*issues, f"{manifest_label} legacy evidence classification is invalid"]
     if replacement.get("live_files") != nested.get("applied_files"):
@@ -21971,10 +21969,7 @@ def _legacy_replacement_manifest_issues(
                 f"{manifest_label} cannot prove exact dependent manifest: {exc}"
             )
             continue
-        if (
-            hashlib.sha256(legacy_manifest_raw).hexdigest()
-            != legacy_manifest["sha256"]
-        ):
+        if hashlib.sha256(legacy_manifest_raw).hexdigest() != legacy_manifest["sha256"]:
             issues.append(
                 f"{manifest_label} exact dependent legacy manifest hash is stale"
             )
@@ -22011,16 +22006,12 @@ def _legacy_replacement_manifest_issues(
                 return None
             return parsed
 
-        legacy_hashes = exact_file_map(
-            dependent["legacy_files"], label="legacy file"
-        )
+        legacy_hashes = exact_file_map(dependent["legacy_files"], label="legacy file")
         live_hashes = exact_file_map(dependent["live_files"], label="live file")
         if legacy_hashes is None or live_hashes is None:
             continue
         try:
-            legacy_manifest_payload = json.loads(
-                legacy_manifest_raw.decode("utf-8")
-            )
+            legacy_manifest_payload = json.loads(legacy_manifest_raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError, RecursionError):
             legacy_manifest_payload = None
         legacy_manifest_issues = _legacy_manual_manifest_issues(
@@ -22052,9 +22043,7 @@ def _legacy_replacement_manifest_issues(
         expected_rewrite_paths: set[Path] = set()
         for path in sorted(expected_group, key=Path.as_posix):
             try:
-                base_raw = _rulespec_migration_base_blob(
-                    repo_path, base_commit, path
-                )
+                base_raw = _rulespec_migration_base_blob(repo_path, base_commit, path)
                 live_raw = read_bounded_regular_file(
                     repo_path,
                     repo_path / path,
@@ -22068,16 +22057,14 @@ def _legacy_replacement_manifest_issues(
                 proof_import_repairs = 0
                 if path == primary_path:
                     content_root = repo_path / primary_path.parts[0]
-                    rewritten_text, proof_import_repairs = (
-                        _repair_proof_import_hashes(
-                            rewritten.decode("utf-8"),
-                            target_base=(
-                                f"{content_root.name}:"
-                                f"{_relative_rulespec_import_target(Path(*path.parts[1:]))}"
-                            ),
-                            rules_file=repo_path / path,
-                            repo_path=content_root,
-                        )
+                    rewritten_text, proof_import_repairs = _repair_proof_import_hashes(
+                        rewritten.decode("utf-8"),
+                        target_base=(
+                            f"{content_root.name}:"
+                            f"{_relative_rulespec_import_target(Path(*path.parts[1:]))}"
+                        ),
+                        rules_file=repo_path / path,
+                        repo_path=content_root,
                     )
                     rewritten = rewritten_text.encode("utf-8")
             except (
@@ -22153,8 +22140,7 @@ def _legacy_replacement_manifest_issues(
                     or rewrite.get("before_sha256") != before_sha256
                     or rewrite.get("after_sha256") != after_sha256
                     or rewrite.get("replacements") != list(counts)
-                    or rewrite.get("proof_import_repairs")
-                    != proof_import_repairs
+                    or rewrite.get("proof_import_repairs") != proof_import_repairs
                     or not isinstance(
                         rewrite.get("proof_import_repairs"),
                         int,
@@ -22199,8 +22185,7 @@ def _legacy_replacement_manifest_issues(
         }
         if (
             not isinstance(dependent_manifest, dict)
-            or set(dependent_manifest)
-            != _LEGACY_EXACT_DEPENDENT_APPLY_MANIFEST_FIELDS
+            or set(dependent_manifest) != _LEGACY_EXACT_DEPENDENT_APPLY_MANIFEST_FIELDS
             or dependent_manifest.get("schema_version")
             != APPLIED_ENCODING_MANIFEST_SCHEMA
             or dependent_manifest.get("tool")
@@ -22211,8 +22196,7 @@ def _legacy_replacement_manifest_issues(
             != payload.get("axiom_encode_git")
             or dependent_manifest.get(VALIDATION_WAIVER_SET_SHA256_FIELD)
             != expected_waiver_set_sha256
-            or dependent_manifest.get("applied_files")
-            != dependent["live_files"]
+            or dependent_manifest.get("applied_files") != dependent["live_files"]
             or dependent_manifest.get("legacy_migration") != expected_migration
             or _applied_encoding_manifest_signature_issue(
                 dependent_manifest, signing_broker
@@ -22421,21 +22405,22 @@ def _legacy_exact_dependent_manifest_issues(
     if (
         receipt.get("axiom_encode_version") != payload.get("axiom_encode_version")
         or receipt.get("axiom_encode_git") != payload.get("axiom_encode_git")
-        or receipt.get(VALIDATION_WAIVER_SET_SHA256_FIELD)
-        != expected_waiver_set_sha256
+        or receipt.get(VALIDATION_WAIVER_SET_SHA256_FIELD) != expected_waiver_set_sha256
     ):
         issues.append(f"{manifest_label} exact dependent provenance is stale")
     replacement = receipt.get("replacement")
     exact_dependents = (
-        replacement.get("exact_dependents")
-        if isinstance(replacement, dict)
-        else None
+        replacement.get("exact_dependents") if isinstance(replacement, dict) else None
     )
-    matches = [
-        item
-        for item in exact_dependents
-        if isinstance(item, dict) and item.get("primary") == primary_raw
-    ] if isinstance(exact_dependents, list) else []
+    matches = (
+        [
+            item
+            for item in exact_dependents
+            if isinstance(item, dict) and item.get("primary") == primary_raw
+        ]
+        if isinstance(exact_dependents, list)
+        else []
+    )
     if len(matches) != 1:
         return [
             *issues,
@@ -23931,9 +23916,7 @@ def _resolve_legacy_replacement_contract(
             ) from exc
         dependent_issues = _legacy_manual_manifest_issues(
             dependent_manifest_payload,
-            expected_files={
-                item.path.as_posix(): item.sha256 for item in group_files
-            },
+            expected_files={item.path.as_posix(): item.sha256 for item in group_files},
             allow_unmarked_manual_exception=True,
         )
         if dependent_issues:
@@ -24134,14 +24117,11 @@ def _resolve_encode_replacement_target(
         Path(path) for path in getattr(args, "legacy_dependent_rulespec_path", ())
     )
     exact_dependents = tuple(
-        Path(path)
-        for path in getattr(args, "legacy_exact_dependent_rulespec_path", ())
+        Path(path) for path in getattr(args, "legacy_exact_dependent_rulespec_path", ())
     )
     if raw_path is None and legacy_source is None:
         if scheduled_dependents or exact_dependents:
-            raise ValueError(
-                "legacy dependent paths require a legacy replacement"
-            )
+            raise ValueError("legacy dependent paths require a legacy replacement")
         return None
     if raw_path is None:
         raise ValueError(
@@ -45824,9 +45804,7 @@ def _stage_signed_legacy_replacement_provenance(
 
     exact_dependent_manifests: dict[Path, bytes] = {}
     for dependent in contract.exact_dependents:
-        dependent_manifest_relative = _applied_encoding_manifest_path(
-            dependent.primary
-        )
+        dependent_manifest_relative = _applied_encoding_manifest_path(dependent.primary)
         exact_manifest = {
             "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
             "generated_at": _utc_now_iso(),
@@ -47068,9 +47046,9 @@ def _require_apply_post_install_closure(
         for dependent in legacy_replacement.exact_dependents:
             for live_file in dependent.live_files:
                 if live_file.path.parts[:1] == (content_root.name,):
-                    expected_post_files[
-                        Path(*live_file.path.parts[1:]).as_posix()
-                    ] = live_file.sha256
+                    expected_post_files[Path(*live_file.path.parts[1:]).as_posix()] = (
+                        live_file.sha256
+                    )
     for relative, raw in planned.items():
         expected_post_files[_canonical_apply_relative_path(relative).as_posix()] = (
             hashlib.sha256(raw).hexdigest()
@@ -47126,9 +47104,7 @@ def _require_apply_post_install_closure(
                         "Cannot keep legacy replacement: exact dependent changed "
                         f"for {target}"
                     )
-            dependent_manifest_path = _applied_encoding_manifest_path(
-                dependent.primary
-            )
+            dependent_manifest_path = _applied_encoding_manifest_path(dependent.primary)
             expected_manifest = exact_manifest_bytes.get(dependent_manifest_path)
             if (
                 expected_manifest is None
@@ -47353,9 +47329,9 @@ def _apply_generated_encoding_result(
         for dependent in legacy_replacement.exact_dependents:
             for item in dependent.legacy_files:
                 expected_originals[checkout_root / item.path] = item.sha256
-            expected_originals[
-                checkout_root / dependent.legacy_manifest.path
-            ] = dependent.legacy_manifest.sha256
+            expected_originals[checkout_root / dependent.legacy_manifest.path] = (
+                dependent.legacy_manifest.sha256
+            )
         assert receipt_relative is not None
         expected_originals[checkout_root / receipt_relative] = None
     new_manifest_applied_files = {
@@ -47438,9 +47414,7 @@ def _apply_generated_encoding_result(
             for dependent in legacy_replacement.exact_dependents
             for item in dependent.live_files
         )
-        applied.extend(
-            checkout_root / path for path in exact_dependent_manifest_bytes
-        )
+        applied.extend(checkout_root / path for path in exact_dependent_manifest_bytes)
     if wrote_empty_companion_test:
         print("  apply=generated_empty_deferred_companion_test")
     return applied
@@ -48195,9 +48169,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     )
                 rewrite_target.write_bytes(rewrite.raw)
             for dependent in legacy_replacement.exact_dependents:
-                legacy_by_path = {
-                    item.path: item for item in dependent.legacy_files
-                }
+                legacy_by_path = {item.path: item for item in dependent.legacy_files}
                 for live_file in dependent.live_files:
                     legacy_file = legacy_by_path.get(live_file.path)
                     exact_target = overlay_repo / live_file.path
@@ -50658,9 +50630,7 @@ def _finalize_legacy_exact_dependents_from_overlay(
                 )
                 continue
 
-            replacements = _strict_legacy_replacement_map(
-                list(rewrite.replacements)
-            )
+            replacements = _strict_legacy_replacement_map(list(rewrite.replacements))
             if replacements is None:
                 issues.append(
                     "Legacy exact dependent reference proof is malformed for "
@@ -50687,13 +50657,11 @@ def _finalize_legacy_exact_dependents_from_overlay(
             proof_import_repairs = 0
             if legacy_file.path == dependent.primary:
                 try:
-                    expected_text, proof_import_repairs = (
-                        _repair_proof_import_hashes(
-                            expected_raw.decode("utf-8"),
-                            target_base=target_base,
-                            rules_file=live_path,
-                            repo_path=overlay_content_root,
-                        )
+                    expected_text, proof_import_repairs = _repair_proof_import_hashes(
+                        expected_raw.decode("utf-8"),
+                        target_base=target_base,
+                        rules_file=live_path,
+                        repo_path=overlay_content_root,
                     )
                     expected_raw = expected_text.encode("utf-8")
                 except UnicodeError:
@@ -50702,11 +50670,9 @@ def _finalize_legacy_exact_dependents_from_overlay(
                         f"{legacy_file.path.as_posix()}"
                     )
                     continue
-            if (
-                live_raw != expected_raw
-                or _migration_corpus_citations(legacy_file.raw)
-                != _migration_corpus_citations(live_raw)
-            ):
+            if live_raw != expected_raw or _migration_corpus_citations(
+                legacy_file.raw
+            ) != _migration_corpus_citations(live_raw):
                 issues.append(
                     "Legacy exact dependent final transformation is not limited "
                     "to authenticated reference and proof-import hash rewrites for "

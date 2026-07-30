@@ -627,16 +627,14 @@ def _validate_legacy_exact_dependents(
                 observed_proof_repairs = 0
                 if rewrite_path == primary:
                     content_root = repo / primary.parts[0]
-                    expected_text, observed_proof_repairs = (
-                        _repair_proof_import_hashes(
-                            expected_live.decode("utf-8"),
-                            target_base=(
-                                f"{content_root.name}:"
-                                f"{PurePosixPath(*primary.parts[1:]).with_suffix('').as_posix()}"
-                            ),
-                            rules_file=repo.joinpath(*primary.parts),
-                            repo_path=content_root,
-                        )
+                    expected_text, observed_proof_repairs = _repair_proof_import_hashes(
+                        expected_live.decode("utf-8"),
+                        target_base=(
+                            f"{content_root.name}:"
+                            f"{PurePosixPath(*primary.parts[1:]).with_suffix('').as_posix()}"
+                        ),
+                        rules_file=repo.joinpath(*primary.parts),
+                        repo_path=content_root,
                     )
                     expected_live = expected_text.encode("utf-8")
             except (PathMigrationPlanError, UnicodeError) as exc:
