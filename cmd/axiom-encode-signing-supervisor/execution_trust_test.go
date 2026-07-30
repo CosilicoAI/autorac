@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -94,6 +95,19 @@ func TestDefaultTrustPolicyAcceptsProtectedSystemNativeExecutable(t *testing.T) 
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		t.Skip("platform does not expose /usr/bin/env as a regular native executable")
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		if syscall.Access(current, accessWriteMode) == nil {
+			t.Skipf(
+				"host does not protect %s from writes by the invoking user; "+
+					"the production-fixture test covers the protected success path",
+				current,
+			)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
 	}
 	trusted, err := validateTrustedNativeExecutable(path)
 	if err != nil {
