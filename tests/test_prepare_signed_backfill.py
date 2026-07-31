@@ -45,10 +45,13 @@ def test_parse_source_bundle_accepts_ordered_same_jurisdiction_citations() -> No
 
 
 def test_parse_source_bundle_accepts_empty_array() -> None:
-    assert parse_source_bundle(
-        "[]",
-        primary_citation="us-ri/statute/44-30-2.6",
-    ) == ()
+    assert (
+        parse_source_bundle(
+            "[]",
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize("raw", ['{"citation": "x"}', '"x"', "null"])

@@ -24631,8 +24631,7 @@ def _run_encode_attempt(
         corpus_release=corpus_release,
     )
     raw_required_import_paths = tuple(
-        Path(path)
-        for path in getattr(args, "required_import_rulespec_path", ())
+        Path(path) for path in getattr(args, "required_import_rulespec_path", ())
     )
     required_import_paths: tuple[Path, ...] = ()
     required_import_targets: tuple[str, ...] = ()

@@ -42715,10 +42715,13 @@ def test_required_generated_import_issues_require_each_module(tmp_path: Path):
         encoding="utf-8",
     )
 
-    assert _required_generated_import_issues(
-        rulespec,
-        ("us-ri:guidance/tax/page-1",),
-    ) == []
+    assert (
+        _required_generated_import_issues(
+            rulespec,
+            ("us-ri:guidance/tax/page-1",),
+        )
+        == []
+    )
     assert _required_generated_import_issues(
         rulespec,
         ("us-ri:guidance/tax/page-1", "us-ri:guidance/tax/page-2"),

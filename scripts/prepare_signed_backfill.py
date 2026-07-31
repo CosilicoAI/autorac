@@ -240,8 +240,7 @@ def parse_source_bundle(
         raise ValueError("source bundle JSON must be an array")
     if len(payload) > MAX_SOURCE_BUNDLE_CITATIONS:
         raise ValueError(
-            "source bundle contains more than "
-            f"{MAX_SOURCE_BUNDLE_CITATIONS} citations"
+            f"source bundle contains more than {MAX_SOURCE_BUNDLE_CITATIONS} citations"
         )
 
     def validate_citation(value: object, *, label: str) -> tuple[str, PurePosixPath]:

@@ -1943,9 +1943,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert source_bundle_step["env"]["SOURCE_BUNDLE_JSON"] == (
         "${{ inputs.source_bundle_json }}"
     )
-    assert 'parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"' in (
-        source_bundle_command
-    )
+    assert 'parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"' in (source_bundle_command)
     assert '--primary-citation "$CITATION"' in source_bundle_command
     assert 'source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")' in (
         source_bundle_command
@@ -2105,10 +2103,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert '--output "$RUNNER_TEMP/generated/$output_lane"' in command
     assert '"$SECOND_DEPENDENT_CITATION"' in command
-    assert (
-        '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false'
-        in command
-    )
+    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false' in command
     assert '"$CITATION" "$REVIEW_FINDING" true target \\\n' in command
     assert '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \\\n' in command
     assert '"$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"' in command
@@ -2124,10 +2119,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         command
     )
     assert 'commit -m "$message"' in command
-    source_loop = 'while IFS= read -r source_citation; do'
-    assert command.rindex(source_loop) < command.index(
-        '"$CITATION" "$REVIEW_FINDING"'
-    )
+    source_loop = "while IFS= read -r source_citation; do"
+    assert command.rindex(source_loop) < command.index('"$CITATION" "$REVIEW_FINDING"')
     assert "Compose signed source bundle for ${CITATION}" in command
     assert (
         "queue-authorized re-encodes cannot add a source bundle until queue "
@@ -2203,8 +2196,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert "guard-generated" in guard_step["run"]
     assert 'guard_ref_args+=(--base-ref "$RULESPEC_REF")' in guard_step["run"]
-    assert 'jq -e \'length > 0\' "$RUNNER_TEMP/source-bundle.json"' in (
-        guard_step["run"]
+    assert (
+        "jq -e 'length > 0' \"$RUNNER_TEMP/source-bundle.json\"" in (guard_step["run"])
     )
 
     secret_steps = [
@@ -2693,8 +2686,8 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
     command = (
         before_checkpoint
         + "checkpoint_signed_changes() {\n"
-        + "  printf '%s\\n' \"$1\" >> \"$CHECKPOINTS_PATH\"\n"
-        + "  : > \"$RUNNER_TEMP/checkpoint-guard-generated.json\"\n"
+        + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
+        + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
         + "}\n\nsource_index=0"
         + after_checkpoint
     )
