@@ -34,6 +34,11 @@ on:
         description: Validator or independent-review finding to address
         required: false
         type: string
+      source_bundle_json:
+        description: JSON array of additional same-jurisdiction citations to encode as signed atomic imports
+        required: false
+        default: "[]"
+        type: string
       replace_rulespec_path:
         description: Existing target, or unique canonical destination for a legacy replacement
         required: false
@@ -361,6 +366,33 @@ jobs:
           uv pip install --python .venv/bin/python \
             --target "$RUNNER_TEMP/axiom-verification-site-packages" ".[api]"
 
+      - name: Validate atomic source bundle
+        env:
+          CITATION: ${{ inputs.citation }}
+          DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          QUEUE_ID: ${{ inputs.queue_id }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
+        run: |
+          set -euo pipefail
+          source_bundle_args=(
+            axiom-encode/.venv/bin/python
+            axiom-encode/scripts/prepare_signed_backfill.py
+            parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"
+            --primary-citation "$CITATION"
+          )
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          normalized_source_bundle="$("${source_bundle_args[@]}")"
+          if [ -n "$QUEUE_ID" ] && [ "$normalized_source_bundle" != "[]" ]; then
+            echo "queue-authorized re-encodes cannot add a source bundle until queue generation identity binds it" >&2
+            exit 1
+          fi
+
       - name: Fetch pinned signed corpus release object
         shell: bash
         env:
@@ -568,7 +600,9 @@ jobs:
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_DEPENDENT_REVIEW_FINDING: ${{ inputs.second_dependent_review_finding }}
+          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
           set -euo pipefail
           : "${QUEUE_ID:=}"
@@ -588,6 +622,7 @@ jobs:
             local output_lane="$4"
             local replacement_path="$5"
             local legacy_source_path="$6"
+            local require_source_bundle_imports="$7"
             local review_finding_path=""
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
@@ -632,6 +667,11 @@ jobs:
                   "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
                 )
               fi
+            fi
+            if [ "$require_source_bundle_imports" = "true" ]; then
+              while IFS= read -r required_import_path; do
+                args+=(--required-import-rulespec-path "$required_import_path")
+              done < "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
             fi
             if [ -n "$review_finding" ]; then
               review_finding_dir="$(mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX")"
@@ -749,32 +789,110 @@ jobs:
               citation-rulespec-path "$SECOND_DEPENDENT_CITATION")"
           fi
 
+          source_bundle_args=(
+            "$workflow_python" "$backfill_helper" parse-source-bundle
+            "${SOURCE_BUNDLE_JSON:-[]}" --primary-citation "$CITATION"
+          )
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          normalized_source_bundle="$("${source_bundle_args[@]}")"
+          if [ -n "$QUEUE_ID" ] && [ "$normalized_source_bundle" != "[]" ]; then
+            echo "queue-authorized re-encodes cannot add a source bundle until queue generation identity binds it" >&2
+            exit 1
+          fi
+          printf '%s\n' "$normalized_source_bundle" \
+            > "$RUNNER_TEMP/source-bundle.json"
+          jq -r '.[]' "$RUNNER_TEMP/source-bundle.json" \
+            > "$RUNNER_TEMP/source-bundle-citations.txt"
+          : > "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
+          while IFS= read -r source_citation; do
+            "$workflow_python" "$backfill_helper" \
+              citation-rulespec-path "$source_citation" \
+              >> "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
+          done < "$RUNNER_TEMP/source-bundle-citations.txt"
+          source_bundle_count="$(jq -er 'length' \
+            "$RUNNER_TEMP/source-bundle.json")"
+          source_bundle_enabled=false
+          if [ "$source_bundle_count" -gt 0 ]; then
+            source_bundle_enabled=true
+          fi
+
+          checkpoint_signed_changes() {
+            local message="$1"
+            /opt/axiom-verification/axiom-encode-signing-supervisor \
+              --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
+              --trusted-python-runtime-root /opt/axiom-verification/python \
+              --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages \
+              --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode \
+              -- /opt/axiom-verification/axiom-encode guard-generated \
+              --repo "$RULESPEC_CHECKOUT" \
+              --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
+              --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
+              --json > "$RUNNER_TEMP/checkpoint-guard-generated.json"
+            git -C "$RULESPEC_CHECKOUT" diff --check
+            "$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"
+            git -C "$RULESPEC_CHECKOUT" \
+              -c core.hooksPath=/dev/null \
+              -c user.name=axiom-encode-bot \
+              -c user.email=axiom-encode-bot@users.noreply.github.com \
+              commit -m "$message"
+          }
+
+          source_index=0
+          while IFS= read -r source_citation; do
+            source_index=$((source_index + 1))
+            source_lane="$(printf 'source-%02d' "$source_index")"
+            run_signed_encode \
+              "$source_citation" "" true "$source_lane" "" "" false
+            checkpoint_signed_changes \
+              "Add signed source module for ${source_citation}"
+            cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
+              "$RUNNER_TEMP/${source_lane}-guard-generated.json"
+          done < "$RUNNER_TEMP/source-bundle-citations.txt"
+
           if [ -n "$DEPENDENT_CITATION" ]; then
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" true target \
-              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"
+              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
+              "$source_bundle_enabled"
             dependent_target_only=false
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
               dependent_target_only=true
             fi
             run_signed_encode \
               "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \
-              "$dependent_target_only" dependent "" ""
+              "$dependent_target_only" dependent "" "" false
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
               run_signed_encode \
                 "$SECOND_DEPENDENT_CITATION" \
-                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" ""
+                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false
             fi
           else
             run_signed_encode \
-              "$CITATION" "$REVIEW_FINDING" false target \
-              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"
+              "$CITATION" "$REVIEW_FINDING" false \
+              target "$REPLACE_RULESPEC_PATH" \
+              "$REPLACE_LEGACY_RULESPEC_PATH" \
+              "$source_bundle_enabled"
+          fi
+
+          if [ "$source_bundle_enabled" = "true" ]; then
+            checkpoint_signed_changes \
+              "Compose signed source bundle for ${CITATION}"
           fi
 
       - name: Verify generated provenance
         env:
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
+          guard_ref_args=()
+          if jq -e 'length > 0' "$RUNNER_TEMP/source-bundle.json" > /dev/null; then
+            guard_ref_args+=(--base-ref "$RULESPEC_REF")
+          fi
           /opt/axiom-verification/axiom-encode-signing-supervisor \
             --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
             --trusted-python-runtime-root /opt/axiom-verification/python \
@@ -784,6 +902,7 @@ jobs:
             --repo "$RULESPEC_CHECKOUT" \
             --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
             --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
+            "${guard_ref_args[@]}" \
             --json > "$RUNNER_TEMP/guard-generated.json"
           git -C "$RULESPEC_CHECKOUT" diff --check
 
@@ -805,18 +924,29 @@ jobs:
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
+          set -euo pipefail
           workflow_python=(/opt/axiom-verification/python/bin/python -I)
           if [ ! -x "${workflow_python[0]}" ]; then
             workflow_python=("${AXIOM_TEST_PYTHON:-python}")
           fi
           artifact="$RUNNER_TEMP/targeted-reencode"
           mkdir -p "$artifact"
-          git -C "$RULESPEC_CHECKOUT" diff --binary --full-index HEAD > "$artifact/tracked.patch"
+          git -C "$RULESPEC_CHECKOUT" diff --binary --full-index \
+            "$RULESPEC_REF" > "$artifact/tracked.patch"
           git -C "$RULESPEC_CHECKOUT" ls-files --others --exclude-standard -z \
             | tar -C "$RULESPEC_CHECKOUT" --null -czf "$artifact/untracked.tar.gz" --files-from -
           git -C "$RULESPEC_CHECKOUT" status --short > "$artifact/status.txt"
+          git -C "$RULESPEC_CHECKOUT" diff --name-status \
+            "$RULESPEC_REF" HEAD >> "$artifact/status.txt"
           cp "$RUNNER_TEMP/guard-generated.json" "$artifact/guard-generated.json"
+          cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"
+          for source_guard in "$RUNNER_TEMP"/source-*-guard-generated.json; do
+            if [ -f "$source_guard" ]; then
+              cp "$source_guard" "$artifact/"
+            fi
+          done
           "${workflow_python[@]}" - \
             "$artifact/context-manifest.json" \
             "$artifact/apply-manifests.json" <<'PY'
@@ -864,11 +994,13 @@ jobs:
                   raise SystemExit(str(exc)) from exc
 
           manifest_paths = git_paths(
-              "diff", "--name-only", "--diff-filter=AM", "-z", "HEAD", "--",
+              "diff", "--name-only", "--diff-filter=AM", "-z",
+              os.environ["RULESPEC_REF"], "--",
               ".axiom/encoding-manifests",
           )
           deleted_manifest_paths = git_paths(
-              "diff", "--name-only", "--diff-filter=D", "-z", "HEAD", "--",
+              "diff", "--name-only", "--diff-filter=D", "-z",
+              os.environ["RULESPEC_REF"], "--",
               ".axiom/encoding-manifests",
           )
           manifest_paths.update(
@@ -908,6 +1040,13 @@ jobs:
                   )
               normalized_replacement_path = candidate.as_posix()
           expected_citations = {os.environ["CITATION"]}
+          source_bundle_path = Path(os.environ["RUNNER_TEMP"]) / "source-bundle.json"
+          source_bundle_citations = json.loads(source_bundle_path.read_text())
+          if not isinstance(source_bundle_citations, list) or not all(
+              isinstance(item, str) and item for item in source_bundle_citations
+          ):
+              raise SystemExit("normalized source bundle is malformed")
+          expected_citations.update(source_bundle_citations)
           if dependent_citation:
               expected_citations.add(dependent_citation)
           if second_dependent_citation:
@@ -951,6 +1090,20 @@ jobs:
                   "target",
               )
           ]
+          for source_index, source_citation in enumerate(
+              source_bundle_citations, start=1
+          ):
+              source_lane = f"source-{source_index:02d}"
+              expected.append(
+                  (
+                      source_citation,
+                      False,
+                      Path(sys.argv[1]).with_name(
+                          f"{source_lane}-context-manifest.json"
+                      ),
+                      source_lane,
+                  )
+              )
           if dependent_citation:
               expected.append(
                   (
@@ -1318,6 +1471,7 @@ jobs:
           import os
           import subprocess
           import sys
+          from pathlib import Path
 
           def rev(path):
               return subprocess.check_output(
@@ -1327,6 +1481,11 @@ jobs:
           payload = {
               "schema": "axiom-encode/targeted-reencode-artifact/v1",
               "citation": os.environ["CITATION"],
+              "source_bundle": json.loads(
+                  (
+                      Path(os.environ["RUNNER_TEMP"]) / "source-bundle.json"
+                  ).read_text(encoding="utf-8")
+              ),
               "dependent_citation": os.environ.get("DEPENDENT_CITATION") or None,
               "second_dependent_citation": (
                   os.environ.get("SECOND_DEPENDENT_CITATION") or None
@@ -1354,7 +1513,8 @@ jobs:
               "queue_manifest_sha256": (
                   os.environ.get("QUEUE_MANIFEST_SHA256") or None
               ),
-              "rulespec_base": rev(os.environ["RULESPEC_CHECKOUT"]),
+              "rulespec_base": os.environ["RULESPEC_REF"],
+              "rulespec_generated_head": rev(os.environ["RULESPEC_CHECKOUT"]),
               "encoder_commit": rev("axiom-encode"),
               "corpus_commit": rev("axiom-corpus"),
               "rules_engine_commit": rev("axiom-rules-engine"),
@@ -1383,14 +1543,19 @@ jobs:
             axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           git -C "$RULESPEC_CHECKOUT" switch -c "$branch"
-          "${workflow_python[@]}" \
-            axiom-encode/scripts/prepare_signed_backfill.py stage \
-            "$RULESPEC_CHECKOUT"
-          git -C "$RULESPEC_CHECKOUT" \
-            -c core.hooksPath=/dev/null \
-            -c user.name=axiom-encode-bot \
-            -c user.email=axiom-encode-bot@users.noreply.github.com \
-            commit -m "Add signed encoding manifest for ${CITATION}"
+          if jq -e 'length > 0' \
+            "$RUNNER_TEMP/source-bundle.json" > /dev/null; then
+            test -z "$(git -C "$RULESPEC_CHECKOUT" status --porcelain)"
+          else
+            "${workflow_python[@]}" \
+              axiom-encode/scripts/prepare_signed_backfill.py stage \
+              "$RULESPEC_CHECKOUT"
+            git -C "$RULESPEC_CHECKOUT" \
+              -c core.hooksPath=/dev/null \
+              -c user.name=axiom-encode-bot \
+              -c user.email=axiom-encode-bot@users.noreply.github.com \
+              commit -m "Add signed encoding manifest for ${CITATION}"
+          fi
 
       - name: Push lane branch and open draft pull request
         if: ${{ inputs.open_pr }}
@@ -1424,10 +1589,12 @@ jobs:
           branch="$("${workflow_python[@]}" \
             axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
+          source_bundle="$(tr -d '\n' < "$RUNNER_TEMP/source-bundle.json")"
           body="$(printf '%s\n' \
             '## Signed apply manifest' \
             '' \
             "Citation: \`${CITATION}\`" \
+            "Atomic source bundle: \`${source_bundle}\`" \
             "Direct dependent: \`${DEPENDENT_CITATION:-n/a}\`" \
             "Second direct dependent: \`${SECOND_DEPENDENT_CITATION:-n/a}\`" \
             "Exact legacy dependent: \`${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \

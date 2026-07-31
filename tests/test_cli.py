@@ -157,9 +157,11 @@ from axiom_encode.cli import (
     _repair_upstream_placement_duplicate_imports,
     _require_axiom_encode_version_provenance,
     _require_clean_axiom_encode_git_provenance,
+    _required_generated_import_issues,
     _resolve_applied_manifest_placement,
     _resolve_encode_replacement_target,
     _resolve_explicit_policy_repo_for_corpus_source,
+    _resolve_required_import_rulespec_paths,
     _rewrite_gpt_runner_backend,
     _rewrite_import_output_test_input_refs,
     _rewrite_judgment_conditional_formulas,
@@ -42701,3 +42703,115 @@ def test_ci_entrypoint_is_registered():
     assert "--corpus-release-public-key" in result.stdout
     assert "--allow-ref-mismatch" in result.stdout
     assert "--allow-encoder-mismatch" in result.stdout
+
+
+def test_required_generated_import_issues_require_each_module(tmp_path: Path):
+    rulespec = tmp_path / "target.yaml"
+    rulespec.write_text(
+        "format: rulespec/v1\n"
+        "imports:\n"
+        "  - us-ri:guidance/tax/page-1#deduction_amount\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+
+    assert _required_generated_import_issues(
+        rulespec,
+        ("us-ri:guidance/tax/page-1",),
+    ) == []
+    assert _required_generated_import_issues(
+        rulespec,
+        ("us-ri:guidance/tax/page-1", "us-ri:guidance/tax/page-2"),
+    ) == [
+        "Generated target must directly import at least one exported symbol from "
+        "required atomic module us-ri:guidance/tax/page-2"
+    ]
+
+
+def test_resolve_required_import_rulespec_paths_is_same_jurisdiction_and_tracked(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+    required = checkout / "us-ri/policies/tax/page-2.yaml"
+    required.parent.mkdir(parents=True)
+    required.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-m", "required atomic module")
+
+    paths, targets = _resolve_required_import_rulespec_paths(
+        (Path("us-ri/policies/tax/page-2.yaml"),),
+        policy_checkout_path=checkout,
+        policy_repo_path=checkout / "us-ri",
+        source_citation_path="us-ri/statute/44-30-2.6",
+        target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+    )
+
+    assert paths == (required,)
+    assert targets == ("us-ri:policies/tax/page-2",)
+
+
+@pytest.mark.parametrize(
+    "required_path",
+    [
+        Path("us-ma/policies/tax/page-2.yaml"),
+        Path("us-ri/policies/income_tax/pipeline.yaml"),
+        Path("us-ri/policies/tax/page-2.test.yaml"),
+        Path("../us-ri/policies/tax/page-2.yaml"),
+    ],
+)
+def test_resolve_required_import_rulespec_paths_rejects_unsafe_or_target_paths(
+    tmp_path: Path,
+    required_path: Path,
+):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+    placeholder = checkout / "README.md"
+    placeholder.write_text("test\n", encoding="utf-8")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-m", "baseline")
+
+    with pytest.raises(ValueError, match="required import"):
+        _resolve_required_import_rulespec_paths(
+            (required_path,),
+            policy_checkout_path=checkout,
+            policy_repo_path=checkout / "us-ri",
+            source_citation_path="us-ri/statute/44-30-2.6",
+            target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+        )
+
+
+def test_resolve_required_import_rulespec_paths_rejects_duplicates(tmp_path: Path):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+    required = checkout / "us-ri/policies/tax/page-2.yaml"
+    required.parent.mkdir(parents=True)
+    required.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-m", "required atomic module")
+
+    with pytest.raises(ValueError, match="must be unique"):
+        _resolve_required_import_rulespec_paths(
+            (
+                Path("us-ri/policies/tax/page-2.yaml"),
+                Path("us-ri/policies/tax/page-2.yaml"),
+            ),
+            policy_checkout_path=checkout,
+            policy_repo_path=checkout / "us-ri",
+            source_citation_path="us-ri/statute/44-30-2.6",
+            target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+        )
+
+
+def test_resolve_required_import_rulespec_paths_is_bounded(tmp_path: Path):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+
+    with pytest.raises(ValueError, match="at most 16"):
+        _resolve_required_import_rulespec_paths(
+            tuple(Path(f"us-ri/statutes/section-{index}.yaml") for index in range(17)),
+            policy_checkout_path=checkout,
+            policy_repo_path=checkout / "us-ri",
+            source_citation_path="us-ri/statute/44-30-2.6",
+            target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+        )

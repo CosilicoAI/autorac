@@ -1361,6 +1361,7 @@ def run_model_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    required_import_targets: Sequence[str] = (),
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1400,6 +1401,7 @@ def run_model_eval(
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
                         validation_retry_feedback=validation_retry_feedback,
+                        required_import_targets=required_import_targets,
                     )
                 )
 
@@ -7883,6 +7885,7 @@ def _run_single_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    required_import_targets: Sequence[str] = (),
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -7946,6 +7949,7 @@ def _run_single_eval(
         policyengine_rule_hint=policyengine_rule_hint,
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
+        required_import_targets=required_import_targets,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
     output_file = _contained_eval_output_file(output_root, runner.name, relative_output)
@@ -8839,6 +8843,7 @@ def _build_rulespec_eval_prompt(
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
+    required_import_targets: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
     source_text = workspace.source_text_file.read_text()
@@ -9364,6 +9369,24 @@ Preferred principal output:
     validation_retry_feedback_section = _format_validation_retry_feedback(
         validation_retry_feedback
     )
+    required_import_section = ""
+    if required_import_targets:
+        required_lines = "\n".join(
+            f"- `{target}`" for target in required_import_targets
+        )
+        required_import_section = f"""
+Protected atomic-composition requirements:
+{required_lines}
+- Each listed module is an independently source-attested atomic RuleSpec copied
+  into context. The generated target must directly import at least one exact
+  exported `#symbol` from every listed module and use imported outputs wherever
+  their legal facts are needed.
+- Do not inline or duplicate those modules' source-owned values. Do not add
+  their corpus citations to this module's `source_verification`; this target
+  remains bound to exactly one primary source.
+- Generation is rejected unless every listed module appears in top-level
+  `imports:` through at least one exact symbol import.
+"""
     complete_source_unit_section = ""
     if require_complete_source_unit:
         complete_source_unit_section = """
@@ -9415,7 +9438,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -10236,6 +10259,7 @@ def _build_eval_prompt(
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
+    required_import_targets: Sequence[str] = (),
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
     return _build_rulespec_eval_prompt(
@@ -10251,6 +10275,7 @@ def _build_eval_prompt(
         include_corpus_context_injection=include_corpus_context_injection,
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
+        required_import_targets=required_import_targets,
     )
 
 

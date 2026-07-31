@@ -3,21 +3,182 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 from scripts.prepare_signed_backfill import (
+    MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
     authorized_changed_paths,
     branch_name,
+    parse_source_bundle,
     stage_authorized_changes,
     validate_country,
     validate_dependent_cascade,
     validate_queue_tracking,
     validate_rulespec_base,
 )
+from scripts.prepare_signed_backfill import (
+    main as prepare_signed_backfill_main,
+)
+
+
+def test_parse_source_bundle_accepts_ordered_same_jurisdiction_citations() -> None:
+    raw = json.dumps(
+        [
+            "us-ri/statute/44-30-1",
+            "us-ri/guidance/revenue/2026/rate-schedule",
+        ]
+    )
+
+    assert parse_source_bundle(
+        raw,
+        primary_citation="us-ri/statute/44-30-2.6",
+        excluded_citations=("us-ri/statute/44-30-5",),
+    ) == (
+        "us-ri/statute/44-30-1",
+        "us-ri/guidance/revenue/2026/rate-schedule",
+    )
+
+
+def test_parse_source_bundle_accepts_empty_array() -> None:
+    assert parse_source_bundle(
+        "[]",
+        primary_citation="us-ri/statute/44-30-2.6",
+    ) == ()
+
+
+@pytest.mark.parametrize("raw", ['{"citation": "x"}', '"x"', "null"])
+def test_parse_source_bundle_requires_json_array(raw: str) -> None:
+    with pytest.raises(ValueError, match="must be an array"):
+        parse_source_bundle(
+            raw,
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_source_bundle_rejects_more_than_sixteen_items() -> None:
+    raw = json.dumps([f"us-ri/statute/44-30-{index}" for index in range(17)])
+
+    with pytest.raises(ValueError, match="more than 16"):
+        parse_source_bundle(
+            raw,
+            primary_citation="us-ri/statute/44-30-99",
+        )
+
+
+def test_parse_source_bundle_rejects_oversized_json_before_parsing() -> None:
+    raw = " " * (MAX_SOURCE_BUNDLE_JSON_BYTES + 1)
+
+    with pytest.raises(ValueError, match="maximum input size"):
+        parse_source_bundle(
+            raw,
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+@pytest.mark.parametrize("item", ["", None, 4])
+def test_parse_source_bundle_requires_nonempty_string_items(item: object) -> None:
+    with pytest.raises(ValueError, match="nonempty citation string"):
+        parse_source_bundle(
+            json.dumps([item]),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_source_bundle_requires_exact_canonical_items() -> None:
+    with pytest.raises(ValueError, match="exact canonical corpus citation path"):
+        parse_source_bundle(
+            json.dumps([" us-ri/statute/44-30-1"]),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_source_bundle_rejects_duplicate_citations() -> None:
+    citation = "us-ri/statute/44-30-1"
+
+    with pytest.raises(ValueError, match="must be unique"):
+        parse_source_bundle(
+            json.dumps([citation, citation]),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    ["us-ri/statute/44-30-2.6", "us-ri/statute/44-30-5"],
+)
+def test_parse_source_bundle_rejects_primary_and_excluded_citations(
+    forbidden: str,
+) -> None:
+    with pytest.raises(ValueError, match="primary and excluded citations"):
+        parse_source_bundle(
+            json.dumps([forbidden]),
+            primary_citation="us-ri/statute/44-30-2.6",
+            excluded_citations=("us-ri/statute/44-30-5",),
+        )
+
+
+def test_parse_source_bundle_rejects_other_jurisdiction() -> None:
+    with pytest.raises(ValueError, match="jurisdiction and country"):
+        parse_source_bundle(
+            json.dumps(["us-ma/statute/62/4"]),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_source_bundle_rejects_exclusion_from_other_jurisdiction() -> None:
+    with pytest.raises(ValueError, match="jurisdiction and country"):
+        parse_source_bundle(
+            "[]",
+            primary_citation="us-ri/statute/44-30-2.6",
+            excluded_citations=("us-ma/statute/62/4",),
+        )
+
+
+def test_parse_source_bundle_rejects_citation_rulespec_path_collision() -> None:
+    with pytest.raises(ValueError, match="unique, unreserved canonical RuleSpec"):
+        parse_source_bundle(
+            json.dumps(
+                [
+                    "us-ri/guidance/revenue/section/1.2",
+                    "us-ri/guidance/revenue/section/1/2",
+                ]
+            ),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_source_bundle_rejects_primary_rulespec_path_collision() -> None:
+    with pytest.raises(ValueError, match="unique, unreserved canonical RuleSpec"):
+        parse_source_bundle(
+            json.dumps(["us-ri/guidance/revenue/section/1/2"]),
+            primary_citation="us-ri/guidance/revenue/section/1.2",
+        )
+
+
+def test_parse_source_bundle_cli_emits_normalized_json_array(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "parse-source-bundle",
+            '["us-ri/statute/44-30-1"]',
+            "--primary-citation",
+            "us-ri/statute/44-30-2.6",
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    assert capsys.readouterr().out == '["us-ri/statute/44-30-1"]\n'
 
 
 def _git(repo: Path, *args: str) -> str:
