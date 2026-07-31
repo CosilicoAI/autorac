@@ -35109,6 +35109,46 @@ class TestGuardGenerated:
                 rulespec_paths=("us/statutes/26/1.yaml",),
             )
 
+    @pytest.mark.parametrize(
+        "manifest_citation",
+        [None, "us-ca/statute/26/1", "us/statute/26/2"],
+    )
+    def test_signed_import_inventory_rejects_unbound_manifest_citation(
+        self,
+        tmp_path: Path,
+        manifest_citation: object,
+    ):
+        repo, _base_ref, _rule, manifest = self._historical_signed_import_repo(tmp_path)
+        payload = json.loads(manifest.read_text())
+        payload["citation"] = manifest_citation
+        _sign_applied_encoding_manifest(payload, TEST_APPLY_SIGNING_BROKER)
+        manifest.write_text(json.dumps(payload) + "\n")
+        _git(repo, "add", manifest.relative_to(repo).as_posix())
+        _git(repo, "commit", "--amend", "--no-edit")
+        base_ref = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._read_only_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
+                "axiom_encode.cli._applied_encoding_manifest_verifier",
+                return_value=TEST_APPLY_SIGNING_BROKER,
+            ),
+            pytest.raises(ValueError, match="citation"),
+        ):
+            signed_import_inventory(
+                repo,
+                corpus_path=self.corpus_path,
+                base_ref=base_ref,
+                rulespec_paths=("us/statutes/26/1.yaml",),
+            )
+
     def _waiver_entry_text(
         self,
         path: str,

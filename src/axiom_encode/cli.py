@@ -6786,6 +6786,28 @@ def signed_import_inventory(
             raise ValueError(
                 f"signed import {rulespec_path} must have a direct model manifest"
             )
+        citation = payload.get("citation")
+        source_attestation = payload.get("source_attestation")
+        requested_citation = (
+            source_attestation.get("requested_corpus_citation_path")
+            if isinstance(source_attestation, dict)
+            else None
+        )
+        try:
+            canonical_citation = (
+                require_canonical_corpus_citation_path(citation)
+                if isinstance(citation, str)
+                else None
+            )
+        except CorpusResolutionError as exc:
+            raise ValueError(
+                f"signed import {rulespec_path} has a noncanonical citation"
+            ) from exc
+        if canonical_citation is None or canonical_citation != requested_citation:
+            raise ValueError(
+                f"signed import {rulespec_path} citation does not match its "
+                "verified source attestation"
+            )
         applied_files = payload.get("applied_files")
         assert isinstance(applied_files, list)
         applied_inventory: list[dict[str, str]] = []
@@ -6824,7 +6846,7 @@ def signed_import_inventory(
                 ),
                 "manifest_path": manifest_path.as_posix(),
                 "manifest_sha256": manifest_sha256,
-                "citation": payload.get("citation"),
+                "citation": canonical_citation,
                 "applied_files": applied_inventory,
             }
         )
