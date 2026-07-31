@@ -39,6 +39,11 @@ on:
         required: false
         default: "[]"
         type: string
+      existing_signed_imports_json:
+        description: JSON array of tracked same-jurisdiction signed-v5 modules to reuse as direct imports
+        required: false
+        default: "[]"
+        type: string
       replace_rulespec_path:
         description: Existing target, or unique canonical destination for a legacy replacement
         required: false
@@ -366,11 +371,17 @@ jobs:
           uv pip install --python .venv/bin/python \
             --target "$RUNNER_TEMP/axiom-verification-site-packages" ".[api]"
 
-      - name: Validate atomic source bundle
+      - name: Validate atomic source inputs
         env:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           QUEUE_ID: ${{ inputs.queue_id }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
         run: |
@@ -388,8 +399,36 @@ jobs:
             source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
           normalized_source_bundle="$("${source_bundle_args[@]}")"
-          if [ -n "$QUEUE_ID" ] && [ "$normalized_source_bundle" != "[]" ]; then
-            echo "queue-authorized re-encodes cannot add a source bundle until queue generation identity binds it" >&2
+          existing_import_args=(
+            axiom-encode/.venv/bin/python
+            axiom-encode/scripts/prepare_signed_backfill.py
+            parse-existing-signed-imports "$RULESPEC_CHECKOUT"
+            "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
+            --primary-citation "$CITATION"
+          )
+          while IFS= read -r source_citation; do
+            existing_import_args+=(--source-citation "$source_citation")
+          done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          for reserved_path in \
+            "$REPLACE_RULESPEC_PATH" \
+            "$REPLACE_LEGACY_RULESPEC_PATH" \
+            "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            if [ -n "$reserved_path" ]; then
+              existing_import_args+=(--exclude-rulespec-path "$reserved_path")
+            fi
+          done
+          normalized_existing_imports="$("${existing_import_args[@]}")"
+          if [ -n "$QUEUE_ID" ] && \
+            { [ "$normalized_source_bundle" != "[]" ] || \
+              [ "$normalized_existing_imports" != "[]" ]; }; then
+            echo "queue-authorized re-encodes cannot add source inputs until queue generation identity binds them" >&2
             exit 1
           fi
 
@@ -585,6 +624,110 @@ jobs:
           cascade_args+=("${dependent_citations[@]}")
           "${cascade_args[@]}"
 
+      - name: Verify existing signed imports
+        env:
+          CITATION: ${{ inputs.citation }}
+          DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
+        run: |
+          set -euo pipefail
+          workflow_python=/opt/axiom-verification/python/bin/python
+          backfill_helper=axiom-encode/scripts/prepare_signed_backfill.py
+          source_bundle_args=(
+            "$workflow_python" -I "$backfill_helper" parse-source-bundle
+            "${SOURCE_BUNDLE_JSON:-[]}" --primary-citation "$CITATION"
+          )
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          normalized_source_bundle="$("${source_bundle_args[@]}")"
+          printf '%s\n' "$normalized_source_bundle" \
+            > "$RUNNER_TEMP/source-bundle.json"
+
+          existing_import_args=(
+            "$workflow_python" -I "$backfill_helper"
+            parse-existing-signed-imports "$RULESPEC_CHECKOUT"
+            "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
+            --primary-citation "$CITATION"
+          )
+          while IFS= read -r source_citation; do
+            existing_import_args+=(--source-citation "$source_citation")
+          done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          for reserved_path in \
+            "$REPLACE_RULESPEC_PATH" \
+            "$REPLACE_LEGACY_RULESPEC_PATH" \
+            "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            if [ -n "$reserved_path" ]; then
+              existing_import_args+=(--exclude-rulespec-path "$reserved_path")
+            fi
+          done
+          normalized_existing_imports="$("${existing_import_args[@]}")"
+          printf '%s\n' "$normalized_existing_imports" \
+            > "$RUNNER_TEMP/existing-signed-imports.json"
+          jq -r '.[]' "$RUNNER_TEMP/existing-signed-imports.json" \
+            > "$RUNNER_TEMP/existing-signed-import-paths.txt"
+
+          if [ -s "$RUNNER_TEMP/existing-signed-import-paths.txt" ]; then
+            signed_import_args=(
+              /opt/axiom-verification/axiom-encode-signing-supervisor
+              --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json
+              --trusted-python-runtime-root /opt/axiom-verification/python
+              --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages
+              --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode
+              -- /opt/axiom-verification/axiom-encode signed-import-inventory
+              --repo "$RULESPEC_CHECKOUT"
+              --corpus-path "$GITHUB_WORKSPACE/axiom-corpus"
+              --base-ref "$RULESPEC_REF"
+              --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode"
+              --json
+            )
+            while IFS= read -r existing_import_path; do
+              signed_import_args+=(--rulespec-path "$existing_import_path")
+            done < "$RUNNER_TEMP/existing-signed-import-paths.txt"
+            "${signed_import_args[@]}" \
+              > "$RUNNER_TEMP/existing-signed-import-inventory.json"
+          else
+            "$workflow_python" -I - \
+              "$RULESPEC_REF" \
+              "$RUNNER_TEMP/existing-signed-import-inventory.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          Path(sys.argv[2]).write_text(
+              json.dumps(
+                  {
+                      "schema": "axiom-encode/signed-import-inventory/v1",
+                      "rulespec_base": sys.argv[1],
+                      "verifier_encoder_identity": None,
+                      "items": [],
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Encode, review, validate, and apply
         env:
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
@@ -600,6 +743,7 @@ jobs:
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_DEPENDENT_REVIEW_FINDING: ${{ inputs.second_dependent_review_finding }}
+          EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
           SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
@@ -622,7 +766,7 @@ jobs:
             local output_lane="$4"
             local replacement_path="$5"
             local legacy_source_path="$6"
-            local require_source_bundle_imports="$7"
+            local require_direct_imports="$7"
             local review_finding_path=""
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
@@ -668,10 +812,10 @@ jobs:
                 )
               fi
             fi
-            if [ "$require_source_bundle_imports" = "true" ]; then
+            if [ "$require_direct_imports" = "true" ]; then
               while IFS= read -r required_import_path; do
                 args+=(--required-import-rulespec-path "$required_import_path")
-              done < "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
+              done < "$RUNNER_TEMP/required-import-rulespec-paths.txt"
             fi
             if [ -n "$review_finding" ]; then
               review_finding_dir="$(mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX")"
@@ -800,8 +944,41 @@ jobs:
             source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
           normalized_source_bundle="$("${source_bundle_args[@]}")"
-          if [ -n "$QUEUE_ID" ] && [ "$normalized_source_bundle" != "[]" ]; then
-            echo "queue-authorized re-encodes cannot add a source bundle until queue generation identity binds it" >&2
+          existing_import_args=(
+            "$workflow_python" "$backfill_helper"
+            parse-existing-signed-imports "$RULESPEC_CHECKOUT"
+            "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
+            --primary-citation "$CITATION"
+          )
+          while IFS= read -r source_citation; do
+            existing_import_args+=(--source-citation "$source_citation")
+          done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
+          if [ -n "$DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$DEPENDENT_CITATION")
+          fi
+          if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+            existing_import_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
+          fi
+          for reserved_path in \
+            "$REPLACE_RULESPEC_PATH" \
+            "$REPLACE_LEGACY_RULESPEC_PATH" \
+            "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            if [ -n "$reserved_path" ]; then
+              existing_import_args+=(--exclude-rulespec-path "$reserved_path")
+            fi
+          done
+          normalized_existing_imports="$("${existing_import_args[@]}")"
+          verified_existing_imports="$(tr -d '\n' \
+            < "$RUNNER_TEMP/existing-signed-imports.json")"
+          if [ "$normalized_existing_imports" != "$verified_existing_imports" ]; then
+            echo "verified existing signed imports changed before apply" >&2
+            exit 1
+          fi
+          if [ -n "$QUEUE_ID" ] && \
+            { [ "$normalized_source_bundle" != "[]" ] || \
+              [ "$normalized_existing_imports" != "[]" ]; }; then
+            echo "queue-authorized re-encodes cannot add source inputs until queue generation identity binds them" >&2
             exit 1
           fi
           printf '%s\n' "$normalized_source_bundle" \
@@ -814,11 +991,21 @@ jobs:
               citation-rulespec-path "$source_citation" \
               >> "$RUNNER_TEMP/source-bundle-rulespec-paths.txt"
           done < "$RUNNER_TEMP/source-bundle-citations.txt"
+          cat \
+            "$RUNNER_TEMP/source-bundle-rulespec-paths.txt" \
+            "$RUNNER_TEMP/existing-signed-import-paths.txt" \
+            > "$RUNNER_TEMP/required-import-rulespec-paths.txt"
           source_bundle_count="$(jq -er 'length' \
             "$RUNNER_TEMP/source-bundle.json")"
+          existing_import_count="$(jq -er 'length' \
+            "$RUNNER_TEMP/existing-signed-imports.json")"
           source_bundle_enabled=false
           if [ "$source_bundle_count" -gt 0 ]; then
             source_bundle_enabled=true
+          fi
+          required_imports_enabled=false
+          if [ $((source_bundle_count + existing_import_count)) -gt 0 ]; then
+            required_imports_enabled=true
           fi
 
           checkpoint_signed_changes() {
@@ -858,7 +1045,7 @@ jobs:
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" true target \
               "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
-              "$source_bundle_enabled"
+              "$required_imports_enabled"
             dependent_target_only=false
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
               dependent_target_only=true
@@ -876,7 +1063,7 @@ jobs:
               "$CITATION" "$REVIEW_FINDING" false \
               target "$REPLACE_RULESPEC_PATH" \
               "$REPLACE_LEGACY_RULESPEC_PATH" \
-              "$source_bundle_enabled"
+              "$required_imports_enabled"
           fi
 
           if [ "$source_bundle_enabled" = "true" ]; then
@@ -905,6 +1092,40 @@ jobs:
             "${guard_ref_args[@]}" \
             --json > "$RUNNER_TEMP/guard-generated.json"
           git -C "$RULESPEC_CHECKOUT" diff --check
+
+      - name: Verify existing signed import integrity
+        env:
+          RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
+        run: |
+          set -euo pipefail
+          if [ -s "$RUNNER_TEMP/existing-signed-import-paths.txt" ]; then
+            signed_import_args=(
+              /opt/axiom-verification/axiom-encode-signing-supervisor
+              --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json
+              --trusted-python-runtime-root /opt/axiom-verification/python
+              --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages
+              --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode
+              -- /opt/axiom-verification/axiom-encode signed-import-inventory
+              --repo "$RULESPEC_CHECKOUT"
+              --corpus-path "$GITHUB_WORKSPACE/axiom-corpus"
+              --base-ref "$RULESPEC_REF"
+              --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode"
+              --json
+            )
+            while IFS= read -r existing_import_path; do
+              signed_import_args+=(--rulespec-path "$existing_import_path")
+            done < "$RUNNER_TEMP/existing-signed-import-paths.txt"
+            "${signed_import_args[@]}" \
+              > "$RUNNER_TEMP/existing-signed-import-inventory-final.json"
+          else
+            cp \
+              "$RUNNER_TEMP/existing-signed-import-inventory.json" \
+              "$RUNNER_TEMP/existing-signed-import-inventory-final.json"
+          fi
+          cmp --silent \
+            "$RUNNER_TEMP/existing-signed-import-inventory.json" \
+            "$RUNNER_TEMP/existing-signed-import-inventory-final.json"
 
       - name: Package exact generated changes
         env:
@@ -942,6 +1163,10 @@ jobs:
             "$RULESPEC_REF" HEAD >> "$artifact/status.txt"
           cp "$RUNNER_TEMP/guard-generated.json" "$artifact/guard-generated.json"
           cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"
+          cp "$RUNNER_TEMP/existing-signed-imports.json" \
+            "$artifact/existing-signed-imports.json"
+          cp "$RUNNER_TEMP/existing-signed-import-inventory.json" \
+            "$artifact/signed-import-inventory.json"
           for source_guard in "$RUNNER_TEMP"/source-*-guard-generated.json; do
             if [ -f "$source_guard" ]; then
               cp "$source_guard" "$artifact/"
@@ -1467,6 +1692,7 @@ jobs:
           )
           PY
           "${workflow_python[@]}" - "$artifact/metadata.json" <<'PY'
+          import hashlib
           import json
           import os
           import subprocess
@@ -1486,6 +1712,18 @@ jobs:
                       Path(os.environ["RUNNER_TEMP"]) / "source-bundle.json"
                   ).read_text(encoding="utf-8")
               ),
+              "existing_signed_imports": json.loads(
+                  (
+                      Path(os.environ["RUNNER_TEMP"])
+                      / "existing-signed-imports.json"
+                  ).read_text(encoding="utf-8")
+              ),
+              "signed_import_inventory_sha256": hashlib.sha256(
+                  (
+                      Path(os.environ["RUNNER_TEMP"])
+                      / "existing-signed-import-inventory.json"
+                  ).read_bytes()
+              ).hexdigest(),
               "dependent_citation": os.environ.get("DEPENDENT_CITATION") or None,
               "second_dependent_citation": (
                   os.environ.get("SECOND_DEPENDENT_CITATION") or None
@@ -1590,11 +1828,14 @@ jobs:
             axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           source_bundle="$(tr -d '\n' < "$RUNNER_TEMP/source-bundle.json")"
+          existing_signed_imports="$(tr -d '\n' \
+            < "$RUNNER_TEMP/existing-signed-imports.json")"
           body="$(printf '%s\n' \
             '## Signed apply manifest' \
             '' \
             "Citation: \`${CITATION}\`" \
             "Atomic source bundle: \`${source_bundle}\`" \
+            "Existing signed imports: \`${existing_signed_imports}\`" \
             "Direct dependent: \`${DEPENDENT_CITATION:-n/a}\`" \
             "Second direct dependent: \`${SECOND_DEPENDENT_CITATION:-n/a}\`" \
             "Exact legacy dependent: \`${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \

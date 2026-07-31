@@ -14,6 +14,7 @@ from scripts.prepare_signed_backfill import (
     REVIEWED_RULESPEC_REFS,
     authorized_changed_paths,
     branch_name,
+    parse_existing_signed_imports,
     parse_source_bundle,
     stage_authorized_changes,
     validate_country,
@@ -182,6 +183,156 @@ def test_parse_source_bundle_cli_emits_normalized_json_array(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == '["us-ri/statute/44-30-1"]\n'
+
+
+def _add_existing_signed_import(repo: Path, path: str) -> None:
+    module = repo / path
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text("rules: []\n", encoding="utf-8")
+    manifest = repo / ".axiom/encoding-manifests" / Path(path).with_suffix(".json")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps({"schema_version": "axiom-encode/applied-rulespec/v5"}) + "\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", path, manifest.relative_to(repo).as_posix())
+    _git(repo, "commit", "-m", f"add {path}")
+
+
+def test_parse_existing_signed_imports_accepts_ordered_tracked_v5_modules(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    paths = (
+        "us-ri/statutes/44-30-1.yaml",
+        "us-ri/policies/revenue/rate-schedule.yaml",
+    )
+    for path in paths:
+        _add_existing_signed_import(repo, path)
+
+    assert parse_existing_signed_imports(
+        repo,
+        json.dumps(paths),
+        primary_citation="us-ri/statute/44-30-2.6",
+    ) == tuple(PurePosixPath(path) for path in paths)
+
+
+def test_parse_existing_signed_imports_enforces_combined_sixteen_limit(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    with pytest.raises(ValueError, match="more than 16 modules"):
+        parse_existing_signed_imports(
+            repo,
+            '["us-ri/statutes/44-30-1.yaml"]',
+            primary_citation="us-ri/statute/44-30-99",
+            source_bundle_citations=tuple(
+                f"us-ri/statute/44-30-{index}" for index in range(16)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "kwargs"),
+    [
+        (
+            "us-ri/statutes/44-30-2/6.yaml",
+            {},
+        ),
+        (
+            "us-ri/statutes/44-30-1.yaml",
+            {"source_bundle_citations": ("us-ri/statute/44-30-1",)},
+        ),
+        (
+            "us-ri/statutes/44-30-5.yaml",
+            {"excluded_citations": ("us-ri/statute/44-30-5",)},
+        ),
+        (
+            "us-ri/policies/income_tax/target.yaml",
+            {"excluded_rulespec_paths": ("us-ri/policies/income_tax/target.yaml",)},
+        ),
+    ],
+)
+def test_parse_existing_signed_imports_rejects_reserved_paths(
+    tmp_path: Path,
+    path: str,
+    kwargs: dict[str, tuple[str, ...]],
+) -> None:
+    repo = _repo(tmp_path)
+
+    with pytest.raises(ValueError, match="must exclude"):
+        parse_existing_signed_imports(
+            repo,
+            json.dumps([path]),
+            primary_citation="us-ri/statute/44-30-2.6",
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '["us-ma/statutes/62/4.yaml"]',
+        '["us-ri/statutes/44-30-1.test.yaml"]',
+        '["us-ri/statutes/44-30-1.yaml", "us-ri/statutes/44-30-1.yaml"]',
+    ],
+)
+def test_parse_existing_signed_imports_rejects_noncanonical_or_duplicate_paths(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    repo = _repo(tmp_path)
+
+    with pytest.raises(ValueError):
+        parse_existing_signed_imports(
+            repo,
+            payload,
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_existing_signed_imports_requires_tracked_v5_manifest(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    path = "us-ri/statutes/44-30-1.yaml"
+    module = repo / path
+    module.parent.mkdir(parents=True)
+    module.write_text("rules: []\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly tracked"):
+        parse_existing_signed_imports(
+            repo,
+            json.dumps([path]),
+            primary_citation="us-ri/statute/44-30-2.6",
+        )
+
+
+def test_parse_existing_signed_imports_cli_emits_normalized_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _repo(tmp_path)
+    path = "us-ri/statutes/44-30-1.yaml"
+    _add_existing_signed_import(repo, path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "parse-existing-signed-imports",
+            str(repo),
+            json.dumps([path]),
+            "--primary-citation",
+            "us-ri/statute/44-30-2.6",
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    assert capsys.readouterr().out == f'["{path}"]\n'
 
 
 def _git(repo: Path, *args: str) -> str:

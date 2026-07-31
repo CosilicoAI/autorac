@@ -309,6 +309,146 @@ def parse_source_bundle(
     return tuple(citations)
 
 
+def _existing_import_manifest_path(path: PurePosixPath) -> PurePosixPath:
+    return MANIFEST_ROOT / path.with_suffix(".json")
+
+
+def parse_existing_signed_imports(
+    repo: Path,
+    existing_signed_imports_json: str,
+    *,
+    primary_citation: str,
+    source_bundle_citations: tuple[str, ...] = (),
+    excluded_citations: tuple[str, ...] = (),
+    excluded_rulespec_paths: tuple[str, ...] = (),
+) -> tuple[PurePosixPath, ...]:
+    """Validate bounded, tracked signed-v5 modules reused as direct imports."""
+
+    if not isinstance(existing_signed_imports_json, str):
+        raise ValueError("existing signed imports JSON must be a string")
+    if len(existing_signed_imports_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
+        raise ValueError("existing signed imports JSON exceeds the maximum input size")
+    payload = json.loads(existing_signed_imports_json)
+    if not isinstance(payload, list):
+        raise ValueError("existing signed imports JSON must be an array")
+    if len(payload) + len(source_bundle_citations) > MAX_SOURCE_BUNDLE_CITATIONS:
+        raise ValueError(
+            "fresh source bundle and existing signed imports contain more than "
+            f"{MAX_SOURCE_BUNDLE_CITATIONS} modules"
+        )
+
+    primary_jurisdiction, primary_relative = _citation_rulespec_path(primary_citation)
+    primary_path = PurePosixPath(primary_jurisdiction) / primary_relative
+    validate_country(primary_jurisdiction.partition("-")[0])
+    reserved_paths = {primary_path}
+    for citation in (*source_bundle_citations, *excluded_citations):
+        jurisdiction, relative = _citation_rulespec_path(citation)
+        if jurisdiction != primary_jurisdiction:
+            raise ValueError(
+                "fresh source and excluded citations must use the primary "
+                "citation jurisdiction and country"
+            )
+        reserved_paths.add(PurePosixPath(jurisdiction) / relative)
+    for index, value in enumerate(excluded_rulespec_paths):
+        path = _safe_relative_path(
+            value,
+            label=f"excluded RuleSpec path #{index + 1}",
+        )
+        if (
+            len(path.parts) < 3
+            or path.parts[0] != primary_jurisdiction
+            or path.parts[1] not in RULESPEC_ATOMIC_ROOTS
+            or path.suffix != ".yaml"
+            or path.name.endswith(".test.yaml")
+        ):
+            raise ValueError(
+                "excluded RuleSpec paths must be canonical primary modules in "
+                "the primary citation jurisdiction"
+            )
+        reserved_paths.add(path)
+
+    if not payload:
+        return ()
+
+    repo = repo.resolve(strict=True)
+    expected_repo_name = f"rulespec-{primary_jurisdiction.partition('-')[0]}"
+    if repo.name != expected_repo_name:
+        raise ValueError(
+            "repository directory must match the primary citation country: "
+            f"{expected_repo_name}"
+        )
+
+    paths: list[PurePosixPath] = []
+    seen: set[PurePosixPath] = set()
+    for index, value in enumerate(payload):
+        label = f"existing signed import #{index + 1}"
+        path = _safe_relative_path(value, label=label)
+        if (
+            any(
+                ord(character) < 32 or ord(character) == 127 for character in str(value)
+            )
+            or len(path.parts) < 3
+            or path.parts[0] != primary_jurisdiction
+            or path.parts[1] not in RULESPEC_ATOMIC_ROOTS
+            or path.suffix != ".yaml"
+            or path.name.endswith(".test.yaml")
+        ):
+            raise ValueError(
+                f"{label} must be a canonical primary RuleSpec path in the "
+                "primary citation jurisdiction"
+            )
+        if path in reserved_paths:
+            raise ValueError(
+                "existing signed imports must exclude the primary, fresh source, "
+                "and dependent paths"
+            )
+        if path in seen:
+            raise ValueError("existing signed import paths must be unique")
+        manifest_path = _existing_import_manifest_path(path)
+        for tracked_path, tracked_label, max_bytes in (
+            (path, label, 16 * 1024 * 1024),
+            (manifest_path, f"{label} manifest", 1024 * 1024),
+        ):
+            try:
+                tracked = (
+                    _git(
+                        repo,
+                        "ls-files",
+                        "--error-unmatch",
+                        "--",
+                        tracked_path.as_posix(),
+                    )
+                    .decode("utf-8")
+                    .splitlines()
+                )
+            except (subprocess.CalledProcessError, UnicodeDecodeError) as exc:
+                raise ValueError(f"{tracked_label} must be exactly tracked") from exc
+            if tracked != [tracked_path.as_posix()]:
+                raise ValueError(f"{tracked_label} must be exactly tracked")
+            _read_bounded_regular(
+                repo,
+                tracked_path,
+                label=tracked_label,
+                max_bytes=max_bytes,
+            )
+        manifest = json.loads(
+            _read_bounded_regular(
+                repo,
+                manifest_path,
+                label=f"{label} manifest",
+                max_bytes=1024 * 1024,
+            ).decode("utf-8")
+        )
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") != "axiom-encode/applied-rulespec/v5"
+        ):
+            raise ValueError(f"{label} manifest must use signed-v5 schema")
+        paths.append(path)
+        seen.add(path)
+    return tuple(paths)
+
+
 def _is_regular_file_beneath(root: Path, relative: PurePosixPath) -> bool:
     """Reject files reached through any symlink beneath the checkout root."""
 
@@ -1380,6 +1520,37 @@ def main() -> None:
         default=[],
         help="additional forbidden canonical citation; may be repeated",
     )
+    existing_imports_parser = subparsers.add_parser(
+        "parse-existing-signed-imports",
+        help=(
+            "validate tracked signed-v5 modules reused as direct imports and "
+            "emit one normalized JSON array"
+        ),
+    )
+    existing_imports_parser.add_argument("repo", type=Path)
+    existing_imports_parser.add_argument(
+        "existing_signed_imports_json",
+        help="JSON array of canonical checkout-relative primary module paths",
+    )
+    existing_imports_parser.add_argument("--primary-citation", required=True)
+    existing_imports_parser.add_argument(
+        "--source-citation",
+        action="append",
+        default=[],
+        help="fresh source citation already counted toward the 16-import limit",
+    )
+    existing_imports_parser.add_argument(
+        "--exclude-citation",
+        action="append",
+        default=[],
+        help="additional forbidden canonical citation; may be repeated",
+    )
+    existing_imports_parser.add_argument(
+        "--exclude-rulespec-path",
+        action="append",
+        default=[],
+        help="additional forbidden checkout-relative RuleSpec path; may be repeated",
+    )
     args = parser.parse_args()
     try:
         if args.command == "validate-country":
@@ -1424,6 +1595,23 @@ def main() -> None:
                         primary_citation=args.primary_citation,
                         excluded_citations=tuple(args.exclude_citation),
                     ),
+                    separators=(",", ":"),
+                )
+            )
+        elif args.command == "parse-existing-signed-imports":
+            print(
+                json.dumps(
+                    [
+                        path.as_posix()
+                        for path in parse_existing_signed_imports(
+                            args.repo,
+                            args.existing_signed_imports_json,
+                            primary_citation=args.primary_citation,
+                            source_bundle_citations=tuple(args.source_citation),
+                            excluded_citations=tuple(args.exclude_citation),
+                            excluded_rulespec_paths=tuple(args.exclude_rulespec_path),
+                        )
+                    ],
                     separators=(",", ":"),
                 )
             )

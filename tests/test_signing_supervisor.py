@@ -1874,6 +1874,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "default": "[]",
         "type": "string",
     }
+    assert inputs["existing_signed_imports_json"] == {
+        "description": (
+            "JSON array of tracked same-jurisdiction signed-v5 modules to reuse "
+            "as direct imports"
+        ),
+        "required": False,
+        "default": "[]",
+        "type": "string",
+    }
     assert inputs["replace_rulespec_path"]["required"] is False
     assert inputs["replace_legacy_rulespec_path"]["required"] is False
     assert inputs["dependent_citation"]["required"] is False
@@ -1937,20 +1946,32 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert all(step["with"]["fetch-depth"] == 0 for step in checkout_steps)
 
     source_bundle_step = next(
-        step for step in steps if step.get("name") == "Validate atomic source bundle"
+        step for step in steps if step.get("name") == "Validate atomic source inputs"
     )
     source_bundle_command = source_bundle_step["run"]
     assert source_bundle_step["env"]["SOURCE_BUNDLE_JSON"] == (
         "${{ inputs.source_bundle_json }}"
     )
+    assert source_bundle_step["env"]["EXISTING_SIGNED_IMPORTS_JSON"] == (
+        "${{ inputs.existing_signed_imports_json }}"
+    )
     assert 'parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"' in (source_bundle_command)
+    assert 'parse-existing-signed-imports "$RULESPEC_CHECKOUT"' in (
+        source_bundle_command
+    )
+    assert 'existing_import_args+=(--source-citation "$source_citation")' in (
+        source_bundle_command
+    )
+    assert 'existing_import_args+=(--exclude-rulespec-path "$reserved_path")' in (
+        source_bundle_command
+    )
     assert '--primary-citation "$CITATION"' in source_bundle_command
     assert 'source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")' in (
         source_bundle_command
     )
     assert (
-        "queue-authorized re-encodes cannot add a source bundle until queue "
-        "generation identity binds it"
+        "queue-authorized re-encodes cannot add source inputs until queue "
+        "generation identity binds them"
     ) in source_bundle_command
     assert steps.index(source_bundle_step) > next(
         index
@@ -2063,6 +2084,21 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'cascade_args+=("${dependent_citations[@]}")' in cascade_step["run"]
     assert '"${cascade_args[@]}"' in cascade_step["run"]
 
+    signed_import_step = next(
+        step for step in steps if step.get("name") == "Verify existing signed imports"
+    )
+    signed_import_command = signed_import_step["run"]
+    assert steps.index(cascade_step) < steps.index(signed_import_step)
+    assert "/opt/axiom-verification/axiom-encode-signing-supervisor" in (
+        signed_import_command
+    )
+    assert "signed-import-inventory" in signed_import_command
+    assert '--base-ref "$RULESPEC_REF"' in signed_import_command
+    assert '--rulespec-path "$existing_import_path"' in signed_import_command
+    assert '> "$RUNNER_TEMP/existing-signed-import-inventory.json"' in (
+        signed_import_command
+    )
+
     apply_step = next(
         step
         for step in steps
@@ -2090,7 +2126,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
-    assert 'local require_source_bundle_imports="$7"' in command
+    assert 'local require_direct_imports="$7"' in command
     assert 'args+=(--required-import-rulespec-path "$required_import_path")' in (
         command
     )
@@ -2110,6 +2146,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"$CITATION" "$REVIEW_FINDING" false \\\n' in command
     assert "dependent review finding is required with dependent citation" in command
     assert "parse-source-bundle" in command
+    assert "parse-existing-signed-imports" in command
+    assert '"$RUNNER_TEMP/existing-signed-import-paths.txt"' in command
+    assert "source_bundle_count + existing_import_count" in command
     assert '> "$RUNNER_TEMP/source-bundle.json"' in command
     assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
@@ -2123,10 +2162,22 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert command.rindex(source_loop) < command.index('"$CITATION" "$REVIEW_FINDING"')
     assert "Compose signed source bundle for ${CITATION}" in command
     assert (
-        "queue-authorized re-encodes cannot add a source bundle until queue "
-        "generation identity binds it"
+        "queue-authorized re-encodes cannot add source inputs until queue "
+        "generation identity binds them"
     ) in command
     assert steps.index(cascade_step) < steps.index(apply_step)
+    assert steps.index(signed_import_step) < steps.index(apply_step)
+
+    integrity_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify existing signed import integrity"
+    )
+    integrity_command = integrity_step["run"]
+    assert steps.index(apply_step) < steps.index(integrity_step)
+    assert "signed-import-inventory" in integrity_command
+    assert "existing-signed-import-inventory-final.json" in integrity_command
+    assert "cmp --silent" in integrity_command
 
     package_step = next(
         step for step in steps if step.get("name") == "Package exact generated changes"
@@ -2146,6 +2197,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"' in (
         package_command
     )
+    assert '"$artifact/existing-signed-imports.json"' in package_command
+    assert '"$artifact/signed-import-inventory.json"' in package_command
     assert '"$artifact/context-manifest.json"' in package_command
     assert '".axiom/encoding-manifests"' in package_command
     assert 'citation = effective.get("citation")' in package_command
@@ -2161,6 +2214,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'f"{source_lane}-context-manifest.json"' in package_command
     assert 'os.environ["RULESPEC_REF"], "--"' in package_command
     assert '"source_bundle": json.loads(' in package_command
+    assert '"existing_signed_imports": json.loads(' in package_command
+    assert '"signed_import_inventory_sha256": hashlib.sha256(' in package_command
     assert '"rulespec_base": os.environ["RULESPEC_REF"]' in package_command
     assert '"rulespec_generated_head": rev(os.environ["RULESPEC_CHECKOUT"])' in (
         package_command
@@ -2552,6 +2607,11 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
     assert upload["with"]["retention-days"] == 90
 
 
+def _prepare_empty_signed_import_inputs(runner_temp: Path) -> None:
+    (runner_temp / "existing-signed-imports.json").write_text("[]\n")
+    (runner_temp / "existing-signed-import-paths.txt").write_text("")
+
+
 @pytest.mark.parametrize("dependent_count", [0, 1, 2])
 def test_targeted_signed_reencode_orders_target_and_dependents(
     tmp_path: Path,
@@ -2586,6 +2646,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     signer_stub.chmod(0o700)
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
 
     environment = {
         **os.environ,
@@ -2710,6 +2771,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     signer_stub.chmod(0o700)
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
     primary = "us-ri/statute/44-30-2.6"
     sources = [
         "us-ri/statute/44-30-1",
@@ -2769,6 +2831,94 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     ]
 
 
+def test_targeted_signed_reencode_reuses_verified_existing_import(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    ).replace(
+        "/opt/axiom-verification/axiom-encode-apply-signer run",
+        '"$SIGNER_STUB"',
+    )
+
+    calls_path = tmp_path / "calls.jsonl"
+    signer_stub = tmp_path / "signer-stub"
+    signer_stub.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+""",
+        encoding="utf-8",
+    )
+    signer_stub.chmod(0o700)
+
+    rulespec_repo = tmp_path / "rulespec-us"
+    existing_path = "us-ri/statutes/44-30-1.yaml"
+    manifest_path = (
+        rulespec_repo / ".axiom/encoding-manifests/us-ri/statutes/44-30-1.json"
+    )
+    rule = rulespec_repo / existing_path
+    rule.parent.mkdir(parents=True)
+    rule.write_text("format: rulespec/v1\nrules: []\n")
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps({"schema_version": "axiom-encode/applied-rulespec/v5"}) + "\n"
+    )
+    subprocess.run(["git", "-C", str(rulespec_repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(rulespec_repo), "add", "."], check=True)
+
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    normalized_existing = json.dumps([existing_path], separators=(",", ":"))
+    (runner_temp / "existing-signed-imports.json").write_text(
+        normalized_existing + "\n"
+    )
+    (runner_temp / "existing-signed-import-paths.txt").write_text(existing_path + "\n")
+
+    subprocess.run(
+        ["bash", "-c", command],
+        check=True,
+        env={
+            **os.environ,
+            "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+            "AXIOM_TEST_PYTHON": sys.executable,
+            "CALLS_PATH": str(calls_path),
+            "CITATION": "us-ri/statute/44-30-2.6",
+            "DEPENDENT_CITATION": "",
+            "DEPENDENT_REVIEW_FINDING": "",
+            "EXISTING_SIGNED_IMPORTS_JSON": normalized_existing,
+            "GITHUB_WORKSPACE": str(tmp_path),
+            "REVIEW_FINDING": "Preserve direct composition semantics.",
+            "RULESPEC_CHECKOUT": str(rulespec_repo),
+            "RULESPEC_REF": "a" * 40,
+            "RUNNER_TEMP": str(runner_temp),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_DEPENDENT_REVIEW_FINDING": "",
+            "SIGNER_STUB": str(signer_stub),
+            "SOURCE_BUNDLE_JSON": "[]",
+        },
+    )
+
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(calls) == 1
+    encode_args = calls[0][calls[0].index("--") + 1 :]
+    assert encode_args[-1] == "us-ri/statute/44-30-2.6"
+    required_index = encode_args.index("--required-import-rulespec-path")
+    assert encode_args[required_index + 1] == existing_path
+
+
 @pytest.mark.parametrize("with_dependent", [False, True])
 def test_targeted_signed_reencode_runs_replacement_target(
     tmp_path: Path,
@@ -2801,6 +2951,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     signer_stub.chmod(0o700)
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
     replacement_path = "us-nc/policies/income_tax/pilot_liability_pipeline.yaml"
     dependent_citation = "us-nc/statute/105/105-153.5" if with_dependent else ""
     dependent_finding = (
@@ -2898,6 +3049,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     signer_stub.chmod(0o700)
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
     source = "us-la/statutes/47:32.yaml"
     destination = "us-la/statutes/47/32.yaml"
     exact_dependents = [
@@ -3011,6 +3163,7 @@ def test_targeted_signed_reencode_rejects_invalid_second_dependent_inputs(
     )
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
     environment = {
         **os.environ,
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
@@ -3043,6 +3196,7 @@ def test_targeted_signed_reencode_rejects_invalid_second_dependent_inputs(
 def test_targeted_review_finding_temp_file_is_valid_context(tmp_path: Path) -> None:
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
+    _prepare_empty_signed_import_inputs(runner_temp)
     policy_root = tmp_path / "rulespec-us" / "us"
     policy_root.mkdir(parents=True)
     completed = subprocess.run(
