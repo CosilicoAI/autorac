@@ -265,6 +265,7 @@ from axiom_encode.cli import (
     cmd_validate,
     guard_generated_change_issues,
     main,
+    signed_import_inventory,
 )
 from axiom_encode.constants import (
     DEFAULT_OPENAI_ESCALATE_AFTER,
@@ -34990,6 +34991,163 @@ class TestGuardGenerated:
                 "applied_files": applied_files,
             }
         )
+
+    def _historical_signed_import_repo(
+        self,
+        tmp_path: Path,
+    ) -> tuple[Path, str, Path, Path]:
+        repo = tmp_path
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test User")
+        self._canonical_guard_repo(repo)
+        rule = repo / "us/statutes/26/1.yaml"
+        self._source_backed_rule(rule)
+        manifest = repo / ".axiom/encoding-manifests/us/statutes/26/1.json"
+        manifest.parent.mkdir(parents=True)
+        payload = self._model_manifest(
+            [
+                {
+                    "path": "us/statutes/26/1.yaml",
+                    "sha256": _sha256_file(rule),
+                }
+            ]
+        )
+        payload["citation"] = "us/statute/26/1"
+        historical_version = "0.2.1000"
+        historical_commit = "c" * 40
+        payload["axiom_encode_version"] = historical_version
+        payload["axiom_encode_git"]["commit"] = historical_commit
+        payload["axiom_encode_git"]["version"] = historical_version
+        payload["validation_execution"]["axiom_encode"]["commit"] = historical_commit
+        payload["validation_execution"]["axiom_encode"]["version"] = historical_version
+        _sign_applied_encoding_manifest(payload, TEST_APPLY_SIGNING_BROKER)
+        manifest.write_text(json.dumps(payload) + "\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "historical signed import")
+        base_ref = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        return repo, base_ref, rule, manifest
+
+    def test_signed_import_inventory_accepts_historical_signed_v5_model(
+        self,
+        tmp_path: Path,
+    ):
+        repo, base_ref, rule, manifest = self._historical_signed_import_repo(tmp_path)
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._read_only_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
+                "axiom_encode.cli._applied_encoding_manifest_verifier",
+                return_value=TEST_APPLY_SIGNING_BROKER,
+            ),
+        ):
+            inventory = signed_import_inventory(
+                repo,
+                corpus_path=self.corpus_path,
+                base_ref=base_ref,
+                rulespec_paths=("us/statutes/26/1.yaml",),
+            )
+
+        assert inventory["schema"] == "axiom-encode/signed-import-inventory/v1"
+        assert inventory["rulespec_base"] == base_ref
+        assert inventory["verifier_encoder_identity"] == TEST_PINNED_ENCODER_IDENTITY
+        assert inventory["items"] == [
+            {
+                "rulespec_path": "us/statutes/26/1.yaml",
+                "rulespec_sha256": _sha256_file(rule),
+                "manifest_path": (".axiom/encoding-manifests/us/statutes/26/1.json"),
+                "manifest_sha256": _sha256_file(manifest),
+                "citation": "us/statute/26/1",
+                "applied_files": [
+                    {
+                        "path": "us/statutes/26/1.yaml",
+                        "sha256": _sha256_file(rule),
+                    }
+                ],
+            }
+        ]
+
+    @pytest.mark.parametrize("mutation", ["rule", "manifest"])
+    def test_signed_import_inventory_rejects_live_drift_from_base(
+        self,
+        tmp_path: Path,
+        mutation: str,
+    ):
+        repo, base_ref, rule, manifest = self._historical_signed_import_repo(tmp_path)
+        target = rule if mutation == "rule" else manifest
+        target.write_text(target.read_text() + "\n")
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._read_only_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
+                "axiom_encode.cli._applied_encoding_manifest_verifier",
+                return_value=TEST_APPLY_SIGNING_BROKER,
+            ),
+            pytest.raises(
+                ValueError,
+                match="stale sha256|differs from the immutable base",
+            ),
+        ):
+            signed_import_inventory(
+                repo,
+                corpus_path=self.corpus_path,
+                base_ref=base_ref,
+                rulespec_paths=("us/statutes/26/1.yaml",),
+            )
+
+    @pytest.mark.parametrize(
+        "manifest_citation",
+        [None, "us-ca/statute/26/1", "us/statute/26/2"],
+    )
+    def test_signed_import_inventory_rejects_unbound_manifest_citation(
+        self,
+        tmp_path: Path,
+        manifest_citation: object,
+    ):
+        repo, _base_ref, _rule, manifest = self._historical_signed_import_repo(tmp_path)
+        payload = json.loads(manifest.read_text())
+        payload["citation"] = manifest_citation
+        _sign_applied_encoding_manifest(payload, TEST_APPLY_SIGNING_BROKER)
+        manifest.write_text(json.dumps(payload) + "\n")
+        _git(repo, "add", manifest.relative_to(repo).as_posix())
+        _git(repo, "commit", "--amend", "--no-edit")
+        base_ref = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._read_only_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
+                "axiom_encode.cli._applied_encoding_manifest_verifier",
+                return_value=TEST_APPLY_SIGNING_BROKER,
+            ),
+            pytest.raises(ValueError, match="citation"),
+        ):
+            signed_import_inventory(
+                repo,
+                corpus_path=self.corpus_path,
+                base_ref=base_ref,
+                rulespec_paths=("us/statutes/26/1.yaml",),
+            )
 
     def _waiver_entry_text(
         self,

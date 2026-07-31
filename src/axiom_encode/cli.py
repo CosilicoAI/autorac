@@ -1768,6 +1768,27 @@ def main():
         "--json", action="store_true", help="Output guard result as JSON"
     )
 
+    signed_import_parser = subparsers.add_parser(
+        "signed-import-inventory",
+        help=(
+            "Verify existing historical signed-v5 RuleSpec modules at an "
+            "immutable base and emit reusable import evidence"
+        ),
+    )
+    signed_import_parser.add_argument("--repo", type=Path, required=True)
+    signed_import_parser.add_argument("--base-ref", required=True)
+    signed_import_parser.add_argument(
+        "--rulespec-path",
+        action="append",
+        required=True,
+        help="Exact checkout-relative primary RuleSpec module; may be repeated",
+    )
+    _add_required_corpus_path_argument(signed_import_parser)
+    _add_expected_encoder_checkout_argument(signed_import_parser)
+    signed_import_parser.add_argument(
+        "--json", action="store_true", help="Output inventory as JSON"
+    )
+
     manifest_census_parser = subparsers.add_parser(
         "manifest-census",
         help=(
@@ -2791,6 +2812,8 @@ def main():
         cmd_migrate_rulespec_paths(args)
     elif args.command == "guard-generated":
         cmd_guard_generated(args)
+    elif args.command == "signed-import-inventory":
+        cmd_signed_import_inventory(args)
     elif args.command == "manifest-census":
         cmd_manifest_census(args)
     elif args.command == "encode":
@@ -6550,6 +6573,289 @@ def cmd_guard_generated(args):
         else:
             print("All changed RuleSpec files have encoder apply manifests.")
     sys.exit(0 if not issues else 1)
+
+
+def cmd_signed_import_inventory(args):
+    """Verify immutable historical signed-v5 modules for direct reuse."""
+
+    payload = signed_import_inventory(
+        args.repo,
+        corpus_path=Path(args.corpus_path),
+        base_ref=args.base_ref,
+        rulespec_paths=tuple(args.rulespec_path),
+        expected_encoder_checkout=getattr(args, "expected_encoder_checkout", None),
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for item in payload["items"]:
+            print(f"verified {item['rulespec_path']}")
+
+
+def signed_import_inventory(
+    repo_path: Path,
+    *,
+    corpus_path: Path,
+    base_ref: str,
+    rulespec_paths: Sequence[str],
+    expected_encoder_checkout: Path | None = None,
+) -> dict[str, object]:
+    """Return fail-closed evidence for historical signed-v5 direct imports."""
+
+    repo_path = _resolve_canonical_rulespec_checkout(
+        repo_path,
+        label="RuleSpec checkout",
+    )
+    if re.fullmatch(r"[0-9a-f]{40}", base_ref) is None:
+        raise ValueError("signed import base ref must be a full lowercase commit SHA")
+    try:
+        resolved_base = subprocess.check_output(
+            ["git", "-C", str(repo_path), "rev-parse", f"{base_ref}^{{commit}}"],
+            text=True,
+        ).strip()
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "merge-base",
+                "--is-ancestor",
+                base_ref,
+                "HEAD",
+            ],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "signed import base ref is unavailable or not an ancestor"
+        ) from exc
+    if resolved_base != base_ref:
+        raise ValueError("signed import base ref did not resolve exactly")
+    if not rulespec_paths or len(rulespec_paths) > 16:
+        raise ValueError("signed import inventory requires between 1 and 16 modules")
+
+    roots = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS))
+    country = repo_path.name.removeprefix("rulespec-")
+    normalized_paths: list[Path] = []
+    seen: set[Path] = set()
+    jurisdiction: str | None = None
+    for value in rulespec_paths:
+        path = Path(value)
+        if (
+            path.is_absolute()
+            or path.as_posix() != value
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            or len(path.parts) < 3
+            or path.parts[1] not in roots
+            or path.suffix != RULESPEC_FILE_SUFFIX
+            or path.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+        ):
+            raise ValueError(
+                "signed import path must be a canonical checkout-relative primary "
+                "RuleSpec module"
+            )
+        current_jurisdiction = path.parts[0]
+        if current_jurisdiction != country and not current_jurisdiction.startswith(
+            f"{country}-"
+        ):
+            raise ValueError(
+                "signed import jurisdiction does not belong to the checkout"
+            )
+        if jurisdiction is None:
+            jurisdiction = current_jurisdiction
+        elif jurisdiction != current_jurisdiction:
+            raise ValueError("signed imports must use exactly one jurisdiction")
+        if path in seen:
+            raise ValueError("signed import paths must be unique")
+        normalized_paths.append(path)
+        seen.add(path)
+
+    expected_waiver_set_sha256 = verify_rulespec_validation_waiver_set(repo_path)
+    local_corpus_release = load_rulespec_local_corpus_release(
+        repo_path,
+        Path(corpus_path),
+    )
+    try:
+        signing_broker = _applied_encoding_manifest_verifier()
+    except SigningBrokerError as exc:
+        raise RuntimeError(
+            "cannot initialize the protected signing verifier for signed imports"
+        ) from exc
+    if not signing_broker:
+        raise RuntimeError(
+            "A protected signing broker initialized from the three-root trust "
+            "config is required to verify signed imports"
+        )
+    verifier_encoder_identity = _read_only_guard_encoder_execution_identity(
+        expected_encoder_checkout
+    )
+
+    def base_bound_regular(relative: Path, *, label: str, max_bytes: int) -> bytes:
+        listing = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                base_ref,
+                "--",
+                relative.as_posix(),
+            ]
+        )
+        records = [record for record in listing.split(b"\0") if record]
+        if len(records) != 1:
+            raise ValueError(
+                f"{label} is not exactly present at the signed import base"
+            )
+        try:
+            metadata, encoded_path = records[0].split(b"\t", 1)
+            mode, object_type, _object_id = metadata.decode("ascii").split(" ")
+            listed_path = encoded_path.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"{label} base entry is malformed") from exc
+        if (
+            mode != "100644"
+            or object_type != "blob"
+            or listed_path != relative.as_posix()
+        ):
+            raise ValueError(f"{label} is not an exact regular 0644 base blob")
+        base_bytes = _git_show_bytes(repo_path, base_ref, relative.as_posix())
+        if base_bytes is None or len(base_bytes) > max_bytes:
+            raise ValueError(f"{label} base blob is unavailable or oversized")
+        try:
+            live_bytes = read_bounded_regular_file(
+                repo_path,
+                repo_path / relative,
+                label=label,
+                max_bytes=max_bytes,
+                required_mode=0o644,
+            )
+        except UnsafeCorpusPathError as exc:
+            raise ValueError(str(exc)) from exc
+        if live_bytes != base_bytes:
+            raise ValueError(f"{label} differs from the immutable base")
+        return live_bytes
+
+    items: list[dict[str, object]] = []
+    for rulespec_path in normalized_paths:
+        manifest_path = _applied_encoding_manifest_path(rulespec_path)
+        manifest_bytes = base_bound_regular(
+            manifest_path,
+            label=f"signed import manifest {manifest_path}",
+            max_bytes=1024 * 1024,
+        )
+        try:
+            unverified_payload = json.loads(manifest_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError(
+                f"signed import manifest {manifest_path} is invalid"
+            ) from exc
+        execution = (
+            unverified_payload.get("validation_execution")
+            if isinstance(unverified_payload, dict)
+            else None
+        )
+        historical_encoder_identity = (
+            execution.get("axiom_encode") if isinstance(execution, dict) else None
+        )
+        if not isinstance(historical_encoder_identity, dict):
+            raise ValueError(
+                f"signed import manifest {manifest_path} lacks encoder identity"
+            )
+        payload, root_prefix, manifest_sha256, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                repo_path,
+                manifest_path.as_posix(),
+                roots=roots,
+                signing_broker=signing_broker,
+                expected_waiver_set_sha256=expected_waiver_set_sha256,
+                local_corpus_release=local_corpus_release,
+                expected_encoder_identity=historical_encoder_identity,
+            )
+        )
+        if payload is None or root_prefix is None or manifest_sha256 is None or issues:
+            detail = "; ".join(issues) or "manifest verification failed"
+            raise ValueError(f"signed import {rulespec_path} is invalid: {detail}")
+        if (
+            payload.get("tool") != APPLIED_ENCODING_MODEL_TOOL
+            or payload.get("backend") not in APPLIED_ENCODING_ENCODER_BACKENDS
+        ):
+            raise ValueError(
+                f"signed import {rulespec_path} must have a direct model manifest"
+            )
+        citation = payload.get("citation")
+        source_attestation = payload.get("source_attestation")
+        requested_citation = (
+            source_attestation.get("requested_corpus_citation_path")
+            if isinstance(source_attestation, dict)
+            else None
+        )
+        try:
+            canonical_citation = (
+                require_canonical_corpus_citation_path(citation)
+                if isinstance(citation, str)
+                else None
+            )
+        except CorpusResolutionError as exc:
+            raise ValueError(
+                f"signed import {rulespec_path} has a noncanonical citation"
+            ) from exc
+        if canonical_citation is None or canonical_citation != requested_citation:
+            raise ValueError(
+                f"signed import {rulespec_path} citation does not match its "
+                "verified source attestation"
+            )
+        applied_files = payload.get("applied_files")
+        assert isinstance(applied_files, list)
+        applied_inventory: list[dict[str, str]] = []
+        primary_paths: list[str] = []
+        for applied in applied_files:
+            assert isinstance(applied, dict)
+            raw_path = str(applied["path"])
+            checkout_path = Path(_prefix_applied_manifest_path(raw_path, root_prefix))
+            content = base_bound_regular(
+                checkout_path,
+                label=f"signed import applied file {checkout_path}",
+                max_bytes=10 * 1024 * 1024,
+            )
+            digest = hashlib.sha256(content).hexdigest()
+            if digest != applied.get("sha256"):
+                raise ValueError(
+                    f"signed import manifest has stale hash for {checkout_path}"
+                )
+            if not checkout_path.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
+                primary_paths.append(checkout_path.as_posix())
+            applied_inventory.append(
+                {"path": checkout_path.as_posix(), "sha256": digest}
+            )
+        if primary_paths != [rulespec_path.as_posix()]:
+            raise ValueError(
+                f"signed import {rulespec_path} is not the sole primary owned by "
+                "its direct manifest"
+            )
+        items.append(
+            {
+                "rulespec_path": rulespec_path.as_posix(),
+                "rulespec_sha256": next(
+                    item["sha256"]
+                    for item in applied_inventory
+                    if item["path"] == rulespec_path.as_posix()
+                ),
+                "manifest_path": manifest_path.as_posix(),
+                "manifest_sha256": manifest_sha256,
+                "citation": canonical_citation,
+                "applied_files": applied_inventory,
+            }
+        )
+    return {
+        "schema": "axiom-encode/signed-import-inventory/v1",
+        "rulespec_base": base_ref,
+        "verifier_encoder_identity": verifier_encoder_identity,
+        "items": items,
+    }
 
 
 def _scheduled_dependent_manifest_issue(
