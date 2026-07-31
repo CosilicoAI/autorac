@@ -681,7 +681,12 @@ def test_generation_resolver_uses_active_release_and_attests_full_body(tmp_path)
     assert source_unit.source_attestation["row"]["version"] == "2026"
 
 
-def _workspace_prompt_for_source_unit(tmp_path: Path, source_unit: CorpusSourceUnit):
+def _workspace_prompt_for_source_unit(
+    tmp_path: Path,
+    source_unit: CorpusSourceUnit,
+    *,
+    required_import_targets: tuple[str, ...] = (),
+):
     workspace = prepare_eval_workspace(
         citation=source_unit.requested,
         runner=parse_runner_spec("openai:gpt-5.4"),
@@ -702,8 +707,37 @@ def _workspace_prompt_for_source_unit(tmp_path: Path, source_unit: CorpusSourceU
         target_file_name="target.yaml",
         include_tests=True,
         runner_backend="openai",
+        required_import_targets=required_import_targets,
     )
     return workspace, prompt
+
+
+def test_workspace_prompt_requires_each_atomic_composition_import(tmp_path):
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "dk/statute/benefit/section-1",
+                "body": "The benefit uses the separately determined amount.",
+            }
+        ],
+    )
+    source_unit = resolve_corpus_source_unit("dk/statute/benefit/section-1", release)
+
+    _workspace, prompt = _workspace_prompt_for_source_unit(
+        tmp_path,
+        source_unit,
+        required_import_targets=(
+            "dk:guidance/benefit/current-amount",
+            "dk:statutes/benefit/eligibility",
+        ),
+    )
+
+    assert "Protected atomic-composition requirements:" in prompt
+    assert "`dk:guidance/benefit/current-amount`" in prompt
+    assert "`dk:statutes/benefit/eligibility`" in prompt
+    assert "directly import at least one exact" in prompt
+    assert "remains bound to exactly one primary source" in prompt
 
 
 def test_workspace_prompt_includes_curated_provision_metadata(tmp_path):

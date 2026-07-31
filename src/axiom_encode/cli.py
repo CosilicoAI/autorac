@@ -182,6 +182,7 @@ from .harness.evals import (
     _git_checkout_execution_identity,
     _load_eval_suite_resume_state,
     _render_eval_result_verdict_evidence,
+    _resolve_eval_output_path,
     _rulespec_root_execution_identity,
     _source_metadata_citation_path,
     _source_metadata_with_attestation,
@@ -2093,6 +2094,17 @@ def main():
         action="append",
         default=[],
         help="Extra file path to copy into the repo-augmented workspace (repeatable)",
+    )
+    encode_parser.add_argument(
+        "--required-import-rulespec-path",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Existing checkout-relative atomic RuleSpec that must be copied into "
+            "the generation context and directly imported by the generated target "
+            "(repeatable; intended for protected source-bundle composition)"
+        ),
     )
     encode_parser.add_argument(
         "--review-findings",
@@ -23555,6 +23567,92 @@ class _EncodeReplacementTarget(NamedTuple):
 _LEGACY_REPLACEMENT_ATTR = "_axiom_legacy_replacement_contract"
 
 
+def _resolve_required_import_rulespec_paths(
+    raw_paths: Sequence[Path],
+    *,
+    policy_checkout_path: Path,
+    policy_repo_path: Path,
+    source_citation_path: str,
+    target_relative_output: Path,
+) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """Resolve bounded, same-jurisdiction atomic modules required by composition."""
+
+    if len(raw_paths) > 16:
+        raise ValueError("at most 16 required import RuleSpec paths are supported")
+    jurisdiction = normalize_corpus_identifier(source_citation_path).split("/", 1)[0]
+    if jurisdiction != policy_repo_path.name:
+        raise ValueError("required import jurisdiction does not match source routing")
+    tracked = _rulespec_migration_tracked_files(policy_checkout_path)
+    roots = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS))
+    target_checkout_relative = Path(jurisdiction) / target_relative_output
+    resolved_paths: list[Path] = []
+    import_targets: list[str] = []
+    seen_paths: set[Path] = set()
+    for raw_path in raw_paths:
+        relative = Path(raw_path)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+            or len(relative.parts) < 3
+            or relative.parts[0] != jurisdiction
+            or not _is_protected_rulespec_yaml_path(relative, roots=roots)
+            or relative.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+        ):
+            raise ValueError(
+                "required import must be a canonical checkout-relative atomic "
+                "RuleSpec in the requested jurisdiction"
+            )
+        if relative == target_checkout_relative:
+            raise ValueError("required import must differ from the generated target")
+        if relative in seen_paths:
+            raise ValueError("required import RuleSpec paths must be unique")
+        if tracked.get(relative) != "100644":
+            raise ValueError(
+                f"required import is not a tracked regular 0644 RuleSpec: {relative}"
+            )
+        absolute = policy_checkout_path / relative
+        read_bounded_regular_file(
+            policy_checkout_path,
+            absolute,
+            label=f"required import RuleSpec {relative.as_posix()}",
+            max_bytes=16 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        seen_paths.add(relative)
+        resolved_paths.append(absolute)
+        import_targets.append(
+            f"{jurisdiction}:{relative.with_suffix('').relative_to(jurisdiction).as_posix()}"
+        )
+    return tuple(resolved_paths), tuple(import_targets)
+
+
+def _required_generated_import_issues(
+    rulespec_path: Path,
+    required_import_targets: Sequence[str],
+) -> list[str]:
+    """Require at least one direct symbol import from every required module."""
+
+    if not required_import_targets:
+        return []
+    try:
+        payload = yaml.safe_load(rulespec_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        return [f"cannot inspect generated required imports: {exc}"]
+    imports = payload.get("imports") if isinstance(payload, dict) else None
+    imported_modules = {
+        raw_import.split("#", 1)[0].strip().strip("/")
+        for raw_import in imports or []
+        if isinstance(raw_import, str) and "#" in raw_import
+    }
+    return [
+        "Generated target must directly import at least one exported symbol from "
+        f"required atomic module {target}"
+        for target in required_import_targets
+        if target not in imported_modules
+    ]
+
+
 def _result_legacy_replacement_contract(result: object) -> object | None:
     """Read only an explicitly attached contract, including on dynamic test doubles."""
 
@@ -24532,6 +24630,26 @@ def _run_encode_attempt(
         source_unit=source_unit,
         corpus_release=corpus_release,
     )
+    raw_required_import_paths = tuple(
+        Path(path) for path in getattr(args, "required_import_rulespec_path", ())
+    )
+    required_import_paths: tuple[Path, ...] = ()
+    required_import_targets: tuple[str, ...] = ()
+    if raw_required_import_paths:
+        target_relative_output = (
+            replacement_target.relative_output
+            if replacement_target is not None
+            else _resolve_eval_output_path(source_unit.requested)
+        )
+        required_import_paths, required_import_targets = (
+            _resolve_required_import_rulespec_paths(
+                raw_required_import_paths,
+                policy_checkout_path=policy_checkout_path,
+                policy_repo_path=policy_repo_path,
+                source_citation_path=source_unit.requested,
+                target_relative_output=target_relative_output,
+            )
+        )
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -24562,6 +24680,7 @@ def _run_encode_attempt(
     extra_context_paths = [Path(path) for path in args.allow_context]
     if replacement_target is not None:
         extra_context_paths.extend(replacement_target.context_paths)
+    extra_context_paths.extend(required_import_paths)
     results = run_model_eval(
         citations=[args.citation],
         runner_specs=[runner],
@@ -24585,6 +24704,7 @@ def _run_encode_attempt(
             else None
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
+        required_import_targets=required_import_targets,
     )
 
     result = results[0]
@@ -27355,6 +27475,15 @@ def _run_encode_attempt(
                                 outcome["auto_repaired_invalid_test_inputs"] = (
                                     repaired_invalid_input_refs
                                 )
+                if can_apply and required_import_targets:
+                    required_import_issues = _required_generated_import_issues(
+                        Path(str(getattr(result, "output_file", "") or "")),
+                        required_import_targets,
+                    )
+                    if required_import_issues:
+                        can_apply = False
+                        apply_issues = required_import_issues
+                        outcome["overlay_validation_success"] = False
                 if not can_apply:
                     detail = (
                         apply_issues[0]

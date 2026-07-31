@@ -1865,6 +1865,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["open_pr"]["default"] is False
     assert inputs["pr_base_branch"]["type"] == "string"
     assert inputs["pr_base_branch"]["default"] == "main"
+    assert inputs["source_bundle_json"] == {
+        "description": (
+            "JSON array of additional same-jurisdiction citations to encode as "
+            "signed atomic imports"
+        ),
+        "required": False,
+        "default": "[]",
+        "type": "string",
+    }
     assert inputs["replace_rulespec_path"]["required"] is False
     assert inputs["replace_legacy_rulespec_path"]["required"] is False
     assert inputs["dependent_citation"]["required"] is False
@@ -1926,6 +1935,28 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert checkout_steps
     assert all(step["with"]["persist-credentials"] is False for step in checkout_steps)
     assert all(step["with"]["fetch-depth"] == 0 for step in checkout_steps)
+
+    source_bundle_step = next(
+        step for step in steps if step.get("name") == "Validate atomic source bundle"
+    )
+    source_bundle_command = source_bundle_step["run"]
+    assert source_bundle_step["env"]["SOURCE_BUNDLE_JSON"] == (
+        "${{ inputs.source_bundle_json }}"
+    )
+    assert 'parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"' in (source_bundle_command)
+    assert '--primary-citation "$CITATION"' in source_bundle_command
+    assert 'source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")' in (
+        source_bundle_command
+    )
+    assert (
+        "queue-authorized re-encodes cannot add a source bundle until queue "
+        "generation identity binds it"
+    ) in source_bundle_command
+    assert steps.index(source_bundle_step) > next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Install encoder"
+    )
 
     identity_step = next(
         step
@@ -2059,6 +2090,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
+    assert 'local require_source_bundle_imports="$7"' in command
+    assert 'args+=(--required-import-rulespec-path "$required_import_path")' in (
+        command
+    )
     assert "--legacy-dependent-rulespec-path" in command
     assert 'citation-rulespec-path "$DEPENDENT_CITATION"' in command
     assert '[ "$target_only" = "true" ]' in command
@@ -2068,12 +2103,29 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert '--output "$RUNNER_TEMP/generated/$output_lane"' in command
     assert '"$SECOND_DEPENDENT_CITATION"' in command
-    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 ""' in command
+    assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false' in command
     assert '"$CITATION" "$REVIEW_FINDING" true target \\\n' in command
     assert '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \\\n' in command
     assert '"$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"' in command
-    assert '"$CITATION" "$REVIEW_FINDING" false target \\\n' in command
+    assert '"$CITATION" "$REVIEW_FINDING" false \\\n' in command
     assert "dependent review finding is required with dependent citation" in command
+    assert "parse-source-bundle" in command
+    assert '> "$RUNNER_TEMP/source-bundle.json"' in command
+    assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
+    assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
+    assert '"$source_citation" "" true "$source_lane" "" "" false' in command
+    assert "checkpoint_signed_changes()" in command
+    assert '"$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"' in (
+        command
+    )
+    assert 'commit -m "$message"' in command
+    source_loop = "while IFS= read -r source_citation; do"
+    assert command.rindex(source_loop) < command.index('"$CITATION" "$REVIEW_FINDING"')
+    assert "Compose signed source bundle for ${CITATION}" in command
+    assert (
+        "queue-authorized re-encodes cannot add a source bundle until queue "
+        "generation identity binds it"
+    ) in command
     assert steps.index(cascade_step) < steps.index(apply_step)
 
     package_step = next(
@@ -2087,6 +2139,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "${{ inputs.dependent_review_finding != '' }}"
     )
     assert package_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
+    assert package_step["env"]["RULESPEC_REF"] == "${{ inputs.rulespec_ref }}"
+    assert '"$RULESPEC_REF" > "$artifact/tracked.patch"' in package_command
+    assert '"$RULESPEC_REF" HEAD >> "$artifact/status.txt"' in package_command
+    assert "diff --binary --full-index HEAD" not in package_command
+    assert 'cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"' in (
+        package_command
+    )
     assert '"$artifact/context-manifest.json"' in package_command
     assert '".axiom/encoding-manifests"' in package_command
     assert 'citation = effective.get("citation")' in package_command
@@ -2099,6 +2158,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'finding.get("content")' in package_command
     assert 'finding.get("sha256")' in package_command
     assert '"dependent-context-manifest.json"' in package_command
+    assert 'f"{source_lane}-context-manifest.json"' in package_command
+    assert 'os.environ["RULESPEC_REF"], "--"' in package_command
+    assert '"source_bundle": json.loads(' in package_command
+    assert '"rulespec_base": os.environ["RULESPEC_REF"]' in package_command
+    assert '"rulespec_generated_head": rev(os.environ["RULESPEC_CHECKOUT"])' in (
+        package_command
+    )
     assert '"pr_base_branch": os.environ["PR_BASE_BRANCH"]' in package_command
     assert '"queue_id": os.environ.get("QUEUE_ID") or None' in package_command
     assert '"queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None' in (
@@ -2129,7 +2195,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         step for step in steps if step.get("name") == "Verify generated provenance"
     )
     assert "guard-generated" in guard_step["run"]
-    assert "--base-ref" not in guard_step["run"]
+    assert 'guard_ref_args+=(--base-ref "$RULESPEC_REF")' in guard_step["run"]
+    assert (
+        "jq -e 'length > 0' \"$RUNNER_TEMP/source-bundle.json\"" in (guard_step["run"])
+    )
 
     secret_steps = [
         step
@@ -2156,6 +2225,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "refs/remotes/origin/${PR_BASE_BRANCH}" in publish_command
     assert '" = "$RULESPEC_REF"' in publish_command
     assert '"HEAD:refs/heads/${branch}"' in publish_command
+    assert publish_command.count('"HEAD:refs/heads/${branch}"') == 1
     assert "gh api --method POST" in publish_command
     assert '-f base="$PR_BASE_BRANCH"' in publish_command
     assert "-F draft=true" in publish_command
@@ -2170,6 +2240,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         publish_command
     )
     assert "SHA256SUMS" not in publish_command
+    assert not any(
+        " push " in f" {step.get('run', '')} "
+        for step in steps[: steps.index(publish_step)]
+    )
 
     checksum_step = next(
         step
@@ -2524,10 +2598,12 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "GITHUB_WORKSPACE": str(tmp_path),
         "REVIEW_FINDING": "Preserve the target source.",
         "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RULESPEC_REF": "a" * 40,
         "RUNNER_TEMP": str(runner_temp),
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SIGNER_STUB": str(signer_stub),
+        "SOURCE_BUNDLE_JSON": "[]",
     }
     if dependent_count >= 1:
         environment.update(
@@ -2585,6 +2661,114 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         )
 
 
+def test_targeted_signed_reencode_composes_nonempty_source_bundle(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    ).replace(
+        "/opt/axiom-verification/axiom-encode-apply-signer run",
+        '"$SIGNER_STUB"',
+    )
+    before_checkpoint, checkpoint_and_after = command.split(
+        "checkpoint_signed_changes() {",
+        1,
+    )
+    _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
+        "\n}\n\nsource_index=0",
+        1,
+    )
+    command = (
+        before_checkpoint
+        + "checkpoint_signed_changes() {\n"
+        + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
+        + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
+        + "}\n\nsource_index=0"
+        + after_checkpoint
+    )
+
+    calls_path = tmp_path / "calls.jsonl"
+    checkpoints_path = tmp_path / "checkpoints.txt"
+    signer_stub = tmp_path / "signer-stub"
+    signer_stub.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+""",
+        encoding="utf-8",
+    )
+    signer_stub.chmod(0o700)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    primary = "us-ri/statute/44-30-2.6"
+    sources = [
+        "us-ri/statute/44-30-1",
+        "us-ri/guidance/revenue/2026/rate-schedule",
+    ]
+
+    subprocess.run(
+        ["bash", "-c", command],
+        check=True,
+        env={
+            **os.environ,
+            "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+            "AXIOM_TEST_PYTHON": sys.executable,
+            "CALLS_PATH": str(calls_path),
+            "CHECKPOINTS_PATH": str(checkpoints_path),
+            "CITATION": primary,
+            "DEPENDENT_CITATION": "",
+            "DEPENDENT_REVIEW_FINDING": "",
+            "GITHUB_WORKSPACE": str(tmp_path),
+            "REVIEW_FINDING": "Preserve the composed target semantics.",
+            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+            "RULESPEC_REF": "a" * 40,
+            "RUNNER_TEMP": str(runner_temp),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_DEPENDENT_REVIEW_FINDING": "",
+            "SIGNER_STUB": str(signer_stub),
+            "SOURCE_BUNDLE_JSON": json.dumps(sources),
+        },
+    )
+
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(calls) == 3
+    encode_args = [call[call.index("--") + 1 :] for call in calls]
+    for index, source in enumerate(sources):
+        assert encode_args[index][-1] == source
+        assert "--apply-target-only" in encode_args[index]
+        assert "--required-import-rulespec-path" not in encode_args[index]
+
+    primary_args = encode_args[-1]
+    assert primary_args[-1] == primary
+    assert "--apply-target-only" not in primary_args
+    required_indexes = [
+        index
+        for index, value in enumerate(primary_args)
+        if value == "--required-import-rulespec-path"
+    ]
+    assert [primary_args[index + 1] for index in required_indexes] == [
+        "us-ri/statutes/44-30-1.yaml",
+        "us-ri/policies/revenue/2026/rate-schedule.yaml",
+    ]
+    assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
+        f"Add signed source module for {sources[0]}",
+        f"Add signed source module for {sources[1]}",
+        f"Compose signed source bundle for {primary}",
+    ]
+
+
 @pytest.mark.parametrize("with_dependent", [False, True])
 def test_targeted_signed_reencode_runs_replacement_target(
     tmp_path: Path,
@@ -2640,10 +2824,12 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "REPLACE_RULESPEC_PATH": replacement_path,
         "REVIEW_FINDING": "Preserve all supported existing semantics.",
         "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RULESPEC_REF": "a" * 40,
         "RUNNER_TEMP": str(runner_temp),
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SIGNER_STUB": str(signer_stub),
+        "SOURCE_BUNDLE_JSON": "[]",
     }
     subprocess.run(
         ["bash", "-c", command],
@@ -2732,11 +2918,13 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "REPLACE_RULESPEC_PATH": destination,
         "REVIEW_FINDING": "Preserve all supported existing semantics.",
         "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RULESPEC_REF": "a" * 40,
         "RUNNER_TEMP": str(runner_temp),
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": exact_dependents[1],
         "SIGNER_STUB": str(signer_stub),
+        "SOURCE_BUNDLE_JSON": "[]",
     }
 
     subprocess.run(["bash", "-c", command], check=True, env=environment)
@@ -2832,9 +3020,11 @@ def test_targeted_signed_reencode_rejects_invalid_second_dependent_inputs(
         "GITHUB_WORKSPACE": str(tmp_path),
         "REVIEW_FINDING": "Preserve the target source.",
         "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+        "RULESPEC_REF": "a" * 40,
         "RUNNER_TEMP": str(runner_temp),
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        "SOURCE_BUNDLE_JSON": "[]",
         **overrides,
     }
 
@@ -2907,6 +3097,10 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
     base.write_text("fixture\n")
     subprocess.run(["git", "add", "README.md"], cwd=rulespec, check=True)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=rulespec, check=True)
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
+    ).strip()
+    (tmp_path / "source-bundle.json").write_text("[]\n", encoding="utf-8")
 
     citation = "us-la/statute/47:294"
     review_content = "Preserve every supported provision.\n"
@@ -2952,6 +3146,7 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-nz",
+            "RULESPEC_REF": rulespec_ref,
         },
     )
 
@@ -3029,6 +3224,10 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
     base.write_text("fixture\n")
     subprocess.run(["git", "add", "README.md"], cwd=rulespec, check=True)
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=rulespec, check=True)
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
+    ).strip()
+    (tmp_path / "source-bundle.json").write_text("[]\n", encoding="utf-8")
 
     target_citation = "us/regulation/42/435/555"
     dependent_citation = "us/regulation/42/435/559"
@@ -3119,6 +3318,7 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
+            "RULESPEC_REF": rulespec_ref,
         },
     )
 

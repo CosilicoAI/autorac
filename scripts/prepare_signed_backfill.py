@@ -33,6 +33,8 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
 RULESPEC_ATOMIC_ROOTS = frozenset(
     {"legislation", "policies", "regulations", "statutes"}
 )
+MAX_SOURCE_BUNDLE_CITATIONS = 16
+MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
@@ -215,6 +217,96 @@ def _citation_rulespec_path(citation: str) -> tuple[str, PurePosixPath]:
 def citation_rulespec_path(citation: str) -> PurePosixPath:
     jurisdiction, relative = _citation_rulespec_path(citation)
     return PurePosixPath(jurisdiction) / relative
+
+
+def parse_source_bundle(
+    source_bundle_json: str,
+    *,
+    primary_citation: str,
+    excluded_citations: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Validate a bounded same-jurisdiction corpus source citation bundle."""
+
+    from axiom_encode.corpus_resolver import (
+        require_canonical_corpus_citation_path,
+    )
+
+    if not isinstance(source_bundle_json, str):
+        raise ValueError("source bundle JSON must be a string")
+    if len(source_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
+        raise ValueError("source bundle JSON exceeds the maximum input size")
+    payload = json.loads(source_bundle_json)
+    if not isinstance(payload, list):
+        raise ValueError("source bundle JSON must be an array")
+    if len(payload) > MAX_SOURCE_BUNDLE_CITATIONS:
+        raise ValueError(
+            f"source bundle contains more than {MAX_SOURCE_BUNDLE_CITATIONS} citations"
+        )
+
+    def validate_citation(value: object, *, label: str) -> tuple[str, PurePosixPath]:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{label} must be a nonempty citation string")
+        try:
+            citation = require_canonical_corpus_citation_path(value)
+            path = citation_rulespec_path(citation)
+        except ValueError as exc:
+            raise ValueError(
+                f"{label} must be an exact canonical corpus citation path"
+            ) from exc
+        return citation, path
+
+    primary, primary_path = validate_citation(
+        primary_citation,
+        label="primary citation",
+    )
+    primary_jurisdiction = primary.partition("/")[0]
+    validate_country(primary_jurisdiction.partition("-")[0])
+
+    reserved_citations = {primary}
+    reserved_paths = {primary_path}
+    for index, value in enumerate(excluded_citations):
+        citation, path = validate_citation(
+            value,
+            label=f"excluded citation #{index + 1}",
+        )
+        jurisdiction = citation.partition("/")[0]
+        if jurisdiction != primary_jurisdiction:
+            raise ValueError(
+                "excluded citations must use the primary citation jurisdiction "
+                "and country"
+            )
+        reserved_citations.add(citation)
+        reserved_paths.add(path)
+
+    citations: list[str] = []
+    seen_citations: set[str] = set()
+    seen_paths: set[PurePosixPath] = set()
+    for index, value in enumerate(payload):
+        citation, path = validate_citation(
+            value,
+            label=f"source bundle item #{index + 1}",
+        )
+        jurisdiction = citation.partition("/")[0]
+        if jurisdiction != primary_jurisdiction:
+            raise ValueError(
+                "source bundle citations must use the primary citation "
+                "jurisdiction and country"
+            )
+        if citation in reserved_citations:
+            raise ValueError(
+                "source bundle must exclude the primary and excluded citations"
+            )
+        if citation in seen_citations:
+            raise ValueError("source bundle citations must be unique")
+        if path in reserved_paths or path in seen_paths:
+            raise ValueError(
+                "source bundle citations must resolve to unique, unreserved "
+                "canonical RuleSpec paths"
+            )
+        citations.append(citation)
+        seen_citations.add(citation)
+        seen_paths.add(path)
+    return tuple(citations)
 
 
 def _is_regular_file_beneath(root: Path, relative: PurePosixPath) -> bool:
@@ -1269,6 +1361,25 @@ def main() -> None:
     cascade_parser.add_argument("dependent_citations", nargs="+")
     citation_path_parser = subparsers.add_parser("citation-rulespec-path")
     citation_path_parser.add_argument("citation")
+    source_bundle_parser = subparsers.add_parser(
+        "parse-source-bundle",
+        help="validate a bounded source bundle and emit one normalized JSON array",
+    )
+    source_bundle_parser.add_argument(
+        "source_bundle_json",
+        help="JSON array containing at most 16 canonical corpus citation strings",
+    )
+    source_bundle_parser.add_argument(
+        "--primary-citation",
+        required=True,
+        help="canonical primary citation, which is forbidden in the bundle",
+    )
+    source_bundle_parser.add_argument(
+        "--exclude-citation",
+        action="append",
+        default=[],
+        help="additional forbidden canonical citation; may be repeated",
+    )
     args = parser.parse_args()
     try:
         if args.command == "validate-country":
@@ -1305,6 +1416,17 @@ def main() -> None:
             )
         elif args.command == "citation-rulespec-path":
             print(citation_rulespec_path(args.citation))
+        elif args.command == "parse-source-bundle":
+            print(
+                json.dumps(
+                    parse_source_bundle(
+                        args.source_bundle_json,
+                        primary_citation=args.primary_citation,
+                        excluded_citations=tuple(args.exclude_citation),
+                    ),
+                    separators=(",", ":"),
+                )
+            )
         else:
             stage_authorized_changes(args.repo)
     except (
