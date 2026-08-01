@@ -52017,10 +52017,14 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 dependents=dependents,
             )
         issues: list[str] = []
-        seen_issues: set[str] = set()
+        seen_issue_details: set[tuple[str, str]] = set()
         for validated_file, validation in validations:
             if getattr(validation, "all_passed", False):
                 continue
+            relative_file = _relative_to_rulespec_apply_content_root(
+                validated_file,
+                overlay_content_root,
+            )
             for validator_result in validation.results.values():
                 if getattr(validator_result, "passed", False):
                     continue
@@ -52040,16 +52044,13 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     details = [str(validator_result.error).strip()]
                 if not details:
                     continue
-                relative_file = _relative_to_rulespec_apply_content_root(
-                    validated_file,
-                    overlay_content_root,
-                )
                 validator_name = getattr(validator_result, "validator_name", "ci")
                 for detail in details:
-                    issue = f"{relative_file}: {validator_name}: {detail}"
-                    if issue in seen_issues:
+                    identity = (str(relative_file), detail)
+                    if identity in seen_issue_details:
                         continue
-                    seen_issues.add(issue)
+                    seen_issue_details.add(identity)
+                    issue = f"{relative_file}: {validator_name}: {detail}"
                     issues.append(issue)
         return False, issues, {}
 

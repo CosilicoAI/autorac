@@ -26384,7 +26384,7 @@ class ValidatorPipeline:
                         payload = None
                 if isinstance(payload, list):
                     complete_source_unit_test_cases = payload
-                if isinstance(payload, list) and compiled_payload and compiled_path:
+                if isinstance(payload, list):
                     pre_test_issue_count = len(issues)
                     if strict_layout_checks:
                         issues.extend(
@@ -26409,7 +26409,11 @@ class ValidatorPipeline:
                     issues.extend(
                         find_zero_branch_test_coverage_issues(content, payload)
                     )
-                    if len(issues) == pre_test_issue_count:
+                    if (
+                        compiled_payload
+                        and compiled_path
+                        and len(issues) == pre_test_issue_count
+                    ):
                         issues.extend(
                             self._run_rulespec_test_cases(
                                 rules_file=rules_file,

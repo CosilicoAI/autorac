@@ -13472,6 +13472,66 @@ class TestCmdEncode:
             *issues,
         )
 
+    def test_encode_attempt_overlay_issues_replace_stale_standalone_diagnostics(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+        stale_compile_issue = "stale pre-repair compile diagnostic"
+        stale_ci_issue = "stale pre-repair CI diagnostic"
+        current_overlay_issue = "current post-repair overlay diagnostic"
+        make_eval_result = self._make_eval_result
+
+        def result_with_stale_metrics(success=True):
+            result = make_eval_result(success)
+            result.metrics = SimpleNamespace(
+                compile_pass=False,
+                compile_issues=[stale_compile_issue],
+                ci_pass=False,
+                ci_issues=[stale_ci_issue],
+                grounded_numeric_count=0,
+                ungrounded_numeric_count=0,
+                embedded_source_present=True,
+                grounding=[],
+                numeric_occurrence_issues=[],
+                generalist_review_pass=None,
+                generalist_review_score=None,
+                generalist_review_issues=[],
+                policyengine_pass=None,
+                policyengine_score=None,
+                policyengine_issues=[],
+            )
+            return result
+
+        with patch.object(
+            self,
+            "_make_eval_result",
+            side_effect=result_with_stale_metrics,
+        ):
+            exit_code, _generated, _validated, mock_run, _validate, mock_apply = (
+                self._run_validator_escalation_case(
+                    args,
+                    [
+                        (False, [current_overlay_issue]),
+                        (True, []),
+                    ],
+                )
+            )
+
+        assert exit_code == 0
+        assert [
+            call.kwargs["validation_retry_feedback"]
+            for call in mock_run.call_args_list
+        ] == [(), (current_overlay_issue,)]
+        assert stale_compile_issue not in str(mock_run.call_args_list[1])
+        assert stale_ci_issue not in str(mock_run.call_args_list[1])
+        mock_apply.assert_called_once()
+
     def test_encode_retry_forwards_all_overlay_issues_in_stable_order(
         self, tmp_path, capsys
     ):
@@ -41868,6 +41928,12 @@ rules:
         )
         validation = PipelineResult(
             results={
+                "compile": ValidationResult(
+                    validator_name="compile",
+                    passed=False,
+                    issues=[issues[0]],
+                    error=issues[0],
+                ),
                 "ci": ValidationResult(
                     validator_name="ci",
                     passed=False,
@@ -41913,7 +41979,11 @@ rules:
 
         prefix = "statutes/26/1/j/2.yaml: ci: "
         assert ok is False
-        assert collected == [f"{prefix}{issue}" for issue in issues]
+        assert collected == [
+            f"statutes/26/1/j/2.yaml: compile: {issues[0]}",
+            f"{prefix}{issues[1]}",
+            f"{prefix}{issues[2]}",
+        ]
         assert supplemental == {}
 
     @pytest.mark.parametrize(
