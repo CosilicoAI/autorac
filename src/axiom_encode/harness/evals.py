@@ -9100,7 +9100,7 @@ Mandatory independent-review corrections:
 def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
     """Render bounded prior-attempt validator output as non-authority guidance."""
 
-    rendered_items: list[str] = []
+    items: list[str] = []
     rendered_chars = 0
     seen: set[str] = set()
     for raw_item in feedback[:VALIDATION_RETRY_FEEDBACK_MAX_ITEMS]:
@@ -9112,17 +9112,26 @@ def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
         ):
             continue
         seen.add(item)
-        rendered_items.append(f"- {json.dumps(item, ensure_ascii=False)}")
+        items.append(item)
         rendered_chars += len(item)
-    if not rendered_items:
+    if not items:
         return ""
+
+    rendered_items = [
+        f"{index}. {json.dumps(item, ensure_ascii=False)}"
+        for index, item in enumerate(items, 1)
+    ]
+    checklist_heading = (
+        f"Your previous attempt failed {len(items)} validation checks. "
+        "Fix ALL of the following:"
+    )
     return f"""
 Deterministic validation feedback for the rejected candidate below:
 - This is repair guidance from the validator, not legal authority. Keep the
   authoritative source and release-bound corpus evidence as the sole basis for
   legal facts and values.
-- Correct every listed issue in this candidate. Do not repeat the rejected
-  pattern.
+
+{checklist_heading}
 
 === BEGIN PRIOR VALIDATION FEEDBACK ===
 {chr(10).join(rendered_items)}

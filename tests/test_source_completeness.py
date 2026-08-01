@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from axiom_encode.harness.validator_pipeline import (
     find_ungrounded_numeric_issues_scoped,
     numeric_value_is_grounded,
 )
+from tests.release_object_fixtures import bind_test_corpus_release
 
 CORPUS_CITATION_PATH = "de/statute/estg/32a"
 DE_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
@@ -114,6 +117,107 @@ def _formula_test(
             "de:statutes/estg/32a#tariff_income_tax_amount": expected_tax,
         },
     }
+
+
+def test_rulespec_ci_preserves_all_concurrent_complete_source_failures(
+    tmp_path,
+    monkeypatch,
+):
+    source = """\
+(1) Der Freibetrag beträgt 100 Euro.
+(2) Der Zuschlag beträgt 50 Euro.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+  summary: Der Freibetrag und der Zuschlag.
+  deferred_outputs:
+    - output: de:statutes/estg/32a/2#supplement_amount
+      reason: Nicht umgesetzt.
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 999
+"""
+    version = "2026-feedback-test"
+    corpus_root = tmp_path / "axiom-corpus"
+    provision_file = (
+        corpus_root
+        / "data"
+        / "corpus"
+        / "provisions"
+        / "de"
+        / "statute"
+        / f"{version}.jsonl"
+    )
+    provision_file.parent.mkdir(parents=True)
+    provision_file.write_text(
+        json.dumps(
+            {
+                "id": "test:de/statute/estg/32a",
+                "citation_path": CORPUS_CITATION_PATH,
+                "body": source,
+                "jurisdiction": "de",
+                "document_class": "statute",
+                "version": version,
+                "source_path": "sources/de/statute/estg/32a",
+                "source_as_of": "2026-01-01",
+                "expression_date": "2026-01-01",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    release = bind_test_corpus_release(
+        corpus_root,
+        "complete-source-feedback-test",
+        [("de", "statute", version)],
+    )
+    policy_repo = tmp_path / "rulespec-de" / "de"
+    rules_file = policy_repo / "statutes" / "estg" / "32a.yaml"
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(content, encoding="utf-8")
+    pipeline = ValidatorPipeline(
+        policy_repo_path=policy_repo,
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        local_corpus_release=release,
+        enable_oracles=False,
+        source_text=source,
+        source_citation_path=CORPUS_CITATION_PATH,
+        require_complete_source_unit=True,
+    )
+
+    def fake_compile(_rules_file, _output_path):
+        return (
+            subprocess.CompletedProcess(["axiom-rules-engine"], 0, "", ""),
+            {"program": {"parameters": [], "derived": [], "relations": []}},
+        )
+
+    monkeypatch.setattr(pipeline, "_compile_rulespec_to_artifact", fake_compile)
+
+    result = pipeline._run_ci(rules_file)
+
+    assert result.passed is False
+    assert result.error == result.issues[0]
+    assert any(
+        issue.startswith("Ungrounded generated numeric literal:") and "999" in issue
+        for issue in result.issues
+    )
+    assert any(
+        issue.startswith("[complete-source-unit:structure]") and "(2)" in issue
+        for issue in result.issues
+    )
+    assert any(
+        issue.startswith("[complete-source-unit:deferral]")
+        for issue in result.issues
+    )
+    assert "No tests found." in result.issues
 
 
 def test_constants_without_principal_tariff_output_fail():

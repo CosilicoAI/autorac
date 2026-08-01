@@ -27315,9 +27315,16 @@ def _run_encode_attempts_with_retries(
                 next_model = None
             else:
                 failed_attempts = (*failed_attempts, failure)
+                first_issue = (
+                    failure.validation_issues[0]
+                    if failure.validation_issues
+                    else failure.error
+                )
                 print(
                     f"  generation={action} failed_attempts={len(failed_attempts)} "
-                    f"from_model={current_model} to_model={next_model}"
+                    f"from_model={current_model} to_model={next_model} "
+                    f"validation_checks={len(failure.validation_issues) or 1} "
+                    f"first_issue={json.dumps(first_issue[:240], ensure_ascii=False)}"
                 )
                 current_model = next_model
                 live_run.set_attempt(len(failed_attempts) + 1, str(current_model))
@@ -52010,19 +52017,40 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 dependents=dependents,
             )
         issues: list[str] = []
+        seen_issues: set[str] = set()
         for validated_file, validation in validations:
             if getattr(validation, "all_passed", False):
                 continue
             for validator_result in validation.results.values():
-                if validator_result.error:
-                    relative_file = _relative_to_rulespec_apply_content_root(
-                        validated_file,
-                        overlay_content_root,
-                    )
-                    validator_name = getattr(validator_result, "validator_name", "ci")
-                    issues.append(
-                        f"{relative_file}: {validator_name}: {validator_result.error}"
-                    )
+                if getattr(validator_result, "passed", False):
+                    continue
+                validator_issues = getattr(validator_result, "issues", ())
+                if not isinstance(validator_issues, Sequence) or isinstance(
+                    validator_issues, (str, bytes)
+                ):
+                    validator_issues = ()
+                details = _ordered_unique_strings(
+                    [
+                        detail.strip()
+                        for detail in validator_issues
+                        if isinstance(detail, str) and detail.strip()
+                    ]
+                )
+                if not details and getattr(validator_result, "error", None):
+                    details = [str(validator_result.error).strip()]
+                if not details:
+                    continue
+                relative_file = _relative_to_rulespec_apply_content_root(
+                    validated_file,
+                    overlay_content_root,
+                )
+                validator_name = getattr(validator_result, "validator_name", "ci")
+                for detail in details:
+                    issue = f"{relative_file}: {validator_name}: {detail}"
+                    if issue in seen_issues:
+                        continue
+                    seen_issues.add(issue)
+                    issues.append(issue)
         return False, issues, {}
 
 

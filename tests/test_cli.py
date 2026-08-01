@@ -12436,11 +12436,18 @@ class TestCmdEncode:
                 + f"# deterministic-post-repair-tests-{attempt_number}\n"
             )
             outcome = remaining_outcomes.pop(0)
-            if isinstance(outcome, tuple):
+            if (
+                isinstance(outcome, tuple)
+                and len(outcome) == 2
+                and isinstance(outcome[0], bool)
+            ):
                 passed, issues = outcome
-            else:
+            elif isinstance(outcome, bool):
                 passed = outcome
                 issues = [] if passed else ["validator rejected generated section"]
+            else:
+                passed = False
+                issues = list(outcome)
             return passed, issues, {}
 
         applied_file = args.policy_repo_path / "us/statutes/26/1/j/2.yaml"
@@ -13382,7 +13389,6 @@ class TestCmdEncode:
             sync=False,
             escalation_enabled=True,
         )
-
         with patch(
             "axiom_encode.cli._capture_validation_retry_candidate",
             side_effect=RuntimeError("unsafe retry candidate"),
@@ -13432,6 +13438,82 @@ class TestCmdEncode:
 
         assert external_output.read_text() == "must remain\n"
         assert external_output.with_suffix(".test.yaml").read_text() == "must remain\n"
+
+    def test_encode_retry_record_preserves_compile_and_all_ci_issues(self):
+        import axiom_encode.cli as cli_module
+
+        result = SimpleNamespace(
+            metrics=SimpleNamespace(
+                compile_issues=["Axiom rules engine compile failed: invalid formula"],
+                ci_issues=[
+                    "Missing branch companion test for subsection (b).",
+                    "Imprecise deferral for subsection (c).",
+                    "Missing branch companion test for subsection (b).",
+                ],
+            )
+        )
+        issues = cli_module._validation_retry_issue_snapshot(
+            result.metrics.compile_issues,
+            result.metrics.ci_issues,
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=result,
+            error="Generated RuleSpec failed compile validation",
+            validation_issues=issues,
+        )
+
+        assert issues == (
+            "Axiom rules engine compile failed: invalid formula",
+            "Missing branch companion test for subsection (b).",
+            "Imprecise deferral for subsection (c).",
+        )
+        assert cli_module._encode_validation_retry_feedback([failed_attempt]) == (
+            "Generated RuleSpec failed compile validation",
+            *issues,
+        )
+
+    def test_encode_retry_forwards_all_overlay_issues_in_stable_order(
+        self, tmp_path, capsys
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+        issues = (
+            "Ungrounded generated numeric literal: 12 requires source grounding.",
+            "Missing branch companion test for subsection (b).",
+            "Imprecise deferral for subsection (c).",
+        )
+
+        exit_code, _generated, _validated, mock_run, _mock_validate, mock_apply = (
+            self._run_validator_escalation_case(args, [issues] * 4)
+        )
+
+        assert exit_code == 1
+        assert [
+            call.kwargs["validation_retry_feedback"]
+            for call in mock_run.call_args_list
+        ] == [
+            (),
+            issues,
+            issues,
+            issues,
+        ]
+        mock_apply.assert_not_called()
+
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert run.outcome["apply_error"] == issues[0]
+        assert [
+            [error.message for error in iteration.errors]
+            for iteration in run.iterations
+        ] == [[issues[0]]] * 4
+
+        output = capsys.readouterr().out
+        assert output.count("validation_checks=3") == 3
+        assert output.count(f"first_issue={json.dumps(issues[0])}") == 3
 
     def test_encode_rejects_incompatible_escalation_model_before_generation(
         self, tmp_path
@@ -41751,6 +41833,88 @@ rules:
         assert supplemental == {}
         assert [path.name for path in validated_paths] == ["C.yaml", "2.yaml"]
         assert pipeline_source_metadata == [target_source_metadata, None, None]
+
+    def test_apply_overlay_validation_collects_all_validator_issues_stably(
+        self, tmp_path
+    ):
+        from axiom_encode.harness.validator_pipeline import (
+            PipelineResult,
+            ValidationResult,
+        )
+
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        policy_repo.mkdir(parents=True)
+        generated = (
+            output_root
+            / "codex-test-model"
+            / "statutes"
+            / "26"
+            / "1"
+            / "j"
+            / "2.yaml"
+        )
+        generated.parent.mkdir(parents=True)
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+        )
+        issues = (
+            "Ungrounded generated numeric literal: 12 requires source grounding.",
+            "Missing branch companion test for subsection (b).",
+            "Imprecise deferral for subsection (c).",
+        )
+        validation = PipelineResult(
+            results={
+                "ci": ValidationResult(
+                    validator_name="ci",
+                    passed=False,
+                    issues=[issues[0], issues[1], issues[0], issues[2]],
+                    error=issues[0],
+                )
+            },
+            total_duration_ms=0,
+            all_passed=False,
+        )
+
+        def fail_overlay_target(
+            _pipeline,
+            *,
+            dependent_pipeline,
+            overlay_target,
+            dependents,
+        ):
+            del dependent_pipeline
+            assert dependents == []
+            return [(overlay_target, validation)]
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline"),
+            patch(
+                "axiom_encode.cli._validate_overlay_files",
+                side_effect=fail_overlay_target,
+            ),
+            patch("axiom_encode.cli._APPLY_OVERLAY_VALIDATION_REPAIR_LIMIT", 0),
+        ):
+            ok, collected, supplemental = (
+                _validate_generated_encoding_in_policy_overlay(
+                    result,
+                    output_root=output_root,
+                    policy_repo_path=policy_repo,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    local_corpus_release=_bind_test_corpus_release(
+                        policy_repo,
+                        tmp_path / "axiom-corpus",
+                    ),
+                )
+            )
+
+        prefix = "statutes/26/1/j/2.yaml: ci: "
+        assert ok is False
+        assert collected == [f"{prefix}{issue}" for issue in issues]
+        assert supplemental == {}
 
     @pytest.mark.parametrize(
         (

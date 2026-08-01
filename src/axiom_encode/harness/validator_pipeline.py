@@ -26418,7 +26418,7 @@ class ValidatorPipeline:
                                 cases=payload,
                             )
                         )
-        elif not issues and not self._is_nonassertable_rulespec_artifact(rules_file):
+        elif not self._is_nonassertable_rulespec_artifact(rules_file):
             issues.append("No tests found.")
 
         issues.extend(
