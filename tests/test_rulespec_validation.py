@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1423"')
+        .startswith('__version__ = "0.2.1424"')
     )
 
 
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1423"
+    assert encoder_package["version"] == "0.2.1424"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1423"
+    assert project["project"]["version"] == "0.2.1424"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1423"')
+        .startswith('__version__ = "0.2.1424"')
     )
 
 
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1423"
+    assert encoder_package["version"] == "0.2.1424"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1423"
+    assert project["project"]["version"] == "0.2.1424"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1423"')
+        .startswith('__version__ = "0.2.1424"')
     )
 
 
@@ -10137,17 +10137,18 @@ def test_de_numeric_profile_reads_german_lexical_denominators(
         expected,
         reciprocal,
     }
-    assert extract_numeric_occurrences_from_text(
-        source_text,
-        profile="de-DE",
-    ) == [expected]
+    assert (
+        extract_numeric_occurrences_from_text(
+            source_text,
+            profile="de-DE",
+        )
+        == []
+    )
     inventory = extract_typed_numeric_inventory_occurrences_from_text(
         source_text,
         profile="de-DE",
     )
-    assert len(inventory) == 1
-    assert inventory[0].is_word_number
-    assert inventory[0].alternative_values == (reciprocal,)
+    assert inventory == []
 
 
 @pytest.mark.parametrize(
@@ -10155,7 +10156,6 @@ def test_de_numeric_profile_reads_german_lexical_denominators(
         "source_text",
         "expected_primary",
         "expected_alternative",
-        "expected_inventory_count",
     ),
     (
         # Exact released wave-2 corpus bytes from the cited bodies.
@@ -10163,29 +10163,25 @@ def test_de_numeric_profile_reads_german_lexical_denominators(
             "für die Hälfte ihres gemeinsam zu versteuernden Einkommens",
             0.5,
             2.0,
-            0,
         ),
-        ("ein Fünftel der monatlichen Bezugsgröße", 5.0, 0.2, 1),
-        ("abzüglich eines Zwölftels des Kinderfreibetrags", 12.0, 1 / 12, 1),
+        ("ein Fünftel der monatlichen Bezugsgröße", 5.0, 0.2),
+        ("abzüglich eines Zwölftels des Kinderfreibetrags", 12.0, 1 / 12),
         (
             "von einem Dreihundertsechzigstel der Beitragsbemessungsgrenze",
             360.0,
             1 / 360,
-            1,
         ),
         (
             "ein Zehntausendstel des den Grundfreibetrag übersteigenden Teils",
             10000,
             0.0001,
-            1,
         ),
     ),
 )
-def test_de_word_fraction_candidates_do_not_duplicate_recall_obligation(
+def test_de_word_fraction_candidates_are_grounding_only(
     source_text,
     expected_primary,
     expected_alternative,
-    expected_inventory_count,
 ):
     grounding = extract_typed_numeric_occurrences_from_text(
         source_text,
@@ -10201,10 +10197,7 @@ def test_de_word_fraction_candidates_do_not_duplicate_recall_obligation(
         expected_primary,
         expected_alternative,
     ]
-    assert len(inventory) == expected_inventory_count
-    if inventory:
-        assert inventory[0].value == expected_primary
-        assert inventory[0].alternative_values == (expected_alternative,)
+    assert inventory == []
     assert numeric_value_is_grounded(expected_primary, grounding)
     assert numeric_value_is_grounded(expected_alternative, grounding)
 

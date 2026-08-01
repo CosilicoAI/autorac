@@ -37,6 +37,16 @@ on:
         required: false
         type: boolean
         default: false
+      initial-model:
+        description: "Optional allowlisted initial generation model."
+        required: false
+        type: string
+        default: ""
+      escalate-after:
+        description: "Optional generation attempt count before escalation (1-99)."
+        required: false
+        type: string
+        default: ""
     secrets:
       openai-api-key:
         description: "OpenAI model credential, explicitly passed by the caller."
@@ -312,6 +322,8 @@ jobs:
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets['apply-signing-key'] }}
           OPENAI_API_KEY: ${{ secrets['openai-api-key'] }}
           CITATION: ${{ matrix.item.citation }}
+          INITIAL_MODEL: ${{ inputs['initial-model'] }}
+          ESCALATE_AFTER: ${{ inputs['escalate-after'] }}
         run: |
           set -euo pipefail
           # Builtin read/conditionals + pure assignment only — no subprocess is
@@ -341,6 +353,27 @@ jobs:
             --db "$RUNNER_TEMP/enc.db"
           if [[ "$require_complete_source_unit" == true ]]; then
             set -- "$@" --require-complete-source-unit
+          fi
+          case "$INITIAL_MODEL" in
+            "")
+              ;;
+            gpt-5.6-terra)
+              set -- "$@" --model gpt-5.6-terra
+              ;;
+            gpt-5.6-sol)
+              set -- "$@" --model gpt-5.6-sol
+              ;;
+            *)
+              printf 'invalid initial-model: expected gpt-5.6-terra or gpt-5.6-sol\n' >&2
+              exit 1
+              ;;
+          esac
+          if [[ -n "$ESCALATE_AFTER" ]]; then
+            if [[ ! "$ESCALATE_AFTER" =~ ^[1-9][0-9]?$ ]]; then
+              printf 'invalid escalate-after: expected an integer from 1 through 99\n' >&2
+              exit 1
+            fi
+            set -- "$@" --escalate-after "$ESCALATE_AFTER"
           fi
           exec "$@"
 

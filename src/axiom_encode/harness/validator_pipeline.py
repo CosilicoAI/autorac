@@ -6417,7 +6417,7 @@ def _german_word_number_occurrences(
     view: _NumericTextView,
     collector: _LegacyNumericCollector,
 ) -> tuple[list[NumericOccurrence], list[NumericOccurrence]]:
-    """Extract German word-number candidates and one recall item per phrase."""
+    """Extract German word-number grounding candidates."""
 
     grounding: list[NumericOccurrence] = []
     inventory: list[NumericOccurrence] = []
@@ -6459,8 +6459,10 @@ def _german_word_number_occurrences(
             else (denominator_occurrence, reciprocal_occurrence)
         )
         grounding.extend(alternatives)
-        # Complete-source recall treats the two readings as alternatives for one
-        # lexical occurrence rather than demanding two named scalar definitions.
+        # Keep one lexical candidate for the shared inventory projection.
+        # `_scalar_recall_numeric_inventory` removes word-number candidates:
+        # their numeric readings ground formula literals but do not independently
+        # require named scalar definitions.
         if include_in_inventory:
             inventory.append(alternatives[0])
 
@@ -6528,7 +6530,9 @@ def _scalar_recall_numeric_inventory(
     return tuple(
         occurrence
         for occurrence in occurrences
-        if not occurrence.has_temporal_context and not occurrence.has_structural_context
+        if not occurrence.is_word_number
+        and not occurrence.has_temporal_context
+        and not occurrence.has_structural_context
     )
 
 
