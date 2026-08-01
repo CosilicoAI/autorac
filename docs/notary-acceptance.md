@@ -34,7 +34,7 @@ but never required for admission and never executed by the notary.
 Generation and correction history remain first-class records — retained,
 content-addressed, eventually witnessed (receipt#7) — but they are **lineage,
 not authority**. No model call runs on the canonical CI path, and no model
-credential enters CI.
+credential enters authority CI.
 
 ## 2. Records
 
@@ -79,9 +79,9 @@ from later intervention.
 A correction event's `from_sha256` MUST reference content attested by a
 generation event or a prior correction in the same chain. Content that never
 matched any attested record (the rulespec-us#1087 class) CANNOT be granted
-lineage retroactively by a correction event — it simply has no lineage, is
-marked as such, and its admission rests entirely on the notary's verification
-like any other bytes. Lineage is honest-or-absent, never reconstructed.
+lineage retroactively by a correction event — it simply has no lineage,
+recorded as `"lineage": "absent"` in the receipt's advisory evidence, and its
+admission rests entirely on the notary's verification like any other bytes. Lineage is honest-or-absent, never reconstructed.
 
 ### 2.3 Notary receipt (authorizing)
 
@@ -105,8 +105,15 @@ Verification receipt (`axiom/notary-verification-receipt/v0`, content-addressed)
   dispositions (verified / deleted / out-of-scope). **`whole-repo` mode is a
   backfill instrument, not a change-authorizing one**: it verifies the entire
   protected content of `subject_tree` (no base; `base_commit` null and
-  explicit), MUST still run the authority preflight as a whole-tree scan
-  (symlink, executable-mode, and authority-surface anomalies fail closed),
+  explicit), MUST still run the authority preflight as a whole-tree scan that fails
+  closed on STRUCTURAL anomalies — symlinks and non-regular or privileged
+  file modes within protected content trees. Authority-surface files that
+  legitimately exist in any repository (workflows, actions, CODEOWNERS,
+  `.gitattributes`, encoding manifests at any root) are NOT anomalies in this
+  mode: they are part of the byte-exact `subject_tree` the receipt binds and
+  MUST be inventoried in the receipt; the backfill receipt's
+  never-diff-authorizing rule (§5) is what prevents their misuse, not their
+  absence,
   and a whole-repo receipt is valid downstream ONLY for establishing epoch
   coverage of exactly `subject_tree` — it NEVER authorizes a diff against
   any prior base (§5).
@@ -267,8 +274,10 @@ on the current enumeration would silently under-count coverage by ~80% there.
    directories — and MUST classify by schema: v1 records are lineage-only
    (they establish no pre-epoch coverage; repos whose committed corpus is
    entirely v1, like rulespec-us, have no v5-covered content to preserve and
-   migrate via whole-repo backfill receipts alone). The #1282
-   every-manifest-matches-its-file invariant applies in both eras; its
+   migrate via whole-repo backfill receipts alone). BOTH #1282
+   invariants apply in both eras — every attestation matches its file, AND at
+   most one live manifest exists per rule path (matching alone cannot
+   establish uniqueness; two identical live manifests both match); its
    unsigned supersession ledger is a disclosure layer that drains to empty as
    lanes re-notarize, and is retired at cutover.
 2. Per-repo enforcement epoch recorded in protected configuration. After the
@@ -288,8 +297,8 @@ on the current enumeration would silently under-count coverage by ~80% there.
 - A verifier soundness bug deterministically accepts wrong law → mitigations:
   strict profile breadth, oracle execution, golden-regeneration drift QA
   (retained unchanged as the distributional check), shrink-only waivers.
-- Candidate-weakened tests → preflight authority-surface rejection + reviewer
-  gate + oracle independence.
+- Candidate-weakened tests → preflight authority-surface rejection + the
+  required-reviewer approval gate on Job 2 + oracle independence.
 - Verifier compromise must not become signing capability → the Job 1/Job 2
   capability split is load-bearing; a combined job is a rejected
   implementation.
