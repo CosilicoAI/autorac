@@ -722,8 +722,16 @@ def jurisdiction_subdir_names(
     }
 
 
-def atomic_rulespec_module_paths(checkout: Path) -> tuple[Path, ...]:
-    """Strictly inspect a country checkout and return its atomic modules."""
+def atomic_rulespec_module_paths(
+    checkout: Path,
+    *,
+    allow_symlinks_outside_atomic_roots: bool = False,
+) -> tuple[Path, ...]:
+    """Strictly inspect a country checkout and return its atomic modules.
+
+    The opt-in permits symlinks only where they cannot name jurisdiction or
+    atomic-module content; the default retains the stricter shared CLI contract.
+    """
 
     checkout = Path(checkout).resolve()
     inspection = inspect_canonical_rulespec_checkout(
@@ -750,7 +758,12 @@ def atomic_rulespec_module_paths(checkout: Path) -> tuple[Path, ...]:
     jurisdiction_pattern = re.compile(rf"{re.escape(country)}(?:-[a-z0-9]+)*")
     modules: list[Path] = []
     for content_root in sorted(checkout.iterdir()):
+        is_jurisdiction = (
+            jurisdiction_pattern.fullmatch(content_root.name) is not None
+        )
         if content_root.is_symlink():
+            if allow_symlinks_outside_atomic_roots and not is_jurisdiction:
+                continue
             raise ValueError(
                 f"RuleSpec checkout content must not contain symlinks: {content_root}"
             )
@@ -760,7 +773,7 @@ def atomic_rulespec_module_paths(checkout: Path) -> tuple[Path, ...]:
             if (content_root / root_name).exists()
             or (content_root / root_name).is_symlink()
         ]
-        if jurisdiction_pattern.fullmatch(content_root.name) is None:
+        if not is_jurisdiction:
             if root_markers:
                 raise ValueError(
                     "RuleSpec content roots must be under a matching direct "
@@ -775,13 +788,19 @@ def atomic_rulespec_module_paths(checkout: Path) -> tuple[Path, ...]:
         if canonical_rulespec_root_identity(content_root) is None:
             raise ValueError(f"Noncanonical RuleSpec jurisdiction root: {content_root}")
         for candidate in sorted(content_root.rglob("*")):
+            relative = candidate.relative_to(content_root)
             if candidate.is_symlink():
+                if (
+                    allow_symlinks_outside_atomic_roots
+                    and relative.parts
+                    and relative.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS
+                ):
+                    continue
                 raise ValueError(
                     f"RuleSpec content must not contain symlinks: {candidate}"
                 )
             if not candidate.is_file():
                 continue
-            relative = candidate.relative_to(content_root)
             yaml_like = candidate.suffix.lower() in {".yaml", ".yml"}
             if yaml_like and candidate.suffix != RULESPEC_FILE_SUFFIX:
                 raise ValueError(

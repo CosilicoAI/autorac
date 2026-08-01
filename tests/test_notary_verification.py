@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import zlib
@@ -1178,6 +1179,8 @@ def test_diff_mode_rejects_distinct_ancestor_with_identical_tree(
         Path(".github/workflows/notary.yml"),
         Path(".github/actions/notary/action.yml"),
         Path(".github/scripts/notary.py"),
+        Path("us/.axiom/encoding-manifests/notary.json"),
+        Path("us/ca/.axiom/encoding-manifests/notary.json"),
     ],
 )
 def test_authority_surface_matcher_rejects_recognized_paths(relative: Path):
@@ -1200,6 +1203,8 @@ def test_authority_surface_matcher_rejects_recognized_paths(relative: Path):
         Path(".github/nested/.gitignore"),
         Path(".axiom/.gitignore"),
         Path(".axiom/nested/.gitignore"),
+        Path("us/.axiom/.gitignore"),
+        Path("us/axioms/foo.yaml"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
         Path("nested/.gitmodules"),
@@ -1252,6 +1257,8 @@ def test_gitignore_matcher_still_rejects_privileged_modes(
         Path(".github/workflows/notary.yml"),
         Path(".github/actions/notary/action.yml"),
         Path(".github/scripts/notary.py"),
+        Path("us/.axiom/encoding-manifests/notary.json"),
+        Path("us/ca/.axiom/encoding-manifests/notary.json"),
         Path("docs/CODEOWNERS"),
         Path("docs/config/.gitattributes"),
         Path("known-validation-gaps.yaml"),
@@ -1309,6 +1316,8 @@ def test_diff_mode_records_non_authority_matcher_controls_as_out_of_scope(
         Path(".github/nested/.gitignore"),
         Path(".axiom/.gitignore"),
         Path(".axiom/nested/.gitignore"),
+        Path("us/.axiom/.gitignore"),
+        Path("us/axioms/foo.txt"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
         Path("nested/.gitmodules"),
@@ -1339,6 +1348,43 @@ def test_diff_mode_records_non_authority_matcher_controls_as_out_of_scope(
     }
     for relative in allowed_paths:
         assert dispositions[relative.as_posix()] == "out-of-scope"
+
+
+def test_axioms_component_is_not_authority_in_diff_or_whole_repo_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    control = fixture.policy_root / "us/axioms/foo.yaml"
+    control.parent.mkdir(parents=True)
+    control.write_text("# matcher control\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, "add axioms matcher control")
+    policy_git = notary_module._require_clean_git_checkout(
+        fixture.policy_root,
+        label="RuleSpec checkout",
+    )
+
+    diff_targets = notary_module._diff_target_set(
+        policy_git,
+        base_commit=fixture.base_commit,
+    )
+    control_target = next(
+        target
+        for target in diff_targets.files
+        if target.relative.as_posix() == "us/axioms/foo.yaml"
+    )
+    assert control_target.disposition == "out-of-scope"
+
+    monkeypatch.setattr(
+        notary_module,
+        "atomic_rulespec_module_paths",
+        lambda _checkout, **_kwargs: (fixture.module,),
+    )
+    whole_targets = notary_module._whole_repo_target_set(policy_git)
+    assert all(
+        relative.as_posix() != "us/axioms/foo.yaml"
+        for relative in whole_targets.authority_surfaces
+    )
 
 
 @pytest.mark.parametrize(
@@ -2695,6 +2741,52 @@ def test_late_same_content_checkout_swap_cannot_receive_receipt(
     assert _git(fixture.policy_root, "status", "--porcelain").stdout == ""
 
 
+def test_failed_prepublication_cleanup_warns_and_preserves_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    receipt_out = tmp_path / "unpublished-notary-receipt.json"
+    receipt = attach_receipt_sha256({"schema_id": "cleanup-warning-test"})
+    token = "0" * 32
+    temporary_name = f".{receipt_out.name}.{token}"
+    checks = 0
+
+    def fail_first_publication_check() -> None:
+        nonlocal checks
+        checks += 1
+        raise NotaryVerificationError("injected prepublication failure")
+
+    original_unlink = notary_module.os.unlink
+
+    def fail_unpublished_unlink(path, *args, **kwargs):
+        if path == temporary_name and kwargs.get("dir_fd") is not None:
+            raise OSError("injected temporary-receipt cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(notary_module.secrets, "token_hex", lambda _size: token)
+    monkeypatch.setattr(notary_module.os, "unlink", fail_unpublished_unlink)
+
+    with pytest.raises(
+        NotaryVerificationError,
+        match="injected prepublication failure",
+    ):
+        notary_module._write_receipt(
+            receipt_out,
+            receipt,
+            protected_identities=(),
+            publication_check=fail_first_publication_check,
+        )
+
+    assert checks == 1
+    assert not receipt_out.exists()
+    assert (tmp_path / temporary_name).read_bytes() == canonical_receipt_bytes(receipt)
+    assert (
+        "notary-verify: warning: failed to remove rejected temporary receipt"
+        in capsys.readouterr().err
+    )
+
+
 def test_failed_post_publication_cleanup_warns_and_preserves_primary_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2900,19 +2992,38 @@ def test_compile_gate_requires_ci_recompile_evidence():
     assert _ci_compile_passed([result]) is False
 
 
-def test_whole_repo_target_set_is_explicit_and_strict(
+def test_whole_repo_inventories_real_authority_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     fixture = _write_notary_fixture(tmp_path)
+    authority_files = {
+        Path(".axiom/encoding-manifests/root.json"): "{}\n",
+        Path(".gitattributes"): "*.yaml text\n",
+        Path(".github/CODEOWNERS"): "* @AxiomNotary\n",
+        Path(".github/actions/notary/action.yml"): "name: notary\n",
+        Path(".github/actions/notary/run.sh"): "#!/bin/sh\nexit 0\n",
+        Path(".github/workflows/notary.yml"): "name: notary\n",
+        Path("CODEOWNERS"): "* @AxiomNotary\n",
+        Path("us/.axiom/encoding-manifests/jurisdiction.json"): "{}\n",
+        Path("us/ca/.axiom/encoding-manifests/state.json"): "{}\n",
+        Path("us/ca/.gitattributes"): "*.yaml text\n",
+    }
+    for relative, contents in authority_files.items():
+        target = fixture.policy_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf-8")
+    (fixture.policy_root / ".github/actions/notary/run.sh").chmod(0o755)
     for relative in (
         Path(".github/nested/.gitignore"),
         Path(".axiom/nested/.gitignore"),
+        Path("us/.axiom/.gitignore"),
+        Path("us/axioms/foo.txt"),
     ):
-        nested_gitignore = fixture.policy_root / relative
-        nested_gitignore.parent.mkdir(parents=True, exist_ok=True)
-        nested_gitignore.write_text("# not an authority surface\n", encoding="utf-8")
-    _commit_all(fixture.policy_root, "add nested ignore controls")
+        control = fixture.policy_root / relative
+        control.parent.mkdir(parents=True, exist_ok=True)
+        control.write_text("# not an authority surface\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, "add realistic authority surfaces")
 
     monkeypatch.setattr(
         "axiom_encode.harness.validator_pipeline.run_claude_code",
@@ -2943,14 +3054,131 @@ def test_whole_repo_target_set_is_explicit_and_strict(
             },
         ],
     }
+    assert result.receipt["authority_surfaces"] == [
+        {"path": ".axiom/encoding-manifests/root.json"},
+        {"path": ".axiom/toolchain.toml"},
+        {"path": ".gitattributes"},
+        {"path": ".github/CODEOWNERS"},
+        {"path": ".github/actions/notary/action.yml"},
+        {"path": ".github/actions/notary/run.sh"},
+        {"path": ".github/workflows/notary.yml"},
+        {"path": "CODEOWNERS"},
+        {"path": "known-validation-gaps.yaml"},
+        {"path": "us/.axiom/encoding-manifests/jurisdiction.json"},
+        {"path": "us/ca/.axiom/encoding-manifests/state.json"},
+        {"path": "us/ca/.gitattributes"},
+    ]
+
+
+def test_whole_repo_allows_stable_symlinks_outside_protected_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    docs = fixture.policy_root / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("repository guide\n", encoding="utf-8")
+    top_level_link = fixture.policy_root / "current-docs"
+    top_level_link.symlink_to("docs", target_is_directory=True)
+
+    jurisdiction_docs = fixture.policy_root / "us/docs"
+    jurisdiction_docs.mkdir()
+    (jurisdiction_docs / "guide.md").write_text(
+        "jurisdiction guide\n",
+        encoding="utf-8",
+    )
+    jurisdiction_link = jurisdiction_docs / "current-guide"
+    jurisdiction_link.symlink_to("guide.md")
+
+    action = fixture.policy_root / ".github/actions/delegated-action"
+    action.parent.mkdir(parents=True)
+    action.write_text("name: delegated action\n", encoding="utf-8")
+    action_link = fixture.policy_root / ".github/actions/nested/delegated-action"
+    action_link.parent.mkdir(parents=True)
+    action_link.symlink_to("../delegated-action")
+    _commit_all(fixture.policy_root, "add tracked non-content symlinks")
+
+    with pytest.raises(ValueError, match="must not contain symlinks"):
+        notary_module.atomic_rulespec_module_paths(fixture.policy_root)
+    assert fixture.module in notary_module.atomic_rulespec_module_paths(
+        fixture.policy_root,
+        allow_symlinks_outside_atomic_roots=True,
+    )
+
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        _forbidden_model_backend,
+    )
+    result = run_notary_verification(
+        policy_repo_path=fixture.policy_root,
+        corpus_path=fixture.corpus_root,
+        axiom_rules_engine_path=fixture.engine_root,
+        receipt_out=tmp_path / "whole-repo-symlink.json",
+        base_commit=None,
+        whole_repo=True,
+        allow_reduced=True,
+        now=_FIXED_NOW,
+    )
+
+    authority_paths = {
+        item["path"] for item in result.receipt["authority_surfaces"]
+    }
+    assert action_link.relative_to(fixture.policy_root).as_posix() in authority_paths
+    assert top_level_link.relative_to(fixture.policy_root).as_posix() not in authority_paths
+    assert (
+        jurisdiction_link.relative_to(fixture.policy_root).as_posix()
+        not in authority_paths
+    )
+
+    jurisdiction_root_link = fixture.policy_root / "us-ca"
+    jurisdiction_root_link.symlink_to("docs", target_is_directory=True)
+    with pytest.raises(ValueError, match="must not contain symlinks"):
+        notary_module.atomic_rulespec_module_paths(
+            fixture.policy_root,
+            allow_symlinks_outside_atomic_roots=True,
+        )
+
+
+def test_policy_content_identity_hashes_links_without_following_targets(
+    tmp_path: Path,
+):
+    policy_root = tmp_path / "rulespec-us"
+    policy_root.mkdir()
+    first_target = tmp_path / "first-external-target"
+    second_target = tmp_path / "second-external-target"
+    first_target.mkdir()
+    second_target.mkdir()
+    external_content = first_target / "payload.txt"
+    external_content.write_text("first external contents\n", encoding="utf-8")
+    (second_target / "payload.txt").write_text(
+        "second external contents\n",
+        encoding="utf-8",
+    )
+    action_link = policy_root / ".github/actions/nested/delegated-action"
+    action_link.parent.mkdir(parents=True)
+    action_link.symlink_to(first_target, target_is_directory=True)
+
+    first_identity = notary_module._policy_content_identity(policy_root)
+    assert first_identity[1] == 1
+
+    external_content.write_text("mutated external contents\n", encoding="utf-8")
+    assert notary_module._policy_content_identity(policy_root) == first_identity
+    shutil.rmtree(first_target)
+    first_target.write_text("external target is now a file\n", encoding="utf-8")
+    assert notary_module._policy_content_identity(policy_root) == first_identity
+
+    action_link.unlink()
+    action_link.symlink_to(second_target, target_is_directory=True)
+    second_identity = notary_module._policy_content_identity(policy_root)
+    assert second_identity[1] == 1
+    assert second_identity[0] != first_identity[0]
 
 
 @pytest.mark.parametrize(
     ("tree_entry_kind", "expected_reason"),
     [
-        ("workflow", "protected GitHub"),
-        ("executable", "executable changes"),
-        ("symlink", "symlink changes"),
+        ("executable", "privileged file mode"),
+        ("symlink", "symlink"),
     ],
 )
 def test_whole_repo_authority_preflight_rejects_anomalies_before_validation(
@@ -2960,18 +3188,13 @@ def test_whole_repo_authority_preflight_rejects_anomalies_before_validation(
     expected_reason: str,
 ):
     fixture = _write_notary_fixture(tmp_path)
-    if tree_entry_kind == "workflow":
-        target = fixture.policy_root / ".github/workflows/notary.yml"
-        target.parent.mkdir(parents=True)
-        target.write_text("name: untrusted\n", encoding="utf-8")
+    target = fixture.policy_root / f"us/statutes/assets/{tree_entry_kind}"
+    target.parent.mkdir(parents=True)
+    if tree_entry_kind == "executable":
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o755)
     else:
-        target = fixture.policy_root / f"candidate-tools/{tree_entry_kind}"
-        target.parent.mkdir(parents=True)
-        if tree_entry_kind == "executable":
-            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            target.chmod(0o755)
-        else:
-            target.symlink_to("../untrusted-target")
+        target.symlink_to("../untrusted-target")
     _commit_all(fixture.policy_root, f"add whole-tree {tree_entry_kind} anomaly")
     receipt_out = tmp_path / f"whole-repo-{tree_entry_kind}.json"
 
@@ -2998,6 +3221,57 @@ def test_whole_repo_authority_preflight_rejects_anomalies_before_validation(
             now=_FIXED_NOW,
         )
 
+    assert not receipt_out.exists()
+
+
+def test_whole_repo_rejects_setuid_mode_inside_protected_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = _write_notary_fixture(tmp_path)
+    target = fixture.policy_root / "us/statutes/assets/privileged-mode"
+    target.parent.mkdir(parents=True)
+    target.write_text("ordinary tracked bytes\n", encoding="utf-8")
+    _commit_all(fixture.policy_root, "add protected-tree mode fixture")
+    receipt_out = tmp_path / "whole-repo-setuid.json"
+    original_lstat = Path.lstat
+    injected_modes = 0
+
+    def lstat_with_setuid(path: Path):
+        nonlocal injected_modes
+        metadata = original_lstat(path)
+        if path == target:
+            injected_modes += 1
+            return os.stat_result(
+                (metadata.st_mode | stat.S_ISUID, *metadata[1:])
+            )
+        return metadata
+
+    class ForbiddenPipeline:
+        def __init__(self, **_kwargs):
+            raise AssertionError("setuid protected content must fail before validation")
+
+    monkeypatch.setattr(Path, "lstat", lstat_with_setuid)
+    monkeypatch.setattr(
+        "axiom_encode.notary_verification.ValidatorPipeline",
+        ForbiddenPipeline,
+    )
+    with pytest.raises(
+        NotaryVerificationError,
+        match="privileged file mode",
+    ):
+        run_notary_verification(
+            policy_repo_path=fixture.policy_root,
+            corpus_path=fixture.corpus_root,
+            axiom_rules_engine_path=fixture.engine_root,
+            receipt_out=receipt_out,
+            base_commit=None,
+            whole_repo=True,
+            allow_reduced=True,
+            now=_FIXED_NOW,
+        )
+
+    assert injected_modes > 0
     assert not receipt_out.exists()
 
 

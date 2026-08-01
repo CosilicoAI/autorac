@@ -3170,9 +3170,14 @@ def _update_tree_hash(
     hasher: Any,
     relative_path: str,
     raw: bytes,
+    *,
+    entry_kind: bytes | None = None,
 ) -> None:
     """Add one framed path/content pair to a deterministic tree digest."""
 
+    if entry_kind is not None:
+        hasher.update(len(entry_kind).to_bytes(8, "big"))
+        hasher.update(entry_kind)
     relative_bytes = relative_path.encode("utf-8")
     hasher.update(len(relative_bytes).to_bytes(8, "big"))
     hasher.update(relative_bytes)
@@ -3180,15 +3185,54 @@ def _update_tree_hash(
     hasher.update(raw)
 
 
+def _stable_symlink_target_bytes(path: Path) -> bytes:
+    """Read one symlink target without following it or accepting a race."""
+
+    try:
+        before = path.lstat()
+        if not stat.S_ISLNK(before.st_mode):
+            raise ValueError(f"Identity tree entry is not a symlink: {path}")
+        raw = os.fsencode(os.readlink(path))
+        after = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"Could not read identity symlink: {path}") from exc
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if not stat.S_ISLNK(after.st_mode) or any(
+        getattr(before, field) != getattr(after, field) for field in stable_fields
+    ):
+        raise ValueError(f"Identity symlink changed while hashing: {path}")
+    return raw
+
+
 def _deterministic_tree_identity(
     raw_root: Path,
     *,
     excluded_directory_names: frozenset[str] = frozenset(),
+    hash_symlinks: bool = False,
 ) -> dict[str, object]:
-    """Hash every regular file below a root without following symlinks."""
+    """Hash regular files and, when enabled, symlink text without following it."""
 
-    root = Path(raw_root).resolve()
-    hasher = hashlib.sha256(b"axiom-eval-tree-v1\0")
+    requested_root = Path(raw_root)
+    if hash_symlinks:
+        try:
+            requested_metadata = requested_root.lstat()
+        except FileNotFoundError:
+            requested_metadata = None
+        except OSError as exc:
+            raise ValueError(f"Could not inspect identity root: {requested_root}") from exc
+        if requested_metadata is not None and stat.S_ISLNK(requested_metadata.st_mode):
+            raise ValueError(f"Identity root must not be a symlink: {requested_root}")
+    root = requested_root.resolve()
+    hasher = hashlib.sha256(
+        b"axiom-eval-tree-v2\0" if hash_symlinks else b"axiom-eval-tree-v1\0"
+    )
     if not root.exists():
         hasher.update(b"missing")
         return {
@@ -3204,7 +3248,12 @@ def _deterministic_tree_identity(
             raw = root.read_bytes()
         except OSError as exc:
             raise ValueError(f"Could not read identity file: {root}") from exc
-        _update_tree_hash(hasher, root.name, raw)
+        _update_tree_hash(
+            hasher,
+            root.name,
+            raw,
+            entry_kind=b"file" if hash_symlinks else None,
+        )
         return {
             "path": str(root),
             "state": "file",
@@ -3218,29 +3267,53 @@ def _deterministic_tree_identity(
     for directory, directory_names, file_names in os.walk(root, followlinks=False):
         directory_path = Path(directory)
         retained_directories: list[str] = []
+        symlink_names: list[str] = []
         for name in sorted(directory_names):
             candidate = directory_path / name
             if name in excluded_directory_names:
                 continue
             if candidate.is_symlink():
-                raise ValueError(
-                    f"Identity tree must not contain directory symlinks: {candidate}"
-                )
+                if not hash_symlinks:
+                    raise ValueError(
+                        "Identity tree must not contain directory symlinks: "
+                        f"{candidate}"
+                    )
+                symlink_names.append(name)
+                continue
             retained_directories.append(name)
         directory_names[:] = retained_directories
-        for name in sorted(file_names):
+        leaf_names = (
+            sorted((*file_names, *symlink_names))
+            if hash_symlinks
+            else sorted(file_names)
+        )
+        for name in leaf_names:
             path = directory_path / name
             if path.is_symlink():
-                raise ValueError(
-                    f"Identity tree must not contain file symlinks: {path}"
+                if not hash_symlinks:
+                    raise ValueError(
+                        f"Identity tree must not contain file symlinks: {path}"
+                    )
+                _update_tree_hash(
+                    hasher,
+                    path.relative_to(root).as_posix(),
+                    _stable_symlink_target_bytes(path),
+                    entry_kind=b"link",
                 )
+                file_count += 1
+                continue
             if not path.is_file():
                 raise ValueError(f"Identity tree contains a non-regular file: {path}")
             try:
                 raw = path.read_bytes()
             except OSError as exc:
                 raise ValueError(f"Could not read identity file: {path}") from exc
-            _update_tree_hash(hasher, path.relative_to(root).as_posix(), raw)
+            _update_tree_hash(
+                hasher,
+                path.relative_to(root).as_posix(),
+                raw,
+                entry_kind=b"file" if hash_symlinks else None,
+            )
             file_count += 1
     return {
         "path": str(root),

@@ -91,15 +91,16 @@ _AUTHORITY_SURFACE_PATHS = frozenset(
         str(VALIDATION_WAIVER_SET_PATH),
     }
 )
-_WHOLE_REPO_BOUND_AUTHORITY_PATHS = frozenset(
-    {
-        ".axiom/toolchain.toml",
-        POLICYENGINE_RUNTIME_PIN_PATH.as_posix(),
-        str(VALIDATION_WAIVER_SET_PATH),
-    }
-)
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PRIVILEGED_FILE_MODE_MASK = (
+    stat.S_ISUID
+    | stat.S_ISGID
+    | stat.S_ISVTX
+    | stat.S_IXUSR
+    | stat.S_IXGRP
+    | stat.S_IXOTH
+)
 
 
 class NotaryVerificationError(RuntimeError):
@@ -146,6 +147,7 @@ class _NotaryTargetSet:
     base_commit: str | None
     files: tuple[_NotaryTargetFile, ...]
     verification_targets: tuple[PurePosixPath, ...]
+    authority_surfaces: tuple[PurePosixPath, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1006,6 +1008,7 @@ def _policy_content_identity(root: Path) -> tuple[str, int]:
     identity = _deterministic_tree_identity(
         root,
         excluded_directory_names=frozenset({".git"}),
+        hash_symlinks=True,
     )
     tree_sha256 = identity.get("tree_sha256")
     file_count = identity.get("file_count")
@@ -1187,6 +1190,23 @@ def _is_protected_rulespec_relative(relative: PurePosixPath) -> bool:
     )
 
 
+def _authority_surface_path_reason(relative: PurePosixPath) -> str | None:
+    """Return the authority class for one path, independent of its mode."""
+
+    if relative.name == ".gitignore":
+        return None
+    relative_text = relative.as_posix()
+    if ".axiom" in relative.parts:
+        return "protected verifier, trust-root, or repository configuration"
+    if relative.parts and relative.parts[0] == ".github":
+        return "protected GitHub workflow or repository configuration"
+    if relative.name == ".gitattributes":
+        return "protected per-directory Git attributes"
+    if relative_text in _AUTHORITY_SURFACE_PATHS:
+        return "protected repository or waiver-policy configuration"
+    return None
+
+
 def _authority_surface_change_reason(
     relative: PurePosixPath,
     *,
@@ -1202,18 +1222,55 @@ def _authority_surface_change_reason(
             return "symlink changes require a separately privileged flow"
         if entry.mode == "100755":
             return "executable changes require a separately privileged flow"
-    if relative.name == ".gitignore":
+    return _authority_surface_path_reason(relative)
+
+
+def _whole_repo_structural_anomaly_reason(
+    checkout: Path,
+    entry: _GitTreeEntry,
+) -> str | None:
+    """Return a protected-content structural anomaly, if one is present."""
+
+    if _protected_rulespec_root_index(entry.relative) is None:
         return None
-    relative_text = relative.as_posix()
-    if relative.parts and relative.parts[0] == ".axiom":
-        return "protected verifier, trust-root, or repository configuration"
-    if relative.parts and relative.parts[0] == ".github":
-        return "protected GitHub workflow or repository configuration"
-    if relative.name == ".gitattributes":
-        return "protected per-directory Git attributes"
-    if relative_text in _AUTHORITY_SURFACE_PATHS:
-        return "protected repository or waiver-policy configuration"
+    if entry.mode == "120000":
+        return "symlink"
+    if entry.mode != "100644":
+        return "non-regular or privileged file mode"
+    path = checkout.joinpath(*entry.relative.parts)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise NotaryVerificationError(
+            "Cannot inspect protected-content file mode: "
+            f"{entry.relative.as_posix()}"
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_mode & _PRIVILEGED_FILE_MODE_MASK
+    ):
+        return "non-regular or privileged file mode"
     return None
+
+
+def _assert_whole_repo_structural_integrity(
+    policy_git: _CleanGitIdentity,
+    *,
+    entries: Sequence[_GitTreeEntry] | None = None,
+) -> None:
+    """Fail closed on structural anomalies inside protected content trees."""
+
+    admitted_entries = (
+        entries if entries is not None else _git_tree_entries(policy_git)
+    )
+    for entry in admitted_entries:
+        reason = _whole_repo_structural_anomaly_reason(policy_git.root, entry)
+        if reason is not None:
+            raise NotaryVerificationError(
+                "Whole-repository verification refuses structural anomaly in "
+                "protected content tree "
+                f"{entry.relative.as_posix()}: {reason}"
+            )
 
 
 def _primary_relative_for_target(relative: PurePosixPath) -> PurePosixPath:
@@ -1308,23 +1365,17 @@ def _whole_repo_target_set(
 
     checkout = policy_git.root
     entries = _git_tree_entries(policy_git)
-    for entry in entries:
-        authority_reason = _authority_surface_change_reason(
-            entry.relative,
-            base_entry=None,
-            head_entry=entry,
-        )
-        is_bound_verification_input = (
-            entry.mode == "100644"
-            and entry.relative.as_posix() in _WHOLE_REPO_BOUND_AUTHORITY_PATHS
-        )
-        if authority_reason is not None and not is_bound_verification_input:
-            raise NotaryVerificationError(
-                "Whole-repository verification refuses authority-surface tree "
-                f"entry {entry.relative.as_posix()}: {authority_reason}"
-            )
+    _assert_whole_repo_structural_integrity(policy_git, entries=entries)
+    authority_surfaces = tuple(
+        entry.relative
+        for entry in entries
+        if _authority_surface_path_reason(entry.relative) is not None
+    )
     try:
-        modules = atomic_rulespec_module_paths(checkout)
+        modules = atomic_rulespec_module_paths(
+            checkout,
+            allow_symlinks_outside_atomic_roots=True,
+        )
     except ValueError as exc:
         raise NotaryVerificationError(str(exc)) from exc
     if not modules:
@@ -1359,6 +1410,7 @@ def _whole_repo_target_set(
         base_commit=None,
         files=tuple(files),
         verification_targets=tuple(sorted(verification_targets)),
+        authority_surfaces=authority_surfaces,
     )
 
 
@@ -1450,6 +1502,7 @@ def _diff_target_set(
         base_commit=base_commit,
         files=tuple(files),
         verification_targets=tuple(sorted(verification_targets)),
+        authority_surfaces=(),
     )
 
 
@@ -1853,7 +1906,10 @@ def _run_materialized_verification(
         engine_snapshot = engine_snapshot.resolve(strict=True)
 
         try:
-            checkout_modules = atomic_rulespec_module_paths(policy_root)
+            checkout_modules = atomic_rulespec_module_paths(
+                policy_root,
+                allow_symlinks_outside_atomic_roots=True,
+            )
         except ValueError as exc:
             raise NotaryVerificationError(str(exc)) from exc
         if target_relatives and not checkout_modules:
@@ -2141,6 +2197,8 @@ def run_notary_verification(
 
     def assert_verification_inputs_unchanged() -> None:
         _assert_same_clean_checkout(policy_git, label="RuleSpec checkout")
+        if target_set.mode == "whole-repo":
+            _assert_whole_repo_structural_integrity(policy_git)
         _require_tracked_rulespec_inputs(
             policy_root,
             label="RuleSpec checkout",
@@ -2257,6 +2315,11 @@ def run_notary_verification(
             "timestamp": timestamp,
         },
     }
+    if target_set.mode == "whole-repo":
+        body["authority_surfaces"] = [
+            {"path": relative.as_posix()}
+            for relative in target_set.authority_surfaces
+        ]
     receipt = attach_receipt_sha256(body)
     output_path = _assert_output_outside_verification_roots(
         output_path,
