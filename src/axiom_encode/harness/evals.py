@@ -5995,6 +5995,13 @@ def _looks_like_corpus_citation_path(identifier: str) -> bool:
         "policy",
         "regulation",
         "regulations",
+        # Federal Register instruments (proclamations, executive orders,
+        # notices) live under us/rulemaking/... in the corpus; without this
+        # token the CLI mangles such citations via citation_to_citation_path
+        # into us/statute/us/rulemaking/... and the provisions lookup fails.
+        # Validate-time source verification already resolves these paths
+        # verbatim.
+        "rulemaking",
         "statute",
         "statutes",
     }
