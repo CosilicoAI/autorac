@@ -2647,6 +2647,11 @@ def _looks_like_corpus_citation_path(identifier: str) -> bool:
         "policy",
         "regulation",
         "regulations",
+        # Lane-local T0 tariff addition: corpus stores Federal Register
+        # instruments under us/rulemaking/...; without this token the CLI
+        # mangles the citation via citation_to_citation_path into
+        # us/statute/us/rulemaking/... and the corpus lookup fails.
+        "rulemaking",
         "statute",
         "statutes",
     }
