@@ -1958,6 +1958,24 @@ def test_resolve_corpus_source_unit_accepts_form_citation_path(tmp_path):
     assert source_unit.body == "CMS Medicaid, CHIP, and BHP eligibility levels table"
 
 
+def test_resolve_corpus_source_unit_accepts_rulemaking_citation_path(tmp_path):
+    # Federal Register instruments live under us/rulemaking/...; the citation
+    # must resolve verbatim instead of being mangled through
+    # citation_to_citation_path into us/statute/us/rulemaking/...
+    citation = "us/rulemaking/fr/2026-03829"
+    corpus_release = _write_test_corpus_provision(
+        tmp_path,
+        citation_path=citation,
+        body="Termination of certain IEEPA tariff actions",
+    )
+
+    source_unit = resolve_corpus_source_unit(citation, corpus_release)
+
+    assert source_unit.citation_path == citation
+    assert source_unit.source == "local"
+    assert source_unit.body == "Termination of certain IEEPA tariff actions"
+
+
 def test_resolve_corpus_source_unit_slices_before_bracketed_sibling(tmp_path):
     corpus_release = _write_test_corpus_provision(
         tmp_path,
