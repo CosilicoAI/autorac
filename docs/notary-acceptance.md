@@ -76,6 +76,13 @@ uncorrected content in its *authority* decision — both pass the identical
 verifier — but the lineage lets auditors and drift QA distinguish model error
 from later intervention.
 
+A correction event's `from_sha256` MUST reference content attested by a
+generation event or a prior correction in the same chain. Content that never
+matched any attested record (the rulespec-us#1087 class) CANNOT be granted
+lineage retroactively by a correction event — it simply has no lineage, is
+marked as such, and its admission rests entirely on the notary's verification
+like any other bytes. Lineage is honest-or-absent, never reconstructed.
+
 ### 2.3 Notary receipt (authorizing)
 
 The only record whose signature governs merge. Two-stage: an unsigned
@@ -247,7 +254,23 @@ named, non-required check.
 
 ## 6. Migration — dual-era, per-repo epochs
 
+Findings from the #1282 audit (2026-07-31) are incorporated below: the legacy
+manifest enumeration sees only the checkout-root `.axiom/encoding-manifests`,
+while most records on large repos live under `<jurisdiction>/.axiom/…`
+(rulespec-us: 3,758 of 4,615 invisible), and every manifest on rulespec-us
+main is schema v1 — inert to the current verifier. Epoch computations built
+on the current enumeration would silently under-count coverage by ~80% there.
+
 1. Ship the dual-class verifier (v5 frozen + notary-v1) with distinct keys.
+   The legacy-coverage inventory MUST enumerate every manifest root —
+   checkout-root AND jurisdiction-tree `.axiom/encoding-manifests`
+   directories — and MUST classify by schema: v1 records are lineage-only
+   (they establish no pre-epoch coverage; repos whose committed corpus is
+   entirely v1, like rulespec-us, have no v5-covered content to preserve and
+   migrate via whole-repo backfill receipts alone). The #1282
+   every-manifest-matches-its-file invariant applies in both eras; its
+   unsigned supersession ledger is a disclosure layer that drains to empty as
+   lanes re-notarize, and is retired at cutover.
 2. Per-repo enforcement epoch recorded in protected configuration. After the
    epoch: every new/changed/deleted protected file requires notary-v1; v5
    covers only untouched pre-epoch content.
