@@ -22,6 +22,7 @@ EXACT_DEPENDENT_TOOL: Final = (
 RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
+ENCODING_MANIFEST_DIR: Final = Path(".axiom") / "encoding-manifests"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
 LEGACY_OWNER_CLASS: Final = "v1-manual-hmac-untrusted"
 

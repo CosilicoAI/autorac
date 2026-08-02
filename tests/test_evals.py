@@ -119,6 +119,10 @@ from axiom_encode.harness.validator_pipeline import (
     ValidatorPipeline,
     find_test_input_assignment_issues,
 )
+from axiom_encode.legacy_replacement import (
+    LegacyReplacementContract,
+    LegacyReplacementFile,
+)
 from axiom_encode.repo_routing import find_policy_repo_root, monorepo_checkout_name
 from axiom_encode.signing_broker import get_signing_broker
 from axiom_encode.statute import CitationParts, citation_to_relative_rulespec_path
@@ -1625,6 +1629,7 @@ def test_model_eval_passes_single_target_output_override(tmp_path):
         citation_path="us-nc/statute/105/105-153.7",
     )
     target = Path("policies/income_tax/pilot_liability_pipeline.yaml")
+    legacy_replacement = Mock(spec=LegacyReplacementContract)
     result = Mock(name="result")
 
     with (
@@ -1645,10 +1650,12 @@ def test_model_eval_passes_single_target_output_override(tmp_path):
             runtime_axiom_rules_path=tmp_path / "engine",
             corpus_release=corpus_release,
             target_relative_output=target,
+            legacy_replacement=legacy_replacement,
         )
 
     assert actual == [result]
     assert mock_run.call_args.kwargs["target_relative_output"] == target
+    assert mock_run.call_args.kwargs["legacy_replacement"] is legacy_replacement
 
 
 def test_model_eval_rejects_target_override_for_multiple_citations(tmp_path):
@@ -4316,6 +4323,158 @@ def test_rulespec_validation_overlay_does_not_copy_ambient_source_metadata(tmp_p
         validation_root = find_policy_repo_root(validation_file)
         assert validation_root is not None
         assert not (validation_root.parent.parent / "_eval_workspaces").exists()
+
+
+def _unicode_path_replacement_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, LegacyReplacementContract]:
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    checkout = policy_repo.parent
+    source = Path("us/statutes/42/1437c–1.yaml")
+    destination = Path("us/statutes/42/1437c-1.yaml")
+    source_file = checkout / source
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_raw = b"format: rulespec/v1\nrules: []\n"
+    source_file.write_bytes(source_raw)
+    companion = source.with_name(f"{source.stem}.test.yaml")
+    companion_file = checkout / companion
+    companion_raw = b"cases: []\n"
+    companion_file.write_bytes(companion_raw)
+    manifest = Path(".axiom/encoding-manifests") / source.with_suffix(".json")
+    manifest_file = checkout / manifest
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    manifest_raw = b'{"schema_version":"axiom-encode/applied-rulespec/v1"}\n'
+    manifest_file.write_bytes(manifest_raw)
+
+    def bound_file(path: Path, raw: bytes) -> LegacyReplacementFile:
+        return LegacyReplacementFile(path, hashlib.sha256(raw).hexdigest(), raw)
+
+    contract = LegacyReplacementContract(
+        base_commit="1" * 40,
+        base_tree="2" * 40,
+        source=source,
+        destination=destination,
+        legacy_manifest=bound_file(manifest, manifest_raw),
+        deleted_files=(
+            bound_file(source, source_raw),
+            bound_file(companion, companion_raw),
+        ),
+        rewrites=(),
+        scheduled_dependents=(),
+        exact_dependents=(),
+    )
+    generated = tmp_path / "out" / "openai" / "statutes" / "42" / destination.name
+    generated.parent.mkdir(parents=True)
+    generated.write_text("format: rulespec/v1\nrules: []\n")
+    return policy_repo, generated, contract
+
+
+def test_rulespec_prevalidation_stages_authenticated_unicode_path_replacement(
+    tmp_path,
+):
+    policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+
+    with _rulespec_validation_target(
+        generated,
+        policy_repo,
+        legacy_replacement=contract,
+    ) as validation_file:
+        checkout = validation_file.parents[3]
+        assert validation_file.read_text() == "format: rulespec/v1\nrules: []\n"
+        assert not (checkout / contract.source).exists()
+        assert not (checkout / contract.legacy_manifest.path).exists()
+        assert all(
+            part.isascii() for path in checkout.rglob("*") for part in path.parts
+        )
+
+
+def test_rulespec_prevalidation_rejects_changed_legacy_replacement_input(tmp_path):
+    policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+    (policy_repo.parent / contract.source).write_text("changed\n")
+
+    with pytest.raises(ValueError, match="overlay input changed"):
+        with _rulespec_validation_target(
+            generated,
+            policy_repo,
+            legacy_replacement=contract,
+        ):
+            pass
+
+
+@pytest.mark.parametrize("collision", ["primary", "companion", "manifest"])
+def test_rulespec_prevalidation_rejects_replacement_destination_collision(
+    tmp_path,
+    collision,
+):
+    policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+    checkout = policy_repo.parent
+    targets = {
+        "primary": checkout / contract.destination,
+        "companion": checkout
+        / contract.destination.with_name(f"{contract.destination.stem}.test.yaml"),
+        "manifest": checkout
+        / (Path(".axiom/encoding-manifests") / contract.destination).with_suffix(
+            ".json"
+        ),
+    }
+    targets[collision].parent.mkdir(parents=True, exist_ok=True)
+    targets[collision].write_text("collision\n")
+
+    with pytest.raises(ValueError, match="destination.*collision"):
+        with _rulespec_validation_target(
+            generated,
+            policy_repo,
+            legacy_replacement=contract,
+        ):
+            pass
+
+
+def test_rulespec_prevalidation_rejects_live_checkout_artifact(tmp_path):
+    policy_repo, _generated, contract = _unicode_path_replacement_fixture(tmp_path)
+
+    with pytest.raises(ValueError, match="separately generated artifact"):
+        with _rulespec_validation_target(
+            policy_repo / Path(*contract.source.parts[1:]),
+            policy_repo,
+            legacy_replacement=contract,
+        ):
+            pass
+
+
+def test_evaluate_artifact_uses_post_replacement_tree_for_first_compile(tmp_path):
+    policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+    observed = []
+
+    def reject_non_ascii_checkout(_pipeline, validation_file):
+        checkout = validation_file.parents[3]
+        unsafe = [
+            path
+            for path in checkout.rglob("*")
+            if any(not part.isascii() for part in path.relative_to(checkout).parts)
+        ]
+        observed.append((validation_file, unsafe))
+        return ValidationResult("hard-cut", passed=not unsafe)
+
+    with (
+        patch.object(
+            ValidatorPipeline, "_run_compile_check", reject_non_ascii_checkout
+        ),
+        patch.object(ValidatorPipeline, "_run_ci", reject_non_ascii_checkout),
+    ):
+        metrics = evaluate_artifact(
+            local_corpus_release=_write_test_corpus_provision(tmp_path / "release"),
+            rulespec_file=generated,
+            policy_repo_root=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            source_text="No numeric values.",
+            skip_reviewers=True,
+            legacy_replacement=contract,
+        )
+
+    assert metrics.compile_pass is True
+    assert metrics.ci_pass is True
+    assert len(observed) == 2
+    assert all(not unsafe for _path, unsafe in observed)
 
 
 @pytest.mark.parametrize("indirection", ["file", "directory"])

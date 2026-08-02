@@ -300,6 +300,12 @@ from .legacy_replacement import (
     legacy_source_verification_citation_paths as _legacy_source_verification_citation_paths,
 )
 from .legacy_replacement import receipt_identity_payload, receipt_identity_sha256
+from .legacy_replacement_overlay import (
+    LegacyReplacementOverlayError as _LegacyReplacementOverlayError,
+)
+from .legacy_replacement_overlay import (
+    stage_legacy_replacement_overlay as _stage_legacy_replacement_overlay,
+)
 from .oracles.policyengine.pending import (
     PendingDeclarationError,
     apply_pending_to_report,
@@ -25011,6 +25017,11 @@ def _run_encode_attempt(
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
         required_import_targets=required_import_targets,
+        legacy_replacement=(
+            replacement_target.legacy_replacement
+            if replacement_target is not None
+            else None
+        ),
     )
 
     result = results[0]
@@ -48575,90 +48586,13 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     [f"{relative_output}: {issue}" for issue in preservation_issues],
                     {},
                 )
-            for deleted in legacy_replacement.deleted_files:
-                old_overlay = overlay_repo / deleted.path
-                if old_overlay.is_symlink() or not old_overlay.is_file():
-                    return (
-                        False,
-                        [
-                            f"Legacy replacement overlay input changed: "
-                            f"{deleted.path.as_posix()}"
-                        ],
-                        {},
-                    )
-                if (
-                    hashlib.sha256(old_overlay.read_bytes()).hexdigest()
-                    != deleted.sha256
-                ):
-                    return (
-                        False,
-                        [
-                            f"Legacy replacement overlay input changed: "
-                            f"{deleted.path.as_posix()}"
-                        ],
-                        {},
-                    )
-                old_overlay.unlink()
-            old_manifest_overlay = (
-                overlay_repo / legacy_replacement.legacy_manifest.path
-            )
-            if (
-                old_manifest_overlay.is_symlink()
-                or not old_manifest_overlay.is_file()
-                or hashlib.sha256(old_manifest_overlay.read_bytes()).hexdigest()
-                != legacy_replacement.legacy_manifest.sha256
-            ):
-                return (
-                    False,
-                    ["Legacy replacement ownership manifest changed in overlay"],
-                    {},
+            try:
+                _stage_legacy_replacement_overlay(
+                    legacy_replacement,
+                    overlay_repo,
                 )
-            old_manifest_overlay.unlink()
-            for rewrite in legacy_replacement.rewrites:
-                rewrite_target = overlay_repo / rewrite.path
-                if rewrite_target.is_symlink() or not rewrite_target.is_file():
-                    return (
-                        False,
-                        [
-                            f"Legacy replacement rewrite input changed: "
-                            f"{rewrite.path.as_posix()}"
-                        ],
-                        {},
-                    )
-                if (
-                    hashlib.sha256(rewrite_target.read_bytes()).hexdigest()
-                    != rewrite.before_sha256
-                ):
-                    return (
-                        False,
-                        [
-                            f"Legacy replacement rewrite input changed: "
-                            f"{rewrite.path.as_posix()}"
-                        ],
-                        {},
-                    )
-                rewrite_target.write_bytes(rewrite.raw)
-            for dependent in legacy_replacement.exact_dependents:
-                legacy_by_path = {item.path: item for item in dependent.legacy_files}
-                for live_file in dependent.live_files:
-                    legacy_file = legacy_by_path.get(live_file.path)
-                    exact_target = overlay_repo / live_file.path
-                    if (
-                        legacy_file is None
-                        or exact_target.is_symlink()
-                        or not exact_target.is_file()
-                        or hashlib.sha256(exact_target.read_bytes()).hexdigest()
-                        != legacy_file.sha256
-                    ):
-                        return (
-                            False,
-                            [
-                                "Legacy exact dependent overlay input changed: "
-                                f"{live_file.path.as_posix()}"
-                            ],
-                            {},
-                        )
-                    exact_target.write_bytes(live_file.raw)
+            except _LegacyReplacementOverlayError as exc:
+                return False, [str(exc)], {}
             shutil.copy2(output_file, overlay_target)
             if output_test.exists():
                 shutil.copy2(output_test, _rulespec_test_path(overlay_target))
