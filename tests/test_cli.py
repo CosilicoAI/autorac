@@ -34,6 +34,7 @@ from axiom_encode import __version__ as AXIOM_ENCODE_TEST_VERSION
 from axiom_encode.cli import (
     _APPLY_TRANSACTION_SCHEMA,
     _APPLY_VALIDATION_SNAPSHOT_ATTR,
+    _REPLACEMENT_OVERLAY_SCOPE_ATTR,
     APPLIED_ENCODING_MANIFEST_SCHEMA,
     APPLIED_ENCODING_MODEL_TOOL,
     APPLIED_ENCODING_OFFICIAL_REPOSITORY,
@@ -12670,6 +12671,7 @@ class TestCmdEncode:
         result.output_file = str(generated)
         result.generation_prompt_sha256 = "prompt-sha"
         result._axiom_legacy_replacement_contract = None
+        setattr(result, _REPLACEMENT_OVERLAY_SCOPE_ATTR, True)
         result.trace_file = str(tmp_path / "trace.json")
         Path(result.trace_file).write_text("{}\n")
         source_unit = resolve_corpus_source_unit(
@@ -13040,6 +13042,7 @@ class TestCmdEncode:
         assert mock_run.call_args.kwargs["target_relative_output"] == (
             Path("policies/income_tax/pilot_liability_pipeline.yaml")
         )
+        assert mock_run.call_args.kwargs["replacement_overlay_scope"] is True
         assert mock_run.call_args.kwargs["extra_context_paths"] == [
             target,
             companion,
@@ -13461,6 +13464,10 @@ class TestCmdEncode:
             "repository": ("github.com/TheAxiomFoundation/axiom-rules-engine"),
             "commit": "e" * 40,
         }
+        assert payload["validation_execution"]["schema"] == (
+            "axiom-encode/apply-validation-execution/v2"
+        )
+        assert payload["validation_execution"]["rulespec_scope"] == "full_checkout"
         assert (
             payload["validation_execution"]["policy_pre_apply"]["rulespec_root"]
             == "rulespec-us/us-ny"
@@ -13648,6 +13655,13 @@ class TestCmdEncode:
         }
         receipt = json.loads(
             (checkout / outer["replacement"]["receipt_path"]).read_text()
+        )
+        replacement_execution = receipt["replacement_manifest"]["validation_execution"]
+        assert replacement_execution["schema"] == (
+            "axiom-encode/apply-validation-execution/v2"
+        )
+        assert replacement_execution["rulespec_scope"] == (
+            "active_jurisdiction_and_country_ancestors"
         )
         assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
         assert receipt["replacement"]["source"] == checkout_relative.as_posix()
@@ -36366,6 +36380,9 @@ class TestGuardGenerated:
                 ],
             }
         )
+        assert manifest_payload["validation_execution"]["schema"] == (
+            "axiom-encode/apply-validation-execution/v1"
+        )
         manifest.write_text(json.dumps(manifest_payload) + "\n")
 
         with patch.dict(
@@ -36822,6 +36839,26 @@ rules: []
                 "malformed_engine_commit",
                 "validation_execution.axiom_rules_engine.commit is invalid",
             ),
+            (
+                "missing_v2_scope",
+                "validation_execution has noncanonical fields",
+            ),
+            (
+                "invalid_v2_scope",
+                "validation_execution.rulespec_scope is invalid",
+            ),
+            (
+                "object_v2_scope",
+                "validation_execution.rulespec_scope is invalid",
+            ),
+            (
+                "array_v2_scope",
+                "validation_execution.rulespec_scope is invalid",
+            ),
+            (
+                "extra_v2_scope_field",
+                "validation_execution has noncanonical fields",
+            ),
         ],
     )
     def test_rejects_model_manifest_without_canonical_validation_execution(
@@ -36863,10 +36900,34 @@ rules: []
             manifest_payload["validation_execution"]["axiom_rules_engine"][
                 "repository"
             ] = "github.com/attacker/axiom-rules-engine"
-        else:
+        elif mutation == "malformed_engine_commit":
             manifest_payload["validation_execution"]["axiom_rules_engine"]["commit"] = (
                 "ABC123"
             )
+        elif mutation == "missing_v2_scope":
+            manifest_payload["validation_execution"]["schema"] = (
+                "axiom-encode/apply-validation-execution/v2"
+            )
+        elif mutation == "invalid_v2_scope":
+            manifest_payload["validation_execution"]["schema"] = (
+                "axiom-encode/apply-validation-execution/v2"
+            )
+            manifest_payload["validation_execution"]["rulespec_scope"] = (
+                "unbounded_checkout"
+            )
+        elif mutation in {"object_v2_scope", "array_v2_scope"}:
+            manifest_payload["validation_execution"]["schema"] = (
+                "axiom-encode/apply-validation-execution/v2"
+            )
+            manifest_payload["validation_execution"]["rulespec_scope"] = (
+                {} if mutation == "object_v2_scope" else []
+            )
+        else:
+            manifest_payload["validation_execution"]["schema"] = (
+                "axiom-encode/apply-validation-execution/v2"
+            )
+            manifest_payload["validation_execution"]["rulespec_scope"] = "full_checkout"
+            manifest_payload["validation_execution"]["scope_details"] = {}
         _sign_applied_encoding_manifest(manifest_payload, TEST_APPLY_SIGNING_BROKER)
         manifest.write_text(json.dumps(manifest_payload) + "\n")
 
@@ -39374,6 +39435,96 @@ rules:
         assert len(issues) == 1
         assert issues[0].startswith("regulations/18-nycrr/387/12/f/3/v/c.yaml: ")
         assert "dropped existing source_relation" in issues[0]
+
+    def test_apply_overlay_scopes_authenticated_canonical_replacement(self, tmp_path):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        target = policy_repo / "statutes/42/1437c-1.yaml"
+        sibling = policy_repo.parent / "us-nj/statutes/54a:4-7.yaml"
+        generated = output_root / "codex-test-model/statutes/42/1437c-1.yaml"
+        target.parent.mkdir(parents=True)
+        sibling.parent.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        content = "format: rulespec/v1\nrules: []\n"
+        target.write_text(content)
+        sibling.write_text(content)
+        generated.write_text(content)
+        sibling_manifest = (
+            policy_repo.parent / ".axiom/encoding-manifests/us-nj/statutes/54a:4-7.json"
+        )
+        sibling_manifest.parent.mkdir(parents=True)
+        sibling_manifest.write_text("{}\n")
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+        )
+        setattr(result, _REPLACEMENT_OVERLAY_SCOPE_ATTR, True)
+        overlay_observations = []
+
+        class FakePipeline:
+            def __init__(self, **kwargs):
+                self.policy_root = Path(kwargs["policy_repo_path"])
+
+            def validate(self, path, *, skip_reviewers):
+                assert skip_reviewers is True
+                if self.policy_root != policy_repo:
+                    checkout = self.policy_root.parent
+                    overlay_observations.append(
+                        (
+                            (checkout / "us-nj").exists(),
+                            (checkout / ".axiom/encoding-manifests/us-nj").exists(),
+                        )
+                    )
+                return SimpleNamespace(all_passed=True, results={})
+
+        with patch("axiom_encode.cli.ValidatorPipeline", FakePipeline):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+            )
+
+        assert ok is True
+        assert issues == []
+        assert supplemental == {}
+        assert overlay_observations
+        assert all(
+            observation == (False, False) for observation in overlay_observations
+        )
+
+    def test_apply_overlay_rejects_scope_for_missing_canonical_target(self, tmp_path):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us"
+        generated = output_root / "codex-test-model/statutes/42/new.yaml"
+        policy_repo.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            output_file=str(generated), runner="codex-test-model", backend="codex"
+        )
+        setattr(result, _REPLACEMENT_OVERLAY_SCOPE_ATTR, True)
+
+        ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+            result,
+            output_root=output_root,
+            policy_repo_path=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            local_corpus_release=_bind_test_corpus_release(
+                policy_repo, tmp_path / "axiom-corpus"
+            ),
+        )
+
+        assert ok is False
+        assert issues == [
+            "Replacement overlay scope requires an existing regular canonical "
+            "target: statutes/42/new.yaml"
+        ]
+        assert supplemental == {}
 
     def test_apply_overlay_reads_source_metadata_from_explicit_context_manifest(
         self, tmp_path

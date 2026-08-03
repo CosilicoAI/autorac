@@ -49,17 +49,17 @@ def _manifest_jurisdiction_subdir_names(
     return frozenset(jurisdictions)
 
 
-def legacy_replacement_excluded_jurisdictions(
+def replacement_excluded_jurisdictions(
     source_checkout: Path,
     *,
     active_jurisdiction: str,
 ) -> frozenset[str]:
-    """Return sibling jurisdictions excluded from a migration capability.
+    """Return sibling jurisdictions excluded from a replacement capability.
 
-    Legacy replacement validation admits the active jurisdiction and its
+    Replacement validation admits the active jurisdiction and its
     country ancestors. Unrelated siblings remain outside the isolated overlay,
-    so their authenticated pre-hard-cut paths cannot broaden or block this
-    replacement. The live checkout is never changed.
+    so their paths cannot broaden or block the authenticated replacement. The
+    live checkout is never changed.
     """
 
     parts = active_jurisdiction.split("-")
@@ -70,7 +70,7 @@ def legacy_replacement_excluded_jurisdictions(
     )
     if active_jurisdiction not in content_jurisdictions:
         raise LegacyReplacementOverlayError(
-            "Legacy replacement source is missing the active jurisdiction: "
+            "Replacement source is missing the active jurisdiction: "
             f"{active_jurisdiction}"
         )
     manifest_jurisdictions = _manifest_jurisdiction_subdir_names(
@@ -80,14 +80,27 @@ def legacy_replacement_excluded_jurisdictions(
     return frozenset((content_jurisdictions | manifest_jurisdictions) - admitted)
 
 
-def scope_legacy_replacement_overlay(
+def legacy_replacement_excluded_jurisdictions(
+    source_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> frozenset[str]:
+    """Backward-compatible alias for replacement overlay scoping."""
+
+    return replacement_excluded_jurisdictions(
+        source_checkout,
+        active_jurisdiction=active_jurisdiction,
+    )
+
+
+def scope_replacement_overlay(
     overlay_checkout: Path,
     *,
     active_jurisdiction: str,
 ) -> None:
-    """Remove unrelated jurisdictions from one isolated migration overlay."""
+    """Remove unrelated jurisdictions from one isolated replacement overlay."""
 
-    excluded = legacy_replacement_excluded_jurisdictions(
+    excluded = replacement_excluded_jurisdictions(
         overlay_checkout,
         active_jurisdiction=active_jurisdiction,
     )
@@ -101,9 +114,22 @@ def scope_legacy_replacement_overlay(
                 continue
             if candidate.is_symlink() or not candidate.is_dir():
                 raise LegacyReplacementOverlayError(
-                    f"Legacy replacement overlay jurisdiction is unsafe: {candidate}"
+                    f"Replacement overlay jurisdiction is unsafe: {candidate}"
                 )
             shutil.rmtree(candidate)
+
+
+def scope_legacy_replacement_overlay(
+    overlay_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> None:
+    """Backward-compatible alias for replacement overlay scoping."""
+
+    scope_replacement_overlay(
+        overlay_checkout,
+        active_jurisdiction=active_jurisdiction,
+    )
 
 
 def _overlay_path(checkout_root: Path, relative: Path) -> Path:

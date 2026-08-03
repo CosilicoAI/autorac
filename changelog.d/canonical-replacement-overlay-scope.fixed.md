@@ -1,0 +1,1 @@
+Scope authenticated canonical replacement validation to the active jurisdiction and its country ancestors, so unrelated pre-hard-cut state paths cannot block a protected repair while fresh encodes continue to validate the complete checkout.
