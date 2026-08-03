@@ -74,6 +74,7 @@ from axiom_encode.cli import (
     _exclusive_apply_transaction_lock,
     _execute_rulespec_test_file,
     _expected_proof_import_hash,
+    _factual_input_appears_numeric,
     _find_rulespec_dependents,
     _generated_result_source_metadata,
     _git_changed_files,
@@ -18201,7 +18202,17 @@ rules:
         cases = yaml.safe_load(test_file.read_text())
         assert [case["name"] for case in cases] == ["cash_assistance_case"]
 
-    def test_delegated_policy_setting_repair_skips_existing_sets_edge(self, tmp_path):
+    @pytest.mark.parametrize(
+        "imports_block",
+        [
+            "imports:\n- us:policies/usda/snap/fy-2026-cola/deductions",
+            "imports: [us:policies/usda/snap/fy-2026-cola/deductions]",
+        ],
+        ids=("indentless-sequence", "inline-sequence"),
+    )
+    def test_delegated_policy_setting_repair_skips_existing_sets_edge(
+        self, tmp_path, imports_block
+    ):
         output_root = tmp_path / "out"
         policy_repo = tmp_path / "rulespec-us" / "us-ca"
         policy_repo.mkdir(parents=True)
@@ -18225,7 +18236,8 @@ rules:
         rules_file = output_root / "runner" / "state_rule.yaml"
         rules_file.parent.mkdir(parents=True)
         rules_file.write_text(
-            """format: rulespec/v1
+            f"""format: rulespec/v1
+{imports_block}
 module:
   summary: State SNAP standard utility allowance.
 rules:
@@ -18259,7 +18271,10 @@ rules:
 
         assert repaired == ["import:us:regulations/7-cfr/273/9"]
         payload = yaml.safe_load(rules_file.read_text())
-        assert payload["imports"] == ["us:regulations/7-cfr/273/9"]
+        assert payload["imports"] == [
+            "us:policies/usda/snap/fy-2026-cola/deductions",
+            "us:regulations/7-cfr/273/9",
+        ]
 
     def test_delegated_policy_setting_repair_drops_unresolved_sets_edge(self, tmp_path):
         output_root = tmp_path / "out"
@@ -24941,6 +24956,7 @@ rules:
   period: 2026-01
   input:
     us:statutes/26/151#input.adjusted_needs: false
+    us:statutes/26/151#input.household_size: 6
   output:
     us:statutes/26/151#benefit_amount: 0
 """
@@ -24986,6 +25002,7 @@ rules:
         mock_apply.assert_called_once()
         test_payload = yaml.safe_load(test_file.read_text())
         assert test_payload[0]["input"]["us:statutes/26/151#input.adjusted_needs"] == 0
+        assert test_payload[0]["input"]["us:statutes/26/151#input.household_size"] == 6
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
         assert run.outcome["auto_repaired_wrong_typed_test_inputs"] == [
             "zero_adjusted_needs_produces_zero_benefit:"
@@ -24993,6 +25010,26 @@ rules:
         ]
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
+
+    def test_size_named_string_selector_is_not_numeric(self):
+        rules_payload = {
+            "rules": [
+                {
+                    "versions": [
+                        {
+                            "formula": (
+                                'if household_size_category == "large": 1 else: 0'
+                            )
+                        }
+                    ]
+                }
+            ]
+        }
+
+        assert not _factual_input_appears_numeric(
+            "household_size_category",
+            rules_payload=rules_payload,
+        )
 
     def test_encode_apply_auto_repairs_string_selector_test_input_values(
         self, capsys, tmp_path

@@ -29670,14 +29670,18 @@ def _add_rulespec_imports_preserving_content(
         (
             index
             for index, line in enumerate(lines)
-            if line.strip() == "imports:" and not line.startswith((" ", "\t"))
+            if line.startswith("imports:")
         ),
         None,
     )
-    rendered = [f"  - {target}" for target in missing]
+    rendered_indent = "  "
     if import_line is None:
+        rendered = [f"{rendered_indent}- {target}" for target in missing]
         suffix = "\n" if content.endswith("\n") else "\n"
         return f"{content}{suffix}imports:\n" + "\n".join(rendered) + "\n"
+    if lines[import_line].strip() != "imports:":
+        payload["imports"] = [*imports, *missing] if isinstance(imports, list) else missing
+        return yaml.safe_dump(payload, sort_keys=False, allow_unicode=False)
 
     insert_at = import_line + 1
     while insert_at < len(lines):
@@ -29685,7 +29689,12 @@ def _add_rulespec_imports_preserving_content(
         if line.startswith((" ", "\t")) or not line.strip():
             insert_at += 1
             continue
+        if line.startswith("- "):
+            rendered_indent = ""
+            insert_at += 1
+            continue
         break
+    rendered = [f"{rendered_indent}- {target}" for target in missing]
     next_lines = [*lines[:insert_at], *rendered, *lines[insert_at:]]
     return "\n".join(next_lines) + ("\n" if content.endswith("\n") else "")
 
@@ -43898,6 +43907,8 @@ def _factual_input_appears_numeric(
         if any(boolean_context.search(formula) for formula in formula_hits):
             return False
 
+    if _factual_input_name_looks_positive_count(input_name):
+        return True
     input_tokens = set(input_name.split("_"))
     numeric_name_fragments = (
         "amount",
