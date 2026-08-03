@@ -717,9 +717,11 @@ def _validate_legacy_exact_dependents(
     """Verify every v2 exact dependent and return unchanged authorized files."""
 
     from axiom_encode.cli import (
+        _legacy_primary_source_citations,
         _repair_proof_import_hashes,
         _strict_legacy_replacement_map,
     )
+    from axiom_encode.legacy_replacement import legacy_receipt_v1_manifest_issues
     from axiom_encode.rulespec_path_migration import (
         PathMigrationPlanError,
         rewrite_exact_references,
@@ -827,6 +829,34 @@ def _validate_legacy_exact_dependents(
                 raise ValueError(f"{label} live file hash differs: {path}")
             base_by_path[path] = base_raw
             live_by_path[path] = live_raw
+
+        try:
+            base_manifest_payload = json.loads(base_manifest_raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            base_manifest_payload = None
+        primary_citations = _legacy_primary_source_citations(base_by_path[primary])
+        receipt_legacy = receipt.get("legacy")
+        legacy_issues = legacy_receipt_v1_manifest_issues(
+            base_manifest_payload,
+            owner_class=(
+                receipt_legacy.get("owner_class")
+                if isinstance(receipt_legacy, dict)
+                else None
+            ),
+            expected_files={
+                path.as_posix(): str(item["sha256"])
+                for path, item in zip(expected_paths, legacy_files, strict=True)
+            },
+            expected_primary_path=primary.as_posix(),
+            expected_citation=primary_citations[0] if primary_citations else "",
+            jurisdiction_prefix=primary.parts[0],
+            allow_unmarked_manual_exception=True,
+        )
+        if legacy_issues:
+            raise ValueError(
+                f"{label} exact dependent legacy ownership is invalid: "
+                + "; ".join(legacy_issues)
+            )
 
         raw_rewrites = raw_dependent.get("rewrites")
         if not isinstance(raw_rewrites, list) or not raw_rewrites:

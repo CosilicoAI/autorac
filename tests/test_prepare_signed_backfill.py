@@ -389,6 +389,8 @@ def _write_legacy_replacement_change(
     omitted_dependent: bool = False,
     omitted_scheduled_companion: bool = False,
     exact_dependent: bool = False,
+    generated_exact_dependent: bool = False,
+    legacy_owner_class: str = "v1-hmac-untrusted",
 ) -> tuple[Path, Path, Path, Path]:
     old_rule = repo / "us/statutes/47:32.yaml"
     old_test = repo / "us/statutes/47:32.test.yaml"
@@ -462,7 +464,14 @@ def _write_legacy_replacement_change(
         exact_primary.parent.mkdir(parents=True, exist_ok=True)
         exact_primary.write_text(
             "format: rulespec/v1\n"
-            "imports:\n"
+            + (
+                "module:\n"
+                "  source_verification:\n"
+                "    corpus_citation_path: us/statute/26/1\n"
+                if generated_exact_dependent
+                else ""
+            )
+            + "imports:\n"
             "  - us:statutes/47:32#amount\n"
             "rules:\n"
             "  - name: liability\n"
@@ -485,37 +494,66 @@ def _write_legacy_replacement_change(
         )
         exact_companion.write_text("[]\n", encoding="utf-8")
         exact_manifest.parent.mkdir(parents=True, exist_ok=True)
-        exact_manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": "axiom-encode/applied-rulespec/v1",
-                    "tool": "axiom-encode sign-applied-files",
-                    "backend": "manual",
-                    "runner": "manual-attestation",
-                    "manual_exception": "test exact dependent evidence",
-                    "applied_files": [
-                        {
-                            "path": exact_primary.relative_to(repo).as_posix(),
-                            "sha256": hashlib.sha256(
-                                exact_primary.read_bytes()
-                            ).hexdigest(),
-                        },
-                        {
-                            "path": exact_companion.relative_to(repo).as_posix(),
-                            "sha256": hashlib.sha256(
-                                exact_companion.read_bytes()
-                            ).hexdigest(),
-                        },
-                    ],
-                    "signature": {
-                        "algorithm": "hmac-sha256",
-                        "key_id": "historical-v1",
-                        "value": "opaque-untrusted-evidence",
-                    },
+        exact_applied_files = [
+            {
+                "path": exact_primary.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(exact_primary.read_bytes()).hexdigest(),
+            },
+            {
+                "path": exact_companion.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(exact_companion.read_bytes()).hexdigest(),
+            },
+        ]
+        exact_legacy_payload = {
+            "schema_version": "axiom-encode/applied-rulespec/v1",
+            "tool": "axiom-encode sign-applied-files",
+            "backend": "manual",
+            "runner": "manual-attestation",
+            "manual_exception": "test exact dependent evidence",
+            "applied_files": exact_applied_files,
+            "signature": {
+                "algorithm": "hmac-sha256",
+                "key_id": "historical-v1",
+                "value": "opaque-untrusted-evidence",
+            },
+        }
+        if generated_exact_dependent:
+            exact_legacy_payload = {
+                "schema_version": "axiom-encode/applied-rulespec/v1",
+                "tool": "axiom-encode encode --apply",
+                "backend": "codex",
+                "runner": "codex-gpt-5.5",
+                "model": "gpt-5.5",
+                "citation": "us/statute/26/1",
+                "generated_at": "2026-07-16T19:07:09.279448+00:00",
+                "run_id": "generated-exact-dependent",
+                "axiom_encode_version": "0.2.1200",
+                "axiom_encode_git": {
+                    "commit": "c" * 40,
+                    "dirty_tracked": False,
+                    "root": "/tmp/axiom-encode",
+                    "version": "0.2.1200",
+                    "version_commit": "c" * 40,
                 },
-                sort_keys=True,
-            )
-            + "\n",
+                "generation_prompt_sha256": "d" * 64,
+                "generated_output_root": "/tmp/axiom-generated",
+                "generated_output_file": (
+                    "/tmp/axiom-generated/us/policies/income_tax/composite.yaml"
+                ),
+                "generated_output_sha256": exact_applied_files[0]["sha256"],
+                "trace_file": "/tmp/axiom-generated/trace.json",
+                "trace_sha256": "e" * 64,
+                "context_manifest_file": "/tmp/axiom-generated/context.json",
+                "context_manifest_sha256": "f" * 64,
+                "applied_files": exact_applied_files,
+                "signature": {
+                    "algorithm": "hmac-sha256",
+                    "key_id": "axiom-encode-apply-v1",
+                    "value": "1" * 64,
+                },
+            }
+        exact_manifest.write_text(
+            json.dumps(exact_legacy_payload, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     _git(repo, "add", ".")
@@ -603,7 +641,7 @@ def _write_legacy_replacement_change(
             "base_tree": base_tree,
         },
         "legacy": {
-            "owner_class": "v1-hmac-untrusted",
+            "owner_class": legacy_owner_class,
             "trusted_generated_provenance": False,
             "manifest": {
                 "path": old_manifest.relative_to(repo).as_posix(),
@@ -979,11 +1017,26 @@ def _refresh_legacy_receipt_bindings(
         )
 
 
+@pytest.mark.parametrize(
+    ("legacy_owner_class", "generated_exact_dependent"),
+    [
+        ("v1-hmac-untrusted", False),
+        ("v1-manual-hmac-untrusted", False),
+        ("v1-hmac-untrusted", True),
+    ],
+)
 def test_stage_accepts_v2_exact_dependent_with_unchanged_companion(
     tmp_path: Path,
+    legacy_owner_class: str,
+    generated_exact_dependent: bool,
 ) -> None:
     repo = _repo(tmp_path)
-    _write_legacy_replacement_change(repo, exact_dependent=True)
+    _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+        generated_exact_dependent=generated_exact_dependent,
+        legacy_owner_class=legacy_owner_class,
+    )
 
     expected = authorized_changed_paths(repo)
     stage_authorized_changes(repo)
@@ -993,6 +1046,21 @@ def test_stage_accepts_v2_exact_dependent_with_unchanged_companion(
         "us/policies/income_tax/composite.test.yaml"
         not in _git(repo, "diff", "--cached", "--name-only").splitlines()
     )
+
+
+def test_stage_rejects_generated_exact_dependent_under_old_manual_owner_class(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+        generated_exact_dependent=True,
+        legacy_owner_class="v1-manual-hmac-untrusted",
+    )
+
+    with pytest.raises(ValueError, match="exact dependent legacy ownership is invalid"):
+        authorized_changed_paths(repo)
 
 
 def test_stage_keeps_v1_legacy_replacement_compatible(tmp_path: Path) -> None:

@@ -339,6 +339,24 @@ def test_old_manual_receipt_class_cannot_relabel_generated_evidence() -> None:
     assert any("tool is not sign-applied-files" in issue for issue in issues)
 
 
+@pytest.mark.parametrize("owner_class", [[], {}])
+def test_receipt_dispatcher_rejects_nonscalar_owner_class_without_crashing(
+    owner_class: object,
+) -> None:
+    issues = legacy_receipt_v1_manifest_issues(
+        _manual_manifest(),
+        owner_class=owner_class,
+        expected_files={
+            "us-la/statutes/47:32.yaml": "a" * 64,
+            "us-la/statutes/47:32.test.yaml": "b" * 64,
+        },
+        expected_primary_path="us-la/statutes/47:32.yaml",
+        expected_citation="us-la/statute/47:32",
+        jurisdiction_prefix="us-la",
+    )
+    assert issues == ["legacy receipt ownership class is unsupported"]
+
+
 def test_receipt_identity_binds_every_transaction_dimension() -> None:
     payload = receipt_identity_payload(
         base_commit="a" * 40,
@@ -588,15 +606,40 @@ def test_receipt_authority_rejects_generated_bytes_under_old_manual_class(
     replacements, issues = _legacy_replacement_authoritative_map(
         checkout,
         base_commit=base_commit,
-        manifest_label=(
-            ".axiom/encoding-manifests/us/statutes/42/1437c-1.json"
-        ),
+        manifest_label=(".axiom/encoding-manifests/us/statutes/42/1437c-1.json"),
         legacy=legacy,
         replacement=replacement,
     )
 
     assert replacements is None
     assert any("tool is not sign-applied-files" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("owner_class", [[], {}])
+def test_receipt_authority_rejects_nonscalar_owner_class_without_crashing(
+    tmp_path: Path,
+    owner_class: object,
+) -> None:
+    checkout, _content_root, _source = _generated_unicode_checkout(tmp_path)
+    legacy, replacement = _generated_unicode_receipt_blocks(checkout)
+    legacy["owner_class"] = owner_class
+    base_commit = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    replacements, issues = _legacy_replacement_authoritative_map(
+        checkout,
+        base_commit=base_commit,
+        manifest_label=(".axiom/encoding-manifests/us/statutes/42/1437c-1.json"),
+        legacy=legacy,
+        replacement=replacement,
+    )
+
+    assert replacements is None
+    assert any("ownership classification is invalid" in issue for issue in issues)
 
 
 def test_contract_rejects_generated_v1_with_wrong_citation(tmp_path: Path) -> None:
