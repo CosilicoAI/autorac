@@ -43817,12 +43817,13 @@ def _factual_input_appears_string_selector(
     if not isinstance(rules, list):
         return False
 
+    string_literal = rf"(?:{_RULESPEC_STRING_LITERAL_RE})"
     string_comparison = re.compile(
         rf"""
         (?:
-            \b{re.escape(input_name)}\b\s*(?:==|!=)\s*(['"])[^'"]*\1
+            \b{re.escape(input_name)}\b\s*(?:==|!=)\s*{string_literal}
             |
-            (['"])[^'"]*\2\s*(?:==|!=)\s*\b{re.escape(input_name)}\b
+            {string_literal}\s*(?:==|!=)\s*\b{re.escape(input_name)}\b
         )
         """,
         re.VERBOSE,

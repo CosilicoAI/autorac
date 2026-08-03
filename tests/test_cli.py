@@ -25086,7 +25086,7 @@ rules:
     versions:
       - effective_from: '2026-01-01'
         formula: |-
-          if federal_code == "A" and state_os_code == "A":
+          if federal_code == "children's" and state_os_code == "A":
               1675
           else:
               0
