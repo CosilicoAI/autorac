@@ -29667,11 +29667,7 @@ def _add_rulespec_imports_preserving_content(
 
     lines = content.splitlines()
     import_line = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if line.startswith("imports:")
-        ),
+        (index for index, line in enumerate(lines) if line.startswith("imports:")),
         None,
     )
     rendered_indent = "  "
@@ -29680,7 +29676,9 @@ def _add_rulespec_imports_preserving_content(
         suffix = "\n" if content.endswith("\n") else "\n"
         return f"{content}{suffix}imports:\n" + "\n".join(rendered) + "\n"
     if lines[import_line].strip() != "imports:":
-        payload["imports"] = [*imports, *missing] if isinstance(imports, list) else missing
+        payload["imports"] = (
+            [*imports, *missing] if isinstance(imports, list) else missing
+        )
         return yaml.safe_dump(payload, sort_keys=False, allow_unicode=False)
 
     insert_at = import_line + 1
