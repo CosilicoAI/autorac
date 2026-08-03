@@ -1,1 +1,3 @@
-Allow the signing runtime's trusted Git broker to read an exact migration base blob with the narrowly scoped `ls-tree -z --full-tree <commit> -- <path>` query.
+Allow the signing runtime's trusted Git broker to perform the exact base-blob,
+tree-inventory, fixed-string reference scan, and commit-tree queries required to
+verify a legacy RuleSpec path replacement.
