@@ -122,6 +122,7 @@ from axiom_encode.harness.validator_pipeline import (
 from axiom_encode.legacy_replacement import (
     LegacyReplacementContract,
     LegacyReplacementFile,
+    LegacyReplacementRewrite,
 )
 from axiom_encode.repo_routing import find_policy_repo_root, monorepo_checkout_name
 from axiom_encode.signing_broker import get_signing_broker
@@ -4419,6 +4420,34 @@ def test_legacy_replacement_overlay_keeps_active_ancestor_chain(tmp_path):
     assert (copied / ".axiom/encoding-manifests/us/marker.json").is_file()
     assert (copied / ".axiom/encoding-manifests/us-or/marker.json").is_file()
     assert not (copied / ".axiom/encoding-manifests/us-nj").exists()
+
+
+def test_rulespec_prevalidation_rejects_excluded_sibling_rewrite(tmp_path):
+    policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+    sibling = Path("us-nj/statutes/54a:4-7.yaml")
+    sibling_raw = (policy_repo.parent / sibling).read_bytes()
+    replacement_raw = b"format: rulespec/v1\nrules:\n  - name: changed\n"
+    contract = contract._replace(
+        rewrites=(
+            LegacyReplacementRewrite(
+                path=sibling,
+                before_sha256=hashlib.sha256(sibling_raw).hexdigest(),
+                after_sha256=hashlib.sha256(replacement_raw).hexdigest(),
+                replacements=(),
+                raw=replacement_raw,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="rewrite input is not a regular file"):
+        with _rulespec_validation_target(
+            generated,
+            policy_repo,
+            legacy_replacement=contract,
+        ):
+            pass
+
+    assert (policy_repo.parent / sibling).read_bytes() == sibling_raw
 
 
 def test_rulespec_prevalidation_rejects_changed_legacy_replacement_input(tmp_path):
