@@ -26,8 +26,9 @@ RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 ENCODING_MANIFEST_DIR: Final = Path(".axiom") / "encoding-manifests"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
 LEGACY_OWNER_CLASS: Final = "v1-hmac-untrusted"
+LEGACY_MANUAL_OWNER_CLASS: Final = "v1-manual-hmac-untrusted"
 LEGACY_OWNER_CLASSES: Final = frozenset(
-    {LEGACY_OWNER_CLASS, "v1-manual-hmac-untrusted"}
+    {LEGACY_OWNER_CLASS, LEGACY_MANUAL_OWNER_CLASS}
 )
 LEGACY_GENERATED_TOOL: Final = "axiom-encode encode --apply"
 LEGACY_GENERATED_BACKENDS: Final = frozenset({"codex", "openai", "claude"})
@@ -425,6 +426,36 @@ def legacy_v1_manifest_issues(
             jurisdiction_prefix=jurisdiction_prefix,
         )
     return ["legacy ownership manifest class is unsupported"]
+
+
+def legacy_receipt_v1_manifest_issues(
+    payload: object,
+    *,
+    owner_class: object,
+    expected_files: Mapping[str, str],
+    expected_primary_path: str,
+    expected_citation: str,
+    jurisdiction_prefix: str,
+    allow_unmarked_manual_exception: bool = False,
+) -> list[str]:
+    """Preserve old manual receipts without permitting owner-class relabeling."""
+
+    if owner_class == LEGACY_MANUAL_OWNER_CLASS:
+        return legacy_manual_manifest_issues(
+            payload,
+            expected_files=expected_files,
+            allow_unmarked_manual_exception=allow_unmarked_manual_exception,
+        )
+    if owner_class == LEGACY_OWNER_CLASS:
+        return legacy_v1_manifest_issues(
+            payload,
+            expected_files=expected_files,
+            expected_primary_path=expected_primary_path,
+            expected_citation=expected_citation,
+            jurisdiction_prefix=jurisdiction_prefix,
+            allow_unmarked_manual_exception=allow_unmarked_manual_exception,
+        )
+    return ["legacy receipt ownership class is unsupported"]
 
 
 def receipt_identity_payload(

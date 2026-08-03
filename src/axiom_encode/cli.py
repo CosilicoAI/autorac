@@ -297,6 +297,9 @@ from .legacy_replacement import (
     LegacyReplacementScheduledDependent as _LegacyReplacementScheduledDependent,
 )
 from .legacy_replacement import (
+    legacy_receipt_v1_manifest_issues as _legacy_receipt_v1_manifest_issues,
+)
+from .legacy_replacement import (
     legacy_source_verification_citation_paths as _legacy_source_verification_citation_paths,
 )
 from .legacy_replacement import (
@@ -7113,8 +7116,9 @@ def _legacy_replacement_authoritative_map(
                 if source_base_raw is not None
                 else ()
             )
-            legacy_manifest_issues = _legacy_v1_manifest_issues(
+            legacy_manifest_issues = _legacy_receipt_v1_manifest_issues(
                 legacy_manifest_payload,
+                owner_class=legacy.get("owner_class"),
                 expected_files=expected_files,
                 expected_primary_path=source_path.as_posix(),
                 expected_citation=source_citations[0] if source_citations else "",
@@ -22365,8 +22369,9 @@ def _legacy_replacement_manifest_issues(
             base_primary_citations = ()
         else:
             base_primary_citations = _legacy_primary_source_citations(base_primary_raw)
-        legacy_manifest_issues = _legacy_v1_manifest_issues(
+        legacy_manifest_issues = _legacy_receipt_v1_manifest_issues(
             legacy_manifest_payload,
+            owner_class=legacy.get("owner_class"),
             expected_files={
                 path.as_posix(): digest for path, digest in legacy_hashes.items()
             },

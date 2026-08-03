@@ -19,6 +19,7 @@ from axiom_encode.legacy_replacement import (
     LEGACY_MANIFEST_SCHEMA,
     legacy_generated_manifest_issues,
     legacy_manual_manifest_issues,
+    legacy_receipt_v1_manifest_issues,
     legacy_source_verification_citation_paths,
     legacy_v1_manifest_issues,
     receipt_identity_payload,
@@ -323,6 +324,21 @@ def test_v1_dispatcher_preserves_manual_owner_admission() -> None:
     )
 
 
+def test_old_manual_receipt_class_cannot_relabel_generated_evidence() -> None:
+    issues = legacy_receipt_v1_manifest_issues(
+        _generated_manifest(),
+        owner_class="v1-manual-hmac-untrusted",
+        expected_files={
+            "us/statutes/42/1437c–1.yaml": "a" * 64,
+            "us/statutes/42/1437c–1.test.yaml": "b" * 64,
+        },
+        expected_primary_path="us/statutes/42/1437c–1.yaml",
+        expected_citation="us/statute/42/1437c–1",
+        jurisdiction_prefix="us",
+    )
+    assert any("tool is not sign-applied-files" in issue for issue in issues)
+
+
 def test_receipt_identity_binds_every_transaction_dimension() -> None:
     payload = receipt_identity_payload(
         base_commit="a" * 40,
@@ -554,6 +570,33 @@ def test_receipt_authority_rejects_relabelled_generated_v1_bytes(
 
     assert replacements is None
     assert any("runner/backend mismatch" in issue for issue in issues)
+
+
+def test_receipt_authority_rejects_generated_bytes_under_old_manual_class(
+    tmp_path: Path,
+) -> None:
+    checkout, _content_root, _source = _generated_unicode_checkout(tmp_path)
+    legacy, replacement = _generated_unicode_receipt_blocks(checkout)
+    legacy["owner_class"] = "v1-manual-hmac-untrusted"
+    base_commit = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    replacements, issues = _legacy_replacement_authoritative_map(
+        checkout,
+        base_commit=base_commit,
+        manifest_label=(
+            ".axiom/encoding-manifests/us/statutes/42/1437c-1.json"
+        ),
+        legacy=legacy,
+        replacement=replacement,
+    )
+
+    assert replacements is None
+    assert any("tool is not sign-applied-files" in issue for issue in issues)
 
 
 def test_contract_rejects_generated_v1_with_wrong_citation(tmp_path: Path) -> None:
