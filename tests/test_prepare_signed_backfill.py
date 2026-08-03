@@ -1616,6 +1616,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
     [
         ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
         ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
+        ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
 )
@@ -1630,6 +1631,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
         {
             ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
             ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
+            ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }
     )

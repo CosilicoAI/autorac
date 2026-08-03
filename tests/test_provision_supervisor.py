@@ -458,6 +458,7 @@ class TestTrustedGit:
         ).strip()
         allowed_commands = (
             (["rev-parse", "HEAD"], None),
+            (["rev-parse", "HEAD^{tree}"], None),
             (["rev-parse", "--is-inside-work-tree"], None),
             (["rev-parse", "--show-toplevel"], None),
             (["rev-parse", "--verify", "HEAD^{commit}"], None),
