@@ -42980,6 +42980,33 @@ def test_resolve_required_import_rulespec_paths_is_same_jurisdiction_and_tracked
     assert targets == ("us-ri:policies/tax/page-2",)
 
 
+def test_resolve_required_import_rulespec_paths_accepts_state_tax_inventory_size(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+    required_paths = tuple(
+        Path(f"us-nj/statutes/54a/section-{index}.yaml") for index in range(29)
+    )
+    for relative in required_paths:
+        required = checkout / relative
+        required.parent.mkdir(parents=True, exist_ok=True)
+        required.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-m", "required state tax modules")
+
+    paths, targets = _resolve_required_import_rulespec_paths(
+        required_paths,
+        policy_checkout_path=checkout,
+        policy_repo_path=checkout / "us-nj",
+        source_citation_path="us-nj/statute/54a:1-2",
+        target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+    )
+
+    assert len(paths) == 29
+    assert len(targets) == 29
+
+
 @pytest.mark.parametrize(
     "required_path",
     [
@@ -43036,9 +43063,9 @@ def test_resolve_required_import_rulespec_paths_is_bounded(tmp_path: Path):
     checkout = tmp_path / "rulespec-us"
     _init_test_git_repo(checkout)
 
-    with pytest.raises(ValueError, match="at most 16"):
+    with pytest.raises(ValueError, match="at most 64"):
         _resolve_required_import_rulespec_paths(
-            tuple(Path(f"us-ri/statutes/section-{index}.yaml") for index in range(17)),
+            tuple(Path(f"us-ri/statutes/section-{index}.yaml") for index in range(65)),
             policy_checkout_path=checkout,
             policy_repo_path=checkout / "us-ri",
             source_citation_path="us-ri/statute/44-30-2.6",

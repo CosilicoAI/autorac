@@ -114,6 +114,7 @@ from .constants import (
     DEFAULT_OPENAI_ESCALATE_AFTER,
     DEFAULT_OPENAI_ESCALATION_MODEL,
     DEFAULT_OPENAI_MODEL,
+    MAX_SIGNED_SOURCE_MODULES,
     RULESPEC_ATOMIC_MODULE_ROOTS,
     RULESPEC_COMPOSITION_SPEC_ROOT,
     RULESPEC_FILE_SUFFIX,
@@ -23889,8 +23890,11 @@ def _resolve_required_import_rulespec_paths(
 ) -> tuple[tuple[Path, ...], tuple[str, ...]]:
     """Resolve bounded, same-jurisdiction atomic modules required by composition."""
 
-    if len(raw_paths) > 16:
-        raise ValueError("at most 16 required import RuleSpec paths are supported")
+    if len(raw_paths) > MAX_SIGNED_SOURCE_MODULES:
+        raise ValueError(
+            f"at most {MAX_SIGNED_SOURCE_MODULES} required import RuleSpec paths "
+            "are supported"
+        )
     jurisdiction = normalize_corpus_identifier(source_citation_path).split("/", 1)[0]
     if jurisdiction != policy_repo_path.name:
         raise ValueError("required import jurisdiction does not match source routing")

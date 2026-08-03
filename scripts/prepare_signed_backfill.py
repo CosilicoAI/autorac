@@ -10,6 +10,8 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from axiom_encode.constants import MAX_SIGNED_SOURCE_MODULES
+
 COUNTRY_PATTERN = re.compile(r"[a-z]{2}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -33,7 +35,7 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
 RULESPEC_ATOMIC_ROOTS = frozenset(
     {"legislation", "policies", "regulations", "statutes"}
 )
-MAX_SOURCE_BUNDLE_CITATIONS = 16
+MAX_SOURCE_BUNDLE_CITATIONS = MAX_SIGNED_SOURCE_MODULES
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 REVIEWED_RULESPEC_REFS = frozenset(
     {

@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from scripts.prepare_signed_backfill import (
+    MAX_SOURCE_BUNDLE_CITATIONS,
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
@@ -64,10 +65,29 @@ def test_parse_source_bundle_requires_json_array(raw: str) -> None:
         )
 
 
-def test_parse_source_bundle_rejects_more_than_sixteen_items() -> None:
-    raw = json.dumps([f"us-ri/statute/44-30-{index}" for index in range(17)])
+def test_parse_source_bundle_accepts_ty2026_state_tax_inventory_size() -> None:
+    raw = json.dumps([f"us-nj/statute/54a:3-{index}" for index in range(29)])
 
-    with pytest.raises(ValueError, match="more than 16"):
+    assert len(
+        parse_source_bundle(
+            raw,
+            primary_citation="us-nj/statute/54a:1-2",
+        )
+    ) == 29
+
+
+def test_parse_source_bundle_rejects_more_than_bounded_limit() -> None:
+    raw = json.dumps(
+        [
+            f"us-ri/statute/44-30-{index}"
+            for index in range(MAX_SOURCE_BUNDLE_CITATIONS + 1)
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"more than {MAX_SOURCE_BUNDLE_CITATIONS}",
+    ):
         parse_source_bundle(
             raw,
             primary_citation="us-ri/statute/44-30-99",
@@ -217,18 +237,22 @@ def test_parse_existing_signed_imports_accepts_ordered_tracked_v5_modules(
     ) == tuple(PurePosixPath(path) for path in paths)
 
 
-def test_parse_existing_signed_imports_enforces_combined_sixteen_limit(
+def test_parse_existing_signed_imports_enforces_combined_bounded_limit(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
 
-    with pytest.raises(ValueError, match="more than 16 modules"):
+    with pytest.raises(
+        ValueError,
+        match=f"more than {MAX_SOURCE_BUNDLE_CITATIONS} modules",
+    ):
         parse_existing_signed_imports(
             repo,
             '["us-ri/statutes/44-30-1.yaml"]',
             primary_citation="us-ri/statute/44-30-99",
             source_bundle_citations=tuple(
-                f"us-ri/statute/44-30-{index}" for index in range(16)
+                f"us-ri/statute/44-30-{index}"
+                for index in range(MAX_SOURCE_BUNDLE_CITATIONS)
             ),
         )
 
