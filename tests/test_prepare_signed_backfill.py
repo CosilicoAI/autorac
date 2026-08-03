@@ -17,6 +17,7 @@ from scripts.prepare_signed_backfill import (
     branch_name,
     parse_existing_signed_imports,
     parse_source_bundle,
+    reviewed_continuation_paths,
     stage_authorized_changes,
     validate_country,
     validate_dependent_cascade,
@@ -235,6 +236,39 @@ def test_parse_existing_signed_imports_accepts_ordered_tracked_v5_modules(
         json.dumps(paths),
         primary_citation="us-ri/statute/44-30-2.6",
     ) == tuple(PurePosixPath(path) for path in paths)
+
+
+def test_parse_existing_signed_imports_accepts_primary_source_for_distinct_target(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source_path = "us-ri/statutes/44-30-2/6.yaml"
+    _add_existing_signed_import(repo, source_path)
+
+    assert parse_existing_signed_imports(
+        repo,
+        json.dumps([source_path]),
+        primary_citation="us-ri/statute/44-30-2.6",
+        replacement_rulespec_path=(
+            "us-ri/policies/income_tax/pilot_liability_pipeline.yaml"
+        ),
+    ) == (PurePosixPath(source_path),)
+
+
+def test_parse_existing_signed_imports_rejects_primary_source_for_same_target(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source_path = "us-ri/statutes/44-30-2/6.yaml"
+    _add_existing_signed_import(repo, source_path)
+
+    with pytest.raises(ValueError, match="must exclude"):
+        parse_existing_signed_imports(
+            repo,
+            json.dumps([source_path]),
+            primary_citation="us-ri/statute/44-30-2.6",
+            replacement_rulespec_path=source_path,
+        )
 
 
 def test_parse_existing_signed_imports_enforces_combined_bounded_limit(
@@ -1746,3 +1780,83 @@ def test_validate_rulespec_base_rejects_unreviewed_non_main_head(
 
     with pytest.raises(ValueError, match="neither on main nor an approved"):
         validate_rulespec_base(repo, "us", head, open_pr=False)
+
+
+def test_validate_rulespec_base_accepts_signed_protected_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    _git(repo, "add", rule.relative_to(repo), manifest.relative_to(repo))
+    _git(repo, "commit", "-m", "signed continuation")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "update-ref",
+        "refs/remotes/origin/hard-cut/canonical-layout-us",
+        head,
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+    assert reviewed_continuation_paths(
+        repo,
+        "us",
+        head,
+        pr_base_branch="hard-cut/canonical-layout-us",
+    ) == (PurePosixPath("us/regulations/example.yaml"),)
+    assert (
+        validate_rulespec_base(
+            repo,
+            "us",
+            head,
+            open_pr=True,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+        == "reviewed-head-continuation-pr"
+    )
+
+
+def test_validate_rulespec_base_rejects_continuation_metadata_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    (repo / "README.md").write_text("unreviewed metadata\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unreviewed metadata")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "update-ref",
+        "refs/remotes/origin/hard-cut/canonical-layout-us",
+        head,
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+    with pytest.raises(ValueError, match="non-generated path"):
+        validate_rulespec_base(
+            repo,
+            "us",
+            head,
+            open_pr=True,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )

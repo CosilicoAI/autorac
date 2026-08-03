@@ -2787,6 +2787,25 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     _prepare_empty_signed_import_inputs(runner_temp)
+    rulespec_repo = tmp_path / "rulespec-us"
+    rulespec_repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=rulespec_repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=rulespec_repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=rulespec_repo, check=True
+    )
+    (rulespec_repo / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=rulespec_repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "fixture"], cwd=rulespec_repo, check=True
+    )
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec_repo, text=True
+    ).strip()
     primary = "us-ri/statute/44-30-2.6"
     sources = [
         "us-ri/statute/44-30-1",
@@ -2807,8 +2826,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "DEPENDENT_REVIEW_FINDING": "",
             "GITHUB_WORKSPACE": str(tmp_path),
             "REVIEW_FINDING": "Preserve the composed target semantics.",
-            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
-            "RULESPEC_REF": "a" * 40,
+            "RULESPEC_CHECKOUT": str(rulespec_repo),
+            "RULESPEC_REF": rulespec_ref,
             "RUNNER_TEMP": str(runner_temp),
             "SECOND_DEPENDENT_CITATION": "",
             "SECOND_DEPENDENT_REVIEW_FINDING": "",
@@ -2839,6 +2858,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-ri/statutes/44-30-1.yaml",
         "us-ri/policies/revenue/2026/rate-schedule.yaml",
     ]
+    required_base_index = primary_args.index("--required-import-base-ref")
+    assert primary_args[required_base_index + 1] == rulespec_ref
     assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
         f"Add signed source module for {sources[0]}",
         f"Add signed source module for {sources[1]}",
@@ -2890,7 +2911,22 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         json.dumps({"schema_version": "axiom-encode/applied-rulespec/v5"}) + "\n"
     )
     subprocess.run(["git", "-C", str(rulespec_repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(rulespec_repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(rulespec_repo), "config", "user.name", "Test"],
+        check=True,
+    )
     subprocess.run(["git", "-C", str(rulespec_repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(rulespec_repo), "commit", "-qm", "fixture"],
+        check=True,
+    )
+    rulespec_ref = subprocess.check_output(
+        ["git", "-C", str(rulespec_repo), "rev-parse", "HEAD"], text=True
+    ).strip()
 
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
@@ -2915,7 +2951,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "GITHUB_WORKSPACE": str(tmp_path),
             "REVIEW_FINDING": "Preserve direct composition semantics.",
             "RULESPEC_CHECKOUT": str(rulespec_repo),
-            "RULESPEC_REF": "a" * 40,
+            "RULESPEC_REF": rulespec_ref,
             "RUNNER_TEMP": str(runner_temp),
             "SECOND_DEPENDENT_CITATION": "",
             "SECOND_DEPENDENT_REVIEW_FINDING": "",
@@ -2932,6 +2968,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     assert encode_args[-1] == "us-ri/statute/44-30-2.6"
     required_index = encode_args.index("--required-import-rulespec-path")
     assert encode_args[required_index + 1] == existing_path
+    required_base_index = encode_args.index("--required-import-base-ref")
+    assert encode_args[required_base_index + 1] == rulespec_ref
 
 
 @pytest.mark.parametrize("with_dependent", [False, True])

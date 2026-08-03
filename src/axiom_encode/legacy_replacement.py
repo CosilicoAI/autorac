@@ -20,7 +20,8 @@ EXACT_DEPENDENT_TOOL: Final = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
 RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+RECEIPT_SCHEMA_V2: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 ENCODING_MANIFEST_DIR: Final = Path(".axiom") / "encoding-manifests"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
@@ -63,6 +64,20 @@ class LegacyReplacementExactDependent(NamedTuple):
     rewrites: tuple[LegacyReplacementRewrite, ...]
 
 
+class LegacyReplacementSourceImport(NamedTuple):
+    citation: str
+    rulespec_path: Path
+    rulespec_sha256: str
+    manifest_path: Path
+    manifest_sha256: str
+
+
+class LegacyReplacementSourceClosure(NamedTuple):
+    historical_citations: tuple[str, ...]
+    primary_citation: str
+    imports: tuple[LegacyReplacementSourceImport, ...]
+
+
 class LegacyReplacementContract(NamedTuple):
     base_commit: str
     base_tree: str
@@ -73,6 +88,7 @@ class LegacyReplacementContract(NamedTuple):
     rewrites: tuple[LegacyReplacementRewrite, ...]
     scheduled_dependents: tuple[LegacyReplacementScheduledDependent, ...]
     exact_dependents: tuple[LegacyReplacementExactDependent, ...]
+    source_closure: LegacyReplacementSourceClosure | None = None
 
 
 def legacy_source_verification_citation_paths(
@@ -186,6 +202,8 @@ def receipt_identity_payload(
     rewrites: list[dict[str, object]],
     scheduled_dependents: list[dict[str, object]],
     exact_dependents: list[dict[str, object]] | None = None,
+    source_closure: dict[str, object] | None = None,
+    include_source_closure: bool = False,
 ) -> dict[str, object]:
     payload = {
         "base_commit": base_commit,
@@ -199,6 +217,8 @@ def receipt_identity_payload(
     }
     if exact_dependents is not None:
         payload["exact_dependents"] = exact_dependents
+    if include_source_closure:
+        payload["source_closure"] = source_closure
     return payload
 
 
