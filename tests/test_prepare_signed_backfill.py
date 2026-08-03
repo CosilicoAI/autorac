@@ -603,7 +603,7 @@ def _write_legacy_replacement_change(
             "base_tree": base_tree,
         },
         "legacy": {
-            "owner_class": "v1-manual-hmac-untrusted",
+            "owner_class": "v1-hmac-untrusted",
             "trusted_generated_provenance": False,
             "manifest": {
                 "path": old_manifest.relative_to(repo).as_posix(),

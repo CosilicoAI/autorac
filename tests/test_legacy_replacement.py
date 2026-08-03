@@ -11,13 +11,16 @@ from unittest.mock import patch
 import pytest
 
 from axiom_encode.cli import (
+    _legacy_replacement_authoritative_map,
     _require_locked_legacy_replacement_base,
     _resolve_legacy_replacement_contract,
 )
 from axiom_encode.legacy_replacement import (
     LEGACY_MANIFEST_SCHEMA,
+    legacy_generated_manifest_issues,
     legacy_manual_manifest_issues,
     legacy_source_verification_citation_paths,
+    legacy_v1_manifest_issues,
     receipt_identity_payload,
     receipt_identity_sha256,
 )
@@ -164,6 +167,162 @@ def test_manual_manifest_cannot_be_elevated_to_generated_provenance(
     assert any(match in issue for issue in issues)
 
 
+def _generated_manifest() -> dict[str, object]:
+    return {
+        "schema_version": LEGACY_MANIFEST_SCHEMA,
+        "tool": "axiom-encode encode --apply",
+        "backend": "codex",
+        "runner": "codex-gpt-5.5",
+        "model": "gpt-5.5",
+        "citation": "us/statute/42/1437c–1",
+        "generated_at": "2026-07-16T19:07:09.279448+00:00",
+        "run_id": "183b7163",
+        "axiom_encode_version": "0.2.1200",
+        "axiom_encode_git": {
+            "commit": "c" * 40,
+            "dirty_tracked": False,
+            "root": "/private/tmp/axiom-encode-codex",
+            "version": "0.2.1200",
+            "version_commit": "c" * 40,
+        },
+        "generation_prompt_sha256": "d" * 64,
+        "generated_output_root": "/tmp/axiom-generated",
+        "generated_output_file": "/tmp/axiom-generated/statutes/42/1437c–1.yaml",
+        "generated_output_sha256": "a" * 64,
+        "trace_file": "/tmp/axiom-generated/trace.json",
+        "trace_sha256": "e" * 64,
+        "context_manifest_file": "/tmp/axiom-generated/context.json",
+        "context_manifest_sha256": "f" * 64,
+        "applied_files": [
+            {"path": "statutes/42/1437c–1.yaml", "sha256": "a" * 64},
+            {"path": "statutes/42/1437c–1.test.yaml", "sha256": "b" * 64},
+        ],
+        "signature": {
+            "algorithm": "hmac-sha256",
+            "key_id": "axiom-encode-apply-v1",
+            "value": "1" * 64,
+        },
+    }
+
+
+def _generated_manifest_issues(payload: object) -> list[str]:
+    return legacy_generated_manifest_issues(
+        payload,
+        expected_files={
+            "us/statutes/42/1437c–1.yaml": "a" * 64,
+            "us/statutes/42/1437c–1.test.yaml": "b" * 64,
+        },
+        expected_primary_path="us/statutes/42/1437c–1.yaml",
+        expected_citation="us/statute/42/1437c–1",
+        jurisdiction_prefix="us",
+    )
+
+
+def test_generated_manifest_admits_uniform_jurisdiction_relative_scope() -> None:
+    assert _generated_manifest_issues(_generated_manifest()) == []
+
+
+def test_generated_manifest_admits_exact_checkout_relative_scope() -> None:
+    payload = _generated_manifest()
+    payload["applied_files"] = [
+        {"path": f"us/{item['path']}", "sha256": item["sha256"]}
+        for item in payload["applied_files"]
+    ]
+    assert _generated_manifest_issues(payload) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ({"citation": "us/statute/42/1437c-1"}, "citation is stale"),
+        ({"generated_output_sha256": "9" * 64}, "output digest is stale"),
+        ({"runner": "openai-gpt-5.5"}, "runner/backend mismatch"),
+        ({"runner": "codex-attacker"}, "runner/backend mismatch"),
+        (
+            {"tool": "axiom-encode encode --apply (recovered from sandbox)"},
+            "tool is unsupported",
+        ),
+        ({"manual_exception": "relabelled"}, "claims a manual exception"),
+        (
+            {
+                "signature": {
+                    "algorithm": "hmac-sha256",
+                    "key_id": "historical-v1",
+                    "value": "1" * 64,
+                }
+            },
+            "unknown signature shape",
+        ),
+    ],
+)
+def test_generated_manifest_rejects_stale_or_relabelled_evidence(
+    mutation: dict[str, object], match: str
+) -> None:
+    payload = _generated_manifest()
+    payload.update(mutation)
+    assert any(match in issue for issue in _generated_manifest_issues(payload))
+
+
+def test_generated_manifest_rejects_mixed_applied_file_scopes() -> None:
+    payload = _generated_manifest()
+    payload["applied_files"][0]["path"] = "us/statutes/42/1437c–1.yaml"
+    assert any(
+        "one admitted path scope" in issue
+        for issue in _generated_manifest_issues(payload)
+    )
+
+
+def test_generated_manifest_rejects_unknown_provenance_fields() -> None:
+    payload = _generated_manifest()
+    payload["unknown_provenance"] = {"trusted": True}
+    assert any(
+        "fields are noncanonical" in issue
+        for issue in _generated_manifest_issues(payload)
+    )
+
+    payload = _generated_manifest()
+    payload["axiom_encode_git"]["unknown_identity"] = "trusted"
+    assert any(
+        "encoder identity is malformed" in issue
+        for issue in _generated_manifest_issues(payload)
+    )
+
+
+@pytest.mark.parametrize("backend", [[], {}])
+def test_generated_manifest_rejects_nonscalar_backend_without_crashing(
+    backend: object,
+) -> None:
+    payload = _generated_manifest()
+    payload["backend"] = backend
+    issues = legacy_v1_manifest_issues(
+        payload,
+        expected_files={
+            "us/statutes/42/1437c–1.yaml": "a" * 64,
+            "us/statutes/42/1437c–1.test.yaml": "b" * 64,
+        },
+        expected_primary_path="us/statutes/42/1437c–1.yaml",
+        expected_citation="us/statute/42/1437c–1",
+        jurisdiction_prefix="us",
+    )
+    assert any("backend is unsupported" in issue for issue in issues)
+
+
+def test_v1_dispatcher_preserves_manual_owner_admission() -> None:
+    assert (
+        legacy_v1_manifest_issues(
+            _manual_manifest(),
+            expected_files={
+                "us-la/statutes/47:32.yaml": "a" * 64,
+                "us-la/statutes/47:32.test.yaml": "b" * 64,
+            },
+            expected_primary_path="us-la/statutes/47:32.yaml",
+            expected_citation="us-la/statute/47:32",
+            jurisdiction_prefix="us-la",
+        )
+        == []
+    )
+
+
 def test_receipt_identity_binds_every_transaction_dimension() -> None:
     payload = receipt_identity_payload(
         base_commit="a" * 40,
@@ -240,6 +399,184 @@ def _legacy_checkout(tmp_path: Path) -> tuple[Path, Path, SimpleNamespace]:
         resolved_source=object(),
     )
     return checkout, content_root, source
+
+
+def _generated_unicode_checkout(
+    tmp_path: Path,
+) -> tuple[Path, Path, SimpleNamespace]:
+    checkout = tmp_path / "rulespec-us"
+    content_root = checkout / "us"
+    primary = content_root / "statutes/42/1437c–1.yaml"
+    companion = primary.with_name("1437c–1.test.yaml")
+    primary.parent.mkdir(parents=True)
+    primary.write_text(
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_path: us/statute/42/1437c–1\n"
+        "rules: []\n"
+    )
+    companion.write_text("[]\n")
+    primary_sha256 = hashlib.sha256(primary.read_bytes()).hexdigest()
+    companion_sha256 = hashlib.sha256(companion.read_bytes()).hexdigest()
+    manifest = checkout / ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+    manifest.parent.mkdir(parents=True)
+    payload = _generated_manifest()
+    payload["generated_output_sha256"] = primary_sha256
+    payload["applied_files"] = [
+        {"path": "statutes/42/1437c–1.yaml", "sha256": primary_sha256},
+        {
+            "path": "statutes/42/1437c–1.test.yaml",
+            "sha256": companion_sha256,
+        },
+    ]
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "init", "-q")
+    _git(checkout, "config", "user.email", "test@example.com")
+    _git(checkout, "config", "user.name", "Test")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "generated Unicode base")
+    source = SimpleNamespace(
+        requested="us/statute/42/1437c–1",
+        citation_path="us/statute/42/1437c–1",
+        body="official body",
+        resolved_source=object(),
+    )
+    return checkout, content_root, source
+
+
+def test_contract_admits_generated_v1_unicode_path_with_relative_file_scope(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _generated_unicode_checkout(tmp_path)
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+    assert contract.source == Path("us/statutes/42/1437c–1.yaml")
+    assert contract.destination == Path("us/statutes/42/1437c-1.yaml")
+    assert {item.path for item in contract.deleted_files} == {
+        Path("us/statutes/42/1437c–1.yaml"),
+        Path("us/statutes/42/1437c–1.test.yaml"),
+    }
+
+
+def _generated_unicode_receipt_blocks(
+    checkout: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
+    source = Path("us/statutes/42/1437c–1.yaml")
+    companion = source.with_name("1437c–1.test.yaml")
+    manifest = Path(".axiom/encoding-manifests/us/statutes/42/1437c–1.json")
+    return (
+        {
+            "owner_class": "v1-hmac-untrusted",
+            "trusted_generated_provenance": False,
+            "manifest": {
+                "path": manifest.as_posix(),
+                "sha256": hashlib.sha256(
+                    (checkout / manifest).read_bytes()
+                ).hexdigest(),
+            },
+            "files": [
+                {
+                    "path": path.as_posix(),
+                    "sha256": hashlib.sha256(
+                        (checkout / path).read_bytes()
+                    ).hexdigest(),
+                }
+                for path in (source, companion)
+            ],
+        },
+        {
+            "source": source.as_posix(),
+            "destination": "us/statutes/42/1437c-1.yaml",
+            "model_manifest_path": (
+                ".axiom/encoding-manifests/us/statutes/42/1437c-1.json"
+            ),
+        },
+    )
+
+
+def test_receipt_authority_reconstructs_generated_v1_unicode_path(
+    tmp_path: Path,
+) -> None:
+    checkout, _content_root, _source = _generated_unicode_checkout(tmp_path)
+    legacy, replacement = _generated_unicode_receipt_blocks(checkout)
+    base_commit = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacements, issues = _legacy_replacement_authoritative_map(
+        checkout,
+        base_commit=base_commit,
+        manifest_label=(".axiom/encoding-manifests/us/statutes/42/1437c-1.json"),
+        legacy=legacy,
+        replacement=replacement,
+    )
+
+    assert issues == []
+    assert replacements is not None
+
+
+def test_receipt_authority_rejects_relabelled_generated_v1_bytes(
+    tmp_path: Path,
+) -> None:
+    checkout, _content_root, _source = _generated_unicode_checkout(tmp_path)
+    manifest = checkout / ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+    payload = json.loads(manifest.read_text())
+    payload["runner"] = "codex-attacker"
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "relabel generated owner")
+    legacy, replacement = _generated_unicode_receipt_blocks(checkout)
+    base_commit = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    replacements, issues = _legacy_replacement_authoritative_map(
+        checkout,
+        base_commit=base_commit,
+        manifest_label=(".axiom/encoding-manifests/us/statutes/42/1437c-1.json"),
+        legacy=legacy,
+        replacement=replacement,
+    )
+
+    assert replacements is None
+    assert any("runner/backend mismatch" in issue for issue in issues)
+
+
+def test_contract_rejects_generated_v1_with_wrong_citation(tmp_path: Path) -> None:
+    checkout, content_root, source = _generated_unicode_checkout(tmp_path)
+    manifest = checkout / ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+    payload = json.loads(manifest.read_text())
+    payload["citation"] = "us/statute/42/1437c-1"
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "stale generated citation")
+
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="citation is stale"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
 
 
 def _in_place_legacy_checkout(

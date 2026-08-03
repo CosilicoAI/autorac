@@ -1701,7 +1701,7 @@ def test_legacy_pending_detection_requires_signed_untampered_evidence(
             "axiom_encode": encoder_execution_identity,
         },
         "legacy": {
-            "owner_class": "v1-manual-hmac-untrusted",
+            "owner_class": "v1-hmac-untrusted",
             "trusted_generated_provenance": False,
             "manifest": {
                 "path": ".axiom/encoding-manifests/us/statutes/47:32.json",
@@ -12559,7 +12559,7 @@ class TestCmdEncode:
                 "axiom_encode": encoder_execution_identity,
             },
             "legacy": {
-                "owner_class": "v1-manual-hmac-untrusted",
+                "owner_class": "v1-hmac-untrusted",
                 "trusted_generated_provenance": False,
                 "manifest": {
                     "path": ".axiom/encoding-manifests/us/statutes/47:32.json",
@@ -34471,7 +34471,7 @@ class TestResolverOwnedManifestWriter:
             "corpus_release": {},
             "validation_execution": None,
             "legacy": {
-                "owner_class": "v1-manual-hmac-untrusted",
+                "owner_class": "v1-hmac-untrusted",
                 "trusted_generated_provenance": False,
                 "manifest": {
                     "path": legacy_manifest_label,
