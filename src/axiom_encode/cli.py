@@ -267,6 +267,9 @@ from .legacy_replacement import (
     EXACT_DEPENDENT_TOOL as APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL,
 )
 from .legacy_replacement import (
+    LEGACY_MANUAL_OWNER_CLASS as APPLIED_ENCODING_LEGACY_MANUAL_OWNER_CLASS,
+)
+from .legacy_replacement import (
     LEGACY_OWNER_CLASS as APPLIED_ENCODING_LEGACY_OWNER_CLASS,
 )
 from .legacy_replacement import (
@@ -285,6 +288,12 @@ from .legacy_replacement import (
     RECEIPT_SCHEMA_V2 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
 )
 from .legacy_replacement import (
+    RECEIPT_SCHEMA_V3 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+)
+from .legacy_replacement import (
+    RETAINED_SUCCESSOR_TOOL as APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
+)
+from .legacy_replacement import (
     TOOL as APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL,
 )
 from .legacy_replacement import (
@@ -298,6 +307,9 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     LegacyReplacementPendingFile as _LegacyReplacementPendingFile,
+)
+from .legacy_replacement import (
+    LegacyReplacementRetainedSuccessor as _LegacyReplacementRetainedSuccessor,
 )
 from .legacy_replacement import (
     LegacyReplacementRewrite as _LegacyReplacementRewrite,
@@ -369,6 +381,7 @@ from .rulespec_path_migration import (
     exact_reference_replacements,
     load_plan_bytes,
     rewrite_exact_references,
+    rulespec_identity,
 )
 from .signing_broker import (
     _SIGNATURE_DOMAIN_PREFIX,
@@ -516,6 +529,20 @@ _LEGACY_EXACT_DEPENDENT_APPLY_MANIFEST_FIELDS = frozenset(
         "signature",
     }
 )
+_LEGACY_RETAINED_SUCCESSOR_APPLY_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "generated_at",
+        "tool",
+        "axiom_encode_version",
+        "axiom_encode_git",
+        VALIDATION_WAIVER_SET_SHA256_FIELD,
+        "applied_files",
+        "legacy_migration",
+        "retained_successor_manifest",
+        "signature",
+    }
+)
 _LEGACY_REPLACEMENT_RECEIPT_FIELDS = frozenset(
     {
         "schema_version",
@@ -536,7 +563,11 @@ _LEGACY_REPLACEMENT_RECEIPT_FIELDS = frozenset(
 _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
     {
         Path(".axiom/index/provisions_to_rules.json"),
+        Path(".axiom/pending-validation-fingerprints.json"),
+        Path(".axiom/toolchain.toml"),
+        Path("known-validation-gaps.yaml"),
         Path("oracle-coverage-pending.yaml"),
+        Path("tests/test_encoding_manifests.py"),
     }
 )
 _MODEL_APPLIED_FILE_FIELDS = frozenset({"path", "sha256"})
@@ -2266,6 +2297,19 @@ def main():
             "rewrite. Repeat once per composite dependent; each full primary/test "
             "group and old manifest is bound to clean HEAD and replaced atomically "
             "with signed v5 migration provenance."
+        ),
+    )
+    encode_parser.add_argument(
+        "--legacy-retained-successor-rulespec-path",
+        action="append",
+        default=[],
+        type=Path,
+        help=(
+            "Exact protected legacy v1 HMAC-owned primary whose unique canonical "
+            "destination already has a verified signed-v5 manifest. Repeat once "
+            "per retained successor; the old group is retired, canonical content "
+            "bytes are preserved, and its manifest is refreshed with common "
+            "replacement-receipt provenance."
         ),
     )
     _add_complete_source_unit_argument(encode_parser)
@@ -7153,20 +7197,237 @@ def _legacy_replacement_authoritative_map(
                 f"legacy replacement source manifest is not legacy-owned: {issue}"
                 for issue in legacy_manifest_issues
             )
+    moves = (
+        []
+        if in_place
+        else [PlannedMove(source=source_path, destination=destination_path)]
+    )
+    retained = replacement.get("retained_successors", [])
+    if not isinstance(retained, list):
+        issues.append("legacy retained successor authority is malformed")
+        retained = []
+    seen_retained_sources: set[Path] = set()
+    seen_retained_destinations: set[Path] = set()
+    for index, item in enumerate(retained):
+        label = f"legacy retained successor[{index}]"
+        if not isinstance(item, dict) or set(item) != {
+            "source",
+            "destination",
+            "legacy_owner_class",
+            "legacy_manifest",
+            "legacy_files",
+            "successor_manifest",
+            "successor_files",
+        }:
+            issues.append(f"{label} evidence is malformed")
+            continue
+        retained_source_raw = item.get("source")
+        retained_destination_raw = item.get("destination")
+        retained_source = (
+            Path(retained_source_raw)
+            if isinstance(retained_source_raw, str)
+            else Path()
+        )
+        retained_destination = (
+            Path(retained_destination_raw)
+            if isinstance(retained_destination_raw, str)
+            else Path()
+        )
+        try:
+            canonical_retained = canonical_destination(retained_source)
+        except PathMigrationPlanError:
+            canonical_retained = None
+        if (
+            not isinstance(retained_source_raw, str)
+            or not isinstance(retained_destination_raw, str)
+            or retained_source.is_absolute()
+            or retained_destination.is_absolute()
+            or retained_source.as_posix() != retained_source_raw
+            or retained_destination.as_posix() != retained_destination_raw
+            or canonical_retained != retained_destination
+            or retained_source == retained_destination
+            or retained_source in seen_retained_sources
+            or retained_source in seen_retained_destinations
+            or retained_destination in seen_retained_destinations
+            or retained_destination in seen_retained_sources
+            or retained_source in {source_path, destination_path}
+            or retained_destination in {source_path, destination_path}
+            or not _is_protected_rulespec_yaml_path(retained_source, roots=roots)
+            or not _is_protected_rulespec_yaml_path(retained_destination, roots=roots)
+            or retained_source.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+            or retained_destination.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+        ):
+            issues.append(f"{label} move identity is invalid")
+            continue
+        seen_retained_sources.add(retained_source)
+        seen_retained_destinations.add(retained_destination)
+
+        expected_old_group: dict[str, str] = {}
+        expected_successor_group: dict[str, str] = {}
+        retained_companions: set[Path] = set()
+        for old_path, successor_path in (
+            (retained_source, retained_destination),
+            (companion_path(retained_source), companion_path(retained_destination)),
+        ):
+            try:
+                old_raw = _rulespec_migration_base_blob(
+                    repo_path, base_commit, old_path
+                )
+            except RuntimeError:
+                old_raw = None
+            try:
+                successor_raw = _rulespec_migration_base_blob(
+                    repo_path, base_commit, successor_path
+                )
+            except RuntimeError:
+                successor_raw = None
+            if old_raw is None or successor_raw is None:
+                if old_path == retained_source or (old_raw is None) != (
+                    successor_raw is None
+                ):
+                    issues.append(f"{label} base group is incomplete")
+                continue
+            expected_old_group[old_path.as_posix()] = hashlib.sha256(
+                old_raw
+            ).hexdigest()
+            expected_successor_group[successor_path.as_posix()] = hashlib.sha256(
+                successor_raw
+            ).hexdigest()
+            if old_path != retained_source:
+                retained_companions.add(old_path)
+
+        def evidence_map(raw: object, *, evidence_label: str) -> dict[str, str]:
+            parsed: dict[str, str] = {}
+            if not isinstance(raw, list):
+                issues.append(f"{label} {evidence_label} is malformed")
+                return parsed
+            for entry in raw:
+                if (
+                    not isinstance(entry, dict)
+                    or set(entry) != {"path", "sha256"}
+                    or not isinstance(entry.get("path"), str)
+                    or not isinstance(entry.get("sha256"), str)
+                    or _SHA256_HEX_PATTERN.fullmatch(entry["sha256"]) is None
+                    or entry["path"] in parsed
+                ):
+                    issues.append(f"{label} {evidence_label} entry is malformed")
+                    continue
+                parsed[entry["path"]] = entry["sha256"]
+            return parsed
+
+        old_evidence = evidence_map(
+            item.get("legacy_files"), evidence_label="legacy files"
+        )
+        successor_evidence = evidence_map(
+            item.get("successor_files"), evidence_label="successor files"
+        )
+        if old_evidence != expected_old_group:
+            issues.append(f"{label} legacy files do not match the base group")
+        if successor_evidence != expected_successor_group:
+            issues.append(f"{label} successor files do not match the base group")
+
+        old_manifest = item.get("legacy_manifest")
+        old_manifest_path = _applied_encoding_manifest_path(retained_source)
+        old_manifest_raw: bytes | None = None
+        if (
+            not isinstance(old_manifest, dict)
+            or set(old_manifest) != {"path", "sha256"}
+            or old_manifest.get("path") != old_manifest_path.as_posix()
+            or not isinstance(old_manifest.get("sha256"), str)
+        ):
+            issues.append(f"{label} legacy manifest evidence is malformed")
+        else:
+            try:
+                old_manifest_raw = _rulespec_migration_base_blob(
+                    repo_path, base_commit, old_manifest_path
+                )
+            except RuntimeError as exc:
+                issues.append(f"{label} legacy manifest is absent: {exc}")
+            else:
+                if (
+                    hashlib.sha256(old_manifest_raw).hexdigest()
+                    != old_manifest["sha256"]
+                ):
+                    issues.append(f"{label} legacy manifest hash is stale")
+        if old_manifest_raw is not None:
+            try:
+                old_payload = json.loads(old_manifest_raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError, RecursionError):
+                issues.append(f"{label} legacy manifest is not JSON")
+            else:
+                try:
+                    retained_primary_raw = _rulespec_migration_base_blob(
+                        repo_path, base_commit, retained_source
+                    )
+                except RuntimeError:
+                    retained_citations = ()
+                else:
+                    retained_citations = _legacy_primary_source_citations(
+                        retained_primary_raw
+                    )
+                owner_issues = _legacy_receipt_v1_manifest_issues(
+                    old_payload,
+                    owner_class=item.get("legacy_owner_class"),
+                    expected_files=expected_old_group,
+                    expected_primary_path=retained_source.as_posix(),
+                    expected_citation=(
+                        retained_citations[0] if retained_citations else ""
+                    ),
+                    jurisdiction_prefix=retained_source.parts[0],
+                    allow_unmarked_manual_exception=True,
+                )
+                issues.extend(
+                    f"{label} legacy ownership is invalid: {issue}"
+                    for issue in owner_issues
+                )
+
+        successor_manifest = item.get("successor_manifest")
+        successor_manifest_path = _applied_encoding_manifest_path(retained_destination)
+        if (
+            not isinstance(successor_manifest, dict)
+            or set(successor_manifest) != {"path", "sha256", "payload"}
+            or successor_manifest.get("path") != successor_manifest_path.as_posix()
+            or not isinstance(successor_manifest.get("sha256"), str)
+            or not isinstance(successor_manifest.get("payload"), dict)
+        ):
+            issues.append(f"{label} successor manifest evidence is malformed")
+        else:
+            try:
+                base_successor_manifest = _rulespec_migration_base_blob(
+                    repo_path, base_commit, successor_manifest_path
+                )
+            except RuntimeError as exc:
+                issues.append(f"{label} successor manifest is absent: {exc}")
+            else:
+                nested_raw = (
+                    json.dumps(successor_manifest["payload"], indent=2, sort_keys=True)
+                    + "\n"
+                ).encode()
+                if (
+                    base_successor_manifest != nested_raw
+                    or hashlib.sha256(base_successor_manifest).hexdigest()
+                    != successor_manifest["sha256"]
+                    or successor_manifest["payload"].get("applied_files")
+                    != item.get("successor_files")
+                ):
+                    issues.append(f"{label} successor manifest base binding is stale")
+
+        moves.append(
+            PlannedMove(
+                source=retained_source,
+                destination=retained_destination,
+            )
+        )
+        existing_companions.update(retained_companions)
     if issues:
         return None, issues
-    if in_place:
-        replacements = {}
-    else:
-        try:
-            replacements = exact_reference_replacements(
-                [PlannedMove(source=source_path, destination=destination_path)],
-                existing_companions=existing_companions,
-            )
-        except PathMigrationPlanError as exc:
-            return None, [
-                f"legacy replacement authority cannot be reconstructed: {exc}"
-            ]
+    try:
+        replacements = exact_reference_replacements(
+            moves,
+            existing_companions=existing_companions,
+        )
+    except PathMigrationPlanError as exc:
+        return None, [f"legacy replacement authority cannot be reconstructed: {exc}"]
     return replacements, []
 
 
@@ -7471,6 +7732,27 @@ def _legacy_replacement_reference_inventory_issues(
             for item in exact_rewrites:
                 if isinstance(item, dict):
                     classify(item.get("path"), "exact dependent")
+    retained_manifest_paths: set[Path] = set()
+    retained = replacement.get("retained_successors")
+    if isinstance(retained, list):
+        for successor in retained:
+            if not isinstance(successor, dict):
+                continue
+            legacy_manifest_evidence = successor.get("legacy_manifest")
+            if isinstance(legacy_manifest_evidence, dict) and isinstance(
+                legacy_manifest_evidence.get("path"), str
+            ):
+                retained_manifest_paths.add(Path(legacy_manifest_evidence["path"]))
+            legacy_successor_files = successor.get("legacy_files")
+            if isinstance(legacy_successor_files, list):
+                for item in legacy_successor_files:
+                    if isinstance(item, dict):
+                        classify(item.get("path"), "deleted source")
+    metadata_reconciliations = replacement.get("metadata_reconciliations")
+    if isinstance(metadata_reconciliations, list):
+        for item in metadata_reconciliations:
+            if isinstance(item, dict):
+                classify(item.get("path"), "metadata rewrite")
 
     legacy_manifest = legacy.get("manifest")
     legacy_manifest_path = (
@@ -7620,6 +7902,7 @@ def _legacy_replacement_reference_inventory_issues(
             path in deleted_paths
             or path == legacy_manifest_path
             or path in exact_manifest_paths
+            or path in retained_manifest_paths
         ):
             continue
         mode, object_id, size = base_entries[path]
@@ -7708,6 +7991,13 @@ def _legacy_replacement_reference_inventory_issues(
                 )
             continue
         if path not in hit_paths:
+            if (
+                owner == "metadata rewrite"
+                and path in _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS
+            ):
+                # Structured metadata removals and the derived toolchain binding
+                # are proved by their dedicated deterministic verifier below.
+                continue
             issues.append(
                 "legacy replacement reference evidence has no authoritative base hit: "
                 f"{path.as_posix()}"
@@ -7861,6 +8151,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             not in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -7922,16 +8213,15 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
         if authoritative_replacements is None or authority_issues:
             pending.append(f"invalid:{manifest_label}")
             continue
-        if (
-            receipt.get("schema_version")
-            == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
-            and _legacy_destination_predecessor_issues(
-                repo_path,
-                base_commit=base_commit,
-                authoritative_replacements=authoritative_replacements,
-                legacy=receipt.get("legacy"),
-                replacement=replacement,
-            )
+        if receipt.get("schema_version") in {
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+        } and _legacy_destination_predecessor_issues(
+            repo_path,
+            base_commit=base_commit,
+            authoritative_replacements=authoritative_replacements,
+            legacy=receipt.get("legacy"),
+            replacement=replacement,
         ):
             pending.append(f"invalid:{manifest_label}")
             continue
@@ -8102,6 +8392,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             not in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -20194,6 +20485,7 @@ def _manifest_coverage_by_file(
                 in APPLIED_ENCODING_GENERATED_BACKENDS
             )
             or payload.get("tool") == APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL
+            or payload.get("tool") == APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL
         )
         applied_files = payload.get("applied_files")
         if not isinstance(applied_files, list):
@@ -20243,7 +20535,10 @@ def _applied_manifest_source_attestation_issues(
 ) -> list[str]:
     """Validate source provenance claimed by an applied encoding manifest."""
 
-    if payload.get("tool") == APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL:
+    if payload.get("tool") in {
+        APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL,
+        APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
+    }:
         return []
     backend = _normalized_manifest_backend(payload)
     attestation_claimed = "source_attestation" in payload
@@ -20739,6 +21034,48 @@ def _applied_manifest_tool_execution_issues(
                     "the running pinned encoder"
                 )
             return issues
+        if tool == APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL:
+            if not isinstance(applied_files, list) or any(
+                not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                for item in applied_files
+            ):
+                issues.append(
+                    f"{manifest_label} retained successor migration has malformed "
+                    "file entries"
+                )
+            retained_manifest = payload.get("retained_successor_manifest")
+            if (
+                not isinstance(retained_manifest, dict)
+                or retained_manifest.get("backend")
+                not in APPLIED_ENCODING_ENCODER_BACKENDS
+                or retained_manifest.get("tool") != APPLIED_ENCODING_MODEL_TOOL
+                or retained_manifest.get("schema_version")
+                != APPLIED_ENCODING_MANIFEST_SCHEMA
+            ):
+                issues.append(
+                    f"{manifest_label} retained successor must nest its original "
+                    "current-v5 model apply manifest"
+                )
+            if (
+                "deterministic_execution" in payload
+                or "validation_execution" in payload
+                or "source_attestation" in payload
+            ):
+                issues.append(
+                    f"{manifest_label} retained successor migration must preserve "
+                    "receipt-bound provenance"
+                )
+            provenance = payload.get("axiom_encode_git")
+            if not isinstance(provenance, dict) or (
+                provenance.get("commit") != expected_encoder_identity.get("commit")
+                or provenance.get("version") != expected_encoder_identity.get("version")
+                or provenance.get("dirty_tracked") is not False
+            ):
+                issues.append(
+                    f"{manifest_label} retained successor migration does not match "
+                    "the running pinned encoder"
+                )
+            return issues
         if tool == APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL:
             replacement_manifest = payload.get("replacement_manifest")
             if (
@@ -20880,6 +21217,10 @@ def _applied_manifest_exact_schema_issues(
         expected_fields = _LEGACY_EXACT_DEPENDENT_APPLY_MANIFEST_FIELDS
         expected_item_fields = _MODEL_APPLIED_FILE_FIELDS
         contract = "legacy exact dependent"
+    elif backend is None and tool == APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL:
+        expected_fields = _LEGACY_RETAINED_SUCCESSOR_APPLY_MANIFEST_FIELDS
+        expected_item_fields = _MODEL_APPLIED_FILE_FIELDS
+        contract = "legacy retained successor"
     else:
         return []
 
@@ -21939,6 +22280,10 @@ def _legacy_replacement_manifest_issues(
     if nested_signature_issue:
         issues.append(f"{nested_label} {nested_signature_issue}")
     nested_execution = nested.get("validation_execution")
+    nested_waiver_set_sha256 = nested.get(VALIDATION_WAIVER_SET_SHA256_FIELD)
+    pre_migration_waiver_set_sha256s: set[str] = set()
+    if isinstance(nested_waiver_set_sha256, str):
+        pre_migration_waiver_set_sha256s.add(nested_waiver_set_sha256)
     nested_encoder = (
         nested_execution.get("axiom_encode")
         if isinstance(nested_execution, dict)
@@ -21956,12 +22301,12 @@ def _legacy_replacement_manifest_issues(
         _model_apply_validation_execution_issues(
             nested,
             manifest_label=nested_label,
-            expected_waiver_set_sha256=expected_waiver_set_sha256,
+            expected_waiver_set_sha256=str(nested_waiver_set_sha256 or ""),
             expected_encoder_identity=expected_nested_encoder,
         )
     )
-    if nested.get(VALIDATION_WAIVER_SET_SHA256_FIELD) != expected_waiver_set_sha256:
-        issues.append(f"{nested_label} waiver-set binding is stale")
+    if not isinstance(nested_waiver_set_sha256, str):
+        issues.append(f"{nested_label} waiver-set binding is malformed")
     if payload.get("source_attestation") != nested.get("source_attestation"):
         issues.append(f"{nested_label} source_attestation differs from replacement")
 
@@ -22012,6 +22357,43 @@ def _legacy_replacement_manifest_issues(
         and isinstance(receipt_replacement.get("exact_dependents"), list)
         else []
     )
+    receipt_retained_successors = (
+        receipt_replacement.get("retained_successors")
+        if isinstance(receipt_replacement, dict)
+        and isinstance(receipt_replacement.get("retained_successors"), list)
+        else []
+    )
+    receipt_live_files = (
+        receipt_replacement.get("live_files")
+        if isinstance(receipt_replacement, dict)
+        and isinstance(receipt_replacement.get("live_files"), list)
+        else []
+    )
+    receipt_live_paths = {
+        item.get("path") for item in receipt_live_files if isinstance(item, dict)
+    }
+    identity_deleted_files = [
+        {"path": item.get("path"), "deleted": True}
+        for item in (
+            receipt_legacy.get("files", [])
+            if isinstance(receipt_legacy, dict)
+            and isinstance(receipt_legacy.get("files"), list)
+            else []
+        )
+        if isinstance(item, dict) and item.get("path") not in receipt_live_paths
+    ]
+    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        identity_deleted_files.extend(
+            {"path": item.get("path"), "deleted": True}
+            for successor in receipt_retained_successors
+            if isinstance(successor, dict)
+            for item in (
+                successor.get("legacy_files", [])
+                if isinstance(successor.get("legacy_files"), list)
+                else []
+            )
+            if isinstance(item, dict)
+        )
     identity_payload = receipt_identity_payload(
         base_commit=(
             str(receipt_repository.get("base_commit"))
@@ -22029,33 +22411,8 @@ def _legacy_replacement_manifest_issues(
             if isinstance(receipt_replacement, dict)
             else ""
         ),
-        live_files=(
-            receipt_replacement.get("live_files")
-            if isinstance(receipt_replacement, dict)
-            and isinstance(receipt_replacement.get("live_files"), list)
-            else []
-        ),
-        deleted_files=[
-            {"path": item.get("path"), "deleted": True}
-            for item in (
-                receipt_legacy.get("files", [])
-                if isinstance(receipt_legacy, dict)
-                and isinstance(receipt_legacy.get("files"), list)
-                else []
-            )
-            if isinstance(item, dict)
-            and item.get("path")
-            not in {
-                live.get("path")
-                for live in (
-                    receipt_replacement.get("live_files", [])
-                    if isinstance(receipt_replacement, dict)
-                    and isinstance(receipt_replacement.get("live_files"), list)
-                    else []
-                )
-                if isinstance(live, dict)
-            }
-        ],
+        live_files=receipt_live_files,
+        deleted_files=identity_deleted_files,
         rewrites=(
             receipt_replacement.get("rewrites")
             if isinstance(receipt_replacement, dict)
@@ -22073,13 +22430,18 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
         ),
         destination_predecessor_files=(
             receipt_replacement.get("destination_predecessor_files")
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             and isinstance(receipt_replacement, dict)
             and isinstance(
                 receipt_replacement.get("destination_predecessor_files"), list
@@ -22088,11 +22450,27 @@ def _legacy_replacement_manifest_issues(
         ),
         destination_predecessor_class=(
             receipt_replacement.get("destination_predecessor_class")
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             and isinstance(receipt_replacement, dict)
             and isinstance(
                 receipt_replacement.get("destination_predecessor_class"), str
             )
+            else None
+        ),
+        retained_successors=(
+            receipt_retained_successors
+            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            else None
+        ),
+        metadata_reconciliations=(
+            receipt_replacement.get("metadata_reconciliations")
+            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            and isinstance(receipt_replacement, dict)
+            and isinstance(receipt_replacement.get("metadata_reconciliations"), list)
             else None
         ),
     )
@@ -22107,6 +22485,7 @@ def _legacy_replacement_manifest_issues(
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -22206,6 +22585,7 @@ def _legacy_replacement_manifest_issues(
                 if receipt_schema
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -22215,6 +22595,15 @@ def _legacy_replacement_manifest_issues(
                     "destination_predecessor_class",
                     "destination_predecessor_files",
                 }
+                if receipt_schema
+                in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }
+                else set()
+            )
+            | (
+                {"retained_successors", "metadata_reconciliations"}
                 if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
                 else set()
             )
@@ -22255,7 +22644,10 @@ def _legacy_replacement_manifest_issues(
                 for issue in authority_issues
             ],
         ]
-    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+    if receipt_schema in {
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+    }:
         issues.extend(
             f"{manifest_label} destination predecessor is invalid: {issue}"
             for issue in _legacy_destination_predecessor_issues(
@@ -22858,6 +23250,314 @@ def _legacy_replacement_manifest_issues(
                 f"migration manifest for {primary}"
             )
 
+    retained_successors = replacement.get("retained_successors", [])
+    retained_deleted_entries: list[dict[str, object]] = []
+    if not isinstance(retained_successors, list):
+        issues.append(f"{manifest_label} retained successors are malformed")
+        retained_successors = []
+    for successor in retained_successors:
+        if not isinstance(successor, dict):
+            continue
+        source_raw = successor.get("source")
+        destination_raw = successor.get("destination")
+        if not isinstance(source_raw, str) or not isinstance(destination_raw, str):
+            continue
+        source_path = Path(source_raw)
+        destination_path = Path(destination_raw)
+        legacy_successor_files = successor.get("legacy_files")
+        successor_files = successor.get("successor_files")
+        successor_manifest_evidence = successor.get("successor_manifest")
+        if not isinstance(legacy_successor_files, list) or not isinstance(
+            successor_files, list
+        ):
+            continue
+        retained_deleted_entries.extend(
+            {"path": item["path"], "deleted": True}
+            for item in legacy_successor_files
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        )
+        old_manifest_path = _applied_encoding_manifest_path(source_path)
+        if (repo_path / old_manifest_path).exists() or (
+            repo_path / old_manifest_path
+        ).is_symlink():
+            issues.append(
+                f"{manifest_label} retained successor legacy manifest still exists: "
+                f"{old_manifest_path}"
+            )
+        for item in legacy_successor_files:
+            old_path = Path(str(item.get("path"))) if isinstance(item, dict) else Path()
+            if (repo_path / old_path).exists() or (repo_path / old_path).is_symlink():
+                issues.append(
+                    f"{manifest_label} retained successor source still exists: {old_path}"
+                )
+
+        nested_successor = (
+            successor_manifest_evidence.get("payload")
+            if isinstance(successor_manifest_evidence, dict)
+            else None
+        )
+        nested_label = f"{manifest_label}.retained_successor[{destination_raw}]"
+        if not isinstance(nested_successor, dict):
+            issues.append(f"{nested_label} original manifest is malformed")
+            continue
+        issues.extend(
+            _applied_manifest_exact_schema_issues(
+                nested_successor, manifest_label=nested_label
+            )
+        )
+        nested_successor_signature_issue = _applied_encoding_manifest_signature_issue(
+            nested_successor, signing_broker
+        )
+        if nested_successor_signature_issue:
+            issues.append(f"{nested_label} {nested_successor_signature_issue}")
+        successor_execution = nested_successor.get("validation_execution")
+        successor_encoder = (
+            successor_execution.get("axiom_encode")
+            if isinstance(successor_execution, dict)
+            else None
+        )
+        expected_successor_encoder = (
+            successor_encoder if isinstance(successor_encoder, dict) else {}
+        )
+        issues.extend(
+            _applied_manifest_tool_execution_issues(
+                nested_successor,
+                manifest_label=nested_label,
+                expected_encoder_identity=expected_successor_encoder,
+            )
+        )
+        issues.extend(
+            _model_apply_validation_execution_issues(
+                nested_successor,
+                manifest_label=nested_label,
+                expected_waiver_set_sha256=str(
+                    nested_successor.get(VALIDATION_WAIVER_SET_SHA256_FIELD) or ""
+                ),
+                expected_encoder_identity=expected_successor_encoder,
+            )
+        )
+        successor_waiver_set_sha256 = nested_successor.get(
+            VALIDATION_WAIVER_SET_SHA256_FIELD
+        )
+        if isinstance(successor_waiver_set_sha256, str):
+            pre_migration_waiver_set_sha256s.add(successor_waiver_set_sha256)
+        else:
+            issues.append(f"{nested_label} waiver-set binding is malformed")
+        live_successor_snapshots: dict[str, bytes] = {}
+        for item in successor_files:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            current_path = Path(item["path"])
+            try:
+                current_raw = read_bounded_regular_file(
+                    repo_path,
+                    repo_path / current_path,
+                    label="retained successor live file",
+                    max_bytes=16 * 1024 * 1024,
+                    required_mode=0o644,
+                )
+            except (OSError, UnsafeCorpusPathError) as exc:
+                issues.append(f"{nested_label} live file is unreadable: {exc}")
+                continue
+            live_successor_snapshots[current_path.as_posix()] = current_raw
+            if hashlib.sha256(current_raw).hexdigest() != item.get("sha256"):
+                issues.append(f"{nested_label} live file hash is stale: {current_path}")
+        issues.extend(
+            _applied_manifest_source_attestation_issues(
+                nested_successor,
+                repo_path=repo_path,
+                root_prefix="",
+                manifest_label=nested_label,
+                rulespec_snapshots=live_successor_snapshots,
+            )
+        )
+        current_manifest_path = _applied_encoding_manifest_path(destination_path)
+        try:
+            current_manifest_raw = read_bounded_regular_file(
+                repo_path,
+                repo_path / current_manifest_path,
+                label="retained successor refreshed manifest",
+                max_bytes=4 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            current_manifest = json.loads(current_manifest_raw.decode("utf-8"))
+        except (
+            OSError,
+            UnsafeCorpusPathError,
+            UnicodeError,
+            json.JSONDecodeError,
+            RecursionError,
+        ):
+            current_manifest = None
+        legacy_manifest_evidence = successor.get("legacy_manifest")
+        expected_successor_migration = {
+            "receipt_path": receipt_path.as_posix(),
+            "receipt_sha256": receipt_sha256,
+            "source": source_raw,
+            "destination": destination_raw,
+            "legacy_manifest_path": (
+                legacy_manifest_evidence.get("path")
+                if isinstance(legacy_manifest_evidence, dict)
+                else None
+            ),
+            "legacy_manifest_sha256": (
+                legacy_manifest_evidence.get("sha256")
+                if isinstance(legacy_manifest_evidence, dict)
+                else None
+            ),
+            "successor_manifest_sha256": (
+                successor_manifest_evidence.get("sha256")
+                if isinstance(successor_manifest_evidence, dict)
+                else None
+            ),
+        }
+        if (
+            not isinstance(current_manifest, dict)
+            or set(current_manifest) != _LEGACY_RETAINED_SUCCESSOR_APPLY_MANIFEST_FIELDS
+            or current_manifest.get("schema_version")
+            != APPLIED_ENCODING_MANIFEST_SCHEMA
+            or current_manifest.get("tool")
+            != APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL
+            or current_manifest.get("axiom_encode_version")
+            != payload.get("axiom_encode_version")
+            or current_manifest.get("axiom_encode_git")
+            != payload.get("axiom_encode_git")
+            or current_manifest.get(VALIDATION_WAIVER_SET_SHA256_FIELD)
+            != expected_waiver_set_sha256
+            or current_manifest.get("applied_files") != successor_files
+            or current_manifest.get("legacy_migration") != expected_successor_migration
+            or current_manifest.get("retained_successor_manifest") != nested_successor
+            or _applied_encoding_manifest_signature_issue(
+                current_manifest, signing_broker
+            )
+        ):
+            issues.append(
+                f"{manifest_label} retained successor lacks its authenticated v5 "
+                f"migration manifest for {destination_raw}"
+            )
+
+    metadata_reconciliations = replacement.get("metadata_reconciliations", [])
+    metadata_entries: list[dict[str, object]] = []
+    if not isinstance(metadata_reconciliations, list):
+        issues.append(f"{manifest_label} metadata reconciliations are malformed")
+        metadata_reconciliations = []
+    primary_moves = [
+        PlannedMove(source=Path(old), destination=Path(new))
+        for old, new in authoritative_replacements.items()
+        if old.endswith(RULESPEC_FILE_SUFFIX)
+        and not old.endswith(RULESPEC_TEST_FILE_SUFFIX)
+    ]
+    post_migration_waiver_sha256: str | None = None
+    try:
+        base_waiver_raw = _rulespec_migration_base_blob(
+            repo_path,
+            base_commit,
+            Path("known-validation-gaps.yaml"),
+        )
+        rewritten_waiver_raw, _waiver_operations = (
+            _legacy_metadata_reconciliation_bytes(
+                Path("known-validation-gaps.yaml"),
+                base_waiver_raw,
+                moves=primary_moves,
+            )
+        )
+        post_migration_waiver_sha256 = hashlib.sha256(rewritten_waiver_raw).hexdigest()
+    except (RuntimeError, ValueError):
+        pass
+    listed_metadata_paths: set[Path] = set()
+    for reconciliation in metadata_reconciliations:
+        if not isinstance(reconciliation, dict) or set(reconciliation) != {
+            "path",
+            "before_sha256",
+            "after_sha256",
+            "operations",
+        }:
+            issues.append(f"{manifest_label} metadata reconciliation is malformed")
+            continue
+        path_raw = reconciliation.get("path")
+        path = Path(path_raw) if isinstance(path_raw, str) else Path()
+        if (
+            path not in _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS
+            or path in listed_metadata_paths
+        ):
+            issues.append(
+                f"{manifest_label} metadata reconciliation path is unauthorized"
+            )
+            continue
+        listed_metadata_paths.add(path)
+        try:
+            base_raw = _rulespec_migration_base_blob(repo_path, base_commit, path)
+            live_raw = read_bounded_regular_file(
+                repo_path,
+                repo_path / path,
+                label="legacy metadata reconciliation live file",
+                max_bytes=16 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            expected_raw, expected_operations = _legacy_metadata_reconciliation_bytes(
+                path,
+                base_raw,
+                moves=primary_moves,
+                validation_waiver_set_sha256=post_migration_waiver_sha256,
+            )
+        except (OSError, RuntimeError, UnsafeCorpusPathError, ValueError) as exc:
+            issues.append(
+                f"{manifest_label} metadata reconciliation is unverifiable: {exc}"
+            )
+            continue
+        if (
+            reconciliation.get("before_sha256") != hashlib.sha256(base_raw).hexdigest()
+            or reconciliation.get("after_sha256")
+            != hashlib.sha256(live_raw).hexdigest()
+            or live_raw != expected_raw
+            or reconciliation.get("operations") != list(expected_operations)
+            or expected_raw == base_raw
+        ):
+            issues.append(
+                f"{manifest_label} metadata reconciliation proof is stale for {path}"
+            )
+        metadata_entries.append(
+            {"path": path.as_posix(), "sha256": hashlib.sha256(live_raw).hexdigest()}
+        )
+    expected_metadata_paths: set[Path] = set()
+    for path in _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS:
+        try:
+            base_raw = _rulespec_migration_base_blob(repo_path, base_commit, path)
+            expected_raw, _operations = _legacy_metadata_reconciliation_bytes(
+                path,
+                base_raw,
+                moves=primary_moves,
+                validation_waiver_set_sha256=post_migration_waiver_sha256,
+            )
+        except (RuntimeError, ValueError):
+            continue
+        if expected_raw != base_raw:
+            expected_metadata_paths.add(path)
+    if listed_metadata_paths != expected_metadata_paths:
+        issues.append(
+            f"{manifest_label} metadata reconciliation inventory is not exact"
+        )
+    waiver_transition = next(
+        (
+            item
+            for item in metadata_reconciliations
+            if isinstance(item, dict)
+            and item.get("path") == "known-validation-gaps.yaml"
+            and item.get("after_sha256") == expected_waiver_set_sha256
+        ),
+        None,
+    )
+    for pre_migration_waiver in pre_migration_waiver_set_sha256s:
+        if pre_migration_waiver == expected_waiver_set_sha256:
+            continue
+        if (
+            not isinstance(waiver_transition, dict)
+            or waiver_transition.get("before_sha256") != pre_migration_waiver
+        ):
+            issues.append(
+                f"{manifest_label} nested waiver-set transition is not authenticated"
+            )
+
     outer_entries = payload.get("applied_files")
     outer_list = outer_entries if isinstance(outer_entries, list) else []
     expected_entries: list[dict[str, object]] = []
@@ -22959,7 +23659,7 @@ def _legacy_replacement_manifest_issues(
                         f"{manifest_label} rewrite transformation is not exact for {path}"
                     )
             expected_entries.append({"path": path, "sha256": after})
-    expected_entries.extend(
+    primary_deleted_entries = [
         {"path": item["path"], "deleted": True}
         for item in legacy_files
         if isinstance(item, dict)
@@ -22970,7 +23670,10 @@ def _legacy_replacement_manifest_issues(
             for live in replacement.get("live_files", [])
             if isinstance(live, dict)
         }
-    )
+    ]
+    expected_entries.extend(metadata_entries)
+    expected_entries.extend(primary_deleted_entries)
+    expected_entries.extend(retained_deleted_entries)
     if outer_list != expected_entries:
         issues.append(
             f"{manifest_label} applied files do not exactly match replacement receipt"
@@ -23049,6 +23752,7 @@ def _legacy_exact_dependent_manifest_issues(
         or receipt.get("schema_version")
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -23149,6 +23853,152 @@ def _legacy_exact_dependent_manifest_issues(
         )
     )
     return issues
+
+
+def _legacy_retained_successor_manifest_issues(
+    payload: Mapping[str, object],
+    *,
+    repo_path: Path,
+    manifest_label: str,
+    signing_broker: SigningBroker | Ed25519PublicKey,
+    expected_waiver_set_sha256: str,
+    local_corpus_release: LocalCorpusRelease | None,
+) -> list[str]:
+    """Verify a preserved canonical successor through its shared v4 receipt."""
+
+    if (
+        payload.get("backend") is not None
+        or payload.get("tool") != APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL
+    ):
+        return []
+    binding = payload.get("legacy_migration")
+    if not isinstance(binding, dict) or set(binding) != {
+        "receipt_path",
+        "receipt_sha256",
+        "source",
+        "destination",
+        "legacy_manifest_path",
+        "legacy_manifest_sha256",
+        "successor_manifest_sha256",
+    }:
+        return [f"{manifest_label} retained successor binding is malformed"]
+    receipt_path_raw = binding.get("receipt_path")
+    receipt_path = (
+        Path(receipt_path_raw) if isinstance(receipt_path_raw, str) else Path()
+    )
+    destination_raw = binding.get("destination")
+    destination = Path(destination_raw) if isinstance(destination_raw, str) else Path()
+    if (
+        not isinstance(receipt_path_raw, str)
+        or receipt_path.is_absolute()
+        or receipt_path.parent != APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_DIR
+        or receipt_path.suffix != ".json"
+        or not isinstance(destination_raw, str)
+        or destination.is_absolute()
+        or destination.as_posix() != destination_raw
+        or _applied_encoding_manifest_path(destination).as_posix() != manifest_label
+    ):
+        return [f"{manifest_label} retained successor identity is invalid"]
+    try:
+        receipt_raw = read_bounded_regular_file(
+            repo_path,
+            repo_path / receipt_path,
+            label="legacy retained successor receipt",
+            max_bytes=4 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        receipt = json.loads(receipt_raw.decode("utf-8"))
+    except (
+        OSError,
+        UnsafeCorpusPathError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ):
+        return [f"{manifest_label} retained successor receipt is unreadable"]
+    receipt_sha256 = hashlib.sha256(receipt_raw).hexdigest()
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
+        or receipt.get("schema_version")
+        != APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+        or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
+        or receipt_sha256 != binding.get("receipt_sha256")
+        or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
+    ):
+        return [f"{manifest_label} retained successor receipt is invalid"]
+    replacement = receipt.get("replacement")
+    retained = (
+        replacement.get("retained_successors")
+        if isinstance(replacement, dict)
+        else None
+    )
+    matches = (
+        [
+            item
+            for item in retained
+            if isinstance(item, dict)
+            and item.get("source") == binding.get("source")
+            and item.get("destination") == destination_raw
+        ]
+        if isinstance(retained, list)
+        else []
+    )
+    if len(matches) != 1:
+        return [f"{manifest_label} is not uniquely authorized by its cascade receipt"]
+    evidence = matches[0]
+    legacy_manifest = evidence.get("legacy_manifest")
+    successor_manifest = evidence.get("successor_manifest")
+    if (
+        evidence.get("successor_files") != payload.get("applied_files")
+        or not isinstance(legacy_manifest, dict)
+        or legacy_manifest.get("path") != binding.get("legacy_manifest_path")
+        or legacy_manifest.get("sha256") != binding.get("legacy_manifest_sha256")
+        or not isinstance(successor_manifest, dict)
+        or successor_manifest.get("sha256") != binding.get("successor_manifest_sha256")
+        or successor_manifest.get("payload")
+        != payload.get("retained_successor_manifest")
+    ):
+        return [f"{manifest_label} retained successor receipt binding is stale"]
+    outer_path_raw = (
+        replacement.get("model_manifest_path")
+        if isinstance(replacement, dict)
+        else None
+    )
+    outer_path = Path(outer_path_raw) if isinstance(outer_path_raw, str) else Path()
+    try:
+        outer_raw = read_bounded_regular_file(
+            repo_path,
+            repo_path / outer_path,
+            label="legacy retained successor cascade owner",
+            max_bytes=4 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        outer = json.loads(outer_raw.decode("utf-8"))
+    except (
+        OSError,
+        UnsafeCorpusPathError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+    ):
+        return [f"{manifest_label} retained successor cascade owner is unreadable"]
+    if (
+        not isinstance(outer_path_raw, str)
+        or not isinstance(outer, dict)
+        or set(outer) != _LEGACY_REPLACEMENT_APPLY_MANIFEST_FIELDS
+        or outer.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
+        or _applied_encoding_manifest_signature_issue(outer, signing_broker)
+    ):
+        return [f"{manifest_label} retained successor cascade owner is invalid"]
+    return _legacy_replacement_manifest_issues(
+        outer,
+        repo_path=repo_path,
+        manifest_label=outer_path.as_posix(),
+        signing_broker=signing_broker,
+        expected_waiver_set_sha256=expected_waiver_set_sha256,
+        local_corpus_release=local_corpus_release,
+    )
 
 
 def _load_verified_applied_encoding_manifest_payload(
@@ -23407,6 +24257,16 @@ def _load_verified_applied_encoding_manifest_payload(
     )
     issues.extend(
         _legacy_exact_dependent_manifest_issues(
+            payload,
+            repo_path=repo_path,
+            manifest_label=manifest_label,
+            signing_broker=signing_broker,
+            expected_waiver_set_sha256=expected_waiver_set_sha256,
+            local_corpus_release=local_corpus_release,
+        )
+    )
+    issues.extend(
+        _legacy_retained_successor_manifest_issues(
             payload,
             repo_path=repo_path,
             manifest_label=manifest_label,
@@ -24345,6 +25205,391 @@ def _require_locked_legacy_replacement_base(
     _require_legacy_replacement_clean_checkout(checkout_root)
 
 
+def _remove_nested_mapping_keys(value: object, keys: set[str]) -> tuple[object, int]:
+    """Return a copy with exact mapping keys removed at any nesting level."""
+
+    if isinstance(value, dict):
+        removed = 0
+        result: dict[object, object] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key in keys:
+                removed += 1
+                continue
+            rewritten, child_removed = _remove_nested_mapping_keys(item, keys)
+            result[key] = rewritten
+            removed += child_removed
+        return result, removed
+    if isinstance(value, list):
+        result_list: list[object] = []
+        removed = 0
+        for item in value:
+            rewritten, child_removed = _remove_nested_mapping_keys(item, keys)
+            result_list.append(rewritten)
+            removed += child_removed
+        return result_list, removed
+    return value, 0
+
+
+def _remove_index_module_records(
+    value: object,
+    *,
+    old_modules: set[str],
+) -> tuple[object, int]:
+    """Remove exact legacy module records without rewriting canonical records."""
+
+    if isinstance(value, list):
+        result: list[object] = []
+        removed = 0
+        for item in value:
+            if isinstance(item, dict) and item.get("module") in old_modules:
+                removed += 1
+                continue
+            rewritten, child_removed = _remove_index_module_records(
+                item,
+                old_modules=old_modules,
+            )
+            result.append(rewritten)
+            removed += child_removed
+        return result, removed
+    if isinstance(value, dict):
+        result_dict: dict[object, object] = {}
+        removed = 0
+        for key, item in value.items():
+            rewritten, child_removed = _remove_index_module_records(
+                item,
+                old_modules=old_modules,
+            )
+            result_dict[key] = rewritten
+            removed += child_removed
+        return result_dict, removed
+    return value, 0
+
+
+def _index_module_record_counts(value: object) -> Counter[str]:
+    """Count exact ``module`` fields only on removable list-item records."""
+
+    counts: Counter[str] = Counter()
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                module = item.get("module")
+                if isinstance(module, str):
+                    counts[module] += 1
+                for child in item.values():
+                    counts.update(_index_module_record_counts(child))
+            else:
+                counts.update(_index_module_record_counts(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            counts.update(_index_module_record_counts(item))
+    return counts
+
+
+def _line_preserving_yaml_mapping_removal(
+    raw: bytes,
+    *,
+    keys: set[str],
+) -> tuple[bytes, int]:
+    """Remove exact YAML mapping blocks and prove the semantic result."""
+
+    try:
+        text = raw.decode("utf-8")
+        before = yaml.safe_load(text)
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("legacy metadata YAML is not valid UTF-8 YAML") from exc
+    expected, expected_count = _remove_nested_mapping_keys(before, keys)
+    lines = text.splitlines(keepends=True)
+    remove_indexes: set[int] = set()
+    observed = 0
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        matched = next(
+            (
+                key
+                for key in keys
+                if stripped.startswith((f'"{key}":', f"'{key}':", f"{key}:"))
+            ),
+            None,
+        )
+        if matched is None:
+            continue
+        observed += 1
+        remove_indexes.add(index)
+        cursor = index + 1
+        while cursor < len(lines):
+            candidate = lines[cursor]
+            candidate_stripped = candidate.lstrip(" ")
+            if (
+                candidate_stripped.strip()
+                and (len(candidate) - len(candidate_stripped)) <= indent
+            ):
+                break
+            remove_indexes.add(cursor)
+            cursor += 1
+    rewritten = "".join(
+        line for index, line in enumerate(lines) if index not in remove_indexes
+    ).encode("utf-8")
+    try:
+        actual = yaml.safe_load(rewritten.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("legacy metadata YAML removal produced invalid YAML") from exc
+    if actual != expected or observed != expected_count:
+        raise ValueError("legacy metadata YAML removal is not exact")
+    return rewritten, observed
+
+
+def _line_preserving_oracle_pending_removal(
+    raw: bytes,
+    *,
+    old_identities: set[str],
+    canonical_identities: set[str],
+) -> tuple[bytes, int]:
+    """Remove legacy pending records only when a canonical successor is present."""
+
+    try:
+        text = raw.decode("utf-8")
+        before = yaml.safe_load(text)
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("legacy oracle metadata is not valid UTF-8 YAML") from exc
+    if not isinstance(before, list):
+        raise ValueError("legacy oracle metadata is not a YAML list")
+    canonical_present = {
+        identity
+        for identity in canonical_identities
+        if any(
+            isinstance(item, dict)
+            and isinstance(item.get("legal_id"), str)
+            and str(item["legal_id"]).startswith(f"{identity}#")
+            for item in before
+        )
+    }
+    expected = [
+        item
+        for item in before
+        if not (
+            isinstance(item, dict)
+            and isinstance(item.get("legal_id"), str)
+            and any(
+                str(item["legal_id"]).startswith(f"{identity}#")
+                for identity in old_identities
+            )
+        )
+    ]
+    removed = len(before) - len(expected)
+    if removed and canonical_present != canonical_identities:
+        raise ValueError(
+            "legacy oracle metadata lacks an exact canonical successor record"
+        )
+    lines = text.splitlines(keepends=True)
+    starts = [
+        index for index, line in enumerate(lines) if line.startswith("- legal_id:")
+    ]
+    remove_indexes: set[int] = set()
+    observed = 0
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        first = lines[start]
+        if any(f"{identity}#" in first for identity in old_identities):
+            observed += 1
+            remove_indexes.update(range(start, end))
+    rewritten = "".join(
+        line for index, line in enumerate(lines) if index not in remove_indexes
+    ).encode("utf-8")
+    try:
+        actual = yaml.safe_load(rewritten.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError(
+            "legacy oracle metadata removal produced invalid YAML"
+        ) from exc
+    if actual != expected or observed != removed:
+        raise ValueError("legacy oracle metadata removal is not exact")
+    return rewritten, observed
+
+
+def _legacy_metadata_reconciliation_bytes(
+    path: Path,
+    raw: bytes,
+    *,
+    moves: Sequence[PlannedMove],
+    validation_waiver_set_sha256: str | None = None,
+) -> tuple[bytes, tuple[dict[str, object], ...]]:
+    """Apply one audited metadata cleanup from an explicit move set."""
+
+    old_modules = {move.source.as_posix() for move in moves}
+    old_identities = {rulespec_identity(move.source) for move in moves}
+    canonical_identities = {rulespec_identity(move.destination) for move in moves}
+    old_manifests = {
+        _applied_encoding_manifest_path(move.source).as_posix() for move in moves
+    }
+    if path == Path(".axiom/toolchain.toml"):
+        if (
+            validation_waiver_set_sha256 is None
+            or _SHA256_HEX_PATTERN.fullmatch(validation_waiver_set_sha256) is None
+        ):
+            raise ValueError(
+                "legacy toolchain reconciliation lacks the post-migration waiver digest"
+            )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("legacy toolchain metadata is not UTF-8") from exc
+        pattern = re.compile(r'(?m)^validation_waiver_set_sha256 = "[0-9a-f]{64}"$')
+        rewritten_text, count = pattern.subn(
+            f'validation_waiver_set_sha256 = "{validation_waiver_set_sha256}"',
+            text,
+        )
+        if count != 1:
+            raise ValueError(
+                "legacy toolchain waiver binding is not one canonical entry"
+            )
+        rewritten = rewritten_text.encode("utf-8")
+        operations = ({"operation": "update_validation_waiver_set_sha256", "count": 1},)
+    elif path == Path(".axiom/index/provisions_to_rules.json"):
+        try:
+            before = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("legacy provision index is invalid JSON") from exc
+        module_counts = _index_module_record_counts(before)
+        missing_successors = [
+            move.destination.as_posix()
+            for move in moves
+            if module_counts[move.source.as_posix()] > 0
+            and module_counts[move.destination.as_posix()] == 0
+        ]
+        if missing_successors:
+            raise ValueError(
+                "legacy provision index lacks exact canonical module records: "
+                + ", ".join(missing_successors)
+            )
+        after, count = _remove_index_module_records(before, old_modules=old_modules)
+        if count != sum(module_counts[module] for module in old_modules):
+            raise ValueError("legacy provision index removal count is inconsistent")
+        rewritten = (json.dumps(after, indent=2, ensure_ascii=True) + "\n").encode()
+        operations = ({"operation": "remove_legacy_module_records", "count": count},)
+    elif path == Path(".axiom/pending-validation-fingerprints.json"):
+        try:
+            before = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("legacy pending fingerprints are invalid JSON") from exc
+        after, count = _remove_nested_mapping_keys(before, old_modules)
+        rewritten = (json.dumps(after, indent=2, ensure_ascii=True) + "\n").encode()
+        operations = ({"operation": "remove_legacy_fingerprints", "count": count},)
+    elif path == Path("known-validation-gaps.yaml"):
+        rewritten, count = _line_preserving_yaml_mapping_removal(raw, keys=old_modules)
+        operations = ({"operation": "remove_legacy_validation_gaps", "count": count},)
+    elif path == Path("oracle-coverage-pending.yaml"):
+        rewritten, count = _line_preserving_oracle_pending_removal(
+            raw,
+            old_identities=old_identities,
+            canonical_identities=canonical_identities,
+        )
+        operations = ({"operation": "remove_legacy_oracle_pending", "count": count},)
+    elif path == Path("tests/test_encoding_manifests.py"):
+        try:
+            lines = raw.decode("utf-8").splitlines(keepends=True)
+        except UnicodeError as exc:
+            raise ValueError("legacy manifest inventory is not UTF-8") from exc
+        removed_lines = [
+            line
+            for line in lines
+            if any(manifest in line for manifest in old_manifests)
+        ]
+        if any(
+            line.strip()
+            not in {
+                *(f"'{manifest}'," for manifest in old_manifests),
+                *(f'"{manifest}",' for manifest in old_manifests),
+            }
+            for line in removed_lines
+        ):
+            raise ValueError("legacy manifest inventory match is not an exact entry")
+        rewritten = "".join(
+            line for line in lines if line not in removed_lines
+        ).encode()
+        count = len(removed_lines)
+        operations = (
+            {"operation": "remove_retired_manifest_allowances", "count": count},
+        )
+    else:
+        raise ValueError(f"legacy metadata reconciliation path is unauthorized: {path}")
+    for old in [*old_modules, *old_identities, *old_manifests]:
+        if old.encode() in rewritten:
+            raise ValueError(
+                f"legacy metadata reconciliation retains old identity {old} in {path}"
+            )
+    return rewritten, operations
+
+
+def _legacy_retained_metadata_reconciliations(
+    *,
+    checkout_root: Path,
+    base_commit: str,
+    tracked: Mapping[Path, str],
+    moves: Sequence[PlannedMove],
+) -> tuple[_LegacyReplacementRewrite, ...]:
+    """Build audited inventory removals and their derived toolchain binding."""
+
+    if not moves:
+        return ()
+    post_migration_waiver_sha256: str | None = None
+    waiver_path = Path("known-validation-gaps.yaml")
+    if waiver_path in tracked:
+        waiver_raw = read_bounded_regular_file(
+            checkout_root,
+            checkout_root / waiver_path,
+            label="legacy validation waiver reconciliation",
+            max_bytes=16 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        waiver_rewritten, _operations = _legacy_metadata_reconciliation_bytes(
+            waiver_path,
+            waiver_raw,
+            moves=moves,
+        )
+        post_migration_waiver_sha256 = hashlib.sha256(waiver_rewritten).hexdigest()
+    reconciliations: list[_LegacyReplacementRewrite] = []
+    for path in sorted(
+        _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS,
+        key=Path.as_posix,
+    ):
+        if path not in tracked:
+            continue
+        if tracked[path] != "100644":
+            raise ValueError(
+                f"legacy metadata reconciliation is not tracked 0644: {path}"
+            )
+        raw = read_bounded_regular_file(
+            checkout_root,
+            checkout_root / path,
+            label=f"legacy metadata reconciliation {path.as_posix()}",
+            max_bytes=16 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        if raw != _rulespec_migration_base_blob(checkout_root, base_commit, path):
+            raise ValueError(
+                f"legacy metadata reconciliation differs from clean HEAD: {path}"
+            )
+        rewritten, operations = _legacy_metadata_reconciliation_bytes(
+            path,
+            raw,
+            moves=moves,
+            validation_waiver_set_sha256=post_migration_waiver_sha256,
+        )
+        if rewritten == raw:
+            continue
+        reconciliations.append(
+            _LegacyReplacementRewrite(
+                path=path,
+                before_sha256=hashlib.sha256(raw).hexdigest(),
+                after_sha256=hashlib.sha256(rewritten).hexdigest(),
+                replacements=tuple(operations),
+                raw=rewritten,
+            )
+        )
+    return tuple(reconciliations)
+
+
 def _resolve_legacy_replacement_contract(
     *,
     source_raw: Path,
@@ -24355,6 +25600,7 @@ def _resolve_legacy_replacement_contract(
     corpus_release: LocalCorpusRelease,
     scheduled_dependent_paths: Sequence[Path] = (),
     exact_dependent_paths: Sequence[Path] = (),
+    retained_successor_paths: Sequence[Path] = (),
 ) -> _LegacyReplacementContract:
     """Bind one clean-HEAD legacy identity and its unique canonical replacement."""
 
@@ -24382,7 +25628,11 @@ def _resolve_legacy_replacement_contract(
             raise ValueError(
                 "in-place legacy replacement source must already be canonical"
             )
-        if scheduled_dependent_paths or exact_dependent_paths:
+        if (
+            scheduled_dependent_paths
+            or exact_dependent_paths
+            or retained_successor_paths
+        ):
             raise ValueError(
                 "in-place legacy replacement cannot schedule path dependents"
             )
@@ -24537,15 +25787,317 @@ def _resolve_legacy_replacement_contract(
         legacy_manifest_raw,
     )
 
-    replacements = (
-        {}
-        if in_place
-        else exact_reference_replacements(
-            [PlannedMove(source=source, destination=destination)],
-            existing_companions={old_companion}
-            if old_companion in old_paths
-            else set(),
+    retained_successors: list[_LegacyReplacementRetainedSuccessor] = []
+    retained_moves: list[PlannedMove] = []
+    retained_companions: set[Path] = set()
+    occupied_move_paths = {source, destination}
+    expected_waiver_set_sha256: str | None = None
+    verifier: Ed25519PublicKey | None = None
+    for raw_retained in retained_successor_paths:
+        retained_source = Path(raw_retained)
+        retained_destination = canonical_destination(retained_source)
+        if (
+            retained_source.is_absolute()
+            or retained_source.as_posix() != str(raw_retained)
+            or any(part in {"", ".", ".."} for part in retained_source.parts)
+            or len(retained_source.parts) < 3
+            or retained_source.parts[0] != policy_repo_path.name
+            or not _is_protected_rulespec_yaml_path(retained_source, roots=roots)
+            or retained_source.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+            or retained_source == retained_destination
+            or retained_source in occupied_move_paths
+            or retained_destination in occupied_move_paths
+        ):
+            raise ValueError(
+                "legacy retained successor must name a unique noncanonical "
+                "checkout-relative protected primary in the requested jurisdiction"
+            )
+        retained_old_paths = [retained_source]
+        retained_old_companion = companion_path(retained_source)
+        if tracked.get(retained_source) != "100644":
+            raise ValueError(
+                f"legacy retained successor source is not tracked 0644: {retained_source}"
+            )
+        if retained_old_companion in tracked:
+            if tracked[retained_old_companion] != "100644":
+                raise ValueError(
+                    "legacy retained successor companion is not tracked 0644: "
+                    f"{retained_old_companion}"
+                )
+            retained_old_paths.append(retained_old_companion)
+            retained_companions.add(retained_old_companion)
+        retained_legacy_files: list[_LegacyReplacementFile] = []
+        for relative in retained_old_paths:
+            raw = read_bounded_regular_file(
+                policy_checkout_path,
+                policy_checkout_path / relative,
+                label=f"legacy retained successor input {relative.as_posix()}",
+                max_bytes=10 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            if raw != _rulespec_migration_base_blob(
+                policy_checkout_path,
+                base_commit,
+                relative,
+            ):
+                raise ValueError(
+                    f"legacy retained successor input differs from clean HEAD: {relative}"
+                )
+            retained_legacy_files.append(
+                _LegacyReplacementFile(
+                    relative,
+                    hashlib.sha256(raw).hexdigest(),
+                    raw,
+                )
+            )
+        try:
+            retained_payload = yaml.safe_load(
+                retained_legacy_files[0].raw.decode("utf-8")
+            )
+        except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+            raise ValueError(
+                f"legacy retained successor source is invalid YAML: {retained_source}"
+            ) from exc
+        retained_module = (
+            retained_payload.get("module")
+            if isinstance(retained_payload, dict)
+            else None
         )
+        retained_verification = (
+            retained_module.get("source_verification")
+            if isinstance(retained_module, dict)
+            else None
+        )
+        retained_citations = (
+            _legacy_source_verification_citation_paths(retained_verification)
+            if isinstance(retained_verification, dict)
+            else ()
+        )
+        if len(retained_citations) != 1:
+            raise ValueError(
+                "legacy retained successor source must declare exactly one signed "
+                f"corpus unit: {retained_source}"
+            )
+        try:
+            resolve_corpus_source_unit(retained_citations[0], corpus_release)
+        except (CorpusResolutionError, ValueError) as exc:
+            raise ValueError(
+                "legacy retained successor source is absent from the signed corpus "
+                f"release: {retained_source}"
+            ) from exc
+        retained_legacy_manifest_path = _applied_encoding_manifest_path(retained_source)
+        if tracked.get(retained_legacy_manifest_path) != "100644":
+            raise ValueError(
+                "legacy retained successor requires its exact tracked v1 HMAC "
+                f"manifest: {retained_source}"
+            )
+        retained_legacy_manifest_raw = read_bounded_regular_file(
+            policy_checkout_path,
+            policy_checkout_path / retained_legacy_manifest_path,
+            label="legacy retained successor ownership manifest",
+            max_bytes=4 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        if retained_legacy_manifest_raw != _rulespec_migration_base_blob(
+            policy_checkout_path,
+            base_commit,
+            retained_legacy_manifest_path,
+        ):
+            raise ValueError(
+                f"legacy retained successor manifest differs from clean HEAD: {retained_source}"
+            )
+        try:
+            retained_legacy_manifest_payload = json.loads(
+                retained_legacy_manifest_raw.decode("utf-8")
+            )
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError(
+                f"legacy retained successor manifest is invalid JSON: {retained_source}"
+            ) from exc
+        retained_legacy_issues = _legacy_v1_manifest_issues(
+            retained_legacy_manifest_payload,
+            expected_files={
+                item.path.as_posix(): item.sha256 for item in retained_legacy_files
+            },
+            expected_primary_path=retained_source.as_posix(),
+            expected_citation=retained_citations[0],
+            jurisdiction_prefix=retained_source.parts[0],
+        )
+        if retained_legacy_issues:
+            raise ValueError(
+                f"legacy retained successor ownership is invalid: {retained_source}: "
+                + "; ".join(retained_legacy_issues)
+            )
+
+        successor_paths = [retained_destination]
+        retained_destination_companion = companion_path(retained_destination)
+        if tracked.get(retained_destination) != "100644":
+            raise ValueError(
+                "legacy retained successor canonical primary is not tracked 0644: "
+                f"{retained_destination}"
+            )
+        if retained_destination_companion in tracked:
+            if tracked[retained_destination_companion] != "100644":
+                raise ValueError(
+                    "legacy retained successor canonical companion is not tracked 0644: "
+                    f"{retained_destination_companion}"
+                )
+            successor_paths.append(retained_destination_companion)
+        successor_files: list[_LegacyReplacementFile] = []
+        for relative in successor_paths:
+            raw = read_bounded_regular_file(
+                policy_checkout_path,
+                policy_checkout_path / relative,
+                label=f"legacy retained successor live file {relative.as_posix()}",
+                max_bytes=10 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            if raw != _rulespec_migration_base_blob(
+                policy_checkout_path,
+                base_commit,
+                relative,
+            ):
+                raise ValueError(
+                    "legacy retained successor live file differs from clean HEAD: "
+                    f"{relative}"
+                )
+            successor_files.append(
+                _LegacyReplacementFile(
+                    relative,
+                    hashlib.sha256(raw).hexdigest(),
+                    raw,
+                )
+            )
+        successor_manifest_path = _applied_encoding_manifest_path(retained_destination)
+        if tracked.get(successor_manifest_path) != "100644":
+            raise ValueError(
+                "legacy retained successor requires its exact signed-v5 manifest: "
+                f"{retained_destination}"
+            )
+        successor_manifest_raw = read_bounded_regular_file(
+            policy_checkout_path,
+            policy_checkout_path / successor_manifest_path,
+            label="legacy retained successor signed manifest",
+            max_bytes=4 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        if successor_manifest_raw != _rulespec_migration_base_blob(
+            policy_checkout_path,
+            base_commit,
+            successor_manifest_path,
+        ):
+            raise ValueError(
+                "legacy retained successor signed manifest differs from clean HEAD: "
+                f"{retained_destination}"
+            )
+        try:
+            successor_manifest_payload = json.loads(
+                successor_manifest_raw.decode("utf-8")
+            )
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError(
+                f"legacy retained successor signed manifest is invalid JSON: {retained_destination}"
+            ) from exc
+        execution = (
+            successor_manifest_payload.get("validation_execution")
+            if isinstance(successor_manifest_payload, dict)
+            else None
+        )
+        historical_encoder = (
+            execution.get("axiom_encode") if isinstance(execution, dict) else None
+        )
+        if not isinstance(historical_encoder, dict):
+            raise ValueError(
+                "legacy retained successor lacks signed encoder execution identity: "
+                f"{retained_destination}"
+            )
+        if verifier is None:
+            verifier = _applied_encoding_manifest_verifier()
+        if verifier is None:
+            raise ValueError(
+                "legacy retained successor requires the protected apply-manifest "
+                "verification key"
+            )
+        if expected_waiver_set_sha256 is None:
+            expected_waiver_set_sha256 = verify_rulespec_validation_waiver_set(
+                policy_checkout_path
+            )
+        verified_successor, _root, manifest_sha256, successor_issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                policy_checkout_path,
+                successor_manifest_path.as_posix(),
+                signing_broker=verifier,
+                expected_waiver_set_sha256=expected_waiver_set_sha256,
+                local_corpus_release=corpus_release,
+                expected_encoder_identity=historical_encoder,
+            )
+        )
+        if successor_issues or verified_successor is None or manifest_sha256 is None:
+            raise ValueError(
+                f"legacy retained successor signed-v5 ownership is invalid: {retained_destination}: "
+                + "; ".join(successor_issues or ["manifest was not verified"])
+            )
+        expected_successor_files = {
+            item.path.as_posix(): item.sha256 for item in successor_files
+        }
+        actual_successor_files = {
+            str(item.get("path")): str(item.get("sha256"))
+            for item in verified_successor.get("applied_files", [])
+            if isinstance(item, dict) and set(item) == {"path", "sha256"}
+        }
+        if actual_successor_files != expected_successor_files:
+            raise ValueError(
+                "legacy retained successor signed manifest does not bind the exact "
+                f"canonical group: {retained_destination}"
+            )
+        try:
+            successor_citation = normalize_corpus_identifier(
+                str(verified_successor.get("citation") or "")
+            )
+        except (TypeError, ValueError):
+            successor_citation = ""
+        if successor_citation != retained_citations[0]:
+            raise ValueError(
+                "legacy retained successor corpus identity differs from its legacy "
+                f"source: {retained_destination}"
+            )
+        retained_successors.append(
+            _LegacyReplacementRetainedSuccessor(
+                source=retained_source,
+                destination=retained_destination,
+                legacy_manifest=_LegacyReplacementFile(
+                    retained_legacy_manifest_path,
+                    hashlib.sha256(retained_legacy_manifest_raw).hexdigest(),
+                    retained_legacy_manifest_raw,
+                ),
+                legacy_files=tuple(retained_legacy_files),
+                successor_manifest=_LegacyReplacementFile(
+                    successor_manifest_path,
+                    manifest_sha256,
+                    successor_manifest_raw,
+                ),
+                successor_files=tuple(successor_files),
+            )
+        )
+        retained_moves.append(
+            PlannedMove(
+                source=retained_source,
+                destination=retained_destination,
+            )
+        )
+        occupied_move_paths.update({retained_source, retained_destination})
+
+    all_moves = (
+        []
+        if in_place
+        else [PlannedMove(source=source, destination=destination), *retained_moves]
+    )
+    replacements = exact_reference_replacements(
+        all_moves,
+        existing_companions={
+            *({old_companion} if old_companion in old_paths else set()),
+            *retained_companions,
+        },
     )
     destination_predecessor_files: list[_LegacyReplacementFile] = []
     if destination_predecessor_present:
@@ -24635,7 +26187,7 @@ def _resolve_legacy_replacement_contract(
             or dependent.parts[0] != policy_repo_path.name
             or not _is_protected_rulespec_yaml_path(dependent, roots=roots)
             or dependent.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
-            or dependent in {source, destination}
+            or dependent in occupied_move_paths
             or tracked.get(dependent) != "100644"
             or dependent in scheduled_groups
             or dependent in exact_groups
@@ -24724,6 +26276,10 @@ def _resolve_legacy_replacement_contract(
         dependent_manifest_path = _applied_encoding_manifest_path(primary)
         if (
             dependent_manifest_path == legacy_manifest_path
+            or dependent_manifest_path
+            in {item.legacy_manifest.path for item in retained_successors}
+            or dependent_manifest_path
+            in {item.successor_manifest.path for item in retained_successors}
             or tracked.get(dependent_manifest_path) != "100644"
         ):
             raise ValueError(
@@ -24789,7 +26345,38 @@ def _resolve_legacy_replacement_contract(
         *old_paths,
         legacy_manifest_path,
         *[item.path for item in exact_legacy_manifests.values()],
+        *[
+            item.path
+            for successor in retained_successors
+            for item in successor.legacy_files
+        ],
+        *[item.legacy_manifest.path for item in retained_successors],
+        *[
+            item.path
+            for successor in retained_successors
+            for item in successor.successor_files
+        ],
+        *[item.successor_manifest.path for item in retained_successors],
     }
+    metadata_reconciliations = _legacy_retained_metadata_reconciliations(
+        checkout_root=policy_checkout_path,
+        base_commit=base_commit,
+        tracked=tracked,
+        moves=all_moves if retained_successors else (),
+    )
+    metadata_reconciliation_paths = {item.path for item in metadata_reconciliations}
+    excluded.update(metadata_reconciliation_paths)
+    for successor in retained_successors:
+        for item in successor.successor_files:
+            _unused, successor_counts = rewrite_exact_references(
+                item.raw,
+                replacements,
+            )
+            if successor_counts:
+                raise ValueError(
+                    "legacy retained successor contains an old durable reference: "
+                    f"{item.path}"
+                )
     manifest_prefix = APPLIED_ENCODING_MANIFEST_DIR.parts
     receipt_prefixes = (
         APPLIED_ENCODING_PATH_MIGRATION_RECEIPT_DIR.parts,
@@ -24948,6 +26535,8 @@ def _resolve_legacy_replacement_contract(
             if destination_predecessor_files
             else APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT
         ),
+        retained_successors=tuple(retained_successors),
+        metadata_reconciliations=metadata_reconciliations,
     )
 
 
@@ -24967,8 +26556,12 @@ def _resolve_encode_replacement_target(
     exact_dependents = tuple(
         Path(path) for path in getattr(args, "legacy_exact_dependent_rulespec_path", ())
     )
+    retained_successors = tuple(
+        Path(path)
+        for path in getattr(args, "legacy_retained_successor_rulespec_path", ())
+    )
     if raw_path is None and legacy_source is None:
-        if scheduled_dependents or exact_dependents:
+        if scheduled_dependents or exact_dependents or retained_successors:
             raise ValueError("legacy dependent paths require a legacy replacement")
         return None
     if raw_path is None:
@@ -24982,7 +26575,9 @@ def _resolve_encode_replacement_target(
         raise ValueError(
             "encode --replace-rulespec-path requires --mode repo-augmented"
         )
-    if legacy_source is None and (scheduled_dependents or exact_dependents):
+    if legacy_source is None and (
+        scheduled_dependents or exact_dependents or retained_successors
+    ):
         raise ValueError("legacy dependent paths require a legacy replacement")
 
     if legacy_source is not None:
@@ -24995,10 +26590,16 @@ def _resolve_encode_replacement_target(
             corpus_release=corpus_release,
             scheduled_dependent_paths=scheduled_dependents,
             exact_dependent_paths=exact_dependents,
+            retained_successor_paths=retained_successors,
         )
         context_paths = [
             policy_checkout_path / item.path for item in contract.deleted_files
         ]
+        context_paths.extend(
+            policy_checkout_path / item.path
+            for successor in contract.retained_successors
+            for item in successor.legacy_files
+        )
         return _EncodeReplacementTarget(
             relative_output=Path(*contract.destination.parts[1:]),
             context_paths=tuple(context_paths),
@@ -46201,6 +47802,38 @@ def _build_apply_validation_snapshot(
                 }
                 for dependent in legacy_replacement.exact_dependents
             ],
+            "retained_successors": [
+                {
+                    "source": successor.source.as_posix(),
+                    "destination": successor.destination.as_posix(),
+                    "legacy_manifest": {
+                        "path": successor.legacy_manifest.path.as_posix(),
+                        "sha256": successor.legacy_manifest.sha256,
+                    },
+                    "legacy_files": [
+                        {"path": item.path.as_posix(), "sha256": item.sha256}
+                        for item in successor.legacy_files
+                    ],
+                    "successor_manifest": {
+                        "path": successor.successor_manifest.path.as_posix(),
+                        "sha256": successor.successor_manifest.sha256,
+                    },
+                    "successor_files": [
+                        {"path": item.path.as_posix(), "sha256": item.sha256}
+                        for item in successor.successor_files
+                    ],
+                }
+                for successor in legacy_replacement.retained_successors
+            ],
+            "metadata_reconciliations": [
+                {
+                    "path": item.path.as_posix(),
+                    "before_sha256": item.before_sha256,
+                    "after_sha256": item.after_sha256,
+                    "operations": list(item.replacements),
+                }
+                for item in legacy_replacement.metadata_reconciliations
+            ],
         }
     return snapshot
 
@@ -46650,11 +48283,23 @@ def _stage_signed_legacy_replacement_provenance(
         }
         for rewrite in contract.rewrites
     ]
+    metadata_files = [
+        {
+            "path": rewrite.path.as_posix(),
+            "sha256": rewrite.after_sha256,
+        }
+        for rewrite in contract.metadata_reconciliations
+    ]
     deleted_files = [
         {"path": item.path.as_posix(), "deleted": True}
         for item in contract.deleted_files
         if item.path.as_posix() not in live_paths
     ]
+    deleted_files.extend(
+        {"path": item.path.as_posix(), "deleted": True}
+        for successor in contract.retained_successors
+        for item in successor.legacy_files
+    )
     scheduled_dependents = [
         {
             "primary": dependent.primary.as_posix(),
@@ -46701,6 +48346,67 @@ def _stage_signed_legacy_replacement_provenance(
         {"path": item.path.as_posix(), "sha256": item.sha256}
         for item in contract.destination_predecessor_files
     ]
+    retained_successors: list[dict[str, object]] = []
+    for successor in contract.retained_successors:
+        try:
+            legacy_payload = json.loads(successor.legacy_manifest.raw.decode("utf-8"))
+            successor_payload = json.loads(
+                successor.successor_manifest.raw.decode("utf-8")
+            )
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise RuntimeError(
+                "Retained-successor evidence changed after contract admission"
+            ) from exc
+        owner_class = (
+            APPLIED_ENCODING_LEGACY_MANUAL_OWNER_CLASS
+            if isinstance(legacy_payload, dict)
+            and (
+                legacy_payload.get("tool") == "axiom-encode sign-applied-files"
+                or legacy_payload.get("backend") == "manual"
+            )
+            else APPLIED_ENCODING_LEGACY_OWNER_CLASS
+        )
+        retained_successors.append(
+            {
+                "source": successor.source.as_posix(),
+                "destination": successor.destination.as_posix(),
+                "legacy_owner_class": owner_class,
+                "legacy_manifest": {
+                    "path": successor.legacy_manifest.path.as_posix(),
+                    "sha256": successor.legacy_manifest.sha256,
+                },
+                "legacy_files": [
+                    {"path": item.path.as_posix(), "sha256": item.sha256}
+                    for item in successor.legacy_files
+                ],
+                "successor_manifest": {
+                    "path": successor.successor_manifest.path.as_posix(),
+                    "sha256": successor.successor_manifest.sha256,
+                    "payload": successor_payload,
+                },
+                "successor_files": [
+                    {"path": item.path.as_posix(), "sha256": item.sha256}
+                    for item in successor.successor_files
+                ],
+            }
+        )
+    metadata_reconciliations = [
+        {
+            "path": item.path.as_posix(),
+            "before_sha256": item.before_sha256,
+            "after_sha256": item.after_sha256,
+            "operations": list(item.replacements),
+        }
+        for item in contract.metadata_reconciliations
+    ]
+    post_migration_waiver_sha256 = next(
+        (
+            item.after_sha256
+            for item in contract.metadata_reconciliations
+            if item.path == Path("known-validation-gaps.yaml")
+        ),
+        verify_rulespec_validation_waiver_set(checkout_root),
+    )
     receipt_identity = receipt_identity_payload(
         base_commit=contract.base_commit,
         base_tree=contract.base_tree,
@@ -46721,6 +48427,8 @@ def _stage_signed_legacy_replacement_provenance(
         exact_dependents=exact_dependents,
         destination_predecessor_class=contract.destination_predecessor_class,
         destination_predecessor_files=destination_predecessor_files,
+        retained_successors=retained_successors,
+        metadata_reconciliations=metadata_reconciliations,
     )
     receipt_id = receipt_identity_sha256(receipt_identity)
     receipt_relative = (
@@ -46742,9 +48450,7 @@ def _stage_signed_legacy_replacement_provenance(
         },
         "axiom_encode_version": __version__,
         "axiom_encode_git": dict(axiom_encode_git),
-        VALIDATION_WAIVER_SET_SHA256_FIELD: verify_rulespec_validation_waiver_set(
-            checkout_root
-        ),
+        VALIDATION_WAIVER_SET_SHA256_FIELD: post_migration_waiver_sha256,
         "corpus_release": {
             "name": local_corpus_release.name,
             "content_sha256": local_corpus_release.content_sha256,
@@ -46774,6 +48480,8 @@ def _stage_signed_legacy_replacement_provenance(
             "exact_dependents": exact_dependents,
             "destination_predecessor_class": (contract.destination_predecessor_class),
             "destination_predecessor_files": destination_predecessor_files,
+            "retained_successors": retained_successors,
+            "metadata_reconciliations": metadata_reconciliations,
         },
         "replacement_manifest": model_manifest,
     }
@@ -46812,6 +48520,43 @@ def _stage_signed_legacy_replacement_provenance(
             json.dumps(exact_manifest, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
 
+    for successor, evidence in zip(
+        contract.retained_successors,
+        retained_successors,
+        strict=True,
+    ):
+        successor_manifest_relative = successor.successor_manifest.path
+        retained_manifest = {
+            "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+            "generated_at": _utc_now_iso(),
+            "tool": APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
+            "axiom_encode_version": __version__,
+            "axiom_encode_git": dict(axiom_encode_git),
+            VALIDATION_WAIVER_SET_SHA256_FIELD: receipt[
+                VALIDATION_WAIVER_SET_SHA256_FIELD
+            ],
+            "applied_files": [
+                {"path": item.path.as_posix(), "sha256": item.sha256}
+                for item in successor.successor_files
+            ],
+            "legacy_migration": {
+                "receipt_path": receipt_relative.as_posix(),
+                "receipt_sha256": receipt_sha256,
+                "source": successor.source.as_posix(),
+                "destination": successor.destination.as_posix(),
+                "legacy_manifest_path": successor.legacy_manifest.path.as_posix(),
+                "legacy_manifest_sha256": successor.legacy_manifest.sha256,
+                "successor_manifest_sha256": successor.successor_manifest.sha256,
+            },
+            "retained_successor_manifest": copy.deepcopy(
+                evidence["successor_manifest"]["payload"]
+            ),
+        }
+        _sign_applied_encoding_manifest(retained_manifest, signing_broker)
+        exact_dependent_manifests[successor_manifest_relative] = (
+            json.dumps(retained_manifest, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+
     outer_manifest = {
         "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
         "generated_at": _utc_now_iso(),
@@ -46819,7 +48564,12 @@ def _stage_signed_legacy_replacement_provenance(
         "axiom_encode_version": __version__,
         "axiom_encode_git": dict(axiom_encode_git),
         VALIDATION_WAIVER_SET_SHA256_FIELD: receipt[VALIDATION_WAIVER_SET_SHA256_FIELD],
-        "applied_files": [*live_files, *rewrite_files, *deleted_files],
+        "applied_files": [
+            *live_files,
+            *rewrite_files,
+            *metadata_files,
+            *deleted_files,
+        ],
         "replacement_manifest": model_manifest,
         "replacement": {
             "receipt_path": receipt_relative.as_posix(),
@@ -47925,6 +49675,7 @@ def _require_apply_post_install_closure(
     receipt_path: Path | None = None,
     receipt_bytes: bytes | None = None,
     exact_dependent_manifest_bytes: Mapping[Path, bytes] | None = None,
+    signing_broker: SigningBroker | None = None,
 ) -> None:
     """Recheck the execution closure while rollback is still possible."""
 
@@ -47987,16 +49738,48 @@ def _require_apply_post_install_closure(
         current_policy_identity, dict
     ):
         raise RuntimeError("Apply execution identity lacks RuleSpec provenance")
-    for field in (
-        "path",
-        "toolchain_root",
-        "toolchain_contract_sha256",
-        "validation_waiver_set_sha256",
-    ):
+    waiver_reconciliation = next(
+        (
+            item
+            for item in (
+                legacy_replacement.metadata_reconciliations
+                if legacy_replacement is not None
+                else ()
+            )
+            if item.path == Path("known-validation-gaps.yaml")
+        ),
+        None,
+    )
+    toolchain_reconciliation = next(
+        (
+            item
+            for item in (
+                legacy_replacement.metadata_reconciliations
+                if legacy_replacement is not None
+                else ()
+            )
+            if item.path == Path(".axiom/toolchain.toml")
+        ),
+        None,
+    )
+    stable_policy_identity_fields = ["path", "toolchain_root"]
+    if waiver_reconciliation is None or toolchain_reconciliation is None:
+        stable_policy_identity_fields.extend(
+            ["toolchain_contract_sha256", "validation_waiver_set_sha256"]
+        )
+    for field in stable_policy_identity_fields:
         if current_policy_identity.get(field) != expected_policy_identity.get(field):
             raise RuntimeError(
                 "Cannot keep applied RuleSpec: RuleSpec contract changed during "
                 f"installation ({field})"
+            )
+    if waiver_reconciliation is not None and toolchain_reconciliation is not None:
+        if (
+            current_policy_identity.get("validation_waiver_set_sha256")
+            != waiver_reconciliation.after_sha256
+        ):
+            raise RuntimeError(
+                "Cannot keep applied RuleSpec: migrated waiver identity is stale"
             )
     expected_checkout = expected_policy_identity.get("checkout_identity")
     current_checkout = current_policy_identity.get("checkout_identity")
@@ -48026,6 +49809,18 @@ def _require_apply_post_install_closure(
                 )
         for dependent in legacy_replacement.exact_dependents:
             for live_file in dependent.live_files:
+                if live_file.path.parts[:1] == (content_root.name,):
+                    expected_post_files[Path(*live_file.path.parts[1:]).as_posix()] = (
+                        live_file.sha256
+                    )
+        for successor in legacy_replacement.retained_successors:
+            for legacy_file in successor.legacy_files:
+                if legacy_file.path.parts[:1] == (content_root.name,):
+                    expected_post_files.pop(
+                        Path(*legacy_file.path.parts[1:]).as_posix(),
+                        None,
+                    )
+            for live_file in successor.successor_files:
                 if live_file.path.parts[:1] == (content_root.name,):
                     expected_post_files[Path(*live_file.path.parts[1:]).as_posix()] = (
                         live_file.sha256
@@ -48076,6 +49871,13 @@ def _require_apply_post_install_closure(
                 raise RuntimeError(
                     f"Cannot keep legacy replacement: rewrite changed for {target}"
                 )
+        for rewrite in legacy_replacement.metadata_reconciliations:
+            target = checkout_root / rewrite.path
+            if target.read_bytes() != rewrite.raw:
+                raise RuntimeError(
+                    "Cannot keep legacy replacement: metadata reconciliation changed "
+                    f"for {target}"
+                )
         exact_manifest_bytes = dict(exact_dependent_manifest_bytes or {})
         for dependent in legacy_replacement.exact_dependents:
             for item in dependent.live_files:
@@ -48096,12 +49898,70 @@ def _require_apply_post_install_closure(
                     "Cannot keep legacy replacement: exact dependent manifest changed "
                     f"for {dependent.primary}"
                 )
+        for successor in legacy_replacement.retained_successors:
+            for item in successor.legacy_files:
+                target = checkout_root / item.path
+                if target.exists() or target.is_symlink():
+                    raise RuntimeError(
+                        "Cannot keep legacy replacement: retained-successor legacy "
+                        f"path still exists: {target}"
+                    )
+            old_successor_manifest = checkout_root / successor.legacy_manifest.path
+            if old_successor_manifest.exists() or old_successor_manifest.is_symlink():
+                raise RuntimeError(
+                    "Cannot keep legacy replacement: retained-successor legacy "
+                    f"manifest still exists: {old_successor_manifest}"
+                )
+            for item in successor.successor_files:
+                target = checkout_root / item.path
+                if target.read_bytes() != item.raw:
+                    raise RuntimeError(
+                        "Cannot keep legacy replacement: retained successor changed "
+                        f"for {target}"
+                    )
+            expected_manifest = exact_manifest_bytes.get(
+                successor.successor_manifest.path
+            )
+            if (
+                expected_manifest is None
+                or (checkout_root / successor.successor_manifest.path).read_bytes()
+                != expected_manifest
+            ):
+                raise RuntimeError(
+                    "Cannot keep legacy replacement: retained-successor manifest "
+                    f"changed for {successor.destination}"
+                )
         if (
             receipt_path is None
             or receipt_bytes is None
             or receipt_path.read_bytes() != receipt_bytes
         ):
             raise RuntimeError("Cannot keep legacy replacement: signed receipt changed")
+        if signing_broker is None:
+            raise RuntimeError(
+                "Cannot keep legacy replacement without its signing verifier"
+            )
+        try:
+            installed_manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise RuntimeError(
+                "Cannot keep legacy replacement: installed manifest is invalid"
+            ) from exc
+        semantic_issues = _legacy_replacement_manifest_issues(
+            installed_manifest,
+            repo_path=checkout_root,
+            manifest_label=manifest_path.relative_to(checkout_root).as_posix(),
+            signing_broker=signing_broker,
+            expected_waiver_set_sha256=verify_rulespec_validation_waiver_set(
+                checkout_root
+            ),
+            local_corpus_release=final_release,
+        )
+        if semantic_issues:
+            raise RuntimeError(
+                "Cannot keep legacy replacement: persisted provenance is invalid: "
+                + "; ".join(semantic_issues)
+            )
 
 
 def _apply_generated_encoding_result(
@@ -48258,6 +50118,10 @@ def _apply_generated_encoding_result(
             for rewrite in legacy_replacement.rewrites
         )
         transaction_files.extend(
+            (checkout_root / rewrite.path, rewrite.raw)
+            for rewrite in legacy_replacement.metadata_reconciliations
+        )
+        transaction_files.extend(
             (checkout_root / item.path, item.raw)
             for dependent in legacy_replacement.exact_dependents
             for item in dependent.live_files
@@ -48274,9 +50138,20 @@ def _apply_generated_encoding_result(
             for item in legacy_replacement.deleted_files
             if checkout_root / item.path not in written_targets
         )
+        transaction_files.extend(
+            (checkout_root / item.path, None)
+            for successor in legacy_replacement.retained_successors
+            for item in successor.legacy_files
+            if checkout_root / item.path not in written_targets
+        )
         old_manifest_path = checkout_root / legacy_replacement.legacy_manifest.path
         if old_manifest_path not in written_targets:
             transaction_files.append((old_manifest_path, None))
+        transaction_files.extend(
+            (checkout_root / successor.legacy_manifest.path, None)
+            for successor in legacy_replacement.retained_successors
+            if checkout_root / successor.legacy_manifest.path not in written_targets
+        )
         transaction_files.append((checkout_root / receipt_relative, receipt_bytes))
     for target, _raw in transaction_files:
         _ensure_safe_apply_target(checkout_root, target)
@@ -48304,6 +50179,8 @@ def _apply_generated_encoding_result(
             expected_originals[checkout_root / item.path] = item.sha256
         for rewrite in legacy_replacement.rewrites:
             expected_originals[checkout_root / rewrite.path] = rewrite.before_sha256
+        for rewrite in legacy_replacement.metadata_reconciliations:
+            expected_originals[checkout_root / rewrite.path] = rewrite.before_sha256
         for item in legacy_replacement.deleted_files:
             expected_originals[checkout_root / item.path] = item.sha256
         expected_originals[checkout_root / legacy_replacement.legacy_manifest.path] = (
@@ -48314,6 +50191,17 @@ def _apply_generated_encoding_result(
                 expected_originals[checkout_root / item.path] = item.sha256
             expected_originals[checkout_root / dependent.legacy_manifest.path] = (
                 dependent.legacy_manifest.sha256
+            )
+        for successor in legacy_replacement.retained_successors:
+            for item in successor.legacy_files:
+                expected_originals[checkout_root / item.path] = item.sha256
+            for item in successor.successor_files:
+                expected_originals[checkout_root / item.path] = item.sha256
+            expected_originals[checkout_root / successor.legacy_manifest.path] = (
+                successor.legacy_manifest.sha256
+            )
+            expected_originals[checkout_root / successor.successor_manifest.path] = (
+                successor.successor_manifest.sha256
             )
         assert receipt_relative is not None
         expected_originals[checkout_root / receipt_relative] = None
@@ -48379,6 +50267,7 @@ def _apply_generated_encoding_result(
             ),
             receipt_bytes=receipt_bytes,
             exact_dependent_manifest_bytes=exact_dependent_manifest_bytes,
+            signing_broker=signing_broker,
         )
 
     _install_apply_transaction(

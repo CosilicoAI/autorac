@@ -20,9 +20,13 @@ TOOL: Final = "axiom-encode encode --apply --replace-legacy-rulespec-path"
 EXACT_DEPENDENT_TOOL: Final = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
+RETAINED_SUCCESSOR_TOOL: Final = (
+    "axiom-encode encode --apply --legacy-retained-successor-rulespec-path"
+)
 RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 RECEIPT_SCHEMA_V2: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
+RECEIPT_SCHEMA_V3: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v4"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 DESTINATION_PREDECESSOR_ABSENT: Final = "absent"
 DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE: Final = (
@@ -101,6 +105,15 @@ class LegacyReplacementExactDependent(NamedTuple):
     rewrites: tuple[LegacyReplacementRewrite, ...]
 
 
+class LegacyReplacementRetainedSuccessor(NamedTuple):
+    source: Path
+    destination: Path
+    legacy_manifest: LegacyReplacementFile
+    legacy_files: tuple[LegacyReplacementFile, ...]
+    successor_manifest: LegacyReplacementFile
+    successor_files: tuple[LegacyReplacementFile, ...]
+
+
 class LegacyReplacementContract(NamedTuple):
     base_commit: str
     base_tree: str
@@ -113,6 +126,8 @@ class LegacyReplacementContract(NamedTuple):
     exact_dependents: tuple[LegacyReplacementExactDependent, ...]
     destination_predecessor_class: str = DESTINATION_PREDECESSOR_ABSENT
     destination_predecessor_files: tuple[LegacyReplacementFile, ...] = ()
+    retained_successors: tuple[LegacyReplacementRetainedSuccessor, ...] = ()
+    metadata_reconciliations: tuple[LegacyReplacementRewrite, ...] = ()
 
 
 def legacy_source_verification_citation_paths(
@@ -476,6 +491,8 @@ def receipt_identity_payload(
     exact_dependents: list[dict[str, object]] | None = None,
     destination_predecessor_class: str | None = None,
     destination_predecessor_files: list[dict[str, object]] | None = None,
+    retained_successors: list[dict[str, object]] | None = None,
+    metadata_reconciliations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     payload = {
         "base_commit": base_commit,
@@ -493,6 +510,10 @@ def receipt_identity_payload(
         payload["destination_predecessor_class"] = destination_predecessor_class
     if destination_predecessor_files is not None:
         payload["destination_predecessor_files"] = destination_predecessor_files
+    if retained_successors is not None:
+        payload["retained_successors"] = retained_successors
+    if metadata_reconciliations is not None:
+        payload["metadata_reconciliations"] = metadata_reconciliations
     return payload
 
 

@@ -13720,6 +13720,13 @@ class TestCmdEncode:
         dependent_relative = Path("us-la/policies/income_tax/2026_resident_core.yaml")
         dependent = checkout / dependent_relative
         dependent_test = dependent.with_name("2026_resident_core.test.yaml")
+        second_dependent_relative = Path(
+            "us-la/policies/income_tax/2026_nonresident_core.yaml"
+        )
+        second_dependent = checkout / second_dependent_relative
+        second_dependent_test = second_dependent.with_name(
+            "2026_nonresident_core.test.yaml"
+        )
         source.parent.mkdir(parents=True)
         dependent.parent.mkdir(parents=True)
         source.write_text(
@@ -13730,6 +13737,33 @@ class TestCmdEncode:
             "rules: []\n"
         )
         source_test.write_text("[]\n")
+        source_text = "authoritative Louisiana section 47:32\n"
+        corpus_path, source_attestation = self._bind_apply_source_release(
+            checkout,
+            tmp_path,
+            citation_path="us-la/statute/47/32",
+            source_text=source_text,
+        )
+        retained_pairs: list[tuple[Path, Path]] = []
+        for section in range(294, 298):
+            legacy = checkout / f"us-la/statutes/47:{section}.yaml"
+            successor = checkout / f"us-la/statutes/47/{section}.yaml"
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            successor.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(
+                "format: rulespec/v1\n"
+                "module:\n"
+                "  source_verification:\n"
+                "    corpus_citation_path: us-la/statute/47/32\n"
+                f"    source_sha256: {source_attestation['source_sha256']}\n"
+                "rules: []\n"
+            )
+            legacy.with_name(f"47:{section}.test.yaml").write_text("[]\n")
+            successor.write_bytes(legacy.read_bytes())
+            successor.with_name(f"{section}.test.yaml").write_text("[]\n")
+            retained_pairs.append(
+                (legacy.relative_to(checkout), successor.relative_to(checkout))
+            )
         canonical_predecessor = checkout / destination_relative
         canonical_predecessor_test = canonical_predecessor.with_name("32.test.yaml")
         canonical_predecessor.parent.mkdir(parents=True, exist_ok=True)
@@ -13768,6 +13802,9 @@ class TestCmdEncode:
             "        formula: amount\n"
         )
         dependent_test.write_text("[]\n")
+        second_dependent.parent.mkdir(parents=True, exist_ok=True)
+        second_dependent.write_bytes(dependent.read_bytes())
+        second_dependent_test.write_text("[]\n")
 
         def write_manual_manifest(primary: Path, files: list[Path]) -> Path:
             manifest = checkout / _applied_encoding_manifest_path(
@@ -13803,6 +13840,10 @@ class TestCmdEncode:
         source_manifest = write_manual_manifest(source, [source, source_test])
         dependent_manifest = write_manual_manifest(
             dependent, [dependent, dependent_test]
+        )
+        second_dependent_manifest = write_manual_manifest(
+            second_dependent,
+            [second_dependent, second_dependent_test],
         )
         if dependent_owner == "generated":
             dependent_manifest.write_text(
@@ -13851,16 +13892,140 @@ class TestCmdEncode:
                 )
                 + "\n"
             )
+        retained_manifests: list[tuple[Path, Path]] = []
+        retained_successor_originals: dict[Path, bytes] = {}
+        for legacy_relative, successor_relative in retained_pairs:
+            legacy = checkout / legacy_relative
+            successor = checkout / successor_relative
+            legacy_test = legacy.with_name(f"{legacy.stem}.test.yaml")
+            successor_test = successor.with_name(f"{successor.stem}.test.yaml")
+            legacy_manifest = write_manual_manifest(legacy, [legacy, legacy_test])
+            successor_manifest = checkout / _applied_encoding_manifest_path(
+                successor_relative
+            )
+            successor_manifest.parent.mkdir(parents=True, exist_ok=True)
+            successor_payload = _signed_manifest_payload(
+                {
+                    "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+                    "backend": "codex",
+                    "citation": "us-la/statute/47/32",
+                    "source_attestation": {
+                        **source_attestation,
+                        "rulespec_root": "rulespec-us/us-la",
+                    },
+                    "applied_files": [
+                        {
+                            "path": path.relative_to(checkout).as_posix(),
+                            "sha256": _sha256_file(path),
+                        }
+                        for path in (successor, successor_test)
+                    ],
+                }
+            )
+            successor_manifest.write_text(
+                json.dumps(successor_payload, indent=2, sort_keys=True) + "\n"
+            )
+            retained_manifests.append((legacy_manifest, successor_manifest))
+            retained_successor_originals[successor_manifest] = (
+                successor_manifest.read_bytes()
+            )
         dependent_before = dependent.read_bytes()
         dependent_test_before = dependent_test.read_bytes()
         dependent_manifest_before = dependent_manifest.read_bytes()
-
-        source_text = "authoritative Louisiana section 47:32\n"
-        corpus_path, source_attestation = self._bind_apply_source_release(
-            checkout,
-            tmp_path,
-            citation_path="us-la/statute/47/32",
-            source_text=source_text,
+        second_dependent_before = second_dependent.read_bytes()
+        second_dependent_test_before = second_dependent_test.read_bytes()
+        second_dependent_manifest_before = second_dependent_manifest.read_bytes()
+        old_modules = [
+            source_relative.as_posix(),
+            *[old.as_posix() for old, _new in retained_pairs],
+        ]
+        canonical_modules = [
+            destination_relative.as_posix(),
+            *[new.as_posix() for _old, new in retained_pairs],
+        ]
+        provision_index = checkout / ".axiom/index/provisions_to_rules.json"
+        provision_index.parent.mkdir(parents=True, exist_ok=True)
+        provision_index.write_text(
+            json.dumps(
+                {
+                    "records": [
+                        *[{"module": module} for module in old_modules],
+                        *[{"module": module} for module in canonical_modules],
+                    ]
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        pending_fingerprints = checkout / ".axiom/pending-validation-fingerprints.json"
+        pending_fingerprints.write_text(
+            json.dumps(
+                {
+                    **{module: "legacy" for module in old_modules},
+                    **{module: "canonical" for module in canonical_modules},
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        known_gaps = checkout / "known-validation-gaps.yaml"
+        known_gaps.write_text(
+            "".join(
+                f"'{module}':\n  reason: "
+                f"{'legacy' if module in old_modules else 'canonical'}\n"
+                for module in [*old_modules, *canonical_modules]
+            )
+        )
+        toolchain = checkout / ".axiom/toolchain.toml"
+        toolchain.write_text(
+            re.sub(
+                r'validation_waiver_set_sha256 = "[0-9a-f]{64}"',
+                "validation_waiver_set_sha256 = "
+                f'"{hashlib.sha256(known_gaps.read_bytes()).hexdigest()}"',
+                toolchain.read_text(),
+            )
+        )
+        waiver_sha256 = hashlib.sha256(known_gaps.read_bytes()).hexdigest()
+        for _legacy_manifest, successor_manifest in retained_manifests:
+            successor_payload = json.loads(successor_manifest.read_text())
+            successor_payload["validation_waiver_set_sha256"] = waiver_sha256
+            successor_payload["validation_execution"]["policy_pre_apply"][
+                "validation_waiver_set_sha256"
+            ] = waiver_sha256
+            _sign_applied_encoding_manifest(
+                successor_payload,
+                TEST_APPLY_SIGNING_BROKER,
+            )
+            successor_manifest.write_text(
+                json.dumps(successor_payload, indent=2, sort_keys=True) + "\n"
+            )
+            retained_successor_originals[successor_manifest] = (
+                successor_manifest.read_bytes()
+            )
+        oracle_pending = checkout / "oracle-coverage-pending.yaml"
+        oracle_pending.write_text(
+            "".join(
+                f"- legal_id: us-la:"
+                f"{path.relative_to('us-la').with_suffix('').as_posix()}#output.tax\n"
+                f"  reason: "
+                f"{'legacy' if path.as_posix() in old_modules else 'canonical'}\n"
+                for pair in [
+                    (source_relative, destination_relative),
+                    *retained_pairs,
+                ]
+                for path in pair
+            )
+        )
+        manifest_inventory = checkout / "tests/test_encoding_manifests.py"
+        manifest_inventory.parent.mkdir(parents=True, exist_ok=True)
+        manifest_inventory.write_text(
+            "ALLOW = {\n"
+            f"    '{source_manifest.relative_to(checkout).as_posix()}',\n"
+            + "".join(
+                f"    '{legacy.relative_to(checkout).as_posix()}',\n"
+                for legacy, _successor in retained_manifests
+            )
+            + "    'keep.json',\n}\n"
         )
         _git(checkout, "init", "-b", "main")
         _git(checkout, "config", "user.email", "test@example.com")
@@ -13880,7 +14045,8 @@ class TestCmdEncode:
             policy_repo_path=content_root,
             source_unit=source_unit,
             corpus_release=release,
-            exact_dependent_paths=(dependent_relative,),
+            exact_dependent_paths=(dependent_relative, second_dependent_relative),
+            retained_successor_paths=tuple(old for old, _new in retained_pairs),
         )
 
         generated = output_root / "codex-test-model/statutes/47/32.yaml"
@@ -13948,16 +14114,37 @@ class TestCmdEncode:
             ).exists()
             assert overlay_target.is_file()
             assert overlay_target.read_bytes() == generated.read_bytes()
-            exact_path = next(
+            exact_paths = [
                 path
                 for path in dependents
-                if path.as_posix().endswith(dependent_relative.as_posix())
-            )
-            exact_bytes = exact_path.read_bytes()
-            observed_overlay["dependent"] = exact_path
-            observed_overlay["bytes"] = exact_bytes
+                if any(
+                    path.as_posix().endswith(relative.as_posix())
+                    for relative in (dependent_relative, second_dependent_relative)
+                )
+            ]
+            assert len(exact_paths) == 2
+            observed_overlay["dependents"] = exact_paths
+            observed_overlay["bytes"] = [path.read_bytes() for path in exact_paths]
+            for legacy_relative, successor_relative in retained_pairs:
+                assert not (overlay_checkout / legacy_relative).exists()
+                assert not (
+                    overlay_checkout / _applied_encoding_manifest_path(legacy_relative)
+                ).exists()
+                assert (overlay_checkout / successor_relative).is_file()
+            for metadata_path in (
+                provision_index,
+                pending_fingerprints,
+                known_gaps,
+                oracle_pending,
+                manifest_inventory,
+            ):
+                overlay_metadata = overlay_checkout / metadata_path.relative_to(
+                    checkout
+                )
+                metadata_bytes = overlay_metadata.read_bytes()
+                assert all(old.encode() not in metadata_bytes for old in old_modules)
             passed = SimpleNamespace(all_passed=True, results={})
-            return [(overlay_target, passed), (exact_path, passed)]
+            return [(overlay_target, passed), *[(path, passed) for path in exact_paths]]
 
         with (
             patch("axiom_encode.cli.ValidatorPipeline"),
@@ -13986,12 +14173,10 @@ class TestCmdEncode:
             unrelated_sibling_manifest.read_bytes() == unrelated_sibling_manifest_before
         )
         assert orphan_sibling_manifest.read_bytes() == orphan_sibling_manifest_before
-        assert b"us-la:statutes/47/32#amount" in observed_overlay["bytes"]
-        assert b"us-la:statutes/47:32#amount" not in observed_overlay["bytes"]
-        assert (
-            f"hash: sha256:{_sha256_file(generated)}".encode()
-            in observed_overlay["bytes"]
-        )
+        for overlay_bytes in observed_overlay["bytes"]:
+            assert b"us-la:statutes/47/32#amount" in overlay_bytes
+            assert b"us-la:statutes/47:32#amount" not in overlay_bytes
+            assert f"hash: sha256:{_sha256_file(generated)}".encode() in overlay_bytes
 
         with (
             patch("axiom_encode.cli.ValidatorPipeline"),
@@ -14013,6 +14198,65 @@ class TestCmdEncode:
         assert second_can_apply is True, second_issues
         assert second_issues == []
         assert second_supplemental == {}
+
+        self._record_apply_validation(
+            result,
+            output_root=output_root,
+            policy_repo_path=content_root,
+            corpus_path=corpus_path,
+        )
+
+        retained_probe_legacy = checkout / retained_pairs[0][0]
+        retained_probe_successor = checkout / retained_pairs[0][1]
+        retained_probe_manifest = retained_manifests[0][1]
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            patch(
+                "axiom_encode.cli._git_repo_provenance",
+                return_value={
+                    "root": "/repo/axiom-encode",
+                    "commit": TEST_PINNED_ENCODER_IDENTITY["commit"],
+                    "dirty_tracked": False,
+                },
+            ),
+            patch(
+                "axiom_encode.cli._require_axiom_encode_version_provenance",
+                return_value={
+                    "version": AXIOM_ENCODE_TEST_VERSION,
+                    "version_commit": "f" * 40,
+                    "identity_source": "git",
+                },
+            ),
+            patch(
+                "axiom_encode.cli._require_apply_post_install_closure",
+                side_effect=RuntimeError(
+                    "injected retained-successor post-install failure"
+                ),
+            ),
+            pytest.raises(
+                RuntimeError,
+                match="injected retained-successor post-install failure",
+            ),
+        ):
+            _apply_generated_encoding_result(
+                result,
+                output_root=output_root,
+                policy_repo_path=content_root,
+                corpus_path=corpus_path,
+                run_id="legacy-retained-rollback-probe",
+            )
+        assert _git(checkout, "status", "--porcelain").stdout == ""
+        assert retained_probe_legacy.is_file()
+        assert retained_probe_successor.is_file()
+        assert (
+            retained_probe_manifest.read_bytes()
+            == retained_successor_originals[retained_probe_manifest]
+        )
+        assert source.is_file()
+        assert source_manifest.is_file()
 
         self._record_apply_validation(
             result,
@@ -14069,15 +14313,78 @@ class TestCmdEncode:
         assert dependent.read_bytes() != dependent_before
         assert dependent_test.read_bytes() == dependent_test_before
         assert dependent_manifest.read_bytes() != dependent_manifest_before
+        assert b"us-la:statutes/47/32#amount" in second_dependent.read_bytes()
+        assert (
+            f"hash: sha256:{_sha256_file(destination)}".encode()
+            in second_dependent.read_bytes()
+        )
+        assert second_dependent.read_bytes() != second_dependent_before
+        assert second_dependent_test.read_bytes() == second_dependent_test_before
+        assert (
+            second_dependent_manifest.read_bytes() != second_dependent_manifest_before
+        )
         assert destination_manifest in applied
         assert dependent in applied
         assert dependent_test in applied
         assert dependent_manifest in applied
+        assert second_dependent in applied
+        assert second_dependent_test in applied
+        assert second_dependent_manifest in applied
+
+        for (legacy_relative, successor_relative), (
+            legacy_manifest,
+            successor_manifest,
+        ) in zip(retained_pairs, retained_manifests, strict=True):
+            legacy = checkout / legacy_relative
+            legacy_test = legacy.with_name(f"{legacy.stem}.test.yaml")
+            successor = checkout / successor_relative
+            successor_test = successor.with_name(f"{successor.stem}.test.yaml")
+            assert not legacy.exists()
+            assert not legacy_test.exists()
+            assert not legacy_manifest.exists()
+            assert successor.is_file()
+            assert successor_test.is_file()
+            assert (
+                successor_manifest.read_bytes()
+                != retained_successor_originals[successor_manifest]
+            )
+            assert successor_manifest in applied
 
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v3")
+        assert receipt["schema_version"].endswith("/v4")
+        assert len(receipt["replacement"]["retained_successors"]) == 4
+        assert {
+            item["destination"]
+            for item in receipt["replacement"]["retained_successors"]
+        } == {new.as_posix() for _old, new in retained_pairs}
+        metadata_reconciliations = receipt["replacement"]["metadata_reconciliations"]
+        assert {item["path"] for item in metadata_reconciliations} == {
+            ".axiom/index/provisions_to_rules.json",
+            ".axiom/pending-validation-fingerprints.json",
+            ".axiom/toolchain.toml",
+            "known-validation-gaps.yaml",
+            "oracle-coverage-pending.yaml",
+            "tests/test_encoding_manifests.py",
+        }
+        for reconciliation in metadata_reconciliations:
+            metadata_path = checkout / reconciliation["path"]
+            assert reconciliation["before_sha256"] != reconciliation["after_sha256"]
+            assert _sha256_file(metadata_path) == reconciliation["after_sha256"]
+        for old_module in old_modules:
+            assert old_module.encode() not in provision_index.read_bytes()
+            assert old_module.encode() not in pending_fingerprints.read_bytes()
+            assert old_module.encode() not in known_gaps.read_bytes()
+        assert b"us-la:statutes/47:" not in oracle_pending.read_bytes()
+        for legacy_manifest, _successor_manifest in retained_manifests:
+            assert (
+                legacy_manifest.relative_to(checkout).as_posix().encode()
+                not in manifest_inventory.read_bytes()
+            )
+        assert source_manifest.relative_to(checkout).as_posix().encode() not in (
+            manifest_inventory.read_bytes()
+        )
         assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
         assert receipt["replacement"]["destination_predecessor_class"] == (
             "canonicalized-unowned-duplicate"
@@ -14086,8 +14393,15 @@ class TestCmdEncode:
             item["path"]: item["sha256"]
             for item in receipt["replacement"]["destination_predecessor_files"]
         } == predecessor_hashes
-        assert len(receipt["replacement"]["exact_dependents"]) == 1
-        exact = receipt["replacement"]["exact_dependents"][0]
+        assert len(receipt["replacement"]["exact_dependents"]) == 2
+        exact_by_primary = {
+            item["primary"]: item for item in receipt["replacement"]["exact_dependents"]
+        }
+        assert set(exact_by_primary) == {
+            dependent_relative.as_posix(),
+            second_dependent_relative.as_posix(),
+        }
+        exact = exact_by_primary[dependent_relative.as_posix()]
         assert exact["primary"] == dependent_relative.as_posix()
         assert exact["rewrites"][0]["proof_import_repairs"] == 1
         exact_legacy_hashes = {
@@ -14108,13 +14422,22 @@ class TestCmdEncode:
             hashlib.sha256(receipt_path.read_bytes()).hexdigest()
         )
 
-        for manifest_path in (destination_manifest, dependent_manifest):
+        post_migration_waiver_sha256 = hashlib.sha256(
+            known_gaps.read_bytes()
+        ).hexdigest()
+        persisted_manifests = (
+            destination_manifest,
+            dependent_manifest,
+            second_dependent_manifest,
+            *(successor for _legacy, successor in retained_manifests),
+        )
+        for manifest_path in persisted_manifests:
             verified, _root, _digest, issues = (
                 _load_verified_applied_encoding_manifest_payload(
                     checkout,
                     manifest_path.relative_to(checkout).as_posix(),
                     signing_broker=TEST_APPLY_SIGNING_BROKER,
-                    expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                    expected_waiver_set_sha256=post_migration_waiver_sha256,
                     expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
                     local_corpus_release=release,
                 )
@@ -14122,9 +14445,48 @@ class TestCmdEncode:
             assert issues == [], "\n".join(issues)
             assert verified is not None
 
+        from scripts.prepare_signed_backfill import authorized_changed_paths
+
+        with patch.dict(
+            os.environ,
+            {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+        ):
+            authorized = authorized_changed_paths(checkout)
+        expected_authorized = {
+            source_relative,
+            _applied_encoding_manifest_path(source_relative),
+            destination_relative,
+            _applied_encoding_manifest_path(destination_relative),
+            dependent_relative,
+            second_dependent_relative,
+            *[old for old, _new in retained_pairs],
+            *[_applied_encoding_manifest_path(old) for old, _new in retained_pairs],
+            *[_applied_encoding_manifest_path(new) for _old, new in retained_pairs],
+            *(Path(item["path"]) for item in metadata_reconciliations),
+            receipt_path.relative_to(checkout),
+        }
+        assert expected_authorized <= {Path(path) for path in authorized}
+
         outer_before_tamper = destination_manifest.read_bytes()
         receipt_before_tamper = receipt_path.read_bytes()
-        exact_manifest_before_tamper = dependent_manifest.read_bytes()
+        linked_manifest_bytes = {
+            path: path.read_bytes() for path in persisted_manifests[1:]
+        }
+
+        def rebind_linked_manifests(receipt_sha256: str) -> None:
+            for path, original in linked_manifest_bytes.items():
+                payload = json.loads(original)
+                payload["legacy_migration"]["receipt_sha256"] = receipt_sha256
+                _sign_applied_encoding_manifest(
+                    payload,
+                    TEST_APPLY_SIGNING_BROKER,
+                )
+                path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+        def restore_linked_manifests() -> None:
+            for path, original in linked_manifest_bytes.items():
+                path.write_bytes(original)
+
         compatibility_receipt = copy.deepcopy(receipt)
         compatibility_receipt["legacy"]["owner_class"] = "v1-manual-hmac-untrusted"
         _sign_applied_encoding_manifest(
@@ -14148,23 +14510,13 @@ class TestCmdEncode:
         destination_manifest.write_text(
             json.dumps(compatibility_outer, indent=2, sort_keys=True) + "\n"
         )
-        compatibility_exact_manifest = copy.deepcopy(exact_manifest)
-        compatibility_exact_manifest["legacy_migration"]["receipt_sha256"] = (
-            compatibility_receipt_sha256
-        )
-        _sign_applied_encoding_manifest(
-            compatibility_exact_manifest,
-            TEST_APPLY_SIGNING_BROKER,
-        )
-        dependent_manifest.write_text(
-            json.dumps(compatibility_exact_manifest, indent=2, sort_keys=True) + "\n"
-        )
+        rebind_linked_manifests(compatibility_receipt_sha256)
         _verified, _root, _digest, compatibility_issues = (
             _load_verified_applied_encoding_manifest_payload(
                 checkout,
                 destination_manifest.relative_to(checkout).as_posix(),
                 signing_broker=TEST_APPLY_SIGNING_BROKER,
-                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_waiver_set_sha256=post_migration_waiver_sha256,
                 expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
                 local_corpus_release=release,
             )
@@ -14178,7 +14530,7 @@ class TestCmdEncode:
             )
         destination_manifest.write_bytes(outer_before_tamper)
         receipt_path.write_bytes(receipt_before_tamper)
-        dependent_manifest.write_bytes(exact_manifest_before_tamper)
+        restore_linked_manifests()
 
         tampered_receipt = copy.deepcopy(receipt)
         tampered_receipt["replacement"]["exact_dependents"][0]["rewrites"][0][
@@ -14201,23 +14553,13 @@ class TestCmdEncode:
         destination_manifest.write_text(
             json.dumps(tampered_outer, indent=2, sort_keys=True) + "\n"
         )
-        tampered_exact_manifest = copy.deepcopy(exact_manifest)
-        tampered_exact_manifest["legacy_migration"]["receipt_sha256"] = (
-            tampered_receipt_sha256
-        )
-        _sign_applied_encoding_manifest(
-            tampered_exact_manifest,
-            TEST_APPLY_SIGNING_BROKER,
-        )
-        dependent_manifest.write_text(
-            json.dumps(tampered_exact_manifest, indent=2, sort_keys=True) + "\n"
-        )
+        rebind_linked_manifests(tampered_receipt_sha256)
         verified, _root, _digest, issues = (
             _load_verified_applied_encoding_manifest_payload(
                 checkout,
                 destination_manifest.relative_to(checkout).as_posix(),
                 signing_broker=TEST_APPLY_SIGNING_BROKER,
-                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_waiver_set_sha256=post_migration_waiver_sha256,
                 expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
                 local_corpus_release=release,
             )
@@ -14226,7 +14568,7 @@ class TestCmdEncode:
 
         destination_manifest.write_bytes(outer_before_tamper)
         receipt_path.write_bytes(receipt_before_tamper)
-        dependent_manifest.write_bytes(exact_manifest_before_tamper)
+        restore_linked_manifests()
         exact_manifest = json.loads(dependent_manifest.read_text())
         exact_manifest["legacy_migration"]["receipt_sha256"] = "0" * 64
         _sign_applied_encoding_manifest(
@@ -14241,7 +14583,7 @@ class TestCmdEncode:
                 checkout,
                 dependent_manifest.relative_to(checkout).as_posix(),
                 signing_broker=TEST_APPLY_SIGNING_BROKER,
-                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_waiver_set_sha256=post_migration_waiver_sha256,
                 expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
                 local_corpus_release=release,
             )

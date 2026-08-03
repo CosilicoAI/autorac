@@ -1,0 +1,1 @@
+Reconcile authenticated legacy RuleSpec groups with already-retained canonical successors, exact dependent rewrites, canonical predecessor evidence, structured metadata inventories, and the derived validation-waiver toolchain binding in one atomic signed replacement.
