@@ -547,7 +547,7 @@ def _install_trusted_git_wrapper(
         "            'src/axiom_encode/__init__.py', 'uv.lock',\n"
         "        ]\n"
         "    if command == 'ls-files':\n"
-        "        if options == ['-z']:\n"
+        "        if options in (['-z'], ['--stage', '-z']):\n"
         "            return True\n"
         "        prefix = ['--others', '--exclude-standard', '-z']\n"
         "        if options == prefix:\n"

@@ -504,6 +504,7 @@ class TestTrustedGit:
                 None,
             ),
             (["ls-files", "-z"], None),
+            (["ls-files", "--stage", "-z"], None),
             (["ls-files", "--others", "--exclude-standard", "-z"], None),
             (
                 [
@@ -628,6 +629,8 @@ class TestTrustedGit:
             ["diff", "--stat", "HEAD"],
             ["log", "--oneline"],
             ["ls-files", "--stage"],
+            ["ls-files", "-z", "--stage"],
+            ["ls-files", "--stage", "-z", "--debug"],
             ["ls-tree", "--name-only", "HEAD"],
             ["merge-base", "--octopus", "HEAD", "HEAD"],
             ["remote", "add", "blocked", "https://example.invalid/repo.git"],
@@ -757,6 +760,39 @@ class TestTrustedGit:
             assert refused_gitlink.returncode != 0
             assert "refused gitlink at sub" in refused_gitlink.stderr
         assert not marker.exists()
+
+    def test_installed_wrapper_supports_migration_stage_inventory(
+        self, tmp_path, monkeypatch
+    ):
+        from axiom_encode.cli import _rulespec_migration_tracked_files
+
+        git = shutil.which("git")
+        if git is None:
+            pytest.skip("Git is required")
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        provisioner._install_trusted_git_wrapper(
+            destination,
+            Path(sys.executable).resolve(),
+            provisioner._resolve_trusted_git(Path(git).resolve()),
+        )
+        repository = tmp_path / "rulespec-us"
+        subprocess.run([git, "init", "--quiet", str(repository)], check=True)
+        unicode_path = repository / "us/statutes/42/1437c–1.yaml"
+        unicode_path.parent.mkdir(parents=True)
+        unicode_path.write_text("format: rulespec/v1\n")
+        executable = repository / "tools/check"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\n")
+        executable.chmod(0o755)
+        subprocess.run([git, "-C", str(repository), "add", "."], check=True)
+
+        monkeypatch.setenv("PATH", str(destination))
+
+        assert _rulespec_migration_tracked_files(repository) == {
+            Path("tools/check"): "100755",
+            Path("us/statutes/42/1437c–1.yaml"): "100644",
+        }
 
     def test_installed_wrapper_disables_partial_clone_lazy_fetch(self, tmp_path):
         git = shutil.which("git")

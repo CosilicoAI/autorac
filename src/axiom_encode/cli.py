@@ -18417,25 +18417,12 @@ def _rulespec_migration_base_identity(repo_path: Path) -> tuple[str, str]:
 def _rulespec_migration_tracked_files(repo_path: Path) -> dict[Path, str]:
     """Return exact tracked regular-file modes, rejecting ambiguous Git stages."""
 
-    raw = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo_path),
-            "-c",
-            "core.quotepath=false",
-            "ls-files",
-            "--stage",
-            "-z",
-        ],
-        capture_output=True,
-        env=_rulespec_migration_git_environment(),
-        check=False,
-    )
-    if raw.returncode != 0:
-        raise RuntimeError("Cannot enumerate tracked RuleSpec files")
+    # NUL-delimited ls-files output carries path bytes verbatim, so it does not
+    # need a caller-controlled core.quotepath override. Keep this query on the
+    # same sanitized, read-only Git path as the other migration inspections.
+    raw = _rulespec_migration_git_bytes(repo_path, "ls-files", "--stage", "-z")
     result: dict[Path, str] = {}
-    for record in raw.stdout.split(b"\0"):
+    for record in raw.split(b"\0"):
         if not record:
             continue
         try:
