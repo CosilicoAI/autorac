@@ -2133,6 +2133,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert "--allowed-event-name workflow_dispatch" in command
     assert "--apply" in command
+    assert "--require-complete-source-unit" in command
     assert "--skip-reviewers" not in command
     assert 'mktemp -d "$RUNNER_TEMP/axiom-targeted-review-finding.XXXXXX"' in command
     assert 'review_finding_path="$review_finding_dir/review-finding.txt"' in command
@@ -2709,6 +2710,9 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     ]
     assert len(calls) == dependent_count + 1
     encode_args = [call[call.index("--") + 1 :] for call in calls]
+    assert all(
+        args.count("--require-complete-source-unit") == 1 for args in encode_args
+    )
     assert encode_args[0][-1] == "us/regulation/42/435/555"
     assert ("--apply-target-only" in encode_args[0]) is (dependent_count > 0)
     assert (

@@ -777,6 +777,7 @@ jobs:
               --policy-repo-path "$RULESPEC_CHECKOUT"
               --output "$RUNNER_TEMP/generated/$output_lane"
               --mode repo-augmented
+              --require-complete-source-unit
               --db "$RUNNER_TEMP/encodings.db"
               --no-sync
               --apply
