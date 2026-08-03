@@ -9,17 +9,21 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from scripts.prepare_signed_backfill import (
+    MAX_SOURCE_BUNDLE_CITATIONS,
     MAX_SOURCE_BUNDLE_JSON_BYTES,
+    REVIEWED_RULESPEC_CONTINUATION_ROOTS,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
     authorized_changed_paths,
     branch_name,
     parse_existing_signed_imports,
     parse_source_bundle,
+    reviewed_continuation_paths,
     stage_authorized_changes,
     validate_country,
     validate_dependent_cascade,
     validate_queue_tracking,
+    validate_reviewed_continuation_inventories,
     validate_rulespec_base,
 )
 from scripts.prepare_signed_backfill import (
@@ -64,10 +68,32 @@ def test_parse_source_bundle_requires_json_array(raw: str) -> None:
         )
 
 
-def test_parse_source_bundle_rejects_more_than_sixteen_items() -> None:
-    raw = json.dumps([f"us-ri/statute/44-30-{index}" for index in range(17)])
+def test_parse_source_bundle_accepts_ty2026_state_tax_inventory_size() -> None:
+    raw = json.dumps([f"us-nj/statute/54a:3-{index}" for index in range(29)])
 
-    with pytest.raises(ValueError, match="more than 16"):
+    assert (
+        len(
+            parse_source_bundle(
+                raw,
+                primary_citation="us-nj/statute/54a:1-2",
+            )
+        )
+        == 29
+    )
+
+
+def test_parse_source_bundle_rejects_more_than_bounded_limit() -> None:
+    raw = json.dumps(
+        [
+            f"us-ri/statute/44-30-{index}"
+            for index in range(MAX_SOURCE_BUNDLE_CITATIONS + 1)
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"more than {MAX_SOURCE_BUNDLE_CITATIONS}",
+    ):
         parse_source_bundle(
             raw,
             primary_citation="us-ri/statute/44-30-99",
@@ -217,18 +243,55 @@ def test_parse_existing_signed_imports_accepts_ordered_tracked_v5_modules(
     ) == tuple(PurePosixPath(path) for path in paths)
 
 
-def test_parse_existing_signed_imports_enforces_combined_sixteen_limit(
+def test_parse_existing_signed_imports_accepts_primary_source_for_distinct_target(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source_path = "us-ri/statutes/44-30-2/6.yaml"
+    _add_existing_signed_import(repo, source_path)
+
+    assert parse_existing_signed_imports(
+        repo,
+        json.dumps([source_path]),
+        primary_citation="us-ri/statute/44-30-2.6",
+        replacement_rulespec_path=(
+            "us-ri/policies/income_tax/pilot_liability_pipeline.yaml"
+        ),
+    ) == (PurePosixPath(source_path),)
+
+
+def test_parse_existing_signed_imports_rejects_primary_source_for_same_target(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    source_path = "us-ri/statutes/44-30-2/6.yaml"
+    _add_existing_signed_import(repo, source_path)
+
+    with pytest.raises(ValueError, match="must exclude"):
+        parse_existing_signed_imports(
+            repo,
+            json.dumps([source_path]),
+            primary_citation="us-ri/statute/44-30-2.6",
+            replacement_rulespec_path=source_path,
+        )
+
+
+def test_parse_existing_signed_imports_enforces_combined_bounded_limit(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
 
-    with pytest.raises(ValueError, match="more than 16 modules"):
+    with pytest.raises(
+        ValueError,
+        match=f"more than {MAX_SOURCE_BUNDLE_CITATIONS} modules",
+    ):
         parse_existing_signed_imports(
             repo,
             '["us-ri/statutes/44-30-1.yaml"]',
             primary_citation="us-ri/statute/44-30-99",
             source_bundle_citations=tuple(
-                f"us-ri/statute/44-30-{index}" for index in range(16)
+                f"us-ri/statute/44-30-{index}"
+                for index in range(MAX_SOURCE_BUNDLE_CITATIONS)
             ),
         )
 
@@ -1560,6 +1623,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
         ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
         ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
         ("us", "8dddb9fc597fc6a335bc5207c0a9edb93fd1445a"),
+        ("us", "b9b46dd845c61a49091146b3a3510fa3b8204ee7"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
 )
@@ -1576,12 +1640,19 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
             ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
             ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
             ("us", "8dddb9fc597fc6a335bc5207c0a9edb93fd1445a"),
+            ("us", "b9b46dd845c61a49091146b3a3510fa3b8204ee7"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }
     )
     assert REVIEWED_RULESPEC_PR_BASE_BRANCHES == frozenset(
         {("us", "hard-cut/canonical-layout-us")}
     )
+    assert REVIEWED_RULESPEC_CONTINUATION_ROOTS == {
+        (
+            "us",
+            "hard-cut/canonical-layout-us",
+        ): "b9b46dd845c61a49091146b3a3510fa3b8204ee7"
+    }
     monkeypatch.setattr(
         "scripts.prepare_signed_backfill._git",
         lambda _repo, *_args: f"{reviewed_ref}\n".encode(),
@@ -1726,3 +1797,211 @@ def test_validate_rulespec_base_rejects_unreviewed_non_main_head(
 
     with pytest.raises(ValueError, match="neither on main nor an approved"):
         validate_rulespec_base(repo, "us", head, open_pr=False)
+
+
+def test_validate_rulespec_base_accepts_signed_protected_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    _git(repo, "add", rule.relative_to(repo), manifest.relative_to(repo))
+    _git(repo, "commit", "-m", "signed continuation")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "update-ref",
+        "refs/remotes/origin/hard-cut/canonical-layout-us",
+        head,
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+    assert reviewed_continuation_paths(
+        repo,
+        "us",
+        head,
+        pr_base_branch="hard-cut/canonical-layout-us",
+    ) == (PurePosixPath("us/regulations/example.yaml"),)
+    assert (
+        validate_rulespec_base(
+            repo,
+            "us",
+            head,
+            open_pr=True,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+        == "reviewed-head-continuation-pr"
+    )
+
+
+def _configure_reviewed_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reviewed: str,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+
+def test_reviewed_continuation_rejects_changed_companion_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.symlink_to(rule.name)
+    _git(
+        repo,
+        "add",
+        rule.relative_to(repo),
+        companion.relative_to(repo),
+        manifest.relative_to(repo),
+    )
+    _git(repo, "commit", "-m", "continuation with symlink companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+
+    with pytest.raises(ValueError, match="regular 0644 continuation blob"):
+        reviewed_continuation_paths(
+            repo,
+            "us",
+            head,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+
+
+def test_reviewed_continuation_rejects_unmanifested_changed_companion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.write_text("[]\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "continuation with unmanifested companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+    inventory = {
+        "schema": "axiom-encode/signed-import-inventory/v1",
+        "rulespec_base": head,
+        "items": [
+            {
+                "rulespec_path": rule.relative_to(repo).as_posix(),
+                "applied_files": [
+                    {
+                        "path": rule.relative_to(repo).as_posix(),
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="absent from the signed manifest inventory"):
+        validate_reviewed_continuation_inventories(
+            repo,
+            "us",
+            head,
+            [inventory],
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+
+
+def test_reviewed_continuation_accepts_manifested_regular_companion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.write_text("[]\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "continuation with manifested companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+    inventory = {
+        "schema": "axiom-encode/signed-import-inventory/v1",
+        "rulespec_base": head,
+        "items": [
+            {
+                "rulespec_path": rule.relative_to(repo).as_posix(),
+                "applied_files": [
+                    {
+                        "path": rule.relative_to(repo).as_posix(),
+                        "sha256": "a" * 64,
+                    },
+                    {
+                        "path": companion.relative_to(repo).as_posix(),
+                        "sha256": "b" * 64,
+                    },
+                ],
+            }
+        ],
+    }
+
+    validate_reviewed_continuation_inventories(
+        repo,
+        "us",
+        head,
+        [inventory],
+        pr_base_branch="hard-cut/canonical-layout-us",
+    )
+
+
+def test_validate_rulespec_base_rejects_continuation_metadata_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    (repo / "README.md").write_text("unreviewed metadata\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "unreviewed metadata")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "update-ref",
+        "refs/remotes/origin/hard-cut/canonical-layout-us",
+        head,
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+    with pytest.raises(ValueError, match="non-generated path"):
+        validate_rulespec_base(
+            repo,
+            "us",
+            head,
+            open_pr=True,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )

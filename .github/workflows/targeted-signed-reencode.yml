@@ -406,6 +406,11 @@ jobs:
             "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
             --primary-citation "$CITATION"
           )
+          if [ -n "$REPLACE_RULESPEC_PATH" ]; then
+            existing_import_args+=(
+              --replacement-rulespec-path "$REPLACE_RULESPEC_PATH"
+            )
+          fi
           while IFS= read -r source_citation; do
             existing_import_args+=(--source-citation "$source_citation")
           done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
@@ -520,6 +525,63 @@ jobs:
             /opt/axiom-verification/axiom-encode-apply-signer
           sudo chown -R 0:0 /opt/axiom-verification
           sudo chmod -R go-w /opt/axiom-verification
+
+      - name: Verify authenticated reviewed-head continuation
+        env:
+          COUNTRY: ${{ inputs.country }}
+          PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
+          RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
+        run: |
+          set -euo pipefail
+          workflow_python=/opt/axiom-verification/python/bin/python
+          backfill_helper=axiom-encode/scripts/prepare_signed_backfill.py
+          if [ "$PR_BASE_BRANCH" != "hard-cut/canonical-layout-us" ]; then
+            printf '[]\n' > "$RUNNER_TEMP/reviewed-continuation-paths.json"
+            : > "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
+            exit 0
+          fi
+          "$workflow_python" -I "$backfill_helper" \
+            reviewed-continuation-paths \
+            "$RULESPEC_CHECKOUT" "$COUNTRY" "$RULESPEC_REF" "$PR_BASE_BRANCH" \
+            > "$RUNNER_TEMP/reviewed-continuation-paths.json"
+          : > "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
+          while IFS= read -r jurisdiction; do
+            mapfile -t continuation_paths < <(
+              jq -r --arg jurisdiction "$jurisdiction" \
+                '.[] | select(startswith($jurisdiction + "/"))' \
+                "$RUNNER_TEMP/reviewed-continuation-paths.json"
+            )
+            for ((offset=0; offset<${#continuation_paths[@]}; offset+=64)); do
+              inventory_args=(
+                /opt/axiom-verification/axiom-encode-signing-supervisor
+                --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json
+                --trusted-python-runtime-root /opt/axiom-verification/python
+                --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages
+                --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode
+                -- /opt/axiom-verification/axiom-encode signed-import-inventory
+                --repo "$RULESPEC_CHECKOUT"
+                --corpus-path "$GITHUB_WORKSPACE/axiom-corpus"
+                --base-ref "$RULESPEC_REF"
+                --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode"
+                --json
+              )
+              for ((index=offset; index<${#continuation_paths[@]} && index<offset+64; index++)); do
+                inventory_args+=(
+                  --rulespec-path "${continuation_paths[$index]}"
+                )
+              done
+              "${inventory_args[@]}" | jq -c . \
+                >> "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
+            done
+          done < <(
+            jq -r '[.[] | split("/")[0]] | unique[]' \
+              "$RUNNER_TEMP/reviewed-continuation-paths.json"
+          )
+          "$workflow_python" -I "$backfill_helper" \
+            validate-reviewed-continuation-inventories \
+            "$RULESPEC_CHECKOUT" "$COUNTRY" "$RULESPEC_REF" "$PR_BASE_BRANCH" \
+            "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
 
       - name: Verify protected RuleSpec routing
         env:
@@ -661,6 +723,11 @@ jobs:
             "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
             --primary-citation "$CITATION"
           )
+          if [ -n "$REPLACE_RULESPEC_PATH" ]; then
+            existing_import_args+=(
+              --replacement-rulespec-path "$REPLACE_RULESPEC_PATH"
+            )
+          fi
           while IFS= read -r source_citation; do
             existing_import_args+=(--source-citation "$source_citation")
           done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
@@ -814,6 +881,10 @@ jobs:
               fi
             fi
             if [ "$require_direct_imports" = "true" ]; then
+              args+=(
+                --required-import-base-ref
+                "$(git -C "$RULESPEC_CHECKOUT" rev-parse HEAD)"
+              )
               while IFS= read -r required_import_path; do
                 args+=(--required-import-rulespec-path "$required_import_path")
               done < "$RUNNER_TEMP/required-import-rulespec-paths.txt"
@@ -951,6 +1022,11 @@ jobs:
             "${EXISTING_SIGNED_IMPORTS_JSON:-[]}"
             --primary-citation "$CITATION"
           )
+          if [ -n "$REPLACE_RULESPEC_PATH" ]; then
+            existing_import_args+=(
+              --replacement-rulespec-path "$REPLACE_RULESPEC_PATH"
+            )
+          fi
           while IFS= read -r source_citation; do
             existing_import_args+=(--source-citation "$source_citation")
           done < <(printf '%s\n' "$normalized_source_bundle" | jq -r '.[]')
@@ -1168,6 +1244,10 @@ jobs:
             "$artifact/existing-signed-imports.json"
           cp "$RUNNER_TEMP/existing-signed-import-inventory.json" \
             "$artifact/signed-import-inventory.json"
+          cp "$RUNNER_TEMP/reviewed-continuation-paths.json" \
+            "$artifact/reviewed-continuation-paths.json"
+          cp "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl" \
+            "$artifact/reviewed-continuation-inventories.jsonl"
           for source_guard in "$RUNNER_TEMP"/source-*-guard-generated.json; do
             if [ -f "$source_guard" ]; then
               cp "$source_guard" "$artifact/"

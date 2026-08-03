@@ -298,6 +298,13 @@ def test_contract_binds_in_place_plural_source_and_unmarked_v1(
 ) -> None:
     checkout, content_root, source = _in_place_legacy_checkout(tmp_path)
     relative = Path("us-me/policies/income_tax/pilot_liability_pipeline.yaml")
+    required_import = {
+        "citation": "us-me/statute/36/5111",
+        "rulespec_path": "us-me/statutes/36/5111.yaml",
+        "rulespec_sha256": "1" * 64,
+        "manifest_path": ".axiom/encoding-manifests/us-me/statutes/36/5111.json",
+        "manifest_sha256": "2" * 64,
+    }
     with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
         contract = _resolve_legacy_replacement_contract(
             source_raw=relative,
@@ -306,16 +313,42 @@ def test_contract_binds_in_place_plural_source_and_unmarked_v1(
             policy_repo_path=content_root,
             source_unit=source,
             corpus_release=SimpleNamespace(),
+            verified_required_imports=(required_import,),
         )
 
     assert contract.source == relative
     assert contract.destination == relative
     assert contract.rewrites == ()
     assert contract.scheduled_dependents == ()
+    assert contract.source_closure is not None
+    assert contract.source_closure.historical_citations == (
+        "us-me/guidance/revenue/rate-schedule",
+        "us-me/statute/36/5111",
+    )
+    assert contract.source_closure.imports[0].rulespec_path == Path(
+        "us-me/statutes/36/5111.yaml"
+    )
     assert [item.path for item in contract.deleted_files] == [
         relative,
         relative.with_name("pilot_liability_pipeline.test.yaml"),
     ]
+
+
+def test_contract_rejects_incomplete_plural_source_closure(tmp_path: Path) -> None:
+    checkout, content_root, source = _in_place_legacy_checkout(tmp_path)
+    relative = Path("us-me/policies/income_tax/pilot_liability_pipeline.yaml")
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="exactly cover every non-primary"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=relative,
+            destination_raw=relative,
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
 
 
 def test_contract_rejects_in_place_source_choice_outside_first_legacy_slot(

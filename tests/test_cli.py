@@ -272,6 +272,7 @@ from axiom_encode.constants import (
     DEFAULT_OPENAI_ESCALATE_AFTER,
     DEFAULT_OPENAI_ESCALATION_MODEL,
     DEFAULT_OPENAI_MODEL,
+    MAX_SIGNED_SOURCE_MODULES,
     RULESPEC_ATOMIC_MODULE_ROOTS,
     RULESPEC_COMPOSITION_SPEC_ROOT,
     RULESPEC_FILE_SUFFIX,
@@ -12234,6 +12235,14 @@ class TestCmdEncode:
             "replace_legacy_rulespec_path",
             None,
         )
+        args.required_import_rulespec_path = overrides.get(
+            "required_import_rulespec_path",
+            [],
+        )
+        args.required_import_base_ref = overrides.get(
+            "required_import_base_ref",
+            None,
+        )
         args.apply_target_only = overrides.get("apply_target_only", False)
         args.allow_shrink = overrides.get("allow_shrink", False)
         return args
@@ -13516,12 +13525,71 @@ class TestCmdEncode:
         old_manifest = manifest.read_bytes()
 
         source_text = "authoritative Maine schedule\n"
-        corpus_path, source_attestation = self._bind_apply_source_release(
-            checkout,
-            tmp_path,
-            citation_path="us-me/guidance/revenue/rate-schedule",
-            source_text=source_text,
+        corpus_path = tmp_path / "axiom-corpus"
+        _write_active_corpus_row(
+            corpus_path,
+            "us-me/guidance/revenue/rate-schedule",
+            source_text,
         )
+        _write_active_corpus_row(
+            corpus_path,
+            "us-me/statute/36/5111",
+            "authoritative Maine rate statute\n",
+        )
+        release = bind_test_corpus_release(
+            corpus_path,
+            TEST_CORPUS_RELEASE_NAME,
+            [
+                ("us-me", "guidance", TEST_CORPUS_VERSION),
+                ("us-me", "statute", TEST_CORPUS_VERSION),
+            ],
+        )
+        _write_test_rulespec_toolchain(
+            checkout,
+            release_content_sha256=release.content_sha256,
+        )
+        import_rule = checkout / "us-me/statutes/36/5111.yaml"
+        import_rule.parent.mkdir(parents=True)
+        import_source_unit = resolve_corpus_source_unit(
+            "us-me/statute/36/5111",
+            release,
+        )
+        import_rule.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-me/statute/36/5111\n"
+            f"    source_sha256: {import_source_unit.source_attestation['source_sha256']}\n"
+            "rules: []\n"
+        )
+        import_manifest = (
+            checkout / ".axiom/encoding-manifests/us-me/statutes/36/5111.json"
+        )
+        import_manifest.parent.mkdir(parents=True)
+        import_attestation = dict(import_source_unit.source_attestation)
+        import_attestation["rulespec_root"] = "rulespec-us/us-me"
+        import_attestation["generation_input_sha256"] = hashlib.sha256(
+            import_source_unit.body.encode("utf-8")
+        ).hexdigest()
+        import_manifest_payload = _signed_manifest_payload(
+            {
+                "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+                "backend": "codex",
+                "citation": "us-me/statute/36/5111",
+                "source_attestation": import_attestation,
+                "applied_files": [
+                    {
+                        "path": "us-me/statutes/36/5111.yaml",
+                        "sha256": _sha256_file(import_rule),
+                    }
+                ],
+            }
+        )
+        _sign_applied_encoding_manifest(
+            import_manifest_payload,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        import_manifest.write_text(json.dumps(import_manifest_payload) + "\n")
         _git(checkout, "init", "-b", "main")
         _git(checkout, "config", "user.email", "test@example.com")
         _git(checkout, "config", "user.name", "Test User")
@@ -13536,6 +13604,10 @@ class TestCmdEncode:
             "us-me/guidance/revenue/rate-schedule",
             release,
         )
+        source_attestation = dict(source_unit.source_attestation)
+        source_attestation["generation_input_sha256"] = hashlib.sha256(
+            source_text.encode("utf-8")
+        ).hexdigest()
         contract = _resolve_legacy_replacement_contract(
             source_raw=checkout_relative,
             destination_raw=checkout_relative,
@@ -13543,6 +13615,17 @@ class TestCmdEncode:
             policy_repo_path=content_root,
             source_unit=source_unit,
             corpus_release=release,
+            verified_required_imports=(
+                {
+                    "citation": "us-me/statute/36/5111",
+                    "rulespec_path": "us-me/statutes/36/5111.yaml",
+                    "rulespec_sha256": _sha256_file(import_rule),
+                    "manifest_path": (
+                        ".axiom/encoding-manifests/us-me/statutes/36/5111.json"
+                    ),
+                    "manifest_sha256": _sha256_file(import_manifest),
+                },
+            ),
         )
 
         generated = output_root / "codex-test-model" / relative
@@ -13564,6 +13647,7 @@ class TestCmdEncode:
         generated_test = generated.with_name("pilot_liability_pipeline.test.yaml")
         generated_test.write_text("[]\n")
         result = self._make_eval_result(True)
+        result.citation = "us-me/guidance/revenue/rate-schedule"
         result.output_file = str(generated)
         result.trace_file = str(tmp_path / "trace.json")
         Path(result.trace_file).write_text("{}\n")
@@ -13635,6 +13719,10 @@ class TestCmdEncode:
         )
         assert receipt["replacement"]["source"] == checkout_relative.as_posix()
         assert receipt["replacement"]["destination"] == checkout_relative.as_posix()
+        assert receipt["replacement"]["source_closure"]["historical_citations"] == [
+            "us-me/guidance/revenue/rate-schedule",
+            "us-me/statute/36/5111",
+        ]
         assert receipt["legacy"]["files"] == [
             {"path": path, "sha256": digest} for path, digest in legacy_files.items()
         ]
@@ -13650,6 +13738,23 @@ class TestCmdEncode:
         )
         assert issues == [], "\n".join(issues)
         assert verified == outer
+
+        import_rule.write_text(import_rule.read_text() + "# unauthorized drift\n")
+        _tampered, _root, _digest, tamper_issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert any(
+            "source closure import #1 digest or immutable-base binding is stale"
+            in issue
+            for issue in tamper_issues
+        ), "\n".join(tamper_issues)
 
     def test_apply_atomically_migrates_exact_legacy_dependent(
         self,
@@ -13951,7 +14056,7 @@ class TestCmdEncode:
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v2")
+        assert receipt["schema_version"].endswith("/v3")
         assert len(receipt["replacement"]["exact_dependents"]) == 1
         exact = receipt["replacement"]["exact_dependents"][0]
         assert exact["primary"] == dependent_relative.as_posix()
@@ -35142,6 +35247,23 @@ class TestGuardGenerated:
             }
         ]
 
+    def test_signed_import_inventory_rejects_more_than_structural_limit(
+        self,
+        tmp_path: Path,
+    ):
+        repo, base_ref, _rule, _manifest = self._historical_signed_import_repo(tmp_path)
+
+        with pytest.raises(ValueError, match=f"1 and {MAX_SIGNED_SOURCE_MODULES}"):
+            signed_import_inventory(
+                repo,
+                corpus_path=self.corpus_path,
+                base_ref=base_ref,
+                rulespec_paths=tuple(
+                    f"us/statutes/26/{index}.yaml"
+                    for index in range(MAX_SIGNED_SOURCE_MODULES + 1)
+                ),
+            )
+
     @pytest.mark.parametrize("mutation", ["rule", "manifest"])
     def test_signed_import_inventory_rejects_live_drift_from_base(
         self,
@@ -42980,6 +43102,33 @@ def test_resolve_required_import_rulespec_paths_is_same_jurisdiction_and_tracked
     assert targets == ("us-ri:policies/tax/page-2",)
 
 
+def test_resolve_required_import_rulespec_paths_accepts_state_tax_inventory_size(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "rulespec-us"
+    _init_test_git_repo(checkout)
+    required_paths = tuple(
+        Path(f"us-nj/statutes/54a/section-{index}.yaml") for index in range(29)
+    )
+    for relative in required_paths:
+        required = checkout / relative
+        required.parent.mkdir(parents=True, exist_ok=True)
+        required.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-m", "required state tax modules")
+
+    paths, targets = _resolve_required_import_rulespec_paths(
+        required_paths,
+        policy_checkout_path=checkout,
+        policy_repo_path=checkout / "us-nj",
+        source_citation_path="us-nj/statute/54a:1-2",
+        target_relative_output=Path("policies/income_tax/pipeline.yaml"),
+    )
+
+    assert len(paths) == 29
+    assert len(targets) == 29
+
+
 @pytest.mark.parametrize(
     "required_path",
     [
@@ -43036,9 +43185,9 @@ def test_resolve_required_import_rulespec_paths_is_bounded(tmp_path: Path):
     checkout = tmp_path / "rulespec-us"
     _init_test_git_repo(checkout)
 
-    with pytest.raises(ValueError, match="at most 16"):
+    with pytest.raises(ValueError, match="at most 64"):
         _resolve_required_import_rulespec_paths(
-            tuple(Path(f"us-ri/statutes/section-{index}.yaml") for index in range(17)),
+            tuple(Path(f"us-ri/statutes/section-{index}.yaml") for index in range(65)),
             policy_checkout_path=checkout,
             policy_repo_path=checkout / "us-ri",
             source_citation_path="us-ri/statute/44-30-2.6",

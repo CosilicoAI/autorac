@@ -10,6 +10,8 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from axiom_encode.constants import MAX_SIGNED_SOURCE_MODULES
+
 COUNTRY_PATTERN = re.compile(r"[a-z]{2}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -19,6 +21,7 @@ LEGACY_REPLACEMENT_RECEIPT_ROOT = PurePosixPath(".axiom/legacy-replacements")
 LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec-path"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 LEGACY_EXACT_DEPENDENT_TOOL = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
@@ -33,7 +36,7 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
 RULESPEC_ATOMIC_ROOTS = frozenset(
     {"legislation", "policies", "regulations", "statutes"}
 )
-MAX_SOURCE_BUNDLE_CITATIONS = 16
+MAX_SOURCE_BUNDLE_CITATIONS = MAX_SIGNED_SOURCE_MODULES
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 REVIEWED_RULESPEC_REFS = frozenset(
     {
@@ -54,6 +57,10 @@ REVIEWED_RULESPEC_REFS = frozenset(
             "8dddb9fc597fc6a335bc5207c0a9edb93fd1445a",
         ),
         (
+            "us",
+            "b9b46dd845c61a49091146b3a3510fa3b8204ee7",
+        ),
+        (
             "ca",
             "f60f7a84c30e38c7d4961d70647eb0457e7d76c2",
         ),
@@ -64,6 +71,13 @@ REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
         ("us", "hard-cut/canonical-layout-us"),
     }
 )
+REVIEWED_RULESPEC_CONTINUATION_ROOTS = {
+    (
+        "us",
+        "hard-cut/canonical-layout-us",
+    ): "b9b46dd845c61a49091146b3a3510fa3b8204ee7",
+}
+MAX_REVIEWED_CONTINUATION_MODULES = 4096
 
 
 def _read_bounded_regular(
@@ -178,10 +192,23 @@ def validate_rulespec_base(
                 raise ValueError("main-ancestor pull requests must target main")
             _require_remote_branch_tip(repo, pr_base_branch, requested_ref)
         return "main"
-    if (country, requested_ref) not in REVIEWED_RULESPEC_REFS:
-        raise ValueError(
-            "rulespec ref is neither on main nor an approved reviewed head"
+    exact_reviewed_head = (country, requested_ref) in REVIEWED_RULESPEC_REFS
+    if not exact_reviewed_head:
+        if (
+            not open_pr
+            or (country, pr_base_branch) not in REVIEWED_RULESPEC_PR_BASE_BRANCHES
+        ):
+            raise ValueError(
+                "rulespec ref is neither on main nor an approved reviewed head"
+            )
+        _require_remote_branch_tip(repo, pr_base_branch, requested_ref)
+        reviewed_continuation_paths(
+            repo,
+            country,
+            requested_ref,
+            pr_base_branch=pr_base_branch,
         )
+        return "reviewed-head-continuation-pr"
     if open_pr:
         if (country, pr_base_branch) not in REVIEWED_RULESPEC_PR_BASE_BRANCHES:
             raise ValueError(
@@ -191,6 +218,309 @@ def validate_rulespec_base(
         _require_remote_branch_tip(repo, pr_base_branch, requested_ref)
         return "reviewed-head-pr"
     return "reviewed-head-artifact"
+
+
+def _is_commit_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    return (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _reviewed_continuation_root(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    pr_base_branch: str,
+) -> str:
+    root = REVIEWED_RULESPEC_CONTINUATION_ROOTS.get((country, pr_base_branch))
+    if (
+        root is None
+        or (country, root) not in REVIEWED_RULESPEC_REFS
+        or not _is_commit_ancestor(repo, root, requested_ref)
+    ):
+        raise ValueError(
+            "reviewed-head continuation does not descend from its configured "
+            "approved reviewed root"
+        )
+    return root
+
+
+def _require_commit_regular_file(
+    repo: Path,
+    commit: str,
+    path: PurePosixPath,
+    *,
+    label: str,
+) -> None:
+    records = [
+        record
+        for record in _git(
+            repo,
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            commit,
+            "--",
+            path.as_posix(),
+        ).split(b"\0")
+        if record
+    ]
+    if len(records) != 1:
+        raise ValueError(f"{label} is not exactly present at the continuation head")
+    try:
+        metadata, encoded_path = records[0].split(b"\t", 1)
+        mode, object_type, _object_id = metadata.decode("ascii").split(" ")
+        listed_path = encoded_path.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{label} tree entry is malformed") from exc
+    if mode != "100644" or object_type != "blob" or listed_path != path.as_posix():
+        raise ValueError(f"{label} is not a regular 0644 continuation blob")
+
+
+def _reviewed_continuation_groups(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    *,
+    pr_base_branch: str,
+) -> dict[PurePosixPath, frozenset[PurePosixPath]]:
+    """Return exact changed YAML groups in a reviewed-head continuation.
+
+    The cumulative continuation may contain only in-place primary/test/manifest
+    groups.  The workflow subsequently verifies every returned v5 manifest with
+    the protected signing supervisor before model or signing credentials are used.
+    """
+
+    validate_country(country)
+    if COMMIT_PATTERN.fullmatch(requested_ref) is None:
+        raise ValueError("rulespec ref must be a full lowercase commit SHA")
+    if (country, pr_base_branch) not in REVIEWED_RULESPEC_PR_BASE_BRANCHES:
+        raise ValueError("reviewed-head continuation branch is not approved")
+    if (country, requested_ref) in REVIEWED_RULESPEC_REFS:
+        return {}
+    if _git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ):
+        raise ValueError("reviewed-head continuation checkout must be exactly clean")
+    root = _reviewed_continuation_root(
+        repo,
+        country,
+        requested_ref,
+        pr_base_branch,
+    )
+    raw = _git(
+        repo,
+        "diff",
+        "--name-status",
+        "-z",
+        "--no-renames",
+        root,
+        requested_ref,
+        "--",
+    )
+    fields = [field for field in raw.split(b"\0") if field]
+    if len(fields) % 2:
+        raise ValueError("reviewed-head continuation diff is malformed")
+
+    changed_primary_files: set[PurePosixPath] = set()
+    changed_groups: dict[PurePosixPath, set[PurePosixPath]] = {}
+    changed_manifests: set[PurePosixPath] = set()
+    for index in range(0, len(fields), 2):
+        try:
+            status = fields[index].decode("ascii")
+            value = fields[index + 1].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("reviewed-head continuation path is malformed") from exc
+        if status not in {"A", "M"}:
+            raise ValueError(
+                "reviewed-head continuation may not delete, rename, or change "
+                f"file types: {value}"
+            )
+        path = PurePosixPath(value)
+        if path.is_relative_to(MANIFEST_ROOT):
+            relative = path.relative_to(MANIFEST_ROOT)
+            primary = relative.with_suffix(".yaml")
+            if (
+                len(primary.parts) < 3
+                or primary.parts[1] not in RULESPEC_ATOMIC_ROOTS
+                or path.suffix != ".json"
+            ):
+                raise ValueError(
+                    f"reviewed-head continuation manifest path is invalid: {path}"
+                )
+            changed_manifests.add(primary)
+            continue
+        if (
+            len(path.parts) < 3
+            or path.parts[1] not in RULESPEC_ATOMIC_ROOTS
+            or path.suffix != ".yaml"
+        ):
+            raise ValueError(
+                f"reviewed-head continuation contains a non-generated path: {path}"
+            )
+        primary = (
+            path.with_name(path.name.removesuffix(".test.yaml") + ".yaml")
+            if path.name.endswith(".test.yaml")
+            else path
+        )
+        changed_groups.setdefault(primary, set()).add(path)
+        if not path.name.endswith(".test.yaml"):
+            changed_primary_files.add(primary)
+
+    if (
+        not changed_primary_files
+        or changed_primary_files != set(changed_groups)
+        or changed_primary_files != changed_manifests
+    ):
+        raise ValueError(
+            "reviewed-head continuation must contain exact primary/manifest groups"
+        )
+    if len(changed_primary_files) > MAX_REVIEWED_CONTINUATION_MODULES:
+        raise ValueError("reviewed-head continuation contains too many modules")
+    for primary in sorted(changed_primary_files):
+        if primary.parts[0] != country and not primary.parts[0].startswith(
+            f"{country}-"
+        ):
+            raise ValueError(
+                "reviewed-head continuation module does not belong to the checkout"
+            )
+        manifest = _existing_import_manifest_path(primary)
+        _require_commit_regular_file(
+            repo,
+            requested_ref,
+            primary,
+            label="reviewed-head continuation primary",
+        )
+        _require_commit_regular_file(
+            repo,
+            requested_ref,
+            manifest,
+            label="reviewed-head continuation manifest",
+        )
+        for changed_path in sorted(changed_groups[primary]):
+            _require_commit_regular_file(
+                repo,
+                requested_ref,
+                changed_path,
+                label="reviewed-head continuation generated file",
+            )
+    return {
+        primary: frozenset(changed_groups[primary])
+        for primary in sorted(changed_primary_files)
+    }
+
+
+def reviewed_continuation_paths(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    *,
+    pr_base_branch: str,
+) -> tuple[PurePosixPath, ...]:
+    """Return direct signed primaries in a protected reviewed-head continuation."""
+
+    return tuple(
+        _reviewed_continuation_groups(
+            repo,
+            country,
+            requested_ref,
+            pr_base_branch=pr_base_branch,
+        )
+    )
+
+
+def validate_reviewed_continuation_inventories(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    inventories: object,
+    *,
+    pr_base_branch: str,
+) -> None:
+    """Require protected inventories to authenticate every changed YAML blob."""
+
+    groups = _reviewed_continuation_groups(
+        repo,
+        country,
+        requested_ref,
+        pr_base_branch=pr_base_branch,
+    )
+    if not isinstance(inventories, list) or not all(
+        isinstance(inventory, dict) for inventory in inventories
+    ):
+        raise ValueError("reviewed-head continuation inventories are malformed")
+    items_by_primary: dict[PurePosixPath, dict[str, object]] = {}
+    for inventory in inventories:
+        if (
+            inventory.get("schema") != "axiom-encode/signed-import-inventory/v1"
+            or inventory.get("rulespec_base") != requested_ref
+            or not isinstance(inventory.get("items"), list)
+        ):
+            raise ValueError("reviewed-head continuation inventory is malformed")
+        for item in inventory["items"]:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("rulespec_path"), str
+            ):
+                raise ValueError(
+                    "reviewed-head continuation inventory item is malformed"
+                )
+            primary = PurePosixPath(item["rulespec_path"])
+            if primary in items_by_primary:
+                raise ValueError(
+                    "reviewed-head continuation inventory contains duplicate primaries"
+                )
+            items_by_primary[primary] = item
+    if set(items_by_primary) != set(groups):
+        raise ValueError(
+            "reviewed-head continuation inventory primary set differs from the diff"
+        )
+    for primary, changed_paths in groups.items():
+        item = items_by_primary[primary]
+        applied_files = item.get("applied_files")
+        if not isinstance(applied_files, list):
+            raise ValueError(
+                f"reviewed-head continuation inventory lacks applied files: {primary}"
+            )
+        applied_paths: set[PurePosixPath] = set()
+        for applied in applied_files:
+            if (
+                not isinstance(applied, dict)
+                or set(applied) != {"path", "sha256"}
+                or not isinstance(applied.get("path"), str)
+                or not isinstance(applied.get("sha256"), str)
+                or DIGEST_PATTERN.fullmatch(applied["sha256"]) is None
+            ):
+                raise ValueError(
+                    "reviewed-head continuation applied-file inventory is malformed"
+                )
+            path = PurePosixPath(applied["path"])
+            if path in applied_paths:
+                raise ValueError(
+                    "reviewed-head continuation applied-file inventory has duplicates"
+                )
+            applied_paths.add(path)
+        unauthenticated = changed_paths - applied_paths
+        if unauthenticated:
+            raise ValueError(
+                "reviewed-head continuation changed files are absent from the signed "
+                f"manifest inventory: {', '.join(map(str, sorted(unauthenticated)))}"
+            )
 
 
 def _require_remote_branch_tip(
@@ -333,6 +663,7 @@ def parse_existing_signed_imports(
     source_bundle_citations: tuple[str, ...] = (),
     excluded_citations: tuple[str, ...] = (),
     excluded_rulespec_paths: tuple[str, ...] = (),
+    replacement_rulespec_path: str | None = None,
 ) -> tuple[PurePosixPath, ...]:
     """Validate bounded, tracked signed-v5 modules reused as direct imports."""
 
@@ -353,6 +684,29 @@ def parse_existing_signed_imports(
     primary_path = PurePosixPath(primary_jurisdiction) / primary_relative
     validate_country(primary_jurisdiction.partition("-")[0])
     reserved_paths = {primary_path}
+    if replacement_rulespec_path:
+        replacement_path = _safe_relative_path(
+            replacement_rulespec_path,
+            label="replacement RuleSpec path",
+        )
+        if (
+            len(replacement_path.parts) < 3
+            or replacement_path.parts[0] != primary_jurisdiction
+            or replacement_path.parts[1] not in RULESPEC_ATOMIC_ROOTS
+            or replacement_path.suffix != ".yaml"
+            or replacement_path.name.endswith(".test.yaml")
+        ):
+            raise ValueError(
+                "replacement RuleSpec path must be a canonical primary module "
+                "in the primary citation jurisdiction"
+            )
+        reserved_paths.add(replacement_path)
+        if replacement_path != primary_path:
+            # A composition module may share its citation with a separately
+            # signed source module.  The explicit, distinct replacement target
+            # makes that source module an admissible direct import; it remains
+            # subject to the full signed-v5 inventory verification below.
+            reserved_paths.discard(primary_path)
     for citation in (*source_bundle_citations, *excluded_citations):
         jurisdiction, relative = _citation_rulespec_path(citation)
         if jurisdiction != primary_jurisdiction:
@@ -1038,6 +1392,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 not in {
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
@@ -1087,14 +1442,28 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement receipt file sets are malformed: {relative}"
                 )
             if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1:
-                if "exact_dependents" in receipt_replacement:
+                if {
+                    "exact_dependents",
+                    "source_closure",
+                } & set(receipt_replacement):
                     raise ValueError(
-                        f"legacy replacement v1 receipt has v2 fields: {relative}"
+                        f"legacy replacement v1 receipt has newer fields: {relative}"
                     )
             elif not isinstance(exact_dependents, list):
                 raise ValueError(
                     f"legacy replacement exact_dependents are malformed: {relative}"
                 )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2:
+                if "source_closure" in receipt_replacement:
+                    raise ValueError(
+                        f"legacy replacement v2 receipt has v3 fields: {relative}"
+                    )
+            elif receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3:
+                source_closure = receipt_replacement.get("source_closure")
+                if source_closure is not None and not isinstance(source_closure, dict):
+                    raise ValueError(
+                        f"legacy replacement source closure is malformed: {relative}"
+                    )
             nested_manifest = payload.get("replacement_manifest")
             if (
                 not isinstance(nested_manifest, dict)
@@ -1399,7 +1768,10 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement reference inventory differs: {relative}: "
                     + "; ".join(inventory_issues)
                 )
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2:
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            }:
                 authorized_unchanged.update(
                     _validate_legacy_exact_dependents(
                         repo,
@@ -1504,6 +1876,19 @@ def main() -> None:
     base_parser.add_argument("requested_ref")
     base_parser.add_argument("open_pr", choices=("true", "false"))
     base_parser.add_argument("pr_base_branch", nargs="?", default="main")
+    continuation_parser = subparsers.add_parser("reviewed-continuation-paths")
+    continuation_parser.add_argument("repo", type=Path)
+    continuation_parser.add_argument("country")
+    continuation_parser.add_argument("requested_ref")
+    continuation_parser.add_argument("pr_base_branch")
+    continuation_inventory_parser = subparsers.add_parser(
+        "validate-reviewed-continuation-inventories"
+    )
+    continuation_inventory_parser.add_argument("repo", type=Path)
+    continuation_inventory_parser.add_argument("country")
+    continuation_inventory_parser.add_argument("requested_ref")
+    continuation_inventory_parser.add_argument("pr_base_branch")
+    continuation_inventory_parser.add_argument("inventories", type=Path)
     stage_parser = subparsers.add_parser("stage")
     stage_parser.add_argument("repo", type=Path)
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
@@ -1519,7 +1904,10 @@ def main() -> None:
     )
     source_bundle_parser.add_argument(
         "source_bundle_json",
-        help="JSON array containing at most 16 canonical corpus citation strings",
+        help=(
+            "JSON array containing at most "
+            f"{MAX_SOURCE_BUNDLE_CITATIONS} canonical corpus citation strings"
+        ),
     )
     source_bundle_parser.add_argument(
         "--primary-citation",
@@ -1563,6 +1951,13 @@ def main() -> None:
         default=[],
         help="additional forbidden checkout-relative RuleSpec path; may be repeated",
     )
+    existing_imports_parser.add_argument(
+        "--replacement-rulespec-path",
+        help=(
+            "explicit replacement target; when distinct from the primary citation "
+            "path, the latter may be reused as a signed direct import"
+        ),
+    )
     args = parser.parse_args()
     try:
         if args.command == "validate-country":
@@ -1588,6 +1983,37 @@ def main() -> None:
                     pr_base_branch=args.pr_base_branch,
                 )
             )
+        elif args.command == "reviewed-continuation-paths":
+            print(
+                json.dumps(
+                    [
+                        path.as_posix()
+                        for path in reviewed_continuation_paths(
+                            args.repo,
+                            args.country,
+                            args.requested_ref,
+                            pr_base_branch=args.pr_base_branch,
+                        )
+                    ],
+                    separators=(",", ":"),
+                )
+            )
+        elif args.command == "validate-reviewed-continuation-inventories":
+            inventory_raw = args.inventories.read_bytes()
+            if len(inventory_raw) > 16 * 1024 * 1024:
+                raise ValueError("reviewed-head continuation inventories are oversized")
+            validate_reviewed_continuation_inventories(
+                args.repo,
+                args.country,
+                args.requested_ref,
+                [
+                    json.loads(line)
+                    for line in inventory_raw.decode("utf-8").splitlines()
+                    if line.strip()
+                ],
+                pr_base_branch=args.pr_base_branch,
+            )
+            print("reviewed-head continuation inventories verified")
         elif args.command == "validate-dependent-cascade":
             print(
                 validate_dependent_cascade(
@@ -1622,6 +2048,7 @@ def main() -> None:
                             source_bundle_citations=tuple(args.source_citation),
                             excluded_citations=tuple(args.exclude_citation),
                             excluded_rulespec_paths=tuple(args.exclude_rulespec_path),
+                            replacement_rulespec_path=args.replacement_rulespec_path,
                         )
                     ],
                     separators=(",", ":"),
@@ -1631,6 +2058,7 @@ def main() -> None:
             stage_authorized_changes(args.repo)
     except (
         OSError,
+        UnicodeError,
         ValueError,
         json.JSONDecodeError,
         subprocess.CalledProcessError,

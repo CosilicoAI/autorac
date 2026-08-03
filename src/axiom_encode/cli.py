@@ -114,6 +114,7 @@ from .constants import (
     DEFAULT_OPENAI_ESCALATE_AFTER,
     DEFAULT_OPENAI_ESCALATION_MODEL,
     DEFAULT_OPENAI_MODEL,
+    MAX_SIGNED_SOURCE_MODULES,
     RULESPEC_ATOMIC_MODULE_ROOTS,
     RULESPEC_COMPOSITION_SPEC_ROOT,
     RULESPEC_FILE_SUFFIX,
@@ -273,6 +274,9 @@ from .legacy_replacement import (
     RECEIPT_SCHEMA_V1 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
 )
 from .legacy_replacement import (
+    RECEIPT_SCHEMA_V2 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+)
+from .legacy_replacement import (
     TOOL as APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL,
 )
 from .legacy_replacement import (
@@ -292,6 +296,12 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     LegacyReplacementScheduledDependent as _LegacyReplacementScheduledDependent,
+)
+from .legacy_replacement import (
+    LegacyReplacementSourceClosure as _LegacyReplacementSourceClosure,
+)
+from .legacy_replacement import (
+    LegacyReplacementSourceImport as _LegacyReplacementSourceImport,
 )
 from .legacy_replacement import (
     legacy_manual_manifest_issues as _legacy_manual_manifest_issues,
@@ -505,6 +515,37 @@ _LEGACY_REPLACEMENT_RECEIPT_FIELDS = frozenset(
         "signature",
     }
 )
+_LEGACY_REPLACEMENT_RECEIPT_SCHEMAS = frozenset(
+    {
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+    }
+)
+
+
+def _legacy_replacement_receipt_replacement_fields(
+    schema: object,
+) -> set[str]:
+    fields = {
+        "source",
+        "destination",
+        "model_manifest_path",
+        "model_manifest_sha256",
+        "live_files",
+        "rewrites",
+        "scheduled_dependents",
+    }
+    if schema in {
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+    }:
+        fields.add("exact_dependents")
+    if schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        fields.add("source_closure")
+    return fields
+
+
 _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
     {
         Path(".axiom/index/provisions_to_rules.json"),
@@ -2131,6 +2172,13 @@ def main():
             "Existing checkout-relative atomic RuleSpec that must be copied into "
             "the generation context and directly imported by the generated target "
             "(repeatable; intended for protected source-bundle composition)"
+        ),
+    )
+    encode_parser.add_argument(
+        "--required-import-base-ref",
+        help=(
+            "Exact clean RuleSpec HEAD whose direct signed-v5 manifests must "
+            "authenticate every required import"
         ),
     )
     encode_parser.add_argument(
@@ -6637,8 +6685,11 @@ def signed_import_inventory(
         ) from exc
     if resolved_base != base_ref:
         raise ValueError("signed import base ref did not resolve exactly")
-    if not rulespec_paths or len(rulespec_paths) > 16:
-        raise ValueError("signed import inventory requires between 1 and 16 modules")
+    if not rulespec_paths or len(rulespec_paths) > MAX_SIGNED_SOURCE_MODULES:
+        raise ValueError(
+            "signed import inventory requires between 1 and "
+            f"{MAX_SIGNED_SOURCE_MODULES} modules"
+        )
 
     roots = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS))
     country = repo_path.name.removeprefix("rulespec-")
@@ -7602,11 +7653,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
         if (
             not isinstance(receipt, dict)
             or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
-            or receipt.get("schema_version")
-            not in {
-                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
-                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
-            }
+            or receipt.get("schema_version") not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
             or hashlib.sha256(receipt_raw).hexdigest() != binding.get("receipt_sha256")
             or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
@@ -7829,11 +7876,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             or _SHA256_HEX_PATTERN.fullmatch(receipt_relative.stem) is None
             or not isinstance(receipt, dict)
             or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
-            or receipt.get("schema_version")
-            not in {
-                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
-                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
-            }
+            or receipt.get("schema_version") not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
             or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
             or receipt_relative not in bound_receipts
@@ -21642,6 +21685,156 @@ def _migrated_model_manifest_issues(
     return issues
 
 
+def _legacy_source_closure_issues(
+    closure: object,
+    *,
+    repo_path: Path,
+    base_commit: str,
+    signing_broker: SigningBroker | Ed25519PublicKey,
+    expected_waiver_set_sha256: str,
+    local_corpus_release: LocalCorpusRelease | None,
+) -> list[str]:
+    """Verify the v3 receipt's exact historical-source decomposition."""
+
+    if not isinstance(closure, dict) or set(closure) != {
+        "historical_citations",
+        "primary_citation",
+        "imports",
+    }:
+        return ["source closure is malformed"]
+    historical = closure.get("historical_citations")
+    primary = closure.get("primary_citation")
+    imports = closure.get("imports")
+    if (
+        not isinstance(historical, list)
+        or len(historical) < 2
+        or not all(isinstance(item, str) for item in historical)
+        or len(set(historical)) != len(historical)
+        or not isinstance(primary, str)
+        or historical[0] != primary
+        or not isinstance(imports, list)
+        or len(imports) != len(historical) - 1
+    ):
+        return ["source closure citation inventory is malformed"]
+    try:
+        normalized_historical = [
+            normalize_corpus_identifier(item) for item in historical
+        ]
+    except (TypeError, ValueError):
+        return ["source closure citations are not canonical"]
+    if normalized_historical != historical:
+        return ["source closure citations are not canonical"]
+
+    issues: list[str] = []
+    for index, (expected_citation, item) in enumerate(
+        zip(historical[1:], imports, strict=True)
+    ):
+        label = f"source closure import #{index + 1}"
+        if not isinstance(item, dict) or set(item) != {
+            "citation",
+            "rulespec_path",
+            "rulespec_sha256",
+            "manifest_path",
+            "manifest_sha256",
+        }:
+            issues.append(f"{label} is malformed")
+            continue
+        rulespec_path = Path(str(item.get("rulespec_path") or ""))
+        manifest_path = Path(str(item.get("manifest_path") or ""))
+        if (
+            item.get("citation") != expected_citation
+            or rulespec_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in rulespec_path.parts)
+            or manifest_path != _applied_encoding_manifest_path(rulespec_path)
+            or _SHA256_HEX_PATTERN.fullmatch(str(item.get("rulespec_sha256") or ""))
+            is None
+            or _SHA256_HEX_PATTERN.fullmatch(str(item.get("manifest_sha256") or ""))
+            is None
+        ):
+            issues.append(f"{label} identity is malformed")
+            continue
+        try:
+            base_rule = _rulespec_migration_base_blob(
+                repo_path, base_commit, rulespec_path
+            )
+            base_manifest = _rulespec_migration_base_blob(
+                repo_path, base_commit, manifest_path
+            )
+            live_rule = read_bounded_regular_file(
+                repo_path,
+                repo_path / rulespec_path,
+                label=label,
+                max_bytes=16 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            live_manifest = read_bounded_regular_file(
+                repo_path,
+                repo_path / manifest_path,
+                label=f"{label} manifest",
+                max_bytes=1024 * 1024,
+                required_mode=0o644,
+            )
+        except (OSError, RuntimeError, UnsafeCorpusPathError) as exc:
+            issues.append(f"{label} is unavailable: {exc}")
+            continue
+        if (
+            live_rule != base_rule
+            or live_manifest != base_manifest
+            or hashlib.sha256(live_rule).hexdigest() != item.get("rulespec_sha256")
+            or hashlib.sha256(live_manifest).hexdigest() != item.get("manifest_sha256")
+        ):
+            issues.append(f"{label} digest or immutable-base binding is stale")
+            continue
+        try:
+            unverified = json.loads(live_manifest.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError):
+            issues.append(f"{label} manifest is invalid JSON")
+            continue
+        execution = (
+            unverified.get("validation_execution")
+            if isinstance(unverified, dict)
+            else None
+        )
+        historical_encoder = (
+            execution.get("axiom_encode") if isinstance(execution, dict) else None
+        )
+        if not isinstance(historical_encoder, dict):
+            issues.append(f"{label} lacks encoder provenance")
+            continue
+        verified, root_prefix, _digest, manifest_issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                repo_path,
+                manifest_path.as_posix(),
+                roots=tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS)),
+                signing_broker=signing_broker,
+                expected_waiver_set_sha256=expected_waiver_set_sha256,
+                local_corpus_release=local_corpus_release,
+                expected_encoder_identity=historical_encoder,
+            )
+        )
+        if verified is None or root_prefix is None or manifest_issues:
+            issues.append(
+                f"{label} manifest verification failed: "
+                + ("; ".join(manifest_issues) or "unknown error")
+            )
+            continue
+        primary_paths = [
+            _prefix_applied_manifest_path(str(applied.get("path")), root_prefix)
+            for applied in verified.get("applied_files", [])
+            if isinstance(applied, dict)
+            and isinstance(applied.get("path"), str)
+            and not str(applied["path"]).endswith(RULESPEC_TEST_FILE_SUFFIX)
+        ]
+        if (
+            verified.get("tool") != APPLIED_ENCODING_MODEL_TOOL
+            or verified.get("backend") not in APPLIED_ENCODING_ENCODER_BACKENDS
+            or verified.get("citation") != expected_citation
+            or primary_paths != [rulespec_path.as_posix()]
+        ):
+            issues.append(f"{label} is not the expected direct signed-v5 module")
+    return issues
+
+
 def _legacy_replacement_manifest_issues(
     payload: Mapping[str, object],
     *,
@@ -21746,6 +21939,11 @@ def _legacy_replacement_manifest_issues(
         and isinstance(receipt_replacement.get("exact_dependents"), list)
         else []
     )
+    receipt_source_closure = (
+        receipt_replacement.get("source_closure")
+        if isinstance(receipt_replacement, dict)
+        else None
+    )
     identity_payload = receipt_identity_payload(
         base_commit=(
             str(receipt_repository.get("base_commit"))
@@ -21804,8 +22002,18 @@ def _legacy_replacement_manifest_issues(
         ),
         exact_dependents=(
             receipt_exact_dependents
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             else None
+        ),
+        source_closure=(
+            receipt_source_closure if isinstance(receipt_source_closure, dict) else None
+        ),
+        include_source_closure=(
+            receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
         ),
     )
     if binding.get(
@@ -21815,11 +22023,7 @@ def _legacy_replacement_manifest_issues(
     ):
         issues.append(f"{manifest_label} replacement receipt identity is stale")
     if (
-        receipt_schema
-        not in {
-            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
-            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
-        }
+        receipt_schema not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
     ):
         issues.append(f"{manifest_label} replacement receipt schema is invalid")
@@ -21901,28 +22105,68 @@ def _legacy_replacement_manifest_issues(
         or legacy.get("trusted_generated_provenance") is not False
         or not isinstance(replacement, dict)
         or set(replacement)
-        != (
-            {
-                "source",
-                "destination",
-                "model_manifest_path",
-                "model_manifest_sha256",
-                "live_files",
-                "rewrites",
-                "scheduled_dependents",
-            }
-            | (
-                {"exact_dependents"}
-                if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
-                else set()
-            )
-        )
+        != _legacy_replacement_receipt_replacement_fields(receipt_schema)
     ):
         return [*issues, f"{manifest_label} legacy evidence classification is invalid"]
     if replacement.get("live_files") != nested.get("applied_files"):
         issues.append(
             f"{manifest_label} replacement live files differ from nested model manifest"
         )
+    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        source_path = Path(str(replacement.get("source") or ""))
+        try:
+            historical_payload = yaml.safe_load(
+                _rulespec_migration_base_blob(
+                    repo_path,
+                    base_commit,
+                    source_path,
+                ).decode("utf-8")
+            )
+        except (RuntimeError, UnicodeError, yaml.YAMLError, RecursionError):
+            historical_payload = None
+        historical_module = (
+            historical_payload.get("module")
+            if isinstance(historical_payload, dict)
+            else None
+        )
+        historical_verification = (
+            historical_module.get("source_verification")
+            if isinstance(historical_module, dict)
+            else None
+        )
+        historical_citations = (
+            _legacy_source_verification_citation_paths(historical_verification)
+            if isinstance(historical_verification, dict)
+            else ()
+        )
+        source_closure = replacement.get("source_closure")
+        if len(historical_citations) > 1:
+            if not isinstance(source_closure, dict):
+                issues.append(
+                    f"{manifest_label} plural historical sources lack exact closure"
+                )
+            else:
+                if source_closure.get("historical_citations") != list(
+                    historical_citations
+                ) or source_closure.get("primary_citation") != nested.get("citation"):
+                    issues.append(
+                        f"{manifest_label} source closure differs from historical source"
+                    )
+                issues.extend(
+                    f"{manifest_label} {issue}"
+                    for issue in _legacy_source_closure_issues(
+                        source_closure,
+                        repo_path=repo_path,
+                        base_commit=base_commit,
+                        signing_broker=signing_broker,
+                        expected_waiver_set_sha256=expected_waiver_set_sha256,
+                        local_corpus_release=local_corpus_release,
+                    )
+                )
+        elif source_closure is not None:
+            issues.append(
+                f"{manifest_label} singular historical source has extraneous closure"
+            )
     legacy_manifest = legacy.get("manifest")
     legacy_files = legacy.get("files")
     if (
@@ -22720,7 +22964,10 @@ def _legacy_exact_dependent_manifest_issues(
         not isinstance(receipt, dict)
         or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
         or receipt.get("schema_version")
-        != APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+        not in {
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+        }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
         or receipt_sha256 != binding.get("receipt_sha256")
         or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
@@ -23889,8 +24136,11 @@ def _resolve_required_import_rulespec_paths(
 ) -> tuple[tuple[Path, ...], tuple[str, ...]]:
     """Resolve bounded, same-jurisdiction atomic modules required by composition."""
 
-    if len(raw_paths) > 16:
-        raise ValueError("at most 16 required import RuleSpec paths are supported")
+    if len(raw_paths) > MAX_SIGNED_SOURCE_MODULES:
+        raise ValueError(
+            f"at most {MAX_SIGNED_SOURCE_MODULES} required import RuleSpec paths "
+            "are supported"
+        )
     jurisdiction = normalize_corpus_identifier(source_citation_path).split("/", 1)[0]
     if jurisdiction != policy_repo_path.name:
         raise ValueError("required import jurisdiction does not match source routing")
@@ -23975,6 +24225,27 @@ def _result_legacy_replacement_contract(result: object) -> object | None:
     return state.get(_LEGACY_REPLACEMENT_ATTR)
 
 
+def _legacy_source_closure_payload(
+    closure: _LegacyReplacementSourceClosure | None,
+) -> dict[str, object] | None:
+    if closure is None:
+        return None
+    return {
+        "historical_citations": list(closure.historical_citations),
+        "primary_citation": closure.primary_citation,
+        "imports": [
+            {
+                "citation": item.citation,
+                "rulespec_path": item.rulespec_path.as_posix(),
+                "rulespec_sha256": item.rulespec_sha256,
+                "manifest_path": item.manifest_path.as_posix(),
+                "manifest_sha256": item.manifest_sha256,
+            }
+            for item in closure.imports
+        ],
+    }
+
+
 def _require_legacy_replacement_clean_checkout(checkout_root: Path) -> None:
     if _rulespec_migration_git_bytes(
         checkout_root,
@@ -24004,6 +24275,71 @@ def _require_locked_legacy_replacement_base(
     _require_legacy_replacement_clean_checkout(checkout_root)
 
 
+def _resolve_legacy_source_closure(
+    historical_citations: Sequence[str],
+    *,
+    primary_citation: str,
+    verified_required_imports: Sequence[Mapping[str, object]],
+) -> _LegacyReplacementSourceClosure | None:
+    """Bind every non-primary historical source to one verified direct import."""
+
+    historical = tuple(historical_citations)
+    if len(historical) <= 1:
+        return None
+    if historical[0] != primary_citation:
+        raise ValueError(
+            "plural legacy source closure primary does not match the first "
+            "historical citation"
+        )
+    by_citation: dict[str, _LegacyReplacementSourceImport] = {}
+    for index, item in enumerate(verified_required_imports):
+        citation = item.get("citation")
+        rulespec_path = item.get("rulespec_path")
+        rulespec_sha256 = item.get("rulespec_sha256")
+        manifest_path = item.get("manifest_path")
+        manifest_sha256 = item.get("manifest_sha256")
+        if (
+            not isinstance(citation, str)
+            or not isinstance(rulespec_path, str)
+            or not isinstance(rulespec_sha256, str)
+            or _SHA256_HEX_PATTERN.fullmatch(rulespec_sha256) is None
+            or not isinstance(manifest_path, str)
+            or not isinstance(manifest_sha256, str)
+            or _SHA256_HEX_PATTERN.fullmatch(manifest_sha256) is None
+        ):
+            raise ValueError(f"verified required import #{index + 1} is malformed")
+        normalized = normalize_corpus_identifier(citation)
+        if normalized in by_citation:
+            raise ValueError(
+                "plural legacy source closure import citations must be unique"
+            )
+        by_citation[normalized] = _LegacyReplacementSourceImport(
+            normalized,
+            Path(rulespec_path),
+            rulespec_sha256,
+            Path(manifest_path),
+            manifest_sha256,
+        )
+    required = tuple(historical[1:])
+    if set(by_citation) != set(required):
+        missing = sorted(set(required) - set(by_citation))
+        extra = sorted(set(by_citation) - set(required))
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("extra " + ", ".join(extra))
+        raise ValueError(
+            "plural legacy source closure must exactly cover every non-primary "
+            "historical citation" + (": " + "; ".join(detail) if detail else "")
+        )
+    return _LegacyReplacementSourceClosure(
+        historical,
+        primary_citation,
+        tuple(by_citation[citation] for citation in required),
+    )
+
+
 def _resolve_legacy_replacement_contract(
     *,
     source_raw: Path,
@@ -24014,6 +24350,7 @@ def _resolve_legacy_replacement_contract(
     corpus_release: LocalCorpusRelease,
     scheduled_dependent_paths: Sequence[Path] = (),
     exact_dependent_paths: Sequence[Path] = (),
+    verified_required_imports: Sequence[Mapping[str, object]] = (),
 ) -> _LegacyReplacementContract:
     """Bind one clean-HEAD legacy identity and its unique canonical replacement."""
 
@@ -24134,6 +24471,11 @@ def _resolve_legacy_replacement_contract(
             "unit as its sole source for a path move or its first historical source "
             "for an in-place fresh replacement"
         )
+    source_closure = _resolve_legacy_source_closure(
+        old_citations,
+        primary_citation=requested_citation,
+        verified_required_imports=verified_required_imports,
+    )
     resolved_old = resolve_corpus_source_unit(old_citations[0], corpus_release)
     if (
         resolved_old.citation_path != source_unit.citation_path
@@ -24510,6 +24852,7 @@ def _resolve_legacy_replacement_contract(
             if pending_by_primary[primary]
         ),
         exact_dependents=tuple(exact_dependents),
+        source_closure=source_closure,
     )
 
 
@@ -24520,6 +24863,7 @@ def _resolve_encode_replacement_target(
     policy_repo_path: Path,
     source_unit,
     corpus_release: LocalCorpusRelease,
+    verified_required_imports: Sequence[Mapping[str, object]] = (),
 ) -> _EncodeReplacementTarget | None:
     raw_path = getattr(args, "replace_rulespec_path", None)
     legacy_source = getattr(args, "replace_legacy_rulespec_path", None)
@@ -24557,6 +24901,7 @@ def _resolve_encode_replacement_target(
             corpus_release=corpus_release,
             scheduled_dependent_paths=scheduled_dependents,
             exact_dependent_paths=exact_dependents,
+            verified_required_imports=verified_required_imports,
         )
         context_paths = [
             policy_checkout_path / item.path for item in contract.deleted_files
@@ -24935,22 +25280,22 @@ def _run_encode_attempt(
         source_unit.citation_path,
         policy_checkout_path,
     )
-    replacement_target = _resolve_encode_replacement_target(
-        args,
-        policy_checkout_path=policy_checkout_path,
-        policy_repo_path=policy_repo_path,
-        source_unit=source_unit,
-        corpus_release=corpus_release,
-    )
     raw_required_import_paths = tuple(
         Path(path) for path in getattr(args, "required_import_rulespec_path", ())
     )
     required_import_paths: tuple[Path, ...] = ()
     required_import_targets: tuple[str, ...] = ()
+    verified_required_imports: tuple[Mapping[str, object], ...] = ()
     if raw_required_import_paths:
+        raw_replacement_path = getattr(args, "replace_rulespec_path", None)
+        raw_replacement_parts = (
+            Path(raw_replacement_path).parts
+            if isinstance(raw_replacement_path, (str, Path))
+            else ()
+        )
         target_relative_output = (
-            replacement_target.relative_output
-            if replacement_target is not None
+            Path(*raw_replacement_parts[1:])
+            if len(raw_replacement_parts) >= 2
             else _resolve_eval_output_path(source_unit.requested)
         )
         required_import_paths, required_import_targets = (
@@ -24962,6 +25307,36 @@ def _run_encode_attempt(
                 target_relative_output=target_relative_output,
             )
         )
+        required_import_base_ref = getattr(args, "required_import_base_ref", None)
+        if not isinstance(required_import_base_ref, str):
+            raise ValueError("required imports require --required-import-base-ref")
+        inventory = signed_import_inventory(
+            policy_checkout_path,
+            corpus_path=corpus_path,
+            base_ref=required_import_base_ref,
+            rulespec_paths=tuple(
+                path.relative_to(policy_checkout_path).as_posix()
+                for path in required_import_paths
+            ),
+        )
+        raw_verified_items = inventory.get("items")
+        if not isinstance(raw_verified_items, list) or not all(
+            isinstance(item, dict) for item in raw_verified_items
+        ):
+            raise RuntimeError("required import signed inventory is malformed")
+        verified_required_imports = tuple(raw_verified_items)
+    elif isinstance(getattr(args, "required_import_base_ref", None), str):
+        raise ValueError(
+            "--required-import-base-ref requires at least one required import"
+        )
+    replacement_target = _resolve_encode_replacement_target(
+        args,
+        policy_checkout_path=policy_checkout_path,
+        policy_repo_path=policy_repo_path,
+        source_unit=source_unit,
+        corpus_release=corpus_release,
+        verified_required_imports=verified_required_imports,
+    )
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -45682,6 +46057,9 @@ def _build_apply_validation_snapshot(
                 {"path": item.path.as_posix(), "sha256": item.sha256}
                 for item in legacy_replacement.deleted_files
             ],
+            "source_closure": _legacy_source_closure_payload(
+                legacy_replacement.source_closure
+            ),
             "rewrites": [
                 {
                     "path": item.path.as_posix(),
@@ -46229,6 +46607,7 @@ def _stage_signed_legacy_replacement_provenance(
         }
         for dependent in contract.exact_dependents
     ]
+    source_closure = _legacy_source_closure_payload(contract.source_closure)
     receipt_identity = receipt_identity_payload(
         base_commit=contract.base_commit,
         base_tree=contract.base_tree,
@@ -46247,6 +46626,8 @@ def _stage_signed_legacy_replacement_provenance(
         ],
         scheduled_dependents=scheduled_dependents,
         exact_dependents=exact_dependents,
+        source_closure=source_closure,
+        include_source_closure=True,
     )
     receipt_id = receipt_identity_sha256(receipt_identity)
     receipt_relative = (
@@ -46298,6 +46679,7 @@ def _stage_signed_legacy_replacement_provenance(
             "rewrites": receipt_identity["rewrites"],
             "scheduled_dependents": scheduled_dependents,
             "exact_dependents": exact_dependents,
+            "source_closure": source_closure,
         },
         "replacement_manifest": model_manifest,
     }

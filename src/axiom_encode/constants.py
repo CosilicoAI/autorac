@@ -37,3 +37,8 @@ RULESPEC_FILESYSTEM_ROOTS = frozenset(
 )
 RULESPEC_FILE_SUFFIX = ".yaml"
 RULESPEC_TEST_FILE_SUFFIX = ".test.yaml"
+
+# Bounded number of atomic source modules that one protected encode may
+# generate or reuse. The TY2026 state-PIT inventory currently needs at most 29
+# additional source modules for one target.
+MAX_SIGNED_SOURCE_MODULES = 64
