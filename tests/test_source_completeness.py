@@ -2030,6 +2030,57 @@ rules: []
     assert _has_issue(result, "numeric-recall", "value 1")
 
 
+def test_en_us_state_code_citations_are_structural_for_numeric_recall():
+    source = (
+        "The credit applies against tax due under (N.J.S.54A:1-1) and "
+        "N.J.S.A. 54A:9-7, subject to C.54A:4-6 and section 54A:4-7. "
+        "C.54:4-8.57 and “R.S.43:21-1” also apply. "
+        "Sections 54:4-8.57 and 43:21-1 provide the same references. "
+        "'N.J.A.C. 10:90-3.8(b)1' and N.J.A.C. 10:90-3.9(d)5i control. "
+        "N.J.S.54A:4-7—this controls; R.S.43:21-1–as amended."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert inventory == []
+
+
+def test_en_us_state_code_citation_filter_preserves_real_unit_and_ratio_values():
+    source = (
+        "Under N.J.S.54A:1-1, the amount is 1 dollar, the required ratio is 2:1, "
+        "outline A. uses the ratio 10:2, the adjusted ratio is 10:2-3, "
+        "outline C. uses 10:2-3, the score range is 10:20-30, "
+        "and dose schedule 10mg:2-3 applies."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [
+        (1.0, "1"),
+        (2.0, "2"),
+        (1.0, "1"),
+        (10.0, "10"),
+        (2.0, "2"),
+        (10.0, "10"),
+        (2.0, "2"),
+        (3.0, "3"),
+        (10.0, "10"),
+        (2.0, "2"),
+        (3.0, "3"),
+        (10.0, "10"),
+        (20.0, "20"),
+        (30.0, "30"),
+        (2.0, "2"),
+        (3.0, "3"),
+    ]
+
+
 def test_imported_numeric_recall_only_credits_explicit_imported_scalar():
     content = """\
 format: rulespec/v1

@@ -1177,6 +1177,21 @@ _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN = re.compile(
     r"(?=$|[\s,.;:])",
     re.IGNORECASE,
 )
+_STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET = (
+    r"\d+[A-Za-z]?:\d+[A-Za-z]?-\d+[A-Za-z]?(?:\.\d+)*"
+    r"(?:\([A-Za-z0-9]+\)[A-Za-z0-9]*)*"
+)
+_STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:(?:(?:N\.J\.S\.(?:A\.)?|N\.J\.A\.C\.|R\.S\.)\s*|C\.)"
+    r"|(?:(?:sections?|sec\.?)\s+|§{1,2}\s*))"
+    + _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET
+    + r"(?:\s*(?:,|and|or)\s*"
+    + _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET
+    + r")*"
+    r"""(?=$|[\s,.;:)\]}\'"”’–—])""",
+    re.IGNORECASE,
+)
 _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN = re.compile(
     r"(?<![\w$£€])\d+(?:\.\d+){2,}(?![\w%])"
 )
@@ -4985,6 +5000,7 @@ def _clean_source_text_for_numeric_extraction(text: str) -> str:
     cleaned = _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_FORM_LINE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN.sub(" ", cleaned)
+    cleaned = _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_SECTION_PATTERN.sub(" ", cleaned)
     cleaned = GROUNDING_DATE_PATTERN.sub(" ", cleaned)
@@ -6385,6 +6401,7 @@ def _structural_numeric_component_spans(
             _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
             _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
             _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
+            _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
             _STRUCTURAL_LINE_MARKER_PATTERN,
             _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
         )
