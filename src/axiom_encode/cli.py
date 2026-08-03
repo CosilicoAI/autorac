@@ -544,6 +544,8 @@ def _legacy_replacement_receipt_replacement_fields(
     if schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
         fields.add("source_closure")
     return fields
+
+
 _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
     {
         Path(".axiom/index/provisions_to_rules.json"),
@@ -7651,8 +7653,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
         if (
             not isinstance(receipt, dict)
             or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
-            or receipt.get("schema_version")
-            not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
+            or receipt.get("schema_version") not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
             or hashlib.sha256(receipt_raw).hexdigest() != binding.get("receipt_sha256")
             or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
@@ -7875,8 +7876,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             or _SHA256_HEX_PATTERN.fullmatch(receipt_relative.stem) is None
             or not isinstance(receipt, dict)
             or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
-            or receipt.get("schema_version")
-            not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
+            or receipt.get("schema_version") not in _LEGACY_REPLACEMENT_RECEIPT_SCHEMAS
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
             or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
             or receipt_relative not in bound_receipts
@@ -21746,13 +21746,9 @@ def _legacy_source_closure_issues(
             or rulespec_path.is_absolute()
             or any(part in {"", ".", ".."} for part in rulespec_path.parts)
             or manifest_path != _applied_encoding_manifest_path(rulespec_path)
-            or _SHA256_HEX_PATTERN.fullmatch(
-                str(item.get("rulespec_sha256") or "")
-            )
+            or _SHA256_HEX_PATTERN.fullmatch(str(item.get("rulespec_sha256") or ""))
             is None
-            or _SHA256_HEX_PATTERN.fullmatch(
-                str(item.get("manifest_sha256") or "")
-            )
+            or _SHA256_HEX_PATTERN.fullmatch(str(item.get("manifest_sha256") or ""))
             is None
         ):
             issues.append(f"{label} identity is malformed")
@@ -21784,10 +21780,8 @@ def _legacy_source_closure_issues(
         if (
             live_rule != base_rule
             or live_manifest != base_manifest
-            or hashlib.sha256(live_rule).hexdigest()
-            != item.get("rulespec_sha256")
-            or hashlib.sha256(live_manifest).hexdigest()
-            != item.get("manifest_sha256")
+            or hashlib.sha256(live_rule).hexdigest() != item.get("rulespec_sha256")
+            or hashlib.sha256(live_manifest).hexdigest() != item.get("manifest_sha256")
         ):
             issues.append(f"{label} digest or immutable-base binding is stale")
             continue
@@ -22016,9 +22010,7 @@ def _legacy_replacement_manifest_issues(
             else None
         ),
         source_closure=(
-            receipt_source_closure
-            if isinstance(receipt_source_closure, dict)
-            else None
+            receipt_source_closure if isinstance(receipt_source_closure, dict) else None
         ),
         include_source_closure=(
             receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
@@ -24315,9 +24307,7 @@ def _resolve_legacy_source_closure(
             or not isinstance(manifest_sha256, str)
             or _SHA256_HEX_PATTERN.fullmatch(manifest_sha256) is None
         ):
-            raise ValueError(
-                f"verified required import #{index + 1} is malformed"
-            )
+            raise ValueError(f"verified required import #{index + 1} is malformed")
         normalized = normalize_corpus_identifier(citation)
         if normalized in by_citation:
             raise ValueError(
@@ -25319,9 +25309,7 @@ def _run_encode_attempt(
         )
         required_import_base_ref = getattr(args, "required_import_base_ref", None)
         if not isinstance(required_import_base_ref, str):
-            raise ValueError(
-                "required imports require --required-import-base-ref"
-            )
+            raise ValueError("required imports require --required-import-base-ref")
         inventory = signed_import_inventory(
             policy_checkout_path,
             corpus_path=corpus_path,

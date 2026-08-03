@@ -35251,9 +35251,7 @@ class TestGuardGenerated:
         self,
         tmp_path: Path,
     ):
-        repo, base_ref, _rule, _manifest = self._historical_signed_import_repo(
-            tmp_path
-        )
+        repo, base_ref, _rule, _manifest = self._historical_signed_import_repo(tmp_path)
 
         with pytest.raises(ValueError, match=f"1 and {MAX_SIGNED_SOURCE_MODULES}"):
             signed_import_inventory(

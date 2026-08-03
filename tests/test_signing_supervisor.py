@@ -2800,9 +2800,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     )
     (rulespec_repo / "README.md").write_text("fixture\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=rulespec_repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "fixture"], cwd=rulespec_repo, check=True
-    )
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=rulespec_repo, check=True)
     rulespec_ref = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=rulespec_repo, text=True
     ).strip()

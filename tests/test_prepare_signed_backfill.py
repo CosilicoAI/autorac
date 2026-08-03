@@ -70,12 +70,15 @@ def test_parse_source_bundle_requires_json_array(raw: str) -> None:
 def test_parse_source_bundle_accepts_ty2026_state_tax_inventory_size() -> None:
     raw = json.dumps([f"us-nj/statute/54a:3-{index}" for index in range(29)])
 
-    assert len(
-        parse_source_bundle(
-            raw,
-            primary_citation="us-nj/statute/54a:1-2",
+    assert (
+        len(
+            parse_source_bundle(
+                raw,
+                primary_citation="us-nj/statute/54a:1-2",
+            )
         )
-    ) == 29
+        == 29
+    )
 
 
 def test_parse_source_bundle_rejects_more_than_bounded_limit() -> None:
