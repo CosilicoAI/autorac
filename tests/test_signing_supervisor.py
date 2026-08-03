@@ -2710,6 +2710,9 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     ]
     assert len(calls) == dependent_count + 1
     encode_args = [call[call.index("--") + 1 :] for call in calls]
+    assert all(
+        args.count("--require-complete-source-unit") == 1 for args in encode_args
+    )
     assert encode_args[0][-1] == "us/regulation/42/435/555"
     assert ("--apply-target-only" in encode_args[0]) is (dependent_count > 0)
     assert (
