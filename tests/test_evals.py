@@ -1652,11 +1652,32 @@ def test_model_eval_passes_single_target_output_override(tmp_path):
             corpus_release=corpus_release,
             target_relative_output=target,
             legacy_replacement=legacy_replacement,
+            replacement_overlay_scope=True,
         )
 
     assert actual == [result]
     assert mock_run.call_args.kwargs["target_relative_output"] == target
     assert mock_run.call_args.kwargs["legacy_replacement"] is legacy_replacement
+    assert mock_run.call_args.kwargs["replacement_overlay_scope"] is True
+
+
+def test_model_eval_rejects_replacement_scope_without_target_override(tmp_path):
+    corpus_release, _source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us/statute/26/1",
+    )
+
+    with pytest.raises(ValueError, match="requires an explicit target"):
+        run_model_eval(
+            citations=["us/statute/26/1"],
+            runner_specs=["openai:model-a"],
+            output_root=tmp_path / "out",
+            policy_path=tmp_path / "rulespec-us" / "us",
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+            replacement_overlay_scope=True,
+        )
 
 
 def test_model_eval_rejects_target_override_for_multiple_citations(tmp_path):
@@ -4427,6 +4448,47 @@ def test_legacy_replacement_overlay_keeps_active_ancestor_chain(tmp_path):
     assert (copied / ".axiom/encoding-manifests/us-or/marker.json").is_file()
     assert not (copied / ".axiom/encoding-manifests/us-nj").exists()
     assert not (copied / ".axiom/encoding-manifests/us-tx").exists()
+
+
+def test_canonical_replacement_validation_excludes_unrelated_jurisdictions(tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    checkout = policy_repo.parent
+    sibling = checkout / "us-nj/statutes/54a:4-7.yaml"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("format: rulespec/v1\nrules: []\n")
+    sibling_manifest = (
+        checkout / ".axiom/encoding-manifests/us-nj/statutes/54a:4-7.json"
+    )
+    sibling_manifest.parent.mkdir(parents=True)
+    sibling_manifest.write_text("{}\n")
+    generated = tmp_path / "out/openai/statutes/42/1437c-1.yaml"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("format: rulespec/v1\nrules: []\n")
+
+    with _rulespec_validation_target(
+        generated,
+        policy_repo,
+        replacement_overlay_scope=True,
+    ) as validation_file:
+        overlay_checkout = validation_file.parents[3]
+        assert validation_file.is_file()
+        assert not (overlay_checkout / "us-nj").exists()
+        assert not (overlay_checkout / ".axiom/encoding-manifests/us-nj").exists()
+
+
+def test_fresh_encode_validation_preserves_unrelated_jurisdictions(tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
+    checkout = policy_repo.parent
+    sibling = checkout / "us-nj/statutes/54a:4-7.yaml"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("format: rulespec/v1\nrules: []\n")
+    generated = tmp_path / "out/openai/statutes/42/new.yaml"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("format: rulespec/v1\nrules: []\n")
+
+    with _rulespec_validation_target(generated, policy_repo) as validation_file:
+        overlay_checkout = validation_file.parents[3]
+        assert (overlay_checkout / "us-nj/statutes/54a:4-7.yaml").is_file()
 
 
 def test_legacy_replacement_overlay_rejects_manifest_jurisdiction_symlink(tmp_path):

@@ -47,7 +47,7 @@ from axiom_encode.constants import (
 from axiom_encode.legacy_replacement import LegacyReplacementContract
 from axiom_encode.legacy_replacement_overlay import (
     LegacyReplacementOverlayError,
-    legacy_replacement_excluded_jurisdictions,
+    replacement_excluded_jurisdictions,
     stage_legacy_replacement_overlay,
 )
 from axiom_encode.prompts.encoder import SOURCE_SCOPE_PROTOCOL
@@ -1385,12 +1385,17 @@ def run_model_eval(
     validation_retry_feedback: Sequence[str] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
     if target_relative_output is not None and len(citations) != 1:
         raise ValueError(
             "A target RuleSpec output override requires exactly one citation"
+        )
+    if replacement_overlay_scope and target_relative_output is None:
+        raise ValueError(
+            "Replacement overlay scope requires an explicit target RuleSpec output"
         )
     include_tests = include_tests or require_complete_source_unit
     results: list[EvalResult] = []
@@ -1426,6 +1431,7 @@ def run_model_eval(
                         validation_retry_feedback=validation_retry_feedback,
                         required_import_targets=required_import_targets,
                         legacy_replacement=legacy_replacement,
+                        replacement_overlay_scope=replacement_overlay_scope,
                     )
                 )
 
@@ -6707,6 +6713,7 @@ def evaluate_artifact(
     require_complete_source_unit: bool = False,
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> EvalArtifactMetrics:
     """Evaluate an artifact inside one exact named corpus release."""
 
@@ -6739,6 +6746,7 @@ def evaluate_artifact(
             require_complete_source_unit=require_complete_source_unit,
             amendment_documents=amendment_documents,
             legacy_replacement=legacy_replacement,
+            replacement_overlay_scope=replacement_overlay_scope,
         )
 
 
@@ -6859,6 +6867,7 @@ def _evaluate_artifact_in_scope(
     require_complete_source_unit: bool = False,
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> EvalArtifactMetrics:
     """Evaluate one RuleSpec artifact with deterministic checks plus optional oracles."""
     with _rulespec_validation_target(
@@ -6866,6 +6875,7 @@ def _evaluate_artifact_in_scope(
         policy_repo_root,
         rulespec_dependency_roots=rulespec_dependency_roots,
         legacy_replacement=legacy_replacement,
+        replacement_overlay_scope=replacement_overlay_scope,
     ) as validation_file:
         validation_policy_repo_root = _validation_policy_repo_root(
             validation_file, policy_repo_root
@@ -7237,6 +7247,7 @@ def _evaluate_generated_artifact_with_repairs(
     amendment_documents: Sequence[CorpusAmendmentDocument] = (),
     protected_review_excerpts: frozenset[str] = frozenset(),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> EvalArtifactMetrics | None:
     evaluated_states: set[tuple[bytes | None, bytes | None]] = set()
     while True:
@@ -7261,6 +7272,7 @@ def _evaluate_generated_artifact_with_repairs(
             require_complete_source_unit=require_complete_source_unit,
             amendment_documents=amendment_documents,
             legacy_replacement=legacy_replacement,
+            replacement_overlay_scope=replacement_overlay_scope,
         )
         if metrics is None:
             return None
@@ -7633,7 +7645,7 @@ def _copy_validation_overlay_tree(
     )
 
 
-def _legacy_replacement_overlay_ignore(
+def _replacement_overlay_ignore(
     source_checkout: Path,
     *,
     active_jurisdiction: str,
@@ -7641,13 +7653,13 @@ def _legacy_replacement_overlay_ignore(
     """Exclude unrelated jurisdiction trees while preserving symlink checks."""
 
     try:
-        excluded = legacy_replacement_excluded_jurisdictions(
+        excluded = replacement_excluded_jurisdictions(
             source_checkout,
             active_jurisdiction=active_jurisdiction,
         )
     except LegacyReplacementOverlayError as exc:
         raise UnsafeRulespecContextPath(
-            f"Legacy replacement validation source is invalid: {exc}"
+            f"Replacement validation source is invalid: {exc}"
         ) from exc
     checkout = source_checkout.resolve()
     manifest_root = checkout / ".axiom" / "encoding-manifests"
@@ -7661,13 +7673,15 @@ def _legacy_replacement_overlay_ignore(
             candidate = Path(directory) / name
             if candidate.is_symlink() or not candidate.is_dir():
                 raise UnsafeRulespecContextPath(
-                    "Legacy replacement validation source jurisdiction is unsafe: "
-                    f"{candidate}"
+                    f"Replacement validation source jurisdiction is unsafe: {candidate}"
                 )
             ignored.add(name)
         return ignored
 
     return ignore
+
+
+_legacy_replacement_overlay_ignore = _replacement_overlay_ignore
 
 
 @contextlib.contextmanager
@@ -7677,6 +7691,7 @@ def _rulespec_validation_target(
     *,
     rulespec_dependency_roots: Sequence[Path] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> Iterator[Path]:
     """Yield a validation file under the exact authorized canonical layout."""
 
@@ -7688,9 +7703,9 @@ def _rulespec_validation_target(
         )
     policy_root = Path(policy_repo_root).resolve()
     if _is_under_root(rulespec_file, policy_root):
-        if legacy_replacement is not None:
+        if legacy_replacement is not None or replacement_overlay_scope:
             raise UnsafeRulespecContextPath(
-                "Legacy replacement validation requires a separately generated "
+                "Replacement validation requires a separately generated "
                 "artifact so the live checkout cannot bypass its overlay"
             )
         staging_token = _RULESPEC_VALIDATION_STAGING_ROOT.set(None)
@@ -7732,11 +7747,11 @@ def _rulespec_validation_target(
             )
         overlay_repo = overlay_parent / overlay_repo_name
         overlay_ignore = (
-            _legacy_replacement_overlay_ignore(
+            _replacement_overlay_ignore(
                 source_checkout,
                 active_jurisdiction=policy_root.name,
             )
-            if legacy_replacement is not None
+            if legacy_replacement is not None or replacement_overlay_scope
             else _validation_overlay_ignore
         )
         _copy_validation_overlay_tree(
@@ -8072,6 +8087,7 @@ def _run_single_eval(
     validation_retry_feedback: Sequence[str] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
+    replacement_overlay_scope: bool = False,
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -8193,6 +8209,7 @@ def _run_single_eval(
                 workspace
             ),
             legacy_replacement=legacy_replacement,
+            replacement_overlay_scope=replacement_overlay_scope,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,

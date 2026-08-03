@@ -319,7 +319,7 @@ from .legacy_replacement_overlay import (
     LegacyReplacementOverlayError as _LegacyReplacementOverlayError,
 )
 from .legacy_replacement_overlay import (
-    scope_legacy_replacement_overlay as _scope_legacy_replacement_overlay,
+    scope_replacement_overlay as _scope_replacement_overlay,
 )
 from .legacy_replacement_overlay import (
     stage_legacy_replacement_overlay as _stage_legacy_replacement_overlay,
@@ -389,6 +389,16 @@ DEFAULT_DB = Path.home() / "TheAxiomFoundation" / "axiom-encode" / "encodings.db
 DEFAULT_GPT_RUNNER = f"codex:{DEFAULT_OPENAI_MODEL}"
 APPLIED_ENCODING_MANIFEST_DIR = Path(".axiom") / "encoding-manifests"
 APPLIED_ENCODING_MANIFEST_SCHEMA = "axiom-encode/applied-rulespec/v5"
+_APPLY_VALIDATION_EXECUTION_SCHEMA_V1 = "axiom-encode/apply-validation-execution/v1"
+_APPLY_VALIDATION_EXECUTION_SCHEMA_V2 = "axiom-encode/apply-validation-execution/v2"
+_APPLY_VALIDATION_SCOPE_FULL_CHECKOUT = "full_checkout"
+_APPLY_VALIDATION_SCOPE_REPLACEMENT = "active_jurisdiction_and_country_ancestors"
+_APPLY_VALIDATION_SCOPES = frozenset(
+    {
+        _APPLY_VALIDATION_SCOPE_FULL_CHECKOUT,
+        _APPLY_VALIDATION_SCOPE_REPLACEMENT,
+    }
+)
 APPLIED_ENCODING_SIGNATURE_ALGORITHM = "ed25519-domain-v1"
 APPLIED_ENCODING_DELETED_MARKER = "deleted"
 APPLIED_ENCODING_MODEL_TOOL = "axiom-encode encode --apply"
@@ -20476,10 +20486,19 @@ def _model_apply_validation_execution_issues(
         "rulespec_dependencies",
     }
     issues: list[str] = []
+    schema = execution.get("schema")
+    if schema == _APPLY_VALIDATION_EXECUTION_SCHEMA_V2:
+        expected_top_fields.add("rulespec_scope")
+        rulespec_scope = execution.get("rulespec_scope")
+        if (
+            not isinstance(rulespec_scope, str)
+            or rulespec_scope not in _APPLY_VALIDATION_SCOPES
+        ):
+            issues.append(f"{prefix}.rulespec_scope is invalid")
+    elif schema != _APPLY_VALIDATION_EXECUTION_SCHEMA_V1:
+        issues.append(f"{prefix}.schema is not supported")
     if set(execution) != expected_top_fields:
         issues.append(f"{prefix} has noncanonical fields")
-    if execution.get("schema") != "axiom-encode/apply-validation-execution/v1":
-        issues.append(f"{prefix}.schema is not supported")
 
     def check_git_identity(
         value: object,
@@ -24188,6 +24207,7 @@ class _EncodeReplacementTarget(NamedTuple):
 
 
 _LEGACY_REPLACEMENT_ATTR = "_axiom_legacy_replacement_contract"
+_REPLACEMENT_OVERLAY_SCOPE_ATTR = "_axiom_replacement_overlay_scope"
 
 
 def _resolve_required_import_rulespec_paths(
@@ -24284,6 +24304,16 @@ def _result_legacy_replacement_contract(result: object) -> object | None:
     except TypeError:
         return None
     return state.get(_LEGACY_REPLACEMENT_ATTR)
+
+
+def _result_replacement_overlay_scope(result: object) -> bool:
+    """Return the internal marker for an authenticated replacement target."""
+
+    try:
+        state = vars(result)
+    except TypeError:
+        return False
+    return state.get(_REPLACEMENT_OVERLAY_SCOPE_ATTR) is True
 
 
 def _require_legacy_replacement_clean_checkout(checkout_root: Path) -> None:
@@ -25430,6 +25460,7 @@ def _run_encode_attempt(
             if replacement_target is not None
             else None
         ),
+        replacement_overlay_scope=replacement_target is not None,
     )
 
     result = results[0]
@@ -25439,6 +25470,11 @@ def _run_encode_attempt(
         replacement_target.legacy_replacement
         if replacement_target is not None
         else None,
+    )
+    setattr(
+        result,
+        _REPLACEMENT_OVERLAY_SCOPE_ATTR,
+        replacement_target is not None,
     )
     protected_review_excerpts = (
         _quoted_review_finding_excerpts(
@@ -45827,6 +45863,8 @@ def _portable_clean_apply_git_identity(
 
 def _portable_apply_validation_execution_identity(
     execution: Mapping[str, object],
+    *,
+    replacement_overlay_scope: bool,
 ) -> dict[str, object]:
     """Build the signed, path-portable validator provenance for one apply."""
 
@@ -45992,7 +46030,12 @@ def _portable_apply_validation_execution_identity(
         )
 
     return {
-        "schema": "axiom-encode/apply-validation-execution/v1",
+        "schema": _APPLY_VALIDATION_EXECUTION_SCHEMA_V2,
+        "rulespec_scope": (
+            _APPLY_VALIDATION_SCOPE_REPLACEMENT
+            if replacement_overlay_scope
+            else _APPLY_VALIDATION_SCOPE_FULL_CHECKOUT
+        ),
         "axiom_encode": encoder,
         "axiom_rules_engine": engine,
         "policy_pre_apply": policy_attestation,
@@ -46044,6 +46087,15 @@ def _build_apply_validation_snapshot(
             supplemental_files.items(), key=lambda item: Path(item[0]).as_posix()
         )
     ]
+    legacy_replacement = _result_legacy_replacement_contract(result)
+    if legacy_replacement is not None and not isinstance(
+        legacy_replacement,
+        _LegacyReplacementContract,
+    ):
+        raise RuntimeError("Legacy replacement contract is malformed")
+    replacement_overlay_scope = (
+        _result_replacement_overlay_scope(result) or legacy_replacement is not None
+    )
     snapshot = {
         "schema": "axiom-encode/apply-validation-snapshot/v1",
         "relative_output": canonical_relative_output.as_posix(),
@@ -46070,13 +46122,14 @@ def _build_apply_validation_snapshot(
         "supplemental": supplemental_snapshot,
         "validation_execution": copy.deepcopy(dict(validation_execution_identity)),
         "manifest_validation_execution": (
-            _portable_apply_validation_execution_identity(validation_execution_identity)
+            _portable_apply_validation_execution_identity(
+                validation_execution_identity,
+                replacement_overlay_scope=replacement_overlay_scope,
+            )
         ),
+        "replacement_overlay_scope": replacement_overlay_scope,
     }
-    legacy_replacement = _result_legacy_replacement_contract(result)
     if legacy_replacement is not None:
-        if not isinstance(legacy_replacement, _LegacyReplacementContract):
-            raise RuntimeError("Legacy replacement contract is malformed")
         snapshot["legacy_replacement"] = {
             "base_commit": legacy_replacement.base_commit,
             "base_tree": legacy_replacement.base_tree,
@@ -48890,6 +48943,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     """Validate generated artifacts in a temporary policy-repo overlay."""
     setattr(result, _APPLY_VALIDATION_SNAPSHOT_ATTR, None)
     legacy_replacement = _result_legacy_replacement_contract(result)
+    replacement_overlay_scope = _result_replacement_overlay_scope(result)
     if legacy_replacement is not None and not isinstance(
         legacy_replacement,
         _LegacyReplacementContract,
@@ -48940,6 +48994,19 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         relative_output,
     )
     existing_output = policy_content_root / relative_output
+    if (
+        replacement_overlay_scope
+        and legacy_replacement is None
+        and (existing_output.is_symlink() or not existing_output.is_file())
+    ):
+        return (
+            False,
+            [
+                "Replacement overlay scope requires an existing regular canonical "
+                f"target: {relative_output}"
+            ],
+            {},
+        )
     if existing_output.exists():
         existing_content = existing_output.read_text()
         preservation_issues = _source_relation_preservation_issues(
@@ -48974,9 +49041,9 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             source=policy_checkout_path,
             target=overlay_repo,
         )
-        if legacy_replacement is not None:
+        if legacy_replacement is not None or replacement_overlay_scope:
             try:
-                _scope_legacy_replacement_overlay(
+                _scope_replacement_overlay(
                     overlay_repo,
                     active_jurisdiction=policy_content_root.name,
                 )
