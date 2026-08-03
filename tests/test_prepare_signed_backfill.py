@@ -390,6 +390,7 @@ def _write_legacy_replacement_change(
     omitted_scheduled_companion: bool = False,
     exact_dependent: bool = False,
     generated_exact_dependent: bool = False,
+    destination_predecessor: bool = False,
     legacy_owner_class: str = "v1-hmac-untrusted",
 ) -> tuple[Path, Path, Path, Path]:
     old_rule = repo / "us/statutes/47:32.yaml"
@@ -460,6 +461,23 @@ def _write_legacy_replacement_change(
     exact_manifest = (
         repo / ".axiom/encoding-manifests/us/policies/income_tax/composite.json"
     )
+    new_rule = repo / "us/statutes/47/32.yaml"
+    new_test = repo / "us/statutes/47/32.test.yaml"
+    destination_predecessor_files: list[dict[str, str]] = []
+    if destination_predecessor:
+        new_rule.parent.mkdir(parents=True, exist_ok=True)
+        new_rule.write_bytes(old_rule.read_bytes())
+        new_test.write_bytes(old_test.read_bytes())
+        destination_predecessor_files = [
+            {
+                "path": new_rule.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(new_rule.read_bytes()).hexdigest(),
+            },
+            {
+                "path": new_test.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(new_test.read_bytes()).hexdigest(),
+            },
+        ]
     if exact_dependent:
         exact_primary.parent.mkdir(parents=True, exist_ok=True)
         exact_primary.write_text(
@@ -584,9 +602,7 @@ def _write_legacy_replacement_change(
             encoding="utf-8",
         )
 
-    new_rule = repo / "us/statutes/47/32.yaml"
-    new_test = repo / "us/statutes/47/32.test.yaml"
-    new_rule.parent.mkdir(parents=True)
+    new_rule.parent.mkdir(parents=True, exist_ok=True)
     new_rule.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
     new_test.write_text("[]\n", encoding="utf-8")
     if exact_dependent:
@@ -630,9 +646,13 @@ def _write_legacy_replacement_change(
     receipt.parent.mkdir(parents=True)
     receipt_payload = {
         "schema_version": (
-            "axiom-encode/legacy-fresh-reencode-receipt/v2"
-            if exact_dependent
-            else "axiom-encode/legacy-fresh-reencode-receipt/v1"
+            "axiom-encode/legacy-fresh-reencode-receipt/v3"
+            if destination_predecessor
+            else (
+                "axiom-encode/legacy-fresh-reencode-receipt/v2"
+                if exact_dependent
+                else "axiom-encode/legacy-fresh-reencode-receipt/v1"
+            )
         ),
         "tool": "axiom-encode encode --apply --replace-legacy-rulespec-path",
         "repository": {
@@ -694,6 +714,14 @@ def _write_legacy_replacement_change(
         },
         "replacement_manifest": nested_manifest,
     }
+    if destination_predecessor:
+        receipt_payload["replacement"]["destination_predecessor_class"] = (
+            "canonicalized-unowned-duplicate"
+        )
+        receipt_payload["replacement"]["destination_predecessor_files"] = (
+            destination_predecessor_files
+        )
+        receipt_payload["replacement"]["exact_dependents"] = []
     if exact_dependent:
         assert exact_primary_before is not None
         assert exact_companion_before is not None
@@ -1074,6 +1102,42 @@ def test_stage_keeps_v1_legacy_replacement_compatible(tmp_path: Path) -> None:
         == "axiom-encode/legacy-fresh-reencode-receipt/v1"
     )
     authorized_changed_paths(repo)
+
+
+def test_stage_accepts_v3_unowned_canonical_destination_predecessor(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        destination_predecessor=True,
+    )
+
+    assert (
+        json.loads(receipt.read_text(encoding="utf-8"))["schema_version"]
+        == "axiom-encode/legacy-fresh-reencode-receipt/v3"
+    )
+    expected = authorized_changed_paths(repo)
+    stage_authorized_changes(repo)
+
+    assert PurePosixPath("us/statutes/47/32.yaml") in expected
+
+
+def test_stage_rejects_v3_destination_predecessor_hash_tamper(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        destination_predecessor=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["replacement"]["destination_predecessor_files"][0]["sha256"] = "0" * 64
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    with pytest.raises(ValueError, match="destination predecessor differs"):
+        authorized_changed_paths(repo)
 
 
 def test_stage_rejects_v2_exact_dependent_live_file_tamper(

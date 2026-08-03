@@ -19,6 +19,7 @@ LEGACY_REPLACEMENT_RECEIPT_ROOT = PurePosixPath(".axiom/legacy-replacements")
 LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec-path"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 LEGACY_EXACT_DEPENDENT_TOOL = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
@@ -1068,6 +1069,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 not in {
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
@@ -1125,6 +1127,18 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 raise ValueError(
                     f"legacy replacement exact_dependents are malformed: {relative}"
                 )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 and (
+                not isinstance(
+                    receipt_replacement.get("destination_predecessor_class"), str
+                )
+                or not isinstance(
+                    receipt_replacement.get("destination_predecessor_files"), list
+                )
+            ):
+                raise ValueError(
+                    "legacy replacement destination predecessor files are malformed: "
+                    f"{relative}"
+                )
             nested_manifest = payload.get("replacement_manifest")
             if (
                 not isinstance(nested_manifest, dict)
@@ -1140,6 +1154,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 repository.get("base_commit") if isinstance(repository, dict) else None
             )
             from axiom_encode.cli import (
+                _legacy_destination_predecessor_issues,
                 _legacy_replacement_authoritative_map,
                 _legacy_replacement_reference_inventory_issues,
                 _strict_legacy_replacement_map,
@@ -1158,6 +1173,26 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 raise ValueError(
                     f"legacy replacement authority differs: {relative}: "
                     + "; ".join(authority_issues)
+                )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3:
+                predecessor_issues = _legacy_destination_predecessor_issues(
+                    repo,
+                    base_commit=str(base_commit or ""),
+                    authoritative_replacements=authoritative_replacements,
+                    legacy=legacy,
+                    replacement=receipt_replacement,
+                )
+                if predecessor_issues:
+                    raise ValueError(
+                        f"legacy replacement destination predecessor differs: {relative}: "
+                        + "; ".join(predecessor_issues)
+                    )
+                authorized_unchanged.update(
+                    PurePosixPath(item["path"])
+                    for item in receipt_replacement["destination_predecessor_files"]
+                    if isinstance(item, dict)
+                    and isinstance(item.get("path"), str)
+                    and PurePosixPath(item["path"]) not in changed
                 )
             from axiom_encode.rulespec_path_migration import (
                 PathMigrationPlanError,
@@ -1429,7 +1464,10 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement reference inventory differs: {relative}: "
                     + "; ".join(inventory_issues)
                 )
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2:
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            }:
                 authorized_unchanged.update(
                     _validate_legacy_exact_dependents(
                         repo,

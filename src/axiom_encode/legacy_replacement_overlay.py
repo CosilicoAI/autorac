@@ -8,6 +8,8 @@ import shutil
 from pathlib import Path
 
 from .legacy_replacement import (
+    DESTINATION_PREDECESSOR_ABSENT,
+    DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE,
     ENCODING_MANIFEST_DIR,
     LegacyReplacementContract,
     LegacyReplacementFile,
@@ -227,6 +229,27 @@ def stage_legacy_replacement_overlay(
                 )
             exact_targets.append((target, live_file))
 
+    predecessor_present = bool(contract.destination_predecessor_files)
+    if (
+        predecessor_present
+        and contract.destination_predecessor_class
+        != DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE
+    ) or (
+        not predecessor_present
+        and contract.destination_predecessor_class != DESTINATION_PREDECESSOR_ABSENT
+    ):
+        raise LegacyReplacementOverlayError(
+            "Legacy replacement canonical destination predecessor classification "
+            "differs from its evidence"
+        )
+    predecessor_targets = [
+        _require_overlay_file(
+            root,
+            item,
+            label="Legacy replacement canonical destination predecessor",
+        )
+        for item in contract.destination_predecessor_files
+    ]
     if contract.source != contract.destination:
         destination = _overlay_path(root, contract.destination)
         destination_manifest = _overlay_path(
@@ -238,14 +261,26 @@ def stage_legacy_replacement_overlay(
             destination.with_name(f"{destination.stem}.test.yaml"),
             destination_manifest,
         )
+        admitted_predecessors = set(predecessor_targets)
+        if admitted_predecessors and (
+            destination not in admitted_predecessors
+            or not admitted_predecessors.issubset(set(destination_group[:2]))
+        ):
+            raise LegacyReplacementOverlayError(
+                "Legacy replacement canonical destination predecessor group is malformed"
+            )
         for target in destination_group:
-            if target.exists() or target.is_symlink():
+            if target not in admitted_predecessors and (
+                target.exists() or target.is_symlink()
+            ):
                 raise LegacyReplacementOverlayError(
                     "Legacy replacement destination primary/companion/manifest "
                     f"collision: {target.relative_to(root).as_posix()}"
                 )
 
     for target in deleted_targets:
+        target.unlink()
+    for target in predecessor_targets:
         target.unlink()
     manifest_target.unlink()
     for target, rewrite in rewrite_targets:

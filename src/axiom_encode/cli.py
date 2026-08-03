@@ -258,6 +258,12 @@ from .harness.validator_pipeline import (
     repair_source_table_band_scalar_parameters,
 )
 from .legacy_replacement import (
+    DESTINATION_PREDECESSOR_ABSENT as APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT,
+)
+from .legacy_replacement import (
+    DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE as APPLIED_ENCODING_DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE,
+)
+from .legacy_replacement import (
     EXACT_DEPENDENT_TOOL as APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL,
 )
 from .legacy_replacement import (
@@ -274,6 +280,9 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     RECEIPT_SCHEMA_V1 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+)
+from .legacy_replacement import (
+    RECEIPT_SCHEMA_V2 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
 )
 from .legacy_replacement import (
     TOOL as APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL,
@@ -7151,6 +7160,201 @@ def _legacy_replacement_authoritative_map(
     return replacements, []
 
 
+def _legacy_destination_manifest_claimants_at_base(
+    repo_path: Path,
+    *,
+    base_commit: str,
+    destination_paths: set[Path],
+) -> list[Path]:
+    """Return base manifests that claim any unowned destination predecessor.
+
+    Historical v1 manifests may record either checkout-relative or
+    jurisdiction-relative paths. Inspect the authorized Git base rather than
+    the live post-transaction tree so a freshly installed owner cannot be
+    confused with preexisting authority.
+    """
+
+    if not destination_paths:
+        return []
+    patterns = sorted(
+        {
+            candidate
+            for path in destination_paths
+            for candidate in (
+                path.as_posix(),
+                path.relative_to(path.parts[0]).as_posix(),
+            )
+        }
+    )
+    if len(patterns) > 4:
+        raise RuntimeError("Legacy destination predecessor group is oversized")
+    command = ["git", "-C", str(repo_path), "grep", "-z", "-l", "-a", "-F"]
+    for pattern in patterns:
+        command.extend(("-e", pattern))
+    command.extend((base_commit, "--"))
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        env=_rulespec_migration_git_environment(),
+        check=False,
+    )
+    if completed.returncode not in {0, 1}:
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Cannot scan legacy destination manifest ownership: {stderr}"
+        )
+
+    prefix = f"{base_commit}:".encode()
+    claimants: set[Path] = set()
+    for encoded_candidate in completed.stdout.split(b"\0"):
+        if not encoded_candidate:
+            continue
+        if not encoded_candidate.startswith(prefix):
+            raise RuntimeError("Legacy destination manifest candidate is malformed")
+        try:
+            candidate_text = encoded_candidate[len(prefix) :].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(
+                "Legacy destination manifest candidate is not UTF-8"
+            ) from exc
+        candidate = Path(candidate_text)
+        try:
+            relative = candidate.relative_to(APPLIED_ENCODING_MANIFEST_DIR)
+        except ValueError:
+            continue
+        if (
+            candidate.is_absolute()
+            or candidate.as_posix() != candidate_text
+            or any(part in {"", ".", ".."} for part in candidate.parts)
+            or candidate.suffix != ".json"
+            or len(relative.parts) < 2
+        ):
+            raise RuntimeError("Legacy destination manifest candidate is malformed")
+        claimants.add(candidate)
+    return sorted(claimants, key=Path.as_posix)
+
+
+def _legacy_destination_predecessor_issues(
+    repo_path: Path,
+    *,
+    base_commit: str,
+    authoritative_replacements: Mapping[str, str],
+    legacy: object,
+    replacement: object,
+) -> list[str]:
+    """Verify an exact, unowned canonical destination already present at base."""
+
+    if not isinstance(legacy, dict) or not isinstance(replacement, dict):
+        return ["legacy destination predecessor blocks are malformed"]
+    predecessor_class = replacement.get("destination_predecessor_class")
+    raw_predecessors = replacement.get("destination_predecessor_files")
+    if not isinstance(raw_predecessors, list):
+        return ["legacy destination predecessor files are malformed"]
+    if predecessor_class not in {
+        APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT,
+        APPLIED_ENCODING_DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE,
+    }:
+        return ["legacy destination predecessor classification is malformed"]
+    if (
+        predecessor_class == APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT
+        and raw_predecessors
+    ) or (
+        predecessor_class
+        == APPLIED_ENCODING_DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE
+        and not raw_predecessors
+    ):
+        return ["legacy destination predecessor classification differs from evidence"]
+    predecessors: dict[Path, str] = {}
+    issues: list[str] = []
+    for item in raw_predecessors:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "sha256"}
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("sha256"), str)
+            or _SHA256_HEX_PATTERN.fullmatch(item["sha256"]) is None
+        ):
+            issues.append("legacy destination predecessor entry is malformed")
+            continue
+        path = Path(item["path"])
+        if (
+            path.is_absolute()
+            or path.as_posix() != item["path"]
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path in predecessors
+        ):
+            issues.append("legacy destination predecessor path is malformed")
+            continue
+        predecessors[path] = item["sha256"]
+    if issues or not predecessors:
+        return issues
+
+    legacy_files = legacy.get("files")
+    if not isinstance(legacy_files, list):
+        return ["legacy destination predecessor lacks source file evidence"]
+    expected_sources: dict[Path, Path] = {}
+    for item in legacy_files:
+        source_raw = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(source_raw, str):
+            return ["legacy destination predecessor source evidence is malformed"]
+        destination_raw = authoritative_replacements.get(source_raw)
+        if not isinstance(destination_raw, str):
+            return ["legacy destination predecessor does not cover the source group"]
+        expected_sources[Path(destination_raw)] = Path(source_raw)
+    if set(predecessors) != set(expected_sources):
+        return ["legacy destination predecessor does not exactly match source group"]
+
+    for destination, source in sorted(
+        expected_sources.items(), key=lambda item: item[0].as_posix()
+    ):
+        try:
+            source_raw = _rulespec_migration_base_blob(
+                repo_path,
+                base_commit,
+                source,
+            )
+            destination_raw = _rulespec_migration_base_blob(
+                repo_path,
+                base_commit,
+                destination,
+            )
+            expected_raw, _counts = rewrite_exact_references(
+                source_raw,
+                authoritative_replacements,
+            )
+        except (RuntimeError, PathMigrationPlanError) as exc:
+            issues.append(
+                "legacy destination predecessor base evidence is unreadable: "
+                f"{destination.as_posix()}: {exc}"
+            )
+            continue
+        if hashlib.sha256(destination_raw).hexdigest() != predecessors[destination]:
+            issues.append(
+                "legacy destination predecessor hash is stale: "
+                f"{destination.as_posix()}"
+            )
+        if destination_raw != expected_raw:
+            issues.append(
+                "legacy destination predecessor is not an exact canonicalized source "
+                f"duplicate: {destination.as_posix()}"
+            )
+    try:
+        claimants = _legacy_destination_manifest_claimants_at_base(
+            repo_path,
+            base_commit=base_commit,
+            destination_paths=set(predecessors),
+        )
+    except RuntimeError as exc:
+        issues.append(f"legacy destination predecessor ownership is unreadable: {exc}")
+    else:
+        if claimants:
+            issues.append(
+                "legacy destination predecessor is already manifest-owned: "
+                + ", ".join(path.as_posix() for path in claimants)
+            )
+    return issues
+
+
 def _legacy_replacement_reference_inventory_issues(
     repo_path: Path,
     *,
@@ -7646,6 +7850,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             or receipt.get("schema_version")
             not in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -7705,6 +7910,19 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             )
         )
         if authoritative_replacements is None or authority_issues:
+            pending.append(f"invalid:{manifest_label}")
+            continue
+        if (
+            receipt.get("schema_version")
+            == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            and _legacy_destination_predecessor_issues(
+                repo_path,
+                base_commit=base_commit,
+                authoritative_replacements=authoritative_replacements,
+                legacy=receipt.get("legacy"),
+                replacement=replacement,
+            )
+        ):
             pending.append(f"invalid:{manifest_label}")
             continue
         inventory_issues = _legacy_replacement_reference_inventory_issues(
@@ -7873,6 +8091,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             or receipt.get("schema_version")
             not in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -21832,7 +22051,29 @@ def _legacy_replacement_manifest_issues(
         ),
         exact_dependents=(
             receipt_exact_dependents
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
+            else None
+        ),
+        destination_predecessor_files=(
+            receipt_replacement.get("destination_predecessor_files")
             if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            and isinstance(receipt_replacement, dict)
+            and isinstance(
+                receipt_replacement.get("destination_predecessor_files"), list
+            )
+            else None
+        ),
+        destination_predecessor_class=(
+            receipt_replacement.get("destination_predecessor_class")
+            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            and isinstance(receipt_replacement, dict)
+            and isinstance(
+                receipt_replacement.get("destination_predecessor_class"), str
+            )
             else None
         ),
     )
@@ -21846,6 +22087,7 @@ def _legacy_replacement_manifest_issues(
         receipt_schema
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -21942,6 +22184,18 @@ def _legacy_replacement_manifest_issues(
             }
             | (
                 {"exact_dependents"}
+                if receipt_schema
+                in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }
+                else set()
+            )
+            | (
+                {
+                    "destination_predecessor_class",
+                    "destination_predecessor_files",
+                }
                 if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
                 else set()
             )
@@ -21982,6 +22236,17 @@ def _legacy_replacement_manifest_issues(
                 for issue in authority_issues
             ],
         ]
+    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        issues.extend(
+            f"{manifest_label} destination predecessor is invalid: {issue}"
+            for issue in _legacy_destination_predecessor_issues(
+                repo_path,
+                base_commit=base_commit,
+                authoritative_replacements=authoritative_replacements,
+                legacy=legacy,
+                replacement=replacement,
+            )
+        )
     issues.extend(
         f"{manifest_label} reference inventory is invalid: {issue}"
         for issue in _legacy_replacement_reference_inventory_issues(
@@ -22763,7 +23028,10 @@ def _legacy_exact_dependent_manifest_issues(
         not isinstance(receipt, dict)
         or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
         or receipt.get("schema_version")
-        != APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+        not in {
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+        }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
         or receipt_sha256 != binding.get("receipt_sha256")
         or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
@@ -24099,23 +24367,34 @@ def _resolve_legacy_replacement_contract(
     tracked = _rulespec_migration_tracked_files(policy_checkout_path)
     if tracked.get(source) != "100644":
         raise ValueError("legacy replacement source is not a tracked regular 0644 file")
-    destination_group = (
-        destination,
-        companion_path(destination),
-        _applied_encoding_manifest_path(destination),
-    )
+    destination_companion = companion_path(destination)
+    destination_manifest_path = _applied_encoding_manifest_path(destination)
+    destination_predecessor_present = False
     if not in_place:
-        for candidate in destination_group:
-            candidate_absolute = policy_checkout_path / candidate
-            if (
-                candidate in tracked
-                or candidate_absolute.exists()
-                or candidate_absolute.is_symlink()
-            ):
-                raise ValueError(
-                    "legacy replacement destination primary/companion/manifest group "
-                    f"must be absent at clean HEAD and live: {candidate}"
-                )
+        destination_absolute = policy_checkout_path / destination
+        companion_absolute = policy_checkout_path / destination_companion
+        manifest_absolute = policy_checkout_path / destination_manifest_path
+        if (
+            destination_manifest_path in tracked
+            or manifest_absolute.exists()
+            or manifest_absolute.is_symlink()
+        ):
+            raise ValueError(
+                "legacy replacement canonical destination predecessor must be "
+                "unowned at clean HEAD and live"
+            )
+        if destination_absolute.exists() or destination_absolute.is_symlink():
+            destination_predecessor_present = True
+        elif (
+            destination in tracked
+            or destination_companion in tracked
+            or companion_absolute.exists()
+            or companion_absolute.is_symlink()
+        ):
+            raise ValueError(
+                "legacy replacement destination primary/companion group must be "
+                "either absent or an exact tracked canonical predecessor"
+            )
 
     old_paths = [source]
     old_companion = companion_path(source)
@@ -24238,6 +24517,80 @@ def _resolve_legacy_replacement_contract(
             else set(),
         )
     )
+    destination_predecessor_files: list[_LegacyReplacementFile] = []
+    if destination_predecessor_present:
+        source_by_destination = {
+            destination: deleted_files[0],
+            **(
+                {destination_companion: deleted_files[1]}
+                if len(deleted_files) == 2
+                else {}
+            ),
+        }
+        if len(deleted_files) == 1 and (
+            destination_companion in tracked
+            or (policy_checkout_path / destination_companion).exists()
+            or (policy_checkout_path / destination_companion).is_symlink()
+        ):
+            raise ValueError(
+                "legacy replacement canonical destination predecessor has an "
+                "unmatched companion"
+            )
+        for predecessor_path, source_file in source_by_destination.items():
+            if tracked.get(predecessor_path) != "100644":
+                raise ValueError(
+                    "legacy replacement canonical destination predecessor is not a "
+                    f"tracked regular 0644 file: {predecessor_path}"
+                )
+            predecessor_raw = read_bounded_regular_file(
+                policy_checkout_path,
+                policy_checkout_path / predecessor_path,
+                label="legacy replacement canonical destination predecessor",
+                max_bytes=10 * 1024 * 1024,
+                required_mode=0o644,
+            )
+            predecessor_base_raw = _rulespec_migration_base_blob(
+                policy_checkout_path,
+                base_commit,
+                predecessor_path,
+            )
+            try:
+                expected_predecessor_raw, _counts = rewrite_exact_references(
+                    source_file.raw,
+                    replacements,
+                )
+            except PathMigrationPlanError as exc:
+                raise ValueError(
+                    "legacy replacement canonical destination predecessor cannot be "
+                    "derived exactly"
+                ) from exc
+            if predecessor_raw != predecessor_base_raw:
+                raise ValueError(
+                    "legacy replacement canonical destination predecessor differs "
+                    f"from clean HEAD: {predecessor_path}"
+                )
+            if predecessor_raw != expected_predecessor_raw:
+                raise ValueError(
+                    "legacy replacement canonical destination predecessor is not an "
+                    f"exact canonicalized source duplicate: {predecessor_path}"
+                )
+            destination_predecessor_files.append(
+                _LegacyReplacementFile(
+                    predecessor_path,
+                    hashlib.sha256(predecessor_raw).hexdigest(),
+                    predecessor_raw,
+                )
+            )
+        claimants = _legacy_destination_manifest_claimants_at_base(
+            policy_checkout_path,
+            base_commit=base_commit,
+            destination_paths={item.path for item in destination_predecessor_files},
+        )
+        if claimants:
+            raise ValueError(
+                "legacy replacement canonical destination predecessor is already "
+                "manifest-owned: " + ", ".join(path.as_posix() for path in claimants)
+            )
     scheduled_groups: dict[Path, set[Path]] = {}
     exact_groups: dict[Path, set[Path]] = {}
 
@@ -24559,6 +24912,12 @@ def _resolve_legacy_replacement_contract(
             if pending_by_primary[primary]
         ),
         exact_dependents=tuple(exact_dependents),
+        destination_predecessor_files=tuple(destination_predecessor_files),
+        destination_predecessor_class=(
+            APPLIED_ENCODING_DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE
+            if destination_predecessor_files
+            else APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT
+        ),
     )
 
 
@@ -45727,6 +46086,13 @@ def _build_apply_validation_snapshot(
                 "path": legacy_replacement.legacy_manifest.path.as_posix(),
                 "sha256": legacy_replacement.legacy_manifest.sha256,
             },
+            "destination_predecessor_files": [
+                {"path": item.path.as_posix(), "sha256": item.sha256}
+                for item in legacy_replacement.destination_predecessor_files
+            ],
+            "destination_predecessor_class": (
+                legacy_replacement.destination_predecessor_class
+            ),
             "deleted_files": [
                 {"path": item.path.as_posix(), "sha256": item.sha256}
                 for item in legacy_replacement.deleted_files
@@ -46278,6 +46644,10 @@ def _stage_signed_legacy_replacement_provenance(
         }
         for dependent in contract.exact_dependents
     ]
+    destination_predecessor_files = [
+        {"path": item.path.as_posix(), "sha256": item.sha256}
+        for item in contract.destination_predecessor_files
+    ]
     receipt_identity = receipt_identity_payload(
         base_commit=contract.base_commit,
         base_tree=contract.base_tree,
@@ -46296,6 +46666,8 @@ def _stage_signed_legacy_replacement_provenance(
         ],
         scheduled_dependents=scheduled_dependents,
         exact_dependents=exact_dependents,
+        destination_predecessor_class=contract.destination_predecessor_class,
+        destination_predecessor_files=destination_predecessor_files,
     )
     receipt_id = receipt_identity_sha256(receipt_identity)
     receipt_relative = (
@@ -46347,6 +46719,8 @@ def _stage_signed_legacy_replacement_provenance(
             "rewrites": receipt_identity["rewrites"],
             "scheduled_dependents": scheduled_dependents,
             "exact_dependents": exact_dependents,
+            "destination_predecessor_class": (contract.destination_predecessor_class),
+            "destination_predecessor_files": destination_predecessor_files,
         },
         "replacement_manifest": model_manifest,
     }
@@ -47873,6 +48247,8 @@ def _apply_generated_encoding_result(
     }
     expected_originals[manifest_path] = _apply_transaction_file_digest(manifest_path)
     if legacy_replacement is not None:
+        for item in legacy_replacement.destination_predecessor_files:
+            expected_originals[checkout_root / item.path] = item.sha256
         for rewrite in legacy_replacement.rewrites:
             expected_originals[checkout_root / rewrite.path] = rewrite.before_sha256
         for item in legacy_replacement.deleted_files:
