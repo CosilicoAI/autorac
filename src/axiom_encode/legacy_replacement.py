@@ -26,6 +26,9 @@ RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 ENCODING_MANIFEST_DIR: Final = Path(".axiom") / "encoding-manifests"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
 LEGACY_OWNER_CLASS: Final = "v1-hmac-untrusted"
+LEGACY_OWNER_CLASSES: Final = frozenset(
+    {LEGACY_OWNER_CLASS, "v1-manual-hmac-untrusted"}
+)
 LEGACY_GENERATED_TOOL: Final = "axiom-encode encode --apply"
 LEGACY_GENERATED_BACKENDS: Final = frozenset({"codex", "openai", "claude"})
 LEGACY_SIGNATURE_KEY_ID: Final = "axiom-encode-apply-v1"

@@ -264,6 +264,9 @@ from .legacy_replacement import (
     LEGACY_OWNER_CLASS as APPLIED_ENCODING_LEGACY_OWNER_CLASS,
 )
 from .legacy_replacement import (
+    LEGACY_OWNER_CLASSES as APPLIED_ENCODING_LEGACY_OWNER_CLASSES,
+)
+from .legacy_replacement import (
     RECEIPT_DIR as _LEGACY_REPLACEMENT_RECEIPT_DIR_TEXT,
 )
 from .legacy_replacement import (
@@ -7017,7 +7020,7 @@ def _legacy_replacement_authoritative_map(
     elif expected_destination != destination_path:
         issues.append("legacy replacement destination is not canonical for source")
     if (
-        legacy.get("owner_class") != APPLIED_ENCODING_LEGACY_OWNER_CLASS
+        legacy.get("owner_class") not in APPLIED_ENCODING_LEGACY_OWNER_CLASSES
         or legacy.get("trusted_generated_provenance") is not False
     ):
         issues.append("legacy replacement source ownership classification is invalid")
@@ -21913,7 +21916,7 @@ def _legacy_replacement_manifest_issues(
         not isinstance(legacy, dict)
         or set(legacy)
         != {"owner_class", "trusted_generated_provenance", "manifest", "files"}
-        or legacy.get("owner_class") != APPLIED_ENCODING_LEGACY_OWNER_CLASS
+        or legacy.get("owner_class") not in APPLIED_ENCODING_LEGACY_OWNER_CLASSES
         or legacy.get("trusted_generated_provenance") is not False
         or not isinstance(replacement, dict)
         or set(replacement)
