@@ -529,6 +529,17 @@ class TestTrustedGit:
                 None,
             ),
             (["ls-tree", "-z", "HEAD", "--", "a.txt"], None),
+            (
+                [
+                    "ls-tree",
+                    "-z",
+                    "--full-tree",
+                    "HEAD",
+                    "--",
+                    "us/statutes/42/1437c–1.yaml",
+                ],
+                None,
+            ),
             (["ls-tree", "-r", "-z", "HEAD"], None),
             (["cat-file", "blob", object_id], None),
             (["cat-file", "--batch"], f"{object_id}\n".encode()),
@@ -632,6 +643,9 @@ class TestTrustedGit:
             ["ls-files", "-z", "--stage"],
             ["ls-files", "--stage", "-z", "--debug"],
             ["ls-tree", "--name-only", "HEAD"],
+            ["ls-tree", "--full-tree", "-z", "HEAD", "--", "a.txt"],
+            ["ls-tree", "-z", "--full-tree", "HEAD", "--long", "--", "a.txt"],
+            ["ls-tree", "-z", "--full-tree", "HEAD", "--"],
             ["merge-base", "--octopus", "HEAD", "HEAD"],
             ["remote", "add", "blocked", "https://example.invalid/repo.git"],
             ["remote", "update"],
@@ -761,10 +775,13 @@ class TestTrustedGit:
             assert "refused gitlink at sub" in refused_gitlink.stderr
         assert not marker.exists()
 
-    def test_installed_wrapper_supports_migration_stage_inventory(
+    def test_installed_wrapper_supports_migration_git_queries(
         self, tmp_path, monkeypatch
     ):
-        from axiom_encode.cli import _rulespec_migration_tracked_files
+        from axiom_encode.cli import (
+            _rulespec_migration_base_blob,
+            _rulespec_migration_tracked_files,
+        )
 
         git = shutil.which("git")
         if git is None:
@@ -786,6 +803,25 @@ class TestTrustedGit:
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
         subprocess.run([git, "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            [
+                git,
+                "-c",
+                "user.name=Axiom test",
+                "-c",
+                "user.email=test@axiom.invalid",
+                "-C",
+                str(repository),
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        head = subprocess.check_output(
+            [git, "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ).strip()
 
         monkeypatch.setenv("PATH", str(destination))
 
@@ -793,6 +829,9 @@ class TestTrustedGit:
             Path("tools/check"): "100755",
             Path("us/statutes/42/1437c–1.yaml"): "100644",
         }
+        assert _rulespec_migration_base_blob(
+            repository, head, Path("us/statutes/42/1437c–1.yaml")
+        ) == b"format: rulespec/v1\n"
 
     def test_installed_wrapper_disables_partial_clone_lazy_fetch(self, tmp_path):
         git = shutil.which("git")
