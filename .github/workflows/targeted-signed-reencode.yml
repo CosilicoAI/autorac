@@ -727,6 +727,7 @@ jobs:
               encoding="utf-8",
           )
           PY
+          fi
 
       - name: Encode, review, validate, and apply
         env:

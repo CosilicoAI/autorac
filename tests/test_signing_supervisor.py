@@ -1817,6 +1817,21 @@ def test_production_apply_signer_binary_rejects_wrong_ci_context(
     assert "does not match the expected repository" in completed.stderr
 
 
+def test_targeted_signed_reencode_shell_steps_have_valid_syntax(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+
+    for job_name, job in workflow["jobs"].items():
+        for index, step in enumerate(job.get("steps", [])):
+            command = step.get("run")
+            if command is None:
+                continue
+            script = tmp_path / f"{job_name}-{index}.bash"
+            script.write_text(command, encoding="utf-8")
+            subprocess.run(["bash", "-n", str(script)], check=True)
+
+
 def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
