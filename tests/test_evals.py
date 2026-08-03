@@ -4345,6 +4345,9 @@ def _unicode_path_replacement_fixture(
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
     manifest_raw = b'{"schema_version":"axiom-encode/applied-rulespec/v1"}\n'
     manifest_file.write_bytes(manifest_raw)
+    unrelated_legacy = checkout / "us-nj/statutes/54a:4-7.yaml"
+    unrelated_legacy.parent.mkdir(parents=True, exist_ok=True)
+    unrelated_legacy.write_text("format: rulespec/v1\nrules: []\n")
 
     def bound_file(path: Path, raw: bytes) -> LegacyReplacementFile:
         return LegacyReplacementFile(path, hashlib.sha256(raw).hexdigest(), raw)
@@ -4383,9 +4386,39 @@ def test_rulespec_prevalidation_stages_authenticated_unicode_path_replacement(
         assert validation_file.read_text() == "format: rulespec/v1\nrules: []\n"
         assert not (checkout / contract.source).exists()
         assert not (checkout / contract.legacy_manifest.path).exists()
+        assert not (checkout / "us-nj").exists()
         assert all(
             part.isascii() for path in checkout.rglob("*") for part in path.parts
         )
+
+
+def test_legacy_replacement_overlay_keeps_active_ancestor_chain(tmp_path):
+    state_root = _canonical_rulespec_content_root(tmp_path, "us-or")
+    checkout = state_root.parent
+    (checkout / "us").mkdir()
+    (checkout / "us-nj").mkdir()
+    manifest_root = checkout / ".axiom/encoding-manifests"
+    for jurisdiction in ("us", "us-or", "us-nj"):
+        manifest_dir = manifest_root / jurisdiction
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        (manifest_dir / "marker.json").write_text("{}\n")
+
+    copied = tmp_path / "copy" / "rulespec-us"
+    evals_module._copy_validation_overlay_tree(
+        checkout,
+        copied,
+        ignore=evals_module._legacy_replacement_overlay_ignore(
+            checkout,
+            active_jurisdiction="us-or",
+        ),
+    )
+
+    assert (copied / "us").is_dir()
+    assert (copied / state_root.name).is_dir()
+    assert not (copied / "us-nj").exists()
+    assert (copied / ".axiom/encoding-manifests/us/marker.json").is_file()
+    assert (copied / ".axiom/encoding-manifests/us-or/marker.json").is_file()
+    assert not (copied / ".axiom/encoding-manifests/us-nj").exists()
 
 
 def test_rulespec_prevalidation_rejects_changed_legacy_replacement_input(tmp_path):

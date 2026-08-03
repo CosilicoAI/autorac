@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 
 from .legacy_replacement import (
@@ -11,10 +12,64 @@ from .legacy_replacement import (
     LegacyReplacementFile,
     LegacyReplacementRewrite,
 )
+from .repo_routing import jurisdiction_subdir_names
 
 
 class LegacyReplacementOverlayError(ValueError):
     """Raised when an authenticated replacement cannot be staged exactly."""
+
+
+def legacy_replacement_excluded_jurisdictions(
+    source_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> frozenset[str]:
+    """Return sibling jurisdictions excluded from a migration capability.
+
+    Legacy replacement validation admits the active jurisdiction and its
+    country ancestors. Unrelated siblings remain outside the isolated overlay,
+    so their authenticated pre-hard-cut paths cannot broaden or block this
+    replacement. The live checkout is never changed.
+    """
+
+    parts = active_jurisdiction.split("-")
+    admitted = {"-".join(parts[:length]) for length in range(1, len(parts) + 1)}
+    available = jurisdiction_subdir_names(
+        source_checkout,
+        allow_composition_specs=True,
+    )
+    if active_jurisdiction not in available:
+        raise LegacyReplacementOverlayError(
+            "Legacy replacement source is missing the active jurisdiction: "
+            f"{active_jurisdiction}"
+        )
+    return frozenset(available - admitted)
+
+
+def scope_legacy_replacement_overlay(
+    overlay_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> None:
+    """Remove unrelated jurisdictions from one isolated migration overlay."""
+
+    excluded = legacy_replacement_excluded_jurisdictions(
+        overlay_checkout,
+        active_jurisdiction=active_jurisdiction,
+    )
+    manifest_root = overlay_checkout / ENCODING_MANIFEST_DIR
+    for jurisdiction in sorted(excluded):
+        for candidate in (
+            overlay_checkout / jurisdiction,
+            manifest_root / jurisdiction,
+        ):
+            if not candidate.exists() and not candidate.is_symlink():
+                continue
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise LegacyReplacementOverlayError(
+                    f"Legacy replacement overlay jurisdiction is unsafe: {candidate}"
+                )
+            shutil.rmtree(candidate)
 
 
 def _overlay_path(checkout_root: Path, relative: Path) -> Path:

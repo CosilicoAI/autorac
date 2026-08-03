@@ -45,7 +45,11 @@ from axiom_encode.constants import (
     RULESPEC_TEST_FILE_SUFFIX,
 )
 from axiom_encode.legacy_replacement import LegacyReplacementContract
-from axiom_encode.legacy_replacement_overlay import stage_legacy_replacement_overlay
+from axiom_encode.legacy_replacement_overlay import (
+    LegacyReplacementOverlayError,
+    legacy_replacement_excluded_jurisdictions,
+    stage_legacy_replacement_overlay,
+)
 from axiom_encode.prompts.encoder import SOURCE_SCOPE_PROTOCOL
 from axiom_encode.repo_routing import (
     canonical_rulespec_repo_name,
@@ -7612,6 +7616,7 @@ def _copy_validation_overlay_tree(
     destination: Path,
     *,
     dirs_exist_ok: bool = False,
+    ignore: Callable[[str, list[str]], set[str]] = _validation_overlay_ignore,
 ) -> None:
     """Copy a validation tree without ever dereferencing source symlinks."""
     safe_source = validate_rulespec_context_directory(source, source)
@@ -7623,9 +7628,46 @@ def _copy_validation_overlay_tree(
         safe_source,
         destination,
         symlinks=True,
-        ignore=_validation_overlay_ignore,
+        ignore=ignore,
         dirs_exist_ok=dirs_exist_ok,
     )
+
+
+def _legacy_replacement_overlay_ignore(
+    source_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> Callable[[str, list[str]], set[str]]:
+    """Exclude unrelated jurisdiction trees while preserving symlink checks."""
+
+    try:
+        excluded = legacy_replacement_excluded_jurisdictions(
+            source_checkout,
+            active_jurisdiction=active_jurisdiction,
+        )
+    except LegacyReplacementOverlayError as exc:
+        raise UnsafeRulespecContextPath(
+            f"Legacy replacement validation source is invalid: {exc}"
+        ) from exc
+    checkout = source_checkout.resolve()
+    manifest_root = checkout / ".axiom" / "encoding-manifests"
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = _validation_overlay_ignore(directory, names)
+        current = Path(directory).resolve()
+        if current not in {checkout, manifest_root}:
+            return ignored
+        for name in set(names) & excluded:
+            candidate = Path(directory) / name
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise UnsafeRulespecContextPath(
+                    "Legacy replacement validation source jurisdiction is unsafe: "
+                    f"{candidate}"
+                )
+            ignored.add(name)
+        return ignored
+
+    return ignore
 
 
 @contextlib.contextmanager
@@ -7689,9 +7731,18 @@ def _rulespec_validation_target(
                 overlay_parent / dependency_root.name,
             )
         overlay_repo = overlay_parent / overlay_repo_name
+        overlay_ignore = (
+            _legacy_replacement_overlay_ignore(
+                source_checkout,
+                active_jurisdiction=policy_root.name,
+            )
+            if legacy_replacement is not None
+            else _validation_overlay_ignore
+        )
         _copy_validation_overlay_tree(
             source_checkout,
             overlay_repo,
+            ignore=overlay_ignore,
         )
         validation_content_root = overlay_repo / policy_root.name
         if canonical_rulespec_root_identity(validation_content_root) != identity:
