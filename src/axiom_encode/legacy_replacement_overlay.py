@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,33 @@ from .repo_routing import jurisdiction_subdir_names
 
 class LegacyReplacementOverlayError(ValueError):
     """Raised when an authenticated replacement cannot be staged exactly."""
+
+
+def _manifest_jurisdiction_subdir_names(
+    source_checkout: Path,
+    *,
+    country: str,
+) -> frozenset[str]:
+    """Return validated jurisdiction directories in the manifest tree."""
+
+    manifest_root = source_checkout / ENCODING_MANIFEST_DIR
+    if not manifest_root.exists() and not manifest_root.is_symlink():
+        return frozenset()
+    if manifest_root.is_symlink() or not manifest_root.is_dir():
+        raise LegacyReplacementOverlayError(
+            f"Legacy replacement manifest root is unsafe: {manifest_root}"
+        )
+    jurisdiction_pattern = re.compile(rf"{re.escape(country)}(?:-[a-z0-9]+)*")
+    jurisdictions: set[str] = set()
+    for child in manifest_root.iterdir():
+        if jurisdiction_pattern.fullmatch(child.name) is None:
+            continue
+        if child.is_symlink() or not child.is_dir():
+            raise LegacyReplacementOverlayError(
+                f"Legacy replacement manifest jurisdiction is unsafe: {child}"
+            )
+        jurisdictions.add(child.name)
+    return frozenset(jurisdictions)
 
 
 def legacy_replacement_excluded_jurisdictions(
@@ -34,16 +62,20 @@ def legacy_replacement_excluded_jurisdictions(
 
     parts = active_jurisdiction.split("-")
     admitted = {"-".join(parts[:length]) for length in range(1, len(parts) + 1)}
-    available = jurisdiction_subdir_names(
+    content_jurisdictions = jurisdiction_subdir_names(
         source_checkout,
         allow_composition_specs=True,
     )
-    if active_jurisdiction not in available:
+    if active_jurisdiction not in content_jurisdictions:
         raise LegacyReplacementOverlayError(
             "Legacy replacement source is missing the active jurisdiction: "
             f"{active_jurisdiction}"
         )
-    return frozenset(available - admitted)
+    manifest_jurisdictions = _manifest_jurisdiction_subdir_names(
+        source_checkout,
+        country=active_jurisdiction.split("-", 1)[0],
+    )
+    return frozenset((content_jurisdictions | manifest_jurisdictions) - admitted)
 
 
 def scope_legacy_replacement_overlay(

@@ -13685,14 +13685,20 @@ class TestCmdEncode:
         unrelated_sibling_manifest = (
             checkout / ".axiom/encoding-manifests/us-nj/statutes/54a:4-7.json"
         )
+        orphan_sibling_manifest = (
+            checkout / ".axiom/encoding-manifests/us-tx/statutes/11/orphan.json"
+        )
         federal_ancestor.parent.mkdir(parents=True)
         unrelated_sibling.parent.mkdir(parents=True)
         unrelated_sibling_manifest.parent.mkdir(parents=True)
+        orphan_sibling_manifest.parent.mkdir(parents=True)
         federal_ancestor.write_text("format: rulespec/v1\nrules: []\n")
         unrelated_sibling.write_text("format: rulespec/v1\nrules: []\n")
         unrelated_sibling_manifest.write_text("{}\n")
+        orphan_sibling_manifest.write_text("{}\n")
         unrelated_sibling_before = unrelated_sibling.read_bytes()
         unrelated_sibling_manifest_before = unrelated_sibling_manifest.read_bytes()
+        orphan_sibling_manifest_before = orphan_sibling_manifest.read_bytes()
         source_relative = Path("us-la/statutes/47:32.yaml")
         destination_relative = Path("us-la/statutes/47/32.yaml")
         source = checkout / source_relative
@@ -13912,6 +13918,7 @@ class TestCmdEncode:
             assert (overlay_checkout / "us/statutes/26/1.yaml").is_file()
             assert not (overlay_checkout / "us-nj").exists()
             assert not (overlay_checkout / ".axiom/encoding-manifests/us-nj").exists()
+            assert not (overlay_checkout / ".axiom/encoding-manifests/us-tx").exists()
             assert not (overlay_checkout / source_relative).exists()
             assert not (
                 overlay_checkout / _applied_encoding_manifest_path(source_relative)
@@ -13955,6 +13962,7 @@ class TestCmdEncode:
         assert (
             unrelated_sibling_manifest.read_bytes() == unrelated_sibling_manifest_before
         )
+        assert orphan_sibling_manifest.read_bytes() == orphan_sibling_manifest_before
         assert b"us-la:statutes/47/32#amount" in observed_overlay["bytes"]
         assert b"us-la:statutes/47:32#amount" not in observed_overlay["bytes"]
         assert (

@@ -4346,6 +4346,11 @@ def _unicode_path_replacement_fixture(
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
     manifest_raw = b'{"schema_version":"axiom-encode/applied-rulespec/v1"}\n'
     manifest_file.write_bytes(manifest_raw)
+    orphan_manifest = checkout / (
+        ".axiom/encoding-manifests/us-tx/statutes/11/orphan.json"
+    )
+    orphan_manifest.parent.mkdir(parents=True, exist_ok=True)
+    orphan_manifest.write_text("{}\n")
     unrelated_legacy = checkout / "us-nj/statutes/54a:4-7.yaml"
     unrelated_legacy.parent.mkdir(parents=True, exist_ok=True)
     unrelated_legacy.write_text("format: rulespec/v1\nrules: []\n")
@@ -4388,6 +4393,7 @@ def test_rulespec_prevalidation_stages_authenticated_unicode_path_replacement(
         assert not (checkout / contract.source).exists()
         assert not (checkout / contract.legacy_manifest.path).exists()
         assert not (checkout / "us-nj").exists()
+        assert not (checkout / ".axiom/encoding-manifests/us-tx").exists()
         assert all(
             part.isascii() for path in checkout.rglob("*") for part in path.parts
         )
@@ -4399,7 +4405,7 @@ def test_legacy_replacement_overlay_keeps_active_ancestor_chain(tmp_path):
     (checkout / "us").mkdir()
     (checkout / "us-nj").mkdir()
     manifest_root = checkout / ".axiom/encoding-manifests"
-    for jurisdiction in ("us", "us-or", "us-nj"):
+    for jurisdiction in ("us", "us-or", "us-nj", "us-tx"):
         manifest_dir = manifest_root / jurisdiction
         manifest_dir.mkdir(parents=True, exist_ok=True)
         (manifest_dir / "marker.json").write_text("{}\n")
@@ -4420,6 +4426,25 @@ def test_legacy_replacement_overlay_keeps_active_ancestor_chain(tmp_path):
     assert (copied / ".axiom/encoding-manifests/us/marker.json").is_file()
     assert (copied / ".axiom/encoding-manifests/us-or/marker.json").is_file()
     assert not (copied / ".axiom/encoding-manifests/us-nj").exists()
+    assert not (copied / ".axiom/encoding-manifests/us-tx").exists()
+
+
+def test_legacy_replacement_overlay_rejects_manifest_jurisdiction_symlink(tmp_path):
+    state_root = _canonical_rulespec_content_root(tmp_path, "us-or")
+    manifest_root = state_root.parent / ".axiom/encoding-manifests"
+    manifest_root.mkdir(parents=True)
+    outside = tmp_path / "outside-manifests"
+    outside.mkdir()
+    (manifest_root / "us-tx").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        UnsafeRulespecContextPath,
+        match="manifest jurisdiction is unsafe",
+    ):
+        evals_module._legacy_replacement_overlay_ignore(
+            state_root.parent,
+            active_jurisdiction="us-or",
+        )
 
 
 def test_rulespec_prevalidation_rejects_excluded_sibling_rewrite(tmp_path):
