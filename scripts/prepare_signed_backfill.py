@@ -192,8 +192,7 @@ def validate_rulespec_base(
     if not exact_reviewed_head:
         if (
             not open_pr
-            or (country, pr_base_branch)
-            not in REVIEWED_RULESPEC_PR_BASE_BRANCHES
+            or (country, pr_base_branch) not in REVIEWED_RULESPEC_PR_BASE_BRANCHES
         ):
             raise ValueError(
                 "rulespec ref is neither on main nor an approved reviewed head"
@@ -241,9 +240,7 @@ def _reviewed_continuation_root(
     requested_ref: str,
     pr_base_branch: str,
 ) -> str:
-    root = REVIEWED_RULESPEC_CONTINUATION_ROOTS.get(
-        (country, pr_base_branch)
-    )
+    root = REVIEWED_RULESPEC_CONTINUATION_ROOTS.get((country, pr_base_branch))
     if (
         root is None
         or (country, root) not in REVIEWED_RULESPEC_REFS
@@ -284,22 +281,18 @@ def _require_commit_regular_file(
         listed_path = encoded_path.decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError(f"{label} tree entry is malformed") from exc
-    if (
-        mode != "100644"
-        or object_type != "blob"
-        or listed_path != path.as_posix()
-    ):
+    if mode != "100644" or object_type != "blob" or listed_path != path.as_posix():
         raise ValueError(f"{label} is not a regular 0644 continuation blob")
 
 
-def reviewed_continuation_paths(
+def _reviewed_continuation_groups(
     repo: Path,
     country: str,
     requested_ref: str,
     *,
     pr_base_branch: str,
-) -> tuple[PurePosixPath, ...]:
-    """Return direct signed primaries in a protected reviewed-head continuation.
+) -> dict[PurePosixPath, frozenset[PurePosixPath]]:
+    """Return exact changed YAML groups in a reviewed-head continuation.
 
     The cumulative continuation may contain only in-place primary/test/manifest
     groups.  The workflow subsequently verifies every returned v5 manifest with
@@ -312,7 +305,7 @@ def reviewed_continuation_paths(
     if (country, pr_base_branch) not in REVIEWED_RULESPEC_PR_BASE_BRANCHES:
         raise ValueError("reviewed-head continuation branch is not approved")
     if (country, requested_ref) in REVIEWED_RULESPEC_REFS:
-        return ()
+        return {}
     if _git(
         repo,
         "status",
@@ -342,7 +335,7 @@ def reviewed_continuation_paths(
         raise ValueError("reviewed-head continuation diff is malformed")
 
     changed_primary_files: set[PurePosixPath] = set()
-    changed_groups: set[PurePosixPath] = set()
+    changed_groups: dict[PurePosixPath, set[PurePosixPath]] = {}
     changed_manifests: set[PurePosixPath] = set()
     for index in range(0, len(fields), 2):
         try:
@@ -375,21 +368,20 @@ def reviewed_continuation_paths(
             or path.suffix != ".yaml"
         ):
             raise ValueError(
-                "reviewed-head continuation contains a non-generated path: "
-                f"{path}"
+                f"reviewed-head continuation contains a non-generated path: {path}"
             )
         primary = (
             path.with_name(path.name.removesuffix(".test.yaml") + ".yaml")
             if path.name.endswith(".test.yaml")
             else path
         )
-        changed_groups.add(primary)
+        changed_groups.setdefault(primary, set()).add(path)
         if not path.name.endswith(".test.yaml"):
             changed_primary_files.add(primary)
 
     if (
         not changed_primary_files
-        or changed_primary_files != changed_groups
+        or changed_primary_files != set(changed_groups)
         or changed_primary_files != changed_manifests
     ):
         raise ValueError(
@@ -417,7 +409,114 @@ def reviewed_continuation_paths(
             manifest,
             label="reviewed-head continuation manifest",
         )
-    return tuple(sorted(changed_primary_files))
+        for changed_path in sorted(changed_groups[primary]):
+            _require_commit_regular_file(
+                repo,
+                requested_ref,
+                changed_path,
+                label="reviewed-head continuation generated file",
+            )
+    return {
+        primary: frozenset(changed_groups[primary])
+        for primary in sorted(changed_primary_files)
+    }
+
+
+def reviewed_continuation_paths(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    *,
+    pr_base_branch: str,
+) -> tuple[PurePosixPath, ...]:
+    """Return direct signed primaries in a protected reviewed-head continuation."""
+
+    return tuple(
+        _reviewed_continuation_groups(
+            repo,
+            country,
+            requested_ref,
+            pr_base_branch=pr_base_branch,
+        )
+    )
+
+
+def validate_reviewed_continuation_inventories(
+    repo: Path,
+    country: str,
+    requested_ref: str,
+    inventories: object,
+    *,
+    pr_base_branch: str,
+) -> None:
+    """Require protected inventories to authenticate every changed YAML blob."""
+
+    groups = _reviewed_continuation_groups(
+        repo,
+        country,
+        requested_ref,
+        pr_base_branch=pr_base_branch,
+    )
+    if not isinstance(inventories, list) or not all(
+        isinstance(inventory, dict) for inventory in inventories
+    ):
+        raise ValueError("reviewed-head continuation inventories are malformed")
+    items_by_primary: dict[PurePosixPath, dict[str, object]] = {}
+    for inventory in inventories:
+        if (
+            inventory.get("schema") != "axiom-encode/signed-import-inventory/v1"
+            or inventory.get("rulespec_base") != requested_ref
+            or not isinstance(inventory.get("items"), list)
+        ):
+            raise ValueError("reviewed-head continuation inventory is malformed")
+        for item in inventory["items"]:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("rulespec_path"), str
+            ):
+                raise ValueError(
+                    "reviewed-head continuation inventory item is malformed"
+                )
+            primary = PurePosixPath(item["rulespec_path"])
+            if primary in items_by_primary:
+                raise ValueError(
+                    "reviewed-head continuation inventory contains duplicate primaries"
+                )
+            items_by_primary[primary] = item
+    if set(items_by_primary) != set(groups):
+        raise ValueError(
+            "reviewed-head continuation inventory primary set differs from the diff"
+        )
+    for primary, changed_paths in groups.items():
+        item = items_by_primary[primary]
+        applied_files = item.get("applied_files")
+        if not isinstance(applied_files, list):
+            raise ValueError(
+                f"reviewed-head continuation inventory lacks applied files: {primary}"
+            )
+        applied_paths: set[PurePosixPath] = set()
+        for applied in applied_files:
+            if (
+                not isinstance(applied, dict)
+                or set(applied) != {"path", "sha256"}
+                or not isinstance(applied.get("path"), str)
+                or not isinstance(applied.get("sha256"), str)
+                or DIGEST_PATTERN.fullmatch(applied["sha256"]) is None
+            ):
+                raise ValueError(
+                    "reviewed-head continuation applied-file inventory is malformed"
+                )
+            path = PurePosixPath(applied["path"])
+            if path in applied_paths:
+                raise ValueError(
+                    "reviewed-head continuation applied-file inventory has duplicates"
+                )
+            applied_paths.add(path)
+        unauthenticated = changed_paths - applied_paths
+        if unauthenticated:
+            raise ValueError(
+                "reviewed-head continuation changed files are absent from the signed "
+                f"manifest inventory: {', '.join(map(str, sorted(unauthenticated)))}"
+            )
 
 
 def _require_remote_branch_tip(
@@ -1357,9 +1456,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     )
             elif receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3:
                 source_closure = receipt_replacement.get("source_closure")
-                if source_closure is not None and not isinstance(
-                    source_closure, dict
-                ):
+                if source_closure is not None and not isinstance(source_closure, dict):
                     raise ValueError(
                         f"legacy replacement source closure is malformed: {relative}"
                     )
@@ -1780,6 +1877,14 @@ def main() -> None:
     continuation_parser.add_argument("country")
     continuation_parser.add_argument("requested_ref")
     continuation_parser.add_argument("pr_base_branch")
+    continuation_inventory_parser = subparsers.add_parser(
+        "validate-reviewed-continuation-inventories"
+    )
+    continuation_inventory_parser.add_argument("repo", type=Path)
+    continuation_inventory_parser.add_argument("country")
+    continuation_inventory_parser.add_argument("requested_ref")
+    continuation_inventory_parser.add_argument("pr_base_branch")
+    continuation_inventory_parser.add_argument("inventories", type=Path)
     stage_parser = subparsers.add_parser("stage")
     stage_parser.add_argument("repo", type=Path)
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
@@ -1889,6 +1994,22 @@ def main() -> None:
                     separators=(",", ":"),
                 )
             )
+        elif args.command == "validate-reviewed-continuation-inventories":
+            inventory_raw = args.inventories.read_bytes()
+            if len(inventory_raw) > 16 * 1024 * 1024:
+                raise ValueError("reviewed-head continuation inventories are oversized")
+            validate_reviewed_continuation_inventories(
+                args.repo,
+                args.country,
+                args.requested_ref,
+                [
+                    json.loads(line)
+                    for line in inventory_raw.decode("utf-8").splitlines()
+                    if line.strip()
+                ],
+                pr_base_branch=args.pr_base_branch,
+            )
+            print("reviewed-head continuation inventories verified")
         elif args.command == "validate-dependent-cascade":
             print(
                 validate_dependent_cascade(
@@ -1933,6 +2054,7 @@ def main() -> None:
             stage_authorized_changes(args.repo)
     except (
         OSError,
+        UnicodeError,
         ValueError,
         json.JSONDecodeError,
         subprocess.CalledProcessError,

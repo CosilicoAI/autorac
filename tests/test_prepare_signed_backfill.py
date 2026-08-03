@@ -23,6 +23,7 @@ from scripts.prepare_signed_backfill import (
     validate_country,
     validate_dependent_cascade,
     validate_queue_tracking,
+    validate_reviewed_continuation_inventories,
     validate_rulespec_base,
 )
 from scripts.prepare_signed_backfill import (
@@ -1837,6 +1838,134 @@ def test_validate_rulespec_base_accepts_signed_protected_continuation(
             pr_base_branch="hard-cut/canonical-layout-us",
         )
         == "reviewed-head-continuation-pr"
+    )
+
+
+def _configure_reviewed_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reviewed: str,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_REFS",
+        frozenset({("us", reviewed)}),
+    )
+    monkeypatch.setattr(
+        "scripts.prepare_signed_backfill.REVIEWED_RULESPEC_CONTINUATION_ROOTS",
+        {("us", "hard-cut/canonical-layout-us"): reviewed},
+    )
+
+
+def test_reviewed_continuation_rejects_changed_companion_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.symlink_to(rule.name)
+    _git(
+        repo,
+        "add",
+        rule.relative_to(repo),
+        companion.relative_to(repo),
+        manifest.relative_to(repo),
+    )
+    _git(repo, "commit", "-m", "continuation with symlink companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+
+    with pytest.raises(ValueError, match="regular 0644 continuation blob"):
+        reviewed_continuation_paths(
+            repo,
+            "us",
+            head,
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+
+
+def test_reviewed_continuation_rejects_unmanifested_changed_companion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.write_text("[]\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "continuation with unmanifested companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+    inventory = {
+        "schema": "axiom-encode/signed-import-inventory/v1",
+        "rulespec_base": head,
+        "items": [
+            {
+                "rulespec_path": rule.relative_to(repo).as_posix(),
+                "applied_files": [
+                    {
+                        "path": rule.relative_to(repo).as_posix(),
+                        "sha256": "a" * 64,
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="absent from the signed manifest inventory"):
+        validate_reviewed_continuation_inventories(
+            repo,
+            "us",
+            head,
+            [inventory],
+            pr_base_branch="hard-cut/canonical-layout-us",
+        )
+
+
+def test_reviewed_continuation_accepts_manifested_regular_companion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    reviewed = _add_origin_main(repo)
+    _git(repo, "checkout", "-b", "hard-cut/canonical-layout-us")
+    rule, manifest = _write_signed_change(repo)
+    companion = rule.with_name("example.test.yaml")
+    companion.write_text("[]\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "continuation with manifested companion")
+    head = _git(repo, "rev-parse", "HEAD")
+    _configure_reviewed_continuation(monkeypatch, reviewed=reviewed)
+    inventory = {
+        "schema": "axiom-encode/signed-import-inventory/v1",
+        "rulespec_base": head,
+        "items": [
+            {
+                "rulespec_path": rule.relative_to(repo).as_posix(),
+                "applied_files": [
+                    {
+                        "path": rule.relative_to(repo).as_posix(),
+                        "sha256": "a" * 64,
+                    },
+                    {
+                        "path": companion.relative_to(repo).as_posix(),
+                        "sha256": "b" * 64,
+                    },
+                ],
+            }
+        ],
+    }
+
+    validate_reviewed_continuation_inventories(
+        repo,
+        "us",
+        head,
+        [inventory],
+        pr_base_branch="hard-cut/canonical-layout-us",
     )
 
 

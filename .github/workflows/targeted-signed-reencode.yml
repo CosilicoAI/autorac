@@ -571,13 +571,17 @@ jobs:
                   --rulespec-path "${continuation_paths[$index]}"
                 )
               done
-              "${inventory_args[@]}" \
+              "${inventory_args[@]}" | jq -c . \
                 >> "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
             done
           done < <(
             jq -r '[.[] | split("/")[0]] | unique[]' \
               "$RUNNER_TEMP/reviewed-continuation-paths.json"
           )
+          "$workflow_python" -I "$backfill_helper" \
+            validate-reviewed-continuation-inventories \
+            "$RULESPEC_CHECKOUT" "$COUNTRY" "$RULESPEC_REF" "$PR_BASE_BRANCH" \
+            "$RUNNER_TEMP/reviewed-continuation-inventories.jsonl"
 
       - name: Verify protected RuleSpec routing
         env:
