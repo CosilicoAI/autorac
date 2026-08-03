@@ -1557,6 +1557,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
     ("country", "reviewed_ref"),
     [
         ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
+        ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
 )
@@ -1570,6 +1571,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
     assert REVIEWED_RULESPEC_REFS == frozenset(
         {
             ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
+            ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }
     )
