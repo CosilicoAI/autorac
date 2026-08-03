@@ -310,6 +310,9 @@ from .legacy_replacement_overlay import (
     LegacyReplacementOverlayError as _LegacyReplacementOverlayError,
 )
 from .legacy_replacement_overlay import (
+    scope_legacy_replacement_overlay as _scope_legacy_replacement_overlay,
+)
+from .legacy_replacement_overlay import (
     stage_legacy_replacement_overlay as _stage_legacy_replacement_overlay,
 )
 from .oracles.policyengine.pending import (
@@ -48595,6 +48598,14 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             source=policy_checkout_path,
             target=overlay_repo,
         )
+        if legacy_replacement is not None:
+            try:
+                _scope_legacy_replacement_overlay(
+                    overlay_repo,
+                    active_jurisdiction=policy_content_root.name,
+                )
+            except _LegacyReplacementOverlayError as exc:
+                return False, [str(exc)], {}
         overlay_content_root = overlay_repo / policy_content_root.name
         if canonical_rulespec_root_identity(overlay_content_root) is None:
             raise ValueError(

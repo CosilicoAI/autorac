@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import shutil
 from pathlib import Path
 
 from .legacy_replacement import (
@@ -11,10 +13,95 @@ from .legacy_replacement import (
     LegacyReplacementFile,
     LegacyReplacementRewrite,
 )
+from .repo_routing import jurisdiction_subdir_names
 
 
 class LegacyReplacementOverlayError(ValueError):
     """Raised when an authenticated replacement cannot be staged exactly."""
+
+
+def _manifest_jurisdiction_subdir_names(
+    source_checkout: Path,
+    *,
+    country: str,
+) -> frozenset[str]:
+    """Return validated jurisdiction directories in the manifest tree."""
+
+    manifest_root = source_checkout / ENCODING_MANIFEST_DIR
+    if not manifest_root.exists() and not manifest_root.is_symlink():
+        return frozenset()
+    if manifest_root.is_symlink() or not manifest_root.is_dir():
+        raise LegacyReplacementOverlayError(
+            f"Legacy replacement manifest root is unsafe: {manifest_root}"
+        )
+    jurisdiction_pattern = re.compile(rf"{re.escape(country)}(?:-[a-z0-9]+)*")
+    jurisdictions: set[str] = set()
+    for child in manifest_root.iterdir():
+        if jurisdiction_pattern.fullmatch(child.name) is None:
+            continue
+        if child.is_symlink() or not child.is_dir():
+            raise LegacyReplacementOverlayError(
+                f"Legacy replacement manifest jurisdiction is unsafe: {child}"
+            )
+        jurisdictions.add(child.name)
+    return frozenset(jurisdictions)
+
+
+def legacy_replacement_excluded_jurisdictions(
+    source_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> frozenset[str]:
+    """Return sibling jurisdictions excluded from a migration capability.
+
+    Legacy replacement validation admits the active jurisdiction and its
+    country ancestors. Unrelated siblings remain outside the isolated overlay,
+    so their authenticated pre-hard-cut paths cannot broaden or block this
+    replacement. The live checkout is never changed.
+    """
+
+    parts = active_jurisdiction.split("-")
+    admitted = {"-".join(parts[:length]) for length in range(1, len(parts) + 1)}
+    content_jurisdictions = jurisdiction_subdir_names(
+        source_checkout,
+        allow_composition_specs=True,
+    )
+    if active_jurisdiction not in content_jurisdictions:
+        raise LegacyReplacementOverlayError(
+            "Legacy replacement source is missing the active jurisdiction: "
+            f"{active_jurisdiction}"
+        )
+    manifest_jurisdictions = _manifest_jurisdiction_subdir_names(
+        source_checkout,
+        country=active_jurisdiction.split("-", 1)[0],
+    )
+    return frozenset((content_jurisdictions | manifest_jurisdictions) - admitted)
+
+
+def scope_legacy_replacement_overlay(
+    overlay_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> None:
+    """Remove unrelated jurisdictions from one isolated migration overlay."""
+
+    excluded = legacy_replacement_excluded_jurisdictions(
+        overlay_checkout,
+        active_jurisdiction=active_jurisdiction,
+    )
+    manifest_root = overlay_checkout / ENCODING_MANIFEST_DIR
+    for jurisdiction in sorted(excluded):
+        for candidate in (
+            overlay_checkout / jurisdiction,
+            manifest_root / jurisdiction,
+        ):
+            if not candidate.exists() and not candidate.is_symlink():
+                continue
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise LegacyReplacementOverlayError(
+                    f"Legacy replacement overlay jurisdiction is unsafe: {candidate}"
+                )
+            shutil.rmtree(candidate)
 
 
 def _overlay_path(checkout_root: Path, relative: Path) -> Path:
