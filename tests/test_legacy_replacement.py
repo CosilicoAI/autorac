@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from axiom_encode.cli import (
+    _legacy_destination_manifest_claimants_at_base,
     _legacy_replacement_authoritative_map,
     _require_locked_legacy_replacement_base,
     _resolve_legacy_replacement_contract,
@@ -24,6 +25,10 @@ from axiom_encode.legacy_replacement import (
     legacy_v1_manifest_issues,
     receipt_identity_payload,
     receipt_identity_sha256,
+)
+from axiom_encode.legacy_replacement_overlay import (
+    LegacyReplacementOverlayError,
+    stage_legacy_replacement_overlay,
 )
 
 
@@ -368,6 +373,10 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         rewrites=[],
         scheduled_dependents=[],
         exact_dependents=[],
+        destination_predecessor_class="canonicalized-unowned-duplicate",
+        destination_predecessor_files=[
+            {"path": "us-la/statutes/47/32.yaml", "sha256": "f" * 64}
+        ],
     )
     baseline = receipt_identity_sha256(payload)
     for field in (
@@ -380,6 +389,8 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         "rewrites",
         "scheduled_dependents",
         "exact_dependents",
+        "destination_predecessor_class",
+        "destination_predecessor_files",
     ):
         changed = copy.deepcopy(payload)
         changed[field] = f"changed-{field}"
@@ -499,6 +510,183 @@ def test_contract_admits_generated_v1_unicode_path_with_relative_file_scope(
         Path("us/statutes/42/1437c–1.yaml"),
         Path("us/statutes/42/1437c–1.test.yaml"),
     }
+
+
+def test_contract_absorbs_exact_unowned_canonical_destination_predecessor(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _generated_unicode_checkout(tmp_path)
+    legacy = checkout / "us/statutes/42/1437c–1.yaml"
+    legacy_test = legacy.with_name("1437c–1.test.yaml")
+    destination = checkout / "us/statutes/42/1437c-1.yaml"
+    destination_test = destination.with_name("1437c-1.test.yaml")
+    destination.write_bytes(legacy.read_bytes())
+    destination_test.write_bytes(legacy_test.read_bytes())
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "unowned canonical predecessor")
+
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+    assert {item.path for item in contract.destination_predecessor_files} == {
+        Path("us/statutes/42/1437c-1.yaml"),
+        Path("us/statutes/42/1437c-1.test.yaml"),
+    }
+    assert contract.destination_predecessor_class == "canonicalized-unowned-duplicate"
+    with pytest.raises(
+        LegacyReplacementOverlayError,
+        match="classification differs",
+    ):
+        stage_legacy_replacement_overlay(
+            contract._replace(destination_predecessor_class="absent"),
+            checkout,
+        )
+    stage_legacy_replacement_overlay(contract, checkout)
+    assert not legacy.exists()
+    assert not legacy_test.exists()
+    assert not destination.exists()
+    assert not destination_test.exists()
+    assert not (
+        checkout / ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+    ).exists()
+
+
+def test_destination_manifest_claimant_scan_is_one_conservative_base_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_commit = "a" * 40
+    claimant = Path(".axiom/encoding-manifests/us/statutes/claimant.json")
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{base_commit}:{claimant.as_posix()}\0".encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("axiom_encode.cli.subprocess.run", run)
+
+    assert _legacy_destination_manifest_claimants_at_base(
+        tmp_path,
+        base_commit=base_commit,
+        destination_paths={
+            Path("us/statutes/42/1437c-1.yaml"),
+            Path("us/statutes/42/1437c-1.test.yaml"),
+        },
+    ) == [claimant]
+    assert len(commands) == 1
+    assert commands[0][3:9] == ["grep", "-z", "-l", "-a", "-F", "-e"]
+
+
+@pytest.mark.parametrize(
+    "claimant_schema",
+    ["axiom-encode/applied-rulespec/v1", "axiom-encode/applied-rulespec/v5"],
+)
+def test_canonical_destination_predecessor_rejects_owner_and_overlay_race(
+    tmp_path: Path,
+    claimant_schema: str,
+) -> None:
+    checkout, content_root, source = _generated_unicode_checkout(tmp_path)
+    legacy = checkout / "us/statutes/42/1437c–1.yaml"
+    legacy_test = legacy.with_name("1437c–1.test.yaml")
+    destination = checkout / "us/statutes/42/1437c-1.yaml"
+    destination_test = destination.with_name("1437c-1.test.yaml")
+    destination.write_bytes(legacy.read_bytes())
+    destination_test.write_bytes(legacy_test.read_bytes())
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "unowned canonical predecessor")
+
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+    destination.write_text("changed after planning\n")
+    with pytest.raises(LegacyReplacementOverlayError, match="predecessor changed"):
+        stage_legacy_replacement_overlay(contract, checkout)
+
+    destination.write_bytes(
+        next(
+            item.raw
+            for item in contract.destination_predecessor_files
+            if item.path.name == "1437c-1.yaml"
+        )
+    )
+    claimant = checkout / ".axiom/encoding-manifests/us/policies/claimant.json"
+    claimant.parent.mkdir(parents=True, exist_ok=True)
+    claimant.write_text(
+        json.dumps(
+            {
+                "schema_version": claimant_schema,
+                "applied_files": [
+                    {
+                        "path": "statutes/42/1437c-1.yaml",
+                        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "claim canonical predecessor")
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="already manifest-owned"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+
+def test_canonical_destination_predecessor_rejects_malformed_manifest_candidate(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _generated_unicode_checkout(tmp_path)
+    legacy = checkout / "us/statutes/42/1437c–1.yaml"
+    destination = checkout / "us/statutes/42/1437c-1.yaml"
+    destination.write_bytes(legacy.read_bytes())
+    destination.with_name("1437c-1.test.yaml").write_bytes(
+        legacy.with_name("1437c–1.test.yaml").read_bytes()
+    )
+    claimant = checkout / ".axiom/encoding-manifests/us/statutes/malformed.json"
+    claimant.parent.mkdir(parents=True, exist_ok=True)
+    claimant.write_text('{"applied_files":["us/statutes/42/1437c-1.yaml"\n')
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "malformed destination claimant")
+
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="already manifest-owned"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=Path("us/statutes/42/1437c–1.yaml"),
+            destination_raw=Path("us/statutes/42/1437c-1.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
 
 
 def _generated_unicode_receipt_blocks(
@@ -980,17 +1168,18 @@ def test_contract_rejects_exact_dependent_without_v1_ownership(
         )
 
 
-def test_contract_rejects_dirty_or_existing_destination(tmp_path: Path) -> None:
+def test_contract_rejects_dirty_or_inexact_existing_destination(tmp_path: Path) -> None:
     checkout, content_root, source = _legacy_checkout(tmp_path)
     destination = content_root / "statutes/47/32.yaml"
     destination.parent.mkdir(parents=True)
     destination.write_text("collision\n")
+    destination.with_name("32.test.yaml").write_text("collision\n")
     _git(checkout, "add", ".")
     _git(checkout, "commit", "-qm", "destination collision")
 
     with (
         patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
-        pytest.raises(ValueError, match="absent at clean HEAD and live"),
+        pytest.raises(ValueError, match="not an exact canonicalized source duplicate"),
     ):
         _resolve_legacy_replacement_contract(
             source_raw=Path("us-la/statutes/47:32.yaml"),

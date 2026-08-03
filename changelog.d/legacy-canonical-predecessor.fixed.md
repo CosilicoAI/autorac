@@ -1,0 +1,1 @@
+Allow targeted legacy replacement to absorb an occupied canonical destination only when its unowned files are the exact base-bound canonical projection of the authenticated legacy group, with predecessor evidence recorded in a signed v3 receipt and rechecked atomically.

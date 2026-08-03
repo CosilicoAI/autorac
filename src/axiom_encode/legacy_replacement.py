@@ -21,8 +21,13 @@ EXACT_DEPENDENT_TOOL: Final = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
 RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+RECEIPT_SCHEMA_V2: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
+DESTINATION_PREDECESSOR_ABSENT: Final = "absent"
+DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE: Final = (
+    "canonicalized-unowned-duplicate"
+)
 ENCODING_MANIFEST_DIR: Final = Path(".axiom") / "encoding-manifests"
 LEGACY_MANIFEST_SCHEMA: Final = "axiom-encode/applied-rulespec/v1"
 LEGACY_OWNER_CLASS: Final = "v1-hmac-untrusted"
@@ -106,6 +111,8 @@ class LegacyReplacementContract(NamedTuple):
     rewrites: tuple[LegacyReplacementRewrite, ...]
     scheduled_dependents: tuple[LegacyReplacementScheduledDependent, ...]
     exact_dependents: tuple[LegacyReplacementExactDependent, ...]
+    destination_predecessor_class: str = DESTINATION_PREDECESSOR_ABSENT
+    destination_predecessor_files: tuple[LegacyReplacementFile, ...] = ()
 
 
 def legacy_source_verification_citation_paths(
@@ -467,6 +474,8 @@ def receipt_identity_payload(
     rewrites: list[dict[str, object]],
     scheduled_dependents: list[dict[str, object]],
     exact_dependents: list[dict[str, object]] | None = None,
+    destination_predecessor_class: str | None = None,
+    destination_predecessor_files: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     payload = {
         "base_commit": base_commit,
@@ -480,6 +489,10 @@ def receipt_identity_payload(
     }
     if exact_dependents is not None:
         payload["exact_dependents"] = exact_dependents
+    if destination_predecessor_class is not None:
+        payload["destination_predecessor_class"] = destination_predecessor_class
+    if destination_predecessor_files is not None:
+        payload["destination_predecessor_files"] = destination_predecessor_files
     return payload
 
 

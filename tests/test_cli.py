@@ -13716,6 +13716,15 @@ class TestCmdEncode:
             "rules: []\n"
         )
         source_test.write_text("[]\n")
+        canonical_predecessor = checkout / destination_relative
+        canonical_predecessor_test = canonical_predecessor.with_name("32.test.yaml")
+        canonical_predecessor.parent.mkdir(parents=True, exist_ok=True)
+        canonical_predecessor.write_bytes(source.read_bytes())
+        canonical_predecessor_test.write_bytes(source_test.read_bytes())
+        predecessor_hashes = {
+            path.relative_to(checkout).as_posix(): _sha256_file(path)
+            for path in (canonical_predecessor, canonical_predecessor_test)
+        }
         source_before_sha256 = _sha256_file(source)
         dependent.write_text(
             "format: rulespec/v1\n"
@@ -14054,8 +14063,15 @@ class TestCmdEncode:
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v2")
+        assert receipt["schema_version"].endswith("/v3")
         assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
+        assert receipt["replacement"]["destination_predecessor_class"] == (
+            "canonicalized-unowned-duplicate"
+        )
+        assert {
+            item["path"]: item["sha256"]
+            for item in receipt["replacement"]["destination_predecessor_files"]
+        } == predecessor_hashes
         assert len(receipt["replacement"]["exact_dependents"]) == 1
         exact = receipt["replacement"]["exact_dependents"][0]
         assert exact["primary"] == dependent_relative.as_posix()
