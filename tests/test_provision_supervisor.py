@@ -8,9 +8,11 @@ copy-equivalent preflight — with no root or patchelf required.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -456,12 +458,17 @@ class TestTrustedGit:
         object_id = subprocess.check_output(
             [git, "-C", str(repository), "rev-parse", "HEAD:a.txt"], text=True
         ).strip()
+        head = subprocess.check_output(
+            [git, "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ).strip()
         allowed_commands = (
             (["rev-parse", "HEAD"], None),
             (["rev-parse", "HEAD^{tree}"], None),
             (["rev-parse", "--is-inside-work-tree"], None),
             (["rev-parse", "--show-toplevel"], None),
             (["rev-parse", "--verify", "HEAD^{commit}"], None),
+            (["rev-parse", f"{head}^{{commit}}"], None),
+            (["rev-parse", f"{head}^{{tree}}"], None),
             (["status", "--porcelain"], None),
             (["status", "--porcelain", "--untracked-files=no"], None),
             (
@@ -529,7 +536,33 @@ class TestTrustedGit:
                 None,
             ),
             (["ls-tree", "-z", "HEAD", "--", "a.txt"], None),
+            (
+                [
+                    "ls-tree",
+                    "-z",
+                    "--full-tree",
+                    "HEAD",
+                    "--",
+                    "us/statutes/42/1437c–1.yaml",
+                ],
+                None,
+            ),
             (["ls-tree", "-r", "-z", "HEAD"], None),
+            (["ls-tree", "-r", "-l", "-z", "--full-tree", head], None),
+            (
+                [
+                    "grep",
+                    "-z",
+                    "-l",
+                    "-a",
+                    "-F",
+                    "-e",
+                    "original",
+                    head,
+                    "--",
+                ],
+                None,
+            ),
             (["cat-file", "blob", object_id], None),
             (["cat-file", "--batch"], f"{object_id}\n".encode()),
             (["merge-base", "--is-ancestor", "HEAD", "HEAD"], None),
@@ -632,6 +665,27 @@ class TestTrustedGit:
             ["ls-files", "-z", "--stage"],
             ["ls-files", "--stage", "-z", "--debug"],
             ["ls-tree", "--name-only", "HEAD"],
+            ["ls-tree", "--full-tree", "-z", "HEAD", "--", "a.txt"],
+            ["ls-tree", "-z", "--full-tree", "HEAD", "--long", "--", "a.txt"],
+            ["ls-tree", "-z", "--full-tree", "HEAD", "--"],
+            ["ls-tree", "-r", "-l", "-z", head, "--full-tree"],
+            ["ls-tree", "-r", "-l", "-z", "--full-tree", head, "--"],
+            ["grep", "-z", "-l", "-a", "-F", head, "--"],
+            ["grep", "-z", "-l", "-a", "-F", "-e", "--help", head, "--"],
+            [
+                "grep",
+                "-z",
+                "-l",
+                "-a",
+                "-F",
+                "-e",
+                "us:statutes/42/1437c–1",
+                "--recurse-submodules",
+                head,
+                "--",
+            ],
+            ["rev-parse", f"{head}^{{blob}}"],
+            ["rev-parse", f"{head}^{{tree}}", "--verify"],
             ["merge-base", "--octopus", "HEAD", "HEAD"],
             ["remote", "add", "blocked", "https://example.invalid/repo.git"],
             ["remote", "update"],
@@ -761,10 +815,15 @@ class TestTrustedGit:
             assert "refused gitlink at sub" in refused_gitlink.stderr
         assert not marker.exists()
 
-    def test_installed_wrapper_supports_migration_stage_inventory(
+    def test_installed_wrapper_supports_migration_git_queries(
         self, tmp_path, monkeypatch
     ):
-        from axiom_encode.cli import _rulespec_migration_tracked_files
+        from axiom_encode.cli import (
+            _legacy_replacement_reference_inventory_issues,
+            _rulespec_migration_base_blob,
+            _rulespec_migration_git,
+            _rulespec_migration_tracked_files,
+        )
 
         git = shutil.which("git")
         if git is None:
@@ -781,11 +840,31 @@ class TestTrustedGit:
         unicode_path = repository / "us/statutes/42/1437c–1.yaml"
         unicode_path.parent.mkdir(parents=True)
         unicode_path.write_text("format: rulespec/v1\n")
+        source_sha256 = hashlib.sha256(unicode_path.read_bytes()).hexdigest()
         executable = repository / "tools/check"
         executable.parent.mkdir()
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
         subprocess.run([git, "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            [
+                git,
+                "-c",
+                "user.name=Axiom test",
+                "-c",
+                "user.email=test@axiom.invalid",
+                "-C",
+                str(repository),
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        head = subprocess.check_output(
+            [git, "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ).strip()
 
         monkeypatch.setenv("PATH", str(destination))
 
@@ -793,6 +872,45 @@ class TestTrustedGit:
             Path("tools/check"): "100755",
             Path("us/statutes/42/1437c–1.yaml"): "100644",
         }
+        assert (
+            _rulespec_migration_base_blob(
+                repository, head, Path("us/statutes/42/1437c–1.yaml")
+            )
+            == b"format: rulespec/v1\n"
+        )
+        assert re.fullmatch(
+            r"[0-9a-f]{40}",
+            _rulespec_migration_git(
+                repository, "rev-parse", f"{head}^{{tree}}"
+            ).strip(),
+        )
+        unicode_path.unlink()
+        assert (
+            _legacy_replacement_reference_inventory_issues(
+                repository,
+                base_commit=head,
+                authoritative_replacements={
+                    "us:statutes/42/1437c–1": "us:statutes/42/1437c-1"
+                },
+                legacy={
+                    "manifest": {
+                        "path": (
+                            ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+                        ),
+                        "sha256": "a" * 64,
+                    },
+                    "files": [
+                        {
+                            "path": "us/statutes/42/1437c–1.yaml",
+                            "sha256": source_sha256,
+                        }
+                    ],
+                },
+                replacement={"rewrites": [], "scheduled_dependents": []},
+                allow_pending_scheduled=True,
+            )
+            == []
+        )
 
     def test_installed_wrapper_disables_partial_clone_lazy_fetch(self, tmp_path):
         git = shutil.which("git")
