@@ -53,6 +53,10 @@ REVIEWED_RULESPEC_REFS = frozenset(
             "68cca4a6fa806b63f95277c129575d88d2ac07f1",
         ),
         (
+            "us",
+            "b9b46dd845c61a49091146b3a3510fa3b8204ee7",
+        ),
+        (
             "ca",
             "f60f7a84c30e38c7d4961d70647eb0457e7d76c2",
         ),
@@ -67,7 +71,7 @@ REVIEWED_RULESPEC_CONTINUATION_ROOTS = {
     (
         "us",
         "hard-cut/canonical-layout-us",
-    ): "251d8d66dabdebcb763d9e7c9b8322a281440c36",
+    ): "b9b46dd845c61a49091146b3a3510fa3b8204ee7",
 }
 MAX_REVIEWED_CONTINUATION_MODULES = 4096
 
