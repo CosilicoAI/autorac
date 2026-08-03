@@ -1790,6 +1790,22 @@ def test_legacy_pending_detection_requires_signed_untampered_evidence(
         assert _legacy_replacement_pending_paths(repo) == [
             "us/policies/income_tax/dependent.yaml"
         ]
+        for malformed_owner_class in ([], {}):
+            receipt["legacy"]["owner_class"] = malformed_owner_class
+            _sign_applied_encoding_manifest(receipt, TEST_APPLY_SIGNING_BROKER)
+            receipt_path.write_text(json.dumps(receipt) + "\n")
+            manifest["replacement"]["receipt_sha256"] = hashlib.sha256(
+                receipt_path.read_bytes()
+            ).hexdigest()
+            _sign_applied_encoding_manifest(manifest, TEST_APPLY_SIGNING_BROKER)
+            manifest_path.write_text(json.dumps(manifest) + "\n")
+            assert _legacy_replacement_pending_paths(repo) == [
+                "invalid:.axiom/encoding-manifests/us/statutes/47/32.json",
+                f"invalid:{receipt_relative.as_posix()}",
+            ]
+        receipt["legacy"]["owner_class"] = "v1-manual-hmac-untrusted"
+        receipt_path.write_bytes(signed_receipt_raw)
+        manifest_path.write_bytes(signed_manifest_raw)
         with patch(
             "axiom_encode.cli._legacy_replacement_reference_inventory_issues",
             return_value=[
@@ -13633,6 +13649,7 @@ class TestCmdEncode:
         receipt = json.loads(
             (checkout / outer["replacement"]["receipt_path"]).read_text()
         )
+        assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
         assert receipt["replacement"]["source"] == checkout_relative.as_posix()
         assert receipt["replacement"]["destination"] == checkout_relative.as_posix()
         assert receipt["legacy"]["files"] == [
@@ -13651,9 +13668,11 @@ class TestCmdEncode:
         assert issues == [], "\n".join(issues)
         assert verified == outer
 
+    @pytest.mark.parametrize("dependent_owner", ["manual", "generated"])
     def test_apply_atomically_migrates_exact_legacy_dependent(
         self,
         tmp_path,
+        dependent_owner,
     ):
         from axiom_encode.cli import _resolve_legacy_replacement_contract
         from axiom_encode.toolchain import load_rulespec_local_corpus_release
@@ -13743,6 +13762,53 @@ class TestCmdEncode:
         dependent_manifest = write_manual_manifest(
             dependent, [dependent, dependent_test]
         )
+        if dependent_owner == "generated":
+            dependent_manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "axiom-encode/applied-rulespec/v1",
+                        "tool": "axiom-encode encode --apply",
+                        "backend": "codex",
+                        "runner": "codex-gpt-5.5",
+                        "model": "gpt-5.5",
+                        "citation": "us-la/statute/47/32",
+                        "generated_at": "2026-07-16T19:07:09.279448+00:00",
+                        "run_id": "generated-exact-dependent",
+                        "axiom_encode_version": "0.2.1200",
+                        "axiom_encode_git": {
+                            "commit": "c" * 40,
+                            "dirty_tracked": False,
+                            "root": "/tmp/axiom-encode",
+                            "version": "0.2.1200",
+                            "version_commit": "c" * 40,
+                        },
+                        "generation_prompt_sha256": "d" * 64,
+                        "generated_output_root": "/tmp/axiom-generated",
+                        "generated_output_file": (
+                            "/tmp/axiom-generated/us-la/policies/income_tax/"
+                            "2026_resident_core.yaml"
+                        ),
+                        "generated_output_sha256": _sha256_file(dependent),
+                        "trace_file": "/tmp/axiom-generated/trace.json",
+                        "trace_sha256": "e" * 64,
+                        "context_manifest_file": "/tmp/axiom-generated/context.json",
+                        "context_manifest_sha256": "f" * 64,
+                        "applied_files": [
+                            {
+                                "path": path.relative_to(checkout).as_posix(),
+                                "sha256": _sha256_file(path),
+                            }
+                            for path in (dependent, dependent_test)
+                        ],
+                        "signature": {
+                            "algorithm": "hmac-sha256",
+                            "key_id": "axiom-encode-apply-v1",
+                            "value": "1" * 64,
+                        },
+                    }
+                )
+                + "\n"
+            )
         dependent_before = dependent.read_bytes()
         dependent_test_before = dependent_test.read_bytes()
         dependent_manifest_before = dependent_manifest.read_bytes()
@@ -13952,6 +14018,7 @@ class TestCmdEncode:
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
         assert receipt["schema_version"].endswith("/v2")
+        assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
         assert len(receipt["replacement"]["exact_dependents"]) == 1
         exact = receipt["replacement"]["exact_dependents"][0]
         assert exact["primary"] == dependent_relative.as_posix()
@@ -13991,6 +14058,61 @@ class TestCmdEncode:
         outer_before_tamper = destination_manifest.read_bytes()
         receipt_before_tamper = receipt_path.read_bytes()
         exact_manifest_before_tamper = dependent_manifest.read_bytes()
+        compatibility_receipt = copy.deepcopy(receipt)
+        compatibility_receipt["legacy"]["owner_class"] = "v1-manual-hmac-untrusted"
+        _sign_applied_encoding_manifest(
+            compatibility_receipt,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        receipt_path.write_text(
+            json.dumps(compatibility_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        compatibility_receipt_sha256 = hashlib.sha256(
+            receipt_path.read_bytes()
+        ).hexdigest()
+        compatibility_outer = copy.deepcopy(outer)
+        compatibility_outer["replacement"]["receipt_sha256"] = (
+            compatibility_receipt_sha256
+        )
+        _sign_applied_encoding_manifest(
+            compatibility_outer,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        destination_manifest.write_text(
+            json.dumps(compatibility_outer, indent=2, sort_keys=True) + "\n"
+        )
+        compatibility_exact_manifest = copy.deepcopy(exact_manifest)
+        compatibility_exact_manifest["legacy_migration"]["receipt_sha256"] = (
+            compatibility_receipt_sha256
+        )
+        _sign_applied_encoding_manifest(
+            compatibility_exact_manifest,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        dependent_manifest.write_text(
+            json.dumps(compatibility_exact_manifest, indent=2, sort_keys=True) + "\n"
+        )
+        _verified, _root, _digest, compatibility_issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                destination_manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=TEST_VALIDATION_WAIVER_SHA256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        if dependent_owner == "manual":
+            assert compatibility_issues == [], "\n".join(compatibility_issues)
+        else:
+            assert any(
+                "exact dependent legacy ownership is invalid" in issue
+                for issue in compatibility_issues
+            )
+        destination_manifest.write_bytes(outer_before_tamper)
+        receipt_path.write_bytes(receipt_before_tamper)
+        dependent_manifest.write_bytes(exact_manifest_before_tamper)
+
         tampered_receipt = copy.deepcopy(receipt)
         tampered_receipt["replacement"]["exact_dependents"][0]["rewrites"][0][
             "proof_import_repairs"
@@ -34471,7 +34593,7 @@ class TestResolverOwnedManifestWriter:
             "corpus_release": {},
             "validation_execution": None,
             "legacy": {
-                "owner_class": "v1-manual-hmac-untrusted",
+                "owner_class": "v1-hmac-untrusted",
                 "trusted_generated_provenance": False,
                 "manifest": {
                     "path": legacy_manifest_label,

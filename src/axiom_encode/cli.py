@@ -264,6 +264,9 @@ from .legacy_replacement import (
     LEGACY_OWNER_CLASS as APPLIED_ENCODING_LEGACY_OWNER_CLASS,
 )
 from .legacy_replacement import (
+    LEGACY_OWNER_CLASSES as APPLIED_ENCODING_LEGACY_OWNER_CLASSES,
+)
+from .legacy_replacement import (
     RECEIPT_DIR as _LEGACY_REPLACEMENT_RECEIPT_DIR_TEXT,
 )
 from .legacy_replacement import (
@@ -294,10 +297,13 @@ from .legacy_replacement import (
     LegacyReplacementScheduledDependent as _LegacyReplacementScheduledDependent,
 )
 from .legacy_replacement import (
-    legacy_manual_manifest_issues as _legacy_manual_manifest_issues,
+    legacy_receipt_v1_manifest_issues as _legacy_receipt_v1_manifest_issues,
 )
 from .legacy_replacement import (
     legacy_source_verification_citation_paths as _legacy_source_verification_citation_paths,
+)
+from .legacy_replacement import (
+    legacy_v1_manifest_issues as _legacy_v1_manifest_issues,
 )
 from .legacy_replacement import receipt_identity_payload, receipt_identity_sha256
 from .legacy_replacement_overlay import (
@@ -2210,7 +2216,7 @@ def main():
         type=Path,
         help=(
             "With --apply and --replace-rulespec-path, freshly model-reencode one "
-            "exact protected legacy v1/manual-owned primary, retire its old primary, "
+            "exact protected legacy v1 HMAC-owned primary, retire its old primary, "
             "companion, and legacy manifest bytes atomically at either the same "
             "canonical path or its unique normalized path, and emit only signed v5 "
             "replacement provenance."
@@ -2233,7 +2239,7 @@ def main():
         default=[],
         type=Path,
         help=(
-            "Exact protected legacy v1/manual direct-dependent primary whose "
+            "Exact protected legacy v1 HMAC direct-dependent primary whose "
             "base bytes may change only by the scheduled canonical reference "
             "rewrite. Repeat once per composite dependent; each full primary/test "
             "group and old manifest is bound to clean HEAD and replaced atomically "
@@ -6953,6 +6959,24 @@ def _strict_legacy_replacement_map(
     return replacements
 
 
+def _legacy_primary_source_citations(raw: bytes) -> tuple[str, ...]:
+    """Read the canonical ordered source history from one historical primary."""
+
+    try:
+        payload = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError, RecursionError):
+        return ()
+    module = payload.get("module") if isinstance(payload, dict) else None
+    verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    return (
+        _legacy_source_verification_citation_paths(verification)
+        if isinstance(verification, dict)
+        else ()
+    )
+
+
 def _legacy_replacement_authoritative_map(
     repo_path: Path,
     *,
@@ -6998,8 +7022,10 @@ def _legacy_replacement_authoritative_map(
             )
     elif expected_destination != destination_path:
         issues.append("legacy replacement destination is not canonical for source")
+    legacy_owner_class = legacy.get("owner_class")
     if (
-        legacy.get("owner_class") != APPLIED_ENCODING_LEGACY_OWNER_CLASS
+        not isinstance(legacy_owner_class, str)
+        or legacy_owner_class not in APPLIED_ENCODING_LEGACY_OWNER_CLASSES
         or legacy.get("trusted_generated_provenance") is not False
     ):
         issues.append("legacy replacement source ownership classification is invalid")
@@ -7041,6 +7067,7 @@ def _legacy_replacement_authoritative_map(
         )
 
     expected_files: dict[str, str] = {}
+    source_base_raw: bytes | None = None
     existing_companions: set[Path] = set()
     if isinstance(source, str):
         for candidate in (source_path, companion_path(source_path)):
@@ -7055,6 +7082,8 @@ def _legacy_replacement_authoritative_map(
                     issues.append("legacy replacement source is absent from base")
                 continue
             expected_files[candidate.as_posix()] = hashlib.sha256(raw).hexdigest()
+            if candidate == source_path:
+                source_base_raw = raw
             if candidate != source_path:
                 existing_companions.add(candidate)
     legacy_files = legacy.get("files")
@@ -7084,9 +7113,18 @@ def _legacy_replacement_authoritative_map(
         except (UnicodeError, json.JSONDecodeError, RecursionError):
             issues.append("legacy replacement source manifest is not valid JSON")
         else:
-            legacy_manifest_issues = _legacy_manual_manifest_issues(
+            source_citations = (
+                _legacy_primary_source_citations(source_base_raw)
+                if source_base_raw is not None
+                else ()
+            )
+            legacy_manifest_issues = _legacy_receipt_v1_manifest_issues(
                 legacy_manifest_payload,
+                owner_class=legacy.get("owner_class"),
                 expected_files=expected_files,
+                expected_primary_path=source_path.as_posix(),
+                expected_citation=source_citations[0] if source_citations else "",
+                jurisdiction_prefix=(source_path.parts[0] if source_path.parts else ""),
                 allow_unmarked_manual_exception=in_place,
             )
             issues.extend(
@@ -21884,7 +21922,8 @@ def _legacy_replacement_manifest_issues(
         not isinstance(legacy, dict)
         or set(legacy)
         != {"owner_class", "trusted_generated_provenance", "manifest", "files"}
-        or legacy.get("owner_class") != APPLIED_ENCODING_LEGACY_OWNER_CLASS
+        or not isinstance(legacy.get("owner_class"), str)
+        or legacy.get("owner_class") not in APPLIED_ENCODING_LEGACY_OWNER_CLASSES
         or legacy.get("trusted_generated_provenance") is not False
         or not isinstance(replacement, dict)
         or set(replacement)
@@ -22325,11 +22364,25 @@ def _legacy_replacement_manifest_issues(
             legacy_manifest_payload = json.loads(legacy_manifest_raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError, RecursionError):
             legacy_manifest_payload = None
-        legacy_manifest_issues = _legacy_manual_manifest_issues(
+        try:
+            base_primary_raw = _rulespec_migration_base_blob(
+                repo_path, base_commit, primary_path
+            )
+        except RuntimeError:
+            base_primary_citations = ()
+        else:
+            base_primary_citations = _legacy_primary_source_citations(base_primary_raw)
+        legacy_manifest_issues = _legacy_receipt_v1_manifest_issues(
             legacy_manifest_payload,
+            owner_class=legacy.get("owner_class"),
             expected_files={
                 path.as_posix(): digest for path, digest in legacy_hashes.items()
             },
+            expected_primary_path=primary_path.as_posix(),
+            expected_citation=(
+                base_primary_citations[0] if base_primary_citations else ""
+            ),
+            jurisdiction_prefix=primary_path.parts[0],
             allow_unmarked_manual_exception=True,
         )
         if legacy_manifest_issues:
@@ -24136,7 +24189,7 @@ def _resolve_legacy_replacement_contract(
     legacy_manifest_path = _applied_encoding_manifest_path(source)
     if tracked.get(legacy_manifest_path) != "100644":
         raise ValueError(
-            "legacy replacement requires its exact tracked v1/manual ownership manifest"
+            "legacy replacement requires its exact tracked v1 HMAC ownership manifest"
         )
     legacy_manifest_raw = read_bounded_regular_file(
         policy_checkout_path,
@@ -24156,9 +24209,12 @@ def _resolve_legacy_replacement_contract(
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("legacy ownership manifest is not valid UTF-8 JSON") from exc
     expected_files = {item.path.as_posix(): item.sha256 for item in deleted_files}
-    legacy_issues = _legacy_manual_manifest_issues(
+    legacy_issues = _legacy_v1_manifest_issues(
         legacy_payload,
         expected_files=expected_files,
+        expected_primary_path=source.as_posix(),
+        expected_citation=requested_citation,
+        jurisdiction_prefix=source.parts[0],
         allow_unmarked_manual_exception=in_place,
     )
     if legacy_issues:
@@ -24285,7 +24341,7 @@ def _resolve_legacy_replacement_contract(
             or tracked.get(dependent_manifest_path) != "100644"
         ):
             raise ValueError(
-                "legacy exact dependent requires its unique tracked v1/manual "
+                "legacy exact dependent requires its unique tracked v1 HMAC "
                 f"ownership manifest: {primary}"
             )
         dependent_manifest_raw = read_bounded_regular_file(
@@ -24311,9 +24367,12 @@ def _resolve_legacy_replacement_contract(
             raise ValueError(
                 f"legacy exact dependent manifest is invalid JSON: {primary}"
             ) from exc
-        dependent_issues = _legacy_manual_manifest_issues(
+        dependent_issues = _legacy_v1_manifest_issues(
             dependent_manifest_payload,
             expected_files={item.path.as_posix(): item.sha256 for item in group_files},
+            expected_primary_path=primary.as_posix(),
+            expected_citation=dependent_citations[0],
+            jurisdiction_prefix=primary.parts[0],
             allow_unmarked_manual_exception=True,
         )
         if dependent_issues:
