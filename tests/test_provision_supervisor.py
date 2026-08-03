@@ -464,6 +464,16 @@ class TestTrustedGit:
             (["rev-parse", "--verify", "HEAD^{commit}"], None),
             (["status", "--porcelain"], None),
             (["status", "--porcelain", "--untracked-files=no"], None),
+            (
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignored=matching",
+                ],
+                None,
+            ),
             (["remote", "get-url", "origin"], None),
             (["diff", "--binary", "HEAD", "--", "a.txt"], None),
             (
@@ -552,6 +562,13 @@ class TestTrustedGit:
         filtered_worktree_commands = (
             ["status", "--porcelain"],
             ["status", "--porcelain", "--untracked-files=no"],
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ],
             ["diff", "--binary", "HEAD", "--", "a.txt"],
             [
                 "diff",
@@ -720,6 +737,13 @@ class TestTrustedGit:
         gitlink_commands = (
             ["status", "--porcelain"],
             ["status", "--porcelain", "--untracked-files=no"],
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignored=matching",
+            ],
             ["diff", "--binary", "HEAD", "--", "sub"],
         )
         for command in gitlink_commands:
