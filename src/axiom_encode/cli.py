@@ -43827,6 +43827,13 @@ def _factual_input_appears_string_selector(
         """,
         re.VERBOSE,
     )
+    string_membership = re.compile(
+        rf"""
+        \b{re.escape(input_name)}\b\s+(?:not\s+)?in\s*
+        [\[\(\{{][^\]\)\}}]*{_RULESPEC_STRING_LITERAL_RE}
+        """,
+        re.VERBOSE,
+    )
     for rule in rules:
         if not isinstance(rule, dict):
             continue
@@ -43837,7 +43844,9 @@ def _factual_input_appears_string_selector(
             if not isinstance(version, dict):
                 continue
             formula = version.get("formula")
-            if isinstance(formula, str) and string_comparison.search(formula):
+            if isinstance(formula, str) and (
+                string_comparison.search(formula) or string_membership.search(formula)
+            ):
                 return True
     return False
 
@@ -43859,6 +43868,11 @@ def _factual_input_name_looks_positive_count(input_name: str) -> bool:
 def _factual_input_appears_numeric(
     input_name: str, *, rules_payload: dict[str, object]
 ) -> bool:
+    if _factual_input_appears_string_selector(
+        input_name,
+        rules_payload=rules_payload,
+    ):
+        return False
     if input_name == "filing_status":
         return True
     if _factual_input_name_looks_boolean(input_name):

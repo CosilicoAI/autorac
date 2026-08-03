@@ -24956,7 +24956,7 @@ rules:
   period: 2026-01
   input:
     us:statutes/26/151#input.adjusted_needs: false
-    us:statutes/26/151#input.household_size: 6
+    us:statutes/26/151#input.household_size: false
   output:
     us:statutes/26/151#benefit_amount: 0
 """
@@ -25002,11 +25002,13 @@ rules:
         mock_apply.assert_called_once()
         test_payload = yaml.safe_load(test_file.read_text())
         assert test_payload[0]["input"]["us:statutes/26/151#input.adjusted_needs"] == 0
-        assert test_payload[0]["input"]["us:statutes/26/151#input.household_size"] == 6
+        assert test_payload[0]["input"]["us:statutes/26/151#input.household_size"] == 0
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
         assert run.outcome["auto_repaired_wrong_typed_test_inputs"] == [
             "zero_adjusted_needs_produces_zero_benefit:"
-            "us:statutes/26/151#input.adjusted_needs"
+            "us:statutes/26/151#input.adjusted_needs",
+            "zero_adjusted_needs_produces_zero_benefit:"
+            "us:statutes/26/151#input.household_size",
         ]
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
@@ -25019,6 +25021,27 @@ rules:
                         {
                             "formula": (
                                 'if household_size_category == "large": 1 else: 0'
+                            )
+                        }
+                    ]
+                }
+            ]
+        }
+
+        assert not _factual_input_appears_numeric(
+            "household_size_category",
+            rules_payload=rules_payload,
+        )
+
+    def test_size_named_string_membership_selector_is_not_numeric(self):
+        rules_payload = {
+            "rules": [
+                {
+                    "versions": [
+                        {
+                            "formula": (
+                                'if household_size_category in ["small", "large"]: '
+                                "1 else: 0"
                             )
                         }
                     ]
