@@ -669,13 +669,16 @@ _LEGAL_ACTOR_ACRONYMS = frozenset(
         "dol",
         "dot",
         "eeoc",
+        "ebsa",
         "epa",
         "faa",
         "fbi",
         "fcc",
         "fda",
         "fdic",
+        "fec",
         "fema",
+        "fha",
         "fhfa",
         "fincen",
         "fmc",
@@ -686,6 +689,7 @@ _LEGAL_ACTOR_ACRONYMS = frozenset(
         "gao",
         "gsa",
         "hhs",
+        "hrsa",
         "hud",
         "ice",
         "irs",
@@ -697,15 +701,18 @@ _LEGAL_ACTOR_ACRONYMS = frozenset(
         "nrc",
         "nsa",
         "ntsb",
+        "occ",
         "omb",
         "opm",
         "osc",
         "osha",
         "pbgc",
         "sba",
+        "samhsa",
         "sec",
         "ssa",
         "tva",
+        "tsa",
         "usaid",
         "uscis",
         "usda",
@@ -2940,6 +2947,8 @@ def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
 
 
 def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
+    if _actor_acronym_sequence_starts_finite_clause(tokens):
+        return True
     if _unlisted_actor_acronym_starts_finite_clause(tokens):
         return True
     for subject_end in range(1, len(tokens)):
@@ -2981,6 +2990,27 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
         ):
             continue
         if _dependency_subject_and_predicate_agree(tokens[subject_end - 1], predicate):
+            return True
+    return False
+
+
+def _actor_acronym_sequence_starts_finite_clause(tokens: list[str]) -> bool:
+    for predicate_index in range(1, len(tokens) - 1):
+        actor_tokens = [
+            token.lower()
+            for token in tokens[:predicate_index]
+            if token.lower() not in {"and", "or"}
+        ]
+        if not actor_tokens or any(
+            token not in _LEGAL_ACTOR_ACRONYMS for token in actor_tokens
+        ):
+            continue
+        predicate = tokens[predicate_index].lower()
+        if _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS:
+            continue
+        if _dependency_subject_phrase_is_bounded(
+            " ".join(tokens[predicate_index + 1 :])
+        ):
             return True
     return False
 

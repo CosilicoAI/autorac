@@ -3521,6 +3521,26 @@ rules: []
         "42 USC 1437f(o).",
         "(b) The Social Security Act governs records and FEC issues rules under "
         "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA ran programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FHA made eligibility "
+        "determinations under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EBSA wrote rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SAMHSA gave assistance "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and HRSA chose eligibility "
+        "criteria under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OCC kept records under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA and FHA administer "
+        "programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA, FHA, and EBSA "
+        "administer programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Tsa administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and tsa administers programs "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
