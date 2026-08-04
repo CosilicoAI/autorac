@@ -426,8 +426,8 @@ _DEPENDENCY_SUBJECT_LANGUAGE = re.compile(
     r"\b(?:"
     r"amount|assistance|benefit|calendar|classification|condition|data|date|"
     r"designation|determination|document|eligibility|fact|filing|form|"
-    r"information|input|notice|process|procedure|receipt|record|requirement|"
-    r"standard|status|submission|timing|workflow"
+    r"income|information|input|notice|policy|process|procedure|receipt|record|"
+    r"requirement|standard|status|submission|threshold|timing|workflow"
     r")s?\b",
     flags=re.IGNORECASE,
 )
@@ -1936,9 +1936,14 @@ def _reason_match_names_missing_dependency(
         after,
         flags=re.IGNORECASE,
     )
+    direct_signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
     if (
         direct_missing_state
-        and _MISSING_DEPENDENCY_LANGUAGE.search(before)
+        and direct_signals
+        and _reason_direct_missing_introduction_is_bounded(
+            before[direct_signals[-1].end() :],
+            signal=direct_signals[-1].group(0),
+        )
         and not (
             _qualified_usc_dependencies(before)
             or _PRECISE_DEFERRAL_DEPENDENCY.search(before)
@@ -1947,7 +1952,7 @@ def _reason_match_names_missing_dependency(
     ):
         return True
 
-    signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
+    signals = direct_signals
     if not signals:
         return False
     signal = signals[-1]
@@ -2085,7 +2090,8 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
         r"[\s,)]*(?:by\s+(?:the\s+)?"
         r"(?:(?:a|an|the)\s+)?"
         r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
-        r"(?:agency|administrator|authority|commission|hud|"
+        r"(?:agency|administrator|authority|commission|commissioner|hud|"
+        r"social\s+security\s+administration|"
         r"(?:department|secretary)(?:\s+of\s+(?:agriculture|housing\s+and\s+"
         r"urban\s+development|health\s+and\s+human\s+services|labor|treasury))?))?"
         r"[\s,)]*",
@@ -2198,7 +2204,7 @@ def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
         flags=re.IGNORECASE,
     ):
         return True
-    if not re.search(
+    linker = re.search(
         r"\b(?:"
         r"under|pursuant\s+to|according\s+to|"
         r"(?:cited|defined|described|provided|required|set|specified|referenced)"
@@ -2206,9 +2212,51 @@ def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
         r")\s*$",
         introduction,
         flags=re.IGNORECASE,
-    ):
+    )
+    if not linker:
         return False
-    return bool(_DEPENDENCY_SUBJECT_LANGUAGE.search(introduction))
+    subject_scope = introduction[: linker.start()]
+    subjects = list(_DEPENDENCY_SUBJECT_LANGUAGE.finditer(subject_scope))
+    if not subjects:
+        return False
+    after_subject = subject_scope[subjects[-1].end() :]
+    if not after_subject.strip(" -"):
+        return True
+    return bool(
+        re.fullmatch(
+            r"\s+under\s+(?:the\s+)?[a-z0-9][a-z0-9 -]*\s*",
+            after_subject,
+            flags=re.IGNORECASE,
+        )
+        and re.match(
+            r"(?:cited|defined|described|provided|required|set|specified|referenced)"
+            r"\s+(?:by|in)",
+            introduction[linker.start() :],
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _reason_direct_missing_introduction_is_bounded(
+    introduction: str,
+    *,
+    signal: str,
+) -> bool:
+    if re.fullmatch(
+        r"cannot\s+be\s+(?:computed|encoded|resolved)",
+        signal,
+        flags=re.IGNORECASE,
+    ):
+        dependency_introduction = re.sub(
+            r"^\s*(?:because|since|as|when)\s+",
+            "",
+            introduction,
+            flags=re.IGNORECASE,
+        )
+        return not dependency_introduction.strip() or (
+            _reason_dependency_introduction_is_bounded(dependency_introduction)
+        )
+    return _reason_reference_introduction_is_bounded(introduction)
 
 
 def _usc_dependency_is_external(
