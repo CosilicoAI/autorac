@@ -418,10 +418,22 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
 _ADVERSATIVE_LANGUAGE = re.compile(
     r"\b(?:"
     r"although|but|despite|even\s+though|except|however|nevertheless|nonetheless|"
-    r"notwithstanding|though|unless|whereas|while|(?<!not\s)yet|aber|jedoch|obwohl"
+    r"notwithstanding|though|unless|whereas|while|yet|aber|jedoch|obwohl"
     r")\b",
     flags=re.IGNORECASE,
 )
+
+
+def _has_adversative_language(text: str) -> bool:
+    without_not_yet = re.sub(
+        r"\bnot\s+yet\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return bool(_ADVERSATIVE_LANGUAGE.search(without_not_yet))
+
+
 _DEPENDENCY_SUBJECT_TERMS = frozenset(
     {
         "amount",
@@ -2043,6 +2055,8 @@ def _reason_match_names_missing_dependency(
     reference_end = match.end() - clause_start
     before = clause[:reference_start]
     after = clause[reference_end:]
+    if _has_adversative_language(reason[match.end() :]):
+        return False
     if not _reason_named_instruments_are_source_bound(
         before,
         source_scope_text,
@@ -2091,7 +2105,7 @@ def _reason_match_names_missing_dependency(
     ):
         return False
     bridge = before[signal.end() :]
-    if len(bridge) > 240 or _ADVERSATIVE_LANGUAGE.search(bridge):
+    if len(bridge) > 240 or _has_adversative_language(bridge):
         return False
 
     signal_text = signal.group(0).lower()
@@ -2185,7 +2199,7 @@ def _reason_suffix_has_dependency_state(
 ) -> bool:
     """Require a state predicate for this citation or its coordinated list."""
 
-    if _ADVERSATIVE_LANGUAGE.search(after):
+    if _has_adversative_language(after):
         return False
     bounded = after
     state_pattern = re.compile(
@@ -2455,15 +2469,31 @@ def _reason_named_instruments_are_source_bound(
     if not instrument:
         return False
 
-    source_clauses: list[str] = []
     match_groups = dependency_match.groupdict()
     dependency_title = match_groups.get("title")
     dependency_section = match_groups.get("section")
     if dependency_title and dependency_section:
         dependency_fragments = _usc_dependency_fragments(dependency_match)
-        for source_match in _qualified_usc_dependencies(source_scope_text):
+        source_matches = (
+            *_qualified_usc_dependencies(source_scope_text),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text),
+        )
+        instrument_pattern = re.compile(
+            r"(?<![a-z0-9])"
+            + r"[^a-z0-9]+".join(map(re.escape, instrument.split()))
+            + r"(?![a-z0-9])",
+            flags=re.IGNORECASE,
+        )
+        instrument_link = re.compile(
+            r"\b(?:authorizes?|defines?|establishes?|governs?|provides?|"
+            r"regulates?|requires?)\b[^.;\n]{0,200}\b"
+            r"(?:according\s+to|pursuant\s+to|under)\s*$",
+            flags=re.IGNORECASE,
+        )
+        for source_match in source_matches:
+            source_title = source_match.groupdict().get("title")
             if (
-                source_match.group("title").lower() != dependency_title.lower()
+                (source_title and source_title.lower() != dependency_title.lower())
                 or normalize_rulespec_path_segment(source_match.group("section"))
                 != normalize_rulespec_path_segment(dependency_section)
                 or _usc_dependency_fragments(source_match) != dependency_fragments
@@ -2473,17 +2503,29 @@ def _reason_named_instruments_are_source_bound(
                 source_scope_text,
                 source_match,
             )
-            source_clauses.append(source_scope_text[clause_start:clause_end])
-    else:
-        source_clauses.append(source_scope_text)
+            clause = source_scope_text[clause_start:clause_end]
+            reference_start = source_match.start() - clause_start
+            reference_end = source_match.end() - clause_start
+            if not _source_clause_links_dependency(
+                clause,
+                reference_start=reference_start,
+                reference_end=reference_end,
+            ):
+                continue
+            for title_match in instrument_pattern.finditer(clause, 0, reference_start):
+                bridge = clause[title_match.end() : reference_start]
+                if not _has_adversative_language(bridge) and instrument_link.search(
+                    bridge
+                ):
+                    return True
+        return False
 
-    instrument_pattern = re.compile(
-        rf"(?:^|\s){re.escape(instrument)}(?:$|\s)",
-        flags=re.IGNORECASE,
-    )
-    return any(
-        instrument_pattern.search(re.sub(r"[^a-z0-9]+", " ", clause.lower()).strip())
-        for clause in source_clauses
+    normalized_source = re.sub(r"[^a-z0-9]+", " ", source_scope_text.lower()).strip()
+    return bool(
+        re.search(
+            rf"(?:^|\s){re.escape(instrument)}(?:$|\s)",
+            normalized_source,
+        )
     )
 
 

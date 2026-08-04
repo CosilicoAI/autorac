@@ -2814,6 +2814,64 @@ rules: []
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
+def test_named_instrument_cannot_mix_contextual_and_operative_citation_occurrences():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    sources = [
+        "(b) The Social Security Act and 42 USC 1437f(o) appear only as "
+        "historical context. Assistance is received under 42 USC 1437f(o).",
+        "(b) The Social Security Act is included only for historical context, "
+        "but assistance is received under 42 USC 1437f(o).",
+    ]
+
+    for source in sources:
+        result = _analyze(
+            content,
+            source,
+            corpus_citation_path="us/statute/42/1437c-1",
+            test_cases=[],
+        )
+        assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_named_instrument_accepts_relative_source_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs assistance under section 1437f(o) "
+        "of this title."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
 @pytest.mark.parametrize(
     "subject",
     [
@@ -2928,7 +2986,10 @@ rules: []
 
 
 @pytest.mark.parametrize("linker", ["depends on", "requires"])
-@pytest.mark.parametrize("state", ["not yet encoded", "not yet available"])
+@pytest.mark.parametrize(
+    "state",
+    ["not yet encoded", "not yet available", "not  yet encoded"],
+)
 def test_strong_linker_accepts_not_yet_state(linker: str, state: str):
     content = f"""\
 format: rulespec/v1
@@ -2962,6 +3023,8 @@ rules: []
     [
         "is encoded, but the citation is only nonbinding authority",
         "is unavailable even though it is included only for historical comparison",
+        "is encoded; but the citation is only nonbinding authority",
+        "is encoded. However, the citation is only nonbinding authority",
     ],
 )
 @pytest.mark.parametrize("linker", ["under", "depends on", "requires"])
