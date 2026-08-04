@@ -1989,6 +1989,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "queue-authorized re-encodes cannot add source inputs until queue "
         "generation identity binds them"
     ) in source_bundle_command
+    assert (
+        "source-bundle replacements cannot include dependent migrations"
+        in source_bundle_command
+    )
+    assert (
+        "source bundles require legacy replacements to merge first"
+        in source_bundle_command
+    )
     assert steps.index(source_bundle_step) > next(
         index
         for index, step in enumerate(steps)
@@ -2171,6 +2179,11 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
     assert '"$source_citation" "" true "$source_lane" "" "" false' in command
+    assert '"$CITATION" "" false target-preflight \\' in command
+    assert '"$REPLACE_RULESPEC_PATH" "" false' in command
+    assert "source bundles require legacy replacements to merge first" in command
+    assert "source-bundle replacements cannot include dependent migrations" in command
+    assert "Canonicalize signed replacement target before source bundle" in command
     assert "checkpoint_signed_changes()" in command
     assert 'local guard_status="$?"' in command
     assert 'jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2' in command
@@ -2469,6 +2482,13 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         )
         + "\n"
     )
+    preflight_guard_payload = {
+        "repo": "/runner/rulespec-us",
+        "passed": True,
+        "issues": [],
+    }
+    preflight_guard_raw = json.dumps(preflight_guard_payload) + "\n"
+    (tmp_path / "target-preflight-guard-generated.json").write_text(preflight_guard_raw)
     env = {
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
@@ -2504,6 +2524,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "generated/target/model/statutes/54a:4-7.test.yaml",
             "generated/target/model/target.repair.json",
             "guards/guard-generated.json",
+            "guards/target-preflight-guard-generated.json",
             "metadata.json",
         }
         assert "generated/target/model/ignored.bin" not in file_member_names
@@ -2512,10 +2533,14 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         )
         repair = bundle.extractfile("./generated/target/model/target.repair.json")
         guard = bundle.extractfile("./guards/guard-generated.json")
+        preflight_guard = bundle.extractfile(
+            "./guards/target-preflight-guard-generated.json"
+        )
         metadata_file = bundle.extractfile("./metadata.json")
         assert target is not None
         assert repair is not None
         assert guard is not None
+        assert preflight_guard is not None
         assert metadata_file is not None
         assert target.read() == b"format: rulespec/v1\n"
         assert json.loads(repair.read()) == {"outcome": "blocked"}
@@ -2524,11 +2549,23 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "passed": False,
             "issues": ["waiver transition requires protected base"],
         }
+        assert json.loads(preflight_guard.read()) == preflight_guard_payload
         metadata = json.loads(metadata_file.read())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
     assert metadata["workflow_run_id"] == "1234"
     assert metadata["failed_steps"] == ["encode_apply"]
     assert metadata["generated_lanes"] == ["target"]
+    guards_by_path = {item["path"]: item for item in metadata["guards"]}
+    assert set(guards_by_path) == {
+        "guards/guard-generated.json",
+        "guards/target-preflight-guard-generated.json",
+    }
+    preflight_inventory = guards_by_path["guards/target-preflight-guard-generated.json"]
+    assert preflight_inventory["size"] == len(preflight_guard_raw.encode())
+    assert (
+        preflight_inventory["sha256"]
+        == hashlib.sha256(preflight_guard_raw.encode()).hexdigest()
+    )
     assert metadata["legacy_retained_successor_rulespec_paths_input"] == (
         '["us/statutes/old.yaml"]'
     )
@@ -2564,10 +2601,15 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         ("wrong_shape", "invalid shape"),
     ],
 )
+@pytest.mark.parametrize(
+    "guard_name",
+    ["guard-generated.json", "target-preflight-guard-generated.json"],
+)
 def test_targeted_signed_reencode_rejects_unsafe_guard_diagnostics(
     tmp_path: Path,
     mutation: str,
     expected_error: str,
+    guard_name: str,
 ) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
@@ -2582,7 +2624,7 @@ def test_targeted_signed_reencode_rejects_unsafe_guard_diagnostics(
         sys.executable,
     )
     (tmp_path / "generated").mkdir()
-    guard = tmp_path / "guard-generated.json"
+    guard = tmp_path / guard_name
     if mutation == "symlink":
         outside = tmp_path / "outside.json"
         outside.write_text('{"repo":"outside","passed":false,"issues":[]}\n')
@@ -2639,7 +2681,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         if step.get("name") == "Encode, review, validate, and apply"
     )
     checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
-        "\n}\n\nsource_index=0",
+        '\n}\n\nif [ "$source_bundle_enabled"',
         1,
     )[0]
     guard_stub = tmp_path / "guard-stub"
@@ -3160,7 +3202,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         1,
     )
     _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
-        "\n}\n\nsource_index=0",
+        '\n}\n\nif [ "$source_bundle_enabled"',
         1,
     )
     command = (
@@ -3168,7 +3210,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         + "checkpoint_signed_changes() {\n"
         + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
         + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
-        + "}\n\nsource_index=0"
+        + '}\n\nif [ "$source_bundle_enabled"'
         + after_checkpoint
     )
 
@@ -3182,6 +3224,13 @@ import os
 import sys
 from pathlib import Path
 
+args = sys.argv[sys.argv.index("--") + 1:]
+if "target-preflight" in args[args.index("--output") + 1]:
+    if "--apply-target-only" in args:
+        raise SystemExit("replacement preflight must validate the complete checkout")
+    if "--replace-legacy-rulespec-path" in args:
+        raise SystemExit("source bundle preflight cannot perform legacy migration")
+
 with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
 """,
@@ -3192,6 +3241,12 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     runner_temp.mkdir()
     _prepare_empty_signed_import_inputs(runner_temp)
     primary = "us-ri/statute/44-30-2.6"
+    replacement_path = "us-ri/statutes/44-30-2.6.yaml"
+    checkout = tmp_path / "rulespec-us"
+    canonical = checkout / replacement_path
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("format: rulespec/v1\nrules: []\n")
+    canonical.with_name(f"{canonical.stem}.test.yaml").write_text("[]\n")
     sources = [
         "us-ri/statute/44-30-1",
         "us-ri/guidance/revenue/2026/rate-schedule",
@@ -3210,6 +3265,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "DEPENDENT_CITATION": "",
             "DEPENDENT_REVIEW_FINDING": "",
             "GITHUB_WORKSPACE": str(tmp_path),
+            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "REPLACE_RULESPEC_PATH": replacement_path,
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RULESPEC_REF": "a" * 40,
@@ -3224,9 +3281,18 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     calls = [
         json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert len(calls) == 3
+    assert len(calls) == 4
     encode_args = [call[call.index("--") + 1 :] for call in calls]
-    for index, source in enumerate(sources):
+    preflight_args = encode_args[0]
+    assert preflight_args[-1] == primary
+    assert "--apply-target-only" not in preflight_args
+    assert "--review-findings" not in preflight_args
+    replacement_index = preflight_args.index("--replace-rulespec-path")
+    assert preflight_args[replacement_index + 1] == replacement_path
+    assert "--replace-legacy-rulespec-path" not in preflight_args
+    assert "--required-import-rulespec-path" not in preflight_args
+
+    for index, source in enumerate(sources, start=1):
         assert encode_args[index][-1] == source
         assert "--apply-target-only" in encode_args[index]
         assert "--required-import-rulespec-path" not in encode_args[index]
@@ -3234,6 +3300,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     primary_args = encode_args[-1]
     assert primary_args[-1] == primary
     assert "--apply-target-only" not in primary_args
+    assert "--replace-legacy-rulespec-path" not in primary_args
     required_indexes = [
         index
         for index, value in enumerate(primary_args)
@@ -3244,10 +3311,71 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-ri/policies/revenue/2026/rate-schedule.yaml",
     ]
     assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
+        "Canonicalize signed replacement target before source bundle",
         f"Add signed source module for {sources[0]}",
         f"Add signed source module for {sources[1]}",
         f"Compose signed source bundle for {primary}",
     ]
+    assert canonical.is_file()
+
+
+@pytest.mark.parametrize(
+    ("legacy_source", "dependent_citation", "expected_error"),
+    [
+        (
+            "us-ri/statutes/44:30-2.6.yaml",
+            "",
+            "source bundles require legacy replacements to merge first",
+        ),
+        (
+            "",
+            "us-ri/statute/44-30-2.7",
+            "source-bundle replacements cannot include dependent migrations",
+        ),
+    ],
+)
+def test_targeted_signed_reencode_rejects_nonatomic_source_bundle_replacements_early(
+    tmp_path: Path,
+    legacy_source: str,
+    dependent_citation: str,
+    expected_error: str,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Validate atomic source inputs"
+    )
+    checkout = tmp_path / "rulespec-us"
+    checkout.mkdir()
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": "us-ri/statute/44-30-2.6",
+            "DEPENDENT_CITATION": dependent_citation,
+            "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": "[]",
+            "QUEUE_ID": "",
+            "REPLACE_LEGACY_RULESPEC_PATH": legacy_source,
+            "REPLACE_RULESPEC_PATH": "us-ri/statutes/44-30-2.6.yaml",
+            "RULESPEC_CHECKOUT": str(checkout),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "SOURCE_BUNDLE_JSON": '["us-ri/statute/44-30-1"]',
+        },
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
 
 
 def test_targeted_signed_reencode_reuses_verified_existing_import(
