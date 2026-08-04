@@ -730,6 +730,7 @@ _LEGAL_ACTOR_HEAD_TERMS = frozenset(
         "commissioner",
         "department",
         "office",
+        "reserve",
         "secretary",
         "service",
     }
@@ -3107,7 +3108,7 @@ def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
     if (
         len(tokens) < 3
         or (recognized_actor_end is not None and recognized_actor_end > 1)
-        or not re.fullmatch(r"[A-Za-z]{2,8}", tokens[0])
+        or not re.fullmatch(r"[A-Za-z]{2,16}", tokens[0])
         or _dependency_token_forms(tokens[0]) & _DEPENDENCY_MODIFIER_TERMS
     ):
         return False
@@ -3153,6 +3154,13 @@ def _actor_nominal_object_is_bounded(
         )
     ):
         return False
+    if _dependency_token_forms(
+        object_tokens[-1]
+    ) & _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS and all(
+        _dependency_token_is_actor_nominal_component(token)
+        for token in object_tokens[:-1]
+    ):
+        return True
     if (
         len(object_tokens) >= 3
         and predicate_forms & _DEPENDENCY_MODIFIER_TERMS
@@ -3209,6 +3217,14 @@ def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
     )
 
 
+def _dependency_token_is_actor_nominal_component(token: str) -> bool:
+    return bool(
+        token.lower() == "part"
+        or re.fullmatch(r"[A-Z]{1,10}", token)
+        or _dependency_token_is_actor_nominal_prefix(token)
+    )
+
+
 def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:
     for subject_end in range(1, len(tokens)):
         if not _dependency_subject_phrase_is_bounded(" ".join(tokens[:subject_end])):
@@ -3231,7 +3247,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
         return True
     if re.fullmatch(
         r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
-        r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Service)s?",
+        r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Reserve|Service)s?",
         phrase,
     ):
         return True
@@ -3255,7 +3271,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|secretar(?:y|ies)|services?|"
-            r"internal\s+revenue\s+services?|"
+            r"federal\s+reserves?|internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"
             r"(?:agriculture|commerce|defense|education|energy|"

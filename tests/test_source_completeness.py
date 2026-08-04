@@ -3619,6 +3619,12 @@ rules: []
         "eligibility under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and NHTSA and BIA condition "
         "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and AmeriCorps administers "
+        "programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Reserve determines "
+        "rates under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Reserve issued rules "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3722,6 +3728,13 @@ rules: []
         "Medicare drug rules",
         "Medicaid parent eligibility",
         "SSI blind eligibility",
+        "Medicaid MAGI eligibility",
+        "SNAP ABAWD eligibility",
+        "Medicare Part D eligibility",
+        "Medicaid HCBS eligibility",
+        "SNAP EBT rules",
+        "SSI SGA rules",
+        "Medicare IRMAA rules",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
