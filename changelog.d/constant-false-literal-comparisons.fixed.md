@@ -1,1 +1,1 @@
-Treat literal-only false comparisons as constant-false Judgment formulas so source-stated unconditional prohibitions do not receive impossible positive-test requirements.
+Treat literal-only false comparisons as constant-false Judgment formulas so source-stated unconditional prohibitions do not receive impossible positive-test requirements, while bounding heuristic parsing depth and handling wrapped literals in linear time.

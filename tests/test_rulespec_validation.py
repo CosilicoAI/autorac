@@ -2697,6 +2697,22 @@ def test_constant_false_detection_respects_rulespec_boolean_precedence():
     assert _formula_is_syntactically_unsatisfiable_false("(true or false) and false")
 
 
+def test_constant_false_detection_fails_closed_above_nesting_limit():
+    deeply_wrapped_false = f"{'(' * 300}1 == 0{')' * 300}"
+    deeply_nested_conjunction = "false"
+    for _ in range(300):
+        deeply_nested_conjunction = f"true and ({deeply_nested_conjunction})"
+
+    assert not _formula_is_syntactically_unsatisfiable_false(deeply_wrapped_false)
+    assert not _formula_is_syntactically_unsatisfiable_false(deeply_nested_conjunction)
+
+
+def test_literal_comparison_handles_deep_parentheses_without_recursive_parsing():
+    deeply_wrapped_false = f"{'(' * 10_000}1{')' * 10_000} == 0"
+
+    assert _literal_comparison_truth_value(deeply_wrapped_false) is False
+
+
 @pytest.mark.parametrize(
     "formula",
     [

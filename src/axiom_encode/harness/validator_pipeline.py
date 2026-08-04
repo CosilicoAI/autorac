@@ -11453,19 +11453,25 @@ def _rule_versions_are_constant_false(versions: list[Any]) -> bool:
 
 
 def _formula_is_syntactically_unsatisfiable_false(formula: str) -> bool:
-    exact = _strip_balanced_outer_parentheses(formula.strip())
-    if exact in {"false", "False"}:
-        return True
-    literal_comparison = _literal_comparison_truth_value(exact)
-    if literal_comparison is not None:
-        return not literal_comparison
-    if len(_split_top_level_boolean_operator(exact, "or")) > 1:
+    if not _rulespec_expression_nesting_within_limit(formula):
         return False
-    conjuncts = _split_top_level_boolean_operator(exact, "and")
-    return len(conjuncts) > 1 and any(
-        _formula_is_syntactically_unsatisfiable_false(conjunct)
-        for conjunct in conjuncts
-    )
+
+    pending = [formula]
+    while pending:
+        exact = _strip_balanced_outer_parentheses(pending.pop().strip())
+        if exact in {"false", "False"}:
+            return True
+        literal_comparison = _literal_comparison_truth_value(exact)
+        if literal_comparison is not None:
+            if not literal_comparison:
+                return True
+            continue
+        if len(_split_top_level_boolean_operator(exact, "or")) > 1:
+            continue
+        conjuncts = _split_top_level_boolean_operator(exact, "and")
+        if len(conjuncts) > 1:
+            pending.extend(conjuncts)
+    return False
 
 
 def _literal_comparison_truth_value(expression: str) -> bool | None:
@@ -11639,37 +11645,79 @@ def _rulespec_literal_value(
 
 def _strip_balanced_outer_parentheses(expression: str) -> str:
     stripped = expression.strip()
-    while stripped.startswith("(") and stripped.endswith(")"):
-        depth = 0
-        encloses_all = True
-        quote: str | None = None
-        escaped = False
-        for index, char in enumerate(stripped):
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == quote:
-                    quote = None
-                continue
-            if char in {'"', "'"}:
-                quote = char
-                continue
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0 and index != len(stripped) - 1:
-                    encloses_all = False
-                    break
+    if not stripped.startswith("(") or not stripped.endswith(")"):
+        return stripped
+
+    matching_parentheses: dict[int, int] = {}
+    opening_parentheses: list[int] = []
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(stripped):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            opening_parentheses.append(index)
+            continue
+        if char != ")":
+            continue
+        if not opening_parentheses:
+            return stripped
+        matching_parentheses[opening_parentheses.pop()] = index
+    if quote is not None or opening_parentheses:
+        return stripped
+
+    start = 0
+    end = len(stripped) - 1
+    while start < end and matching_parentheses.get(start) == end:
+        start += 1
+        end -= 1
+        while start <= end and stripped[start].isspace():
+            start += 1
+        while end >= start and stripped[end].isspace():
+            end -= 1
+    return stripped[start : end + 1]
+
+
+def _rulespec_expression_nesting_within_limit(
+    expression: str,
+    *,
+    max_depth: int = 256,
+) -> bool:
+    """Bound heuristic-only parsing and reject malformed delimiters safely."""
+
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for char in expression:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            if depth > max_depth:
+                return False
+        elif char == ")":
+            depth -= 1
             if depth < 0:
-                encloses_all = False
-                break
-        if not encloses_all or depth != 0 or quote is not None:
-            break
-        stripped = stripped[1:-1].strip()
-    return stripped
+                return False
+    return quote is None and depth == 0
 
 
 def _split_top_level_boolean_operator(expression: str, operator: str) -> list[str]:
