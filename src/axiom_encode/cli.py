@@ -366,6 +366,11 @@ from .repo_routing import (
     jurisdiction_subdir_names,
     monorepo_checkout_name,
 )
+from .retry_feedback import (
+    VALIDATION_RETRY_FEEDBACK_MAX_ITEMS,
+    VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS,
+    bounded_validation_retry_feedback_item,
+)
 from .rules_engine_compat import run_rulespec_compile
 from .rulespec_path_migration import (
     MIGRATION_TOOL as APPLIED_ENCODING_PATH_MIGRATION_TOOL,
@@ -25100,7 +25105,7 @@ def _encode_validation_retry_feedback(
 ) -> tuple[str, ...]:
     """Interleave bounded validator guidance across recent failed attempts."""
 
-    feedback_limit = 12
+    feedback_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS
     attempt_feedback: list[list[str]] = []
 
     for failed_attempt in reversed(prior_attempts[-feedback_limit:]):
@@ -25110,7 +25115,7 @@ def _encode_validation_retry_feedback(
         def add_attempt_item(raw_item: object) -> None:
             if len(items) >= feedback_limit or not isinstance(raw_item, str):
                 return
-            item = raw_item.strip()[:2000]
+            item = bounded_validation_retry_feedback_item(raw_item)
             if not item or item in seen_in_attempt:
                 return
             seen_in_attempt.add(item)
@@ -25136,13 +25141,21 @@ def _encode_validation_retry_feedback(
             attempt_feedback.append(items)
 
     feedback: list[str] = []
+    feedback_chars = 0
     seen: set[str] = set()
 
     def add(raw_item: str) -> None:
-        if len(feedback) >= feedback_limit or raw_item in seen:
+        nonlocal feedback_chars
+        if (
+            len(feedback) >= feedback_limit
+            or raw_item in seen
+            or feedback_chars + len(raw_item)
+            > VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS
+        ):
             return
         seen.add(raw_item)
         feedback.append(raw_item)
+        feedback_chars += len(raw_item)
 
     for item_index in range(max((len(items) for items in attempt_feedback), default=0)):
         for items in attempt_feedback:

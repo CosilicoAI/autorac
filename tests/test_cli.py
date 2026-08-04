@@ -13007,7 +13007,33 @@ class TestCmdEncode:
         assert issues.inspected == 12
         assert len(feedback) == 12
         assert feedback[0] == "Generated RuleSpec failed CI validation"
-        assert all(len(item) <= 2000 for item in feedback)
+        assert all(len(item) <= 16_000 for item in feedback)
+        assert sum(map(len, feedback)) <= 64_000
+
+    def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
+        import axiom_encode.cli as cli_module
+
+        final_control = "FINAL_REQUIRED_CONTROL_PAIR_MUST_SURVIVE"
+        diagnostic = (
+            "[complete-source-unit:tests] missing controls: "
+            + "; ".join(f"control-{index}-{'x' * 900}" for index in range(20))
+            + f"; {final_control}"
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(
+                    compile_issues=[],
+                    ci_issues=[diagnostic],
+                )
+            ),
+            error="Generated RuleSpec failed CI validation",
+        )
+
+        feedback = cli_module._encode_validation_retry_feedback([failed_attempt])
+
+        assert len(feedback[1]) == 16_000
+        assert "diagnostic middle elided" in feedback[1]
+        assert final_control in feedback[1]
 
     def test_encode_retry_candidate_capture_preserves_rulespec_and_tests(
         self, tmp_path

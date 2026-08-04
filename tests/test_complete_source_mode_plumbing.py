@@ -298,6 +298,32 @@ def test_eval_prompt_adds_prior_validation_feedback_only_when_supplied(tmp_path)
     assert feedback[0] in retry_prompt
 
 
+def test_eval_prompt_preserves_compound_validation_feedback_tail(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("The annual amount is 73 800.")
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+    )
+    final_control = "FINAL_REQUIRED_CONTROL_PAIR_MUST_REACH_MODEL"
+    feedback = ("missing controls: " + "x" * 5_000 + final_control,)
+
+    prompt = evals._build_eval_prompt(
+        citation="de/regulation/example/1",
+        mode="cold",
+        workspace=workspace,
+        context_files=[],
+        target_file_name="1.yaml",
+        include_tests=True,
+        runner_backend="openai",
+        validation_retry_feedback=feedback,
+    )
+
+    assert feedback[0] in prompt
+    assert final_control in prompt
+
+
 def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
     source_unit = object()
     result = object()
