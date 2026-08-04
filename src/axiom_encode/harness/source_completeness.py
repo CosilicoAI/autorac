@@ -812,6 +812,13 @@ _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
         "verification",
     }
 )
+_DEPENDENCY_NESTED_NOMINAL_COMPOUNDS = frozenset(
+    {
+        ("records", "management"),
+        ("records", "retention"),
+        ("rules", "administration"),
+    }
+)
 _LEGAL_ACTOR_HEAD_TERMS = frozenset(
     {
         "administrator",
@@ -3306,13 +3313,10 @@ def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bo
             and not predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
         ):
             continue
-        if _dependency_token_forms(
-            trailing_object[0]
-        ) & _DEPENDENCY_COMPOUND_NOMINAL_TERMS and (
-            not _dependency_token_is_plural_nominal(subject_tokens[-1])
-            and _dependency_token_is_plural_nominal(predicate)
-            and not predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
-        ):
+        if (
+            predicate,
+            trailing_object[0].lower(),
+        ) in _DEPENDENCY_NESTED_NOMINAL_COMPOUNDS:
             continue
         is_input_requirement = (
             predicate == "input"
@@ -3502,19 +3506,6 @@ def _dependency_subject_and_predicate_agree(
         ("s", "es", "ies")
     ) and not predicate.endswith(("ss", "us", "is"))
     return subject_is_plural != predicate_is_singular
-
-
-def _dependency_token_is_plural_nominal(token: str) -> bool:
-    lowered = token.lower()
-    return lowered in _DEPENDENCY_IRREGULAR_PLURAL_TERMS or any(
-        candidate
-        in (
-            _DEPENDENCY_SUBJECT_TERMS
-            | _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS
-            | _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
-        )
-        for candidate in _dependency_token_forms(lowered) - {lowered}
-    )
 
 
 def _reason_direct_missing_introduction_is_bounded(
