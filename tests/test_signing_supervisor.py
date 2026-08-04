@@ -2067,6 +2067,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert repair_step["id"] == "repair_candidate"
     assert repair_step["if"] == "${{ inputs.repair_run_id != '' }}"
     assert repair_step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert repair_step["env"]["RULESPEC_CHECKOUT"] == ("rulespec-${{ inputs.country }}")
     repair_command = repair_step["run"]
     assert '.conclusion == "failure"' in repair_command
     assert '.event == "workflow_dispatch"' in repair_command
