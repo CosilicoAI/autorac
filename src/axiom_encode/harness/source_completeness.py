@@ -415,6 +415,13 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_ADVERSATIVE_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"although|but|despite|even\s+though|except|however|nevertheless|nonetheless|"
+    r"notwithstanding|though|unless|whereas|while|yet|aber|jedoch|obwohl"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
     r"\b(?:"
     r"administrative|calendar|capabilit(?:y|ies)|classification|complaint|"
@@ -1913,15 +1920,17 @@ def _reason_match_names_missing_dependency(
     reference_start = match.start() - clause_start
     reference_end = match.end() - clause_start
     after = clause[reference_end:]
-    if re.match(
+    direct_missing_state = re.match(
         r"\s*(?:"
         r"(?:is|are)\s+(?:missing|unavailable|not\s+(?:yet\s+)?(?:encoded|implemented|available))|"
         r"(?:has|have)\s+not\s+been\s+(?:encoded|implemented|made\s+available)|"
-        r"(?:is|are)\s+(?:required|needed)|"
         r"fehlt|fehlen|ist\s+nicht\s+codiert|sind\s+nicht\s+codiert"
         r")\b",
         after,
         flags=re.IGNORECASE,
+    )
+    if direct_missing_state and _reason_state_tail_is_bounded(
+        after[direct_missing_state.end() :]
     ):
         return True
 
@@ -1937,11 +1946,7 @@ def _reason_match_names_missing_dependency(
     ):
         return False
     bridge = before[signal.end() :]
-    if len(bridge) > 240 or re.search(
-        r"\b(?:but|however|although|whereas|while|yet|aber|jedoch)\b",
-        bridge,
-        flags=re.IGNORECASE,
-    ):
+    if len(bridge) > 240 or _ADVERSATIVE_LANGUAGE.search(bridge):
         return False
 
     signal_text = signal.group(0).lower()
@@ -1992,17 +1997,12 @@ def _reason_suffix_has_dependency_state(
 ) -> bool:
     """Require a state predicate for this citation or its coordinated list."""
 
-    bounded = re.split(
-        r"\b(?:but|however|although|whereas|while|yet|aber|jedoch)\b",
-        after,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
+    bounded = _ADVERSATIVE_LANGUAGE.split(after, maxsplit=1)[0]
     dependency_state = (
-        r"(?:ascertained|available|calculated|computed|determined|encoded|"
+        r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
         r"established|furnished|implemented|known|made\s+available|missing|"
-        r"needed|obtained|produced|provided|received|required|resolved|set|"
-        r"supplied|unavailable)"
+        r"issued|needed|obtained|produced|provided|received|required|resolved|set|"
+        r"supplied|unavailable|verified)"
     )
     state_pattern = re.compile(
         r"\b(?:"
@@ -2015,10 +2015,11 @@ def _reason_suffix_has_dependency_state(
     )
     for state in state_pattern.finditer(bounded):
         prefix = bounded[: state.start()]
+        tail = bounded[state.end() :]
+        if not _reason_state_tail_is_bounded(tail):
+            continue
         if not prefix.strip():
             return True
-        if not re.fullmatch(r"[\s,)]*", bounded[state.end() :]):
-            continue
         masked_prefix = list(prefix)
         dependencies = sorted(
             (
@@ -2045,6 +2046,16 @@ def _reason_suffix_has_dependency_state(
         ):
             return True
     return False
+
+
+def _reason_state_tail_is_bounded(tail: str) -> bool:
+    if re.fullmatch(r"[\s,)]*", tail):
+        return True
+    if not re.match(r"\s*,?\s+(?:and|or)\b", tail, flags=re.IGNORECASE):
+        return False
+    return bool(
+        _qualified_usc_dependencies(tail) or _PRECISE_DEFERRAL_DEPENDENCY.search(tail)
+    )
 
 
 def _usc_dependency_is_external(

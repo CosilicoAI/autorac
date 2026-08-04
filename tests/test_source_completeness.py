@@ -1889,6 +1889,68 @@ rules: []
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
+def test_contextual_required_citation_cannot_borrow_prior_sentence_missingness():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 7 USC 9999 is encoded. For context,
+        42 USC 1437f(o) is required by a separate example.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "is provided only for legislative history",
+        "is known only as historical background",
+        "is supplied only for comparison",
+    ],
+)
+def test_dependency_state_rejects_contextual_tail(predicate: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: Cannot be computed until 42 USC 1437f(o) {predicate}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
 @pytest.mark.parametrize(
     "reason",
     [
@@ -1896,6 +1958,8 @@ rules: []
         "Cannot be computed until 42 USC 1437f(o), supplied solely for comparison, and 7 USC 9999 are encoded.",
         "Cannot be computed until 42 USC 1437f(o) applies, yet 7 USC 9999 is encoded.",
         "Cannot be computed until 42 USC 1437f(o) applies, while 7 USC 9999 is encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies, even though 7 USC 9999 is encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies; nevertheless 7 USC 9999 is encoded.",
     ],
 )
 def test_contextual_list_cannot_borrow_terminal_dependency_state(reason: str):
@@ -1994,6 +2058,9 @@ rules: []
         "Cannot be computed until information required by 42 USC 1437f(o) is provided.",
         "Cannot be computed until eligibility under 42 USC 1437f(o) is set.",
         "Cannot be computed until information under 42 USC 1437f(o) is made available.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is verified.",
+        "Cannot be computed until information under 42 USC 1437f(o) is issued.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is approved.",
     ],
 )
 def test_until_dependency_accepts_non_contextual_result_predicates(reason: str):
