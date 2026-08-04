@@ -1749,6 +1749,35 @@ def test_provision_index_rejects_out_of_band_structured_successor_field() -> Non
         )
 
 
+def test_provision_index_reconciliation_preserves_literal_unicode() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    unrelated_citation = "us/statute/42/1437c–1"
+    payload = {
+        "records": [
+            {"module": "us-la/statutes/47:294.yaml"},
+            {"module": "us-la/statutes/47/294.yaml"},
+        ],
+        unrelated_citation: [{"module": "us/statutes/42/1437c-1.yaml"}],
+    }
+    raw = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path(".axiom/index/provisions_to_rules.json"),
+        raw,
+        moves=moves,
+    )
+
+    assert operations == ({"operation": "remove_legacy_module_records", "count": 1},)
+    assert unrelated_citation.encode() in rewritten
+    assert b"\\u2013" not in rewritten
+    assert json.loads(rewritten)[unrelated_citation] == payload[unrelated_citation]
+
+
 def test_retained_successor_overlay_preflights_then_removes_one_composite(
     tmp_path: Path,
 ) -> None:
