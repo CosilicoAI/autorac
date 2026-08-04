@@ -649,7 +649,7 @@ _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
     {"benefit", "limit", "process", "program", "rate", "record", "rule"}
 )
 _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS = frozenset(
-    {"condition", "limit", "process", "rate"}
+    {"based", "condition", "limit", "process", "rate"}
 )
 _DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
 _DEPENDENCY_NUMBER_AMBIGUOUS_TERMS = frozenset({"data"})
@@ -709,7 +709,22 @@ _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS = frozenset(
     }
 )
 _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
-    {"abawd", "d", "ebt", "hcbs", "irmaa", "magi", "sga"}
+    {
+        "abawd",
+        "bbce",
+        "chip",
+        "d",
+        "ebt",
+        "hcbs",
+        "irmaa",
+        "magi",
+        "moe",
+        "poms",
+        "qmb",
+        "sga",
+        "slmb",
+        "sua",
+    }
 )
 _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
     {"based", "non", "part", "waiver"}
@@ -3282,7 +3297,9 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|secretar(?:y|ies)|services?|"
-            r"federal\s+bureaus?\s+of\s+investigation|federal\s+reserves?|"
+            r"federal\s+(?:(?:[a-z-]+\s+){0,4}"
+            r"(?:bureau|commission|corporation|judiciary|reserve)|"
+            r"bureaus?\s+of\s+investigation)|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"

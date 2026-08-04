@@ -3637,6 +3637,18 @@ rules: []
         "Corporation issued rules under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and Federal Judiciary determines "
         "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA based eligibility under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA based program "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal deposit insurance "
+        "corporation issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal deposit insurance "
+        "Corporation issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal judiciary determines "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commission issued rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3753,6 +3765,13 @@ rules: []
         "Medicare part d eligibility",
         "SNAP ebt rules",
         "Medicaid HCBS-waiver eligibility",
+        "Medicaid CHIP eligibility",
+        "Medicare QMB eligibility",
+        "Medicare SLMB eligibility",
+        "SNAP BBCE eligibility",
+        "SNAP SUA rules",
+        "SSI POMS rules",
+        "TANF MOE requirements",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
