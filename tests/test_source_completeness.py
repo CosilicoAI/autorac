@@ -8203,6 +8203,258 @@ def test_compound_direct_exception_expression_is_discovered():
     assert not result.issues
 
 
+def test_multiline_boolean_applicability_selector_is_discovered():
+    source = "(1) The claimant is eligible if a certificate is present."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: result
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: |-
+          claimant_is_resident
+          and has_certificate
+"""
+    cases = [
+        {
+            "name": "without certificate",
+            "input": {"claimant_is_resident": True, "has_certificate": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "with certificate",
+            "input": {"claimant_is_resident": True, "has_certificate": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_multiline_direct_formula_returns_every_boolean_selector_name():
+    rule = {
+        "versions": [
+            {
+                "formula": (
+                    "eligible\n"
+                    "and resident\n"
+                    "and not disqualified"
+                )
+            }
+        ]
+    }
+
+    assert completeness_module._rule_exception_selector_names(rule) == {
+        "eligible",
+        "resident",
+        "disqualified",
+    }
+
+
+def test_arithmetic_if_clause_is_formula_evidence_not_exception_toggle():
+    source = """\
+(1) If the credit exceeds the tax due, the amount of the excess is an overpayment.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert not exception_branches
+
+
+def test_positive_eligibility_condition_requires_enabling_effect():
+    source = """\
+(1) The claimant shall be eligible if the claimant is ineligible due to age.
+"""
+    correct = _exception_control_content(
+        "if ineligible_due_to_age: true else: false"
+    )
+    wrong = _exception_control_content(
+        "if ineligible_due_to_age: false else: true"
+    )
+    correct_cases = [
+        {
+            "name": "ordinary",
+            "input": {"ineligible_due_to_age": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "age modification",
+            "input": {"ineligible_due_to_age": True},
+            "output": {"result": True},
+        },
+    ]
+    wrong_cases = [
+        {
+            "name": "ordinary",
+            "input": {"ineligible_due_to_age": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "age modification",
+            "input": {"ineligible_due_to_age": True},
+            "output": {"result": False},
+        },
+    ]
+
+    correct_result = _analyze(correct, source, test_cases=correct_cases)
+    wrong_result = _analyze(wrong, source, test_cases=wrong_cases)
+
+    assert not correct_result.issues
+    assert _has_issue(wrong_result, "exception", "test")
+
+
+def test_qualification_exception_requires_enabling_effect():
+    source = """\
+(1) The claimant shall meet all qualifications, except the age requirement, in
+order to be eligible for the credit.
+"""
+    content = _exception_control_content(
+        "if age_requirement_exception_applies: true else: false"
+    )
+    cases = [
+        {
+            "name": "ordinary qualification path",
+            "input": {"age_requirement_exception_applies": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "age qualification exception",
+            "input": {"age_requirement_exception_applies": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to the provisions of this chapter.",
+        (
+            "(1) The credit is subject to all provisions of this chapter, "
+            "except as may otherwise be provided."
+        ),
+    ],
+)
+def test_non_toggleable_cross_reference_does_not_require_paired_cases(
+    source: str,
+):
+    content = _exception_control_content("false")
+    case = {"name": "nonapplicable", "input": {}, "output": {"result": False}}
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    ("formula", "output", "expected_issue"),
+    [("false", False, False), ("true", True, True)],
+)
+def test_unconditional_nonapplicability_requires_asserted_false_output(
+    formula: str,
+    output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Subsection (f) shall not apply."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Subsection (f) shall not apply
+    versions:
+      - formula: '{formula}'
+"""
+    case = {
+        "name": "subsection f treatment",
+        "input": {},
+        "output": {"subsection_f_applies": output},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "non-applicability", "tests") is expected_issue
+
+
+def test_german_unconditional_nonapplicability_requires_false_output():
+    source = "(1) Absatz 2 findet keine Anwendung."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: absatz_2_applies
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Absatz 2 findet keine Anwendung
+    versions:
+      - formula: 'false'
+"""
+    case = {
+        "name": "absatz 2 treatment",
+        "input": {},
+        "output": {"absatz_2_applies": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+def test_conditional_nonapplicability_still_requires_paired_cases():
+    source = "(1) The credit shall not apply if an exemption applies."
+    content = _exception_control_content("false")
+    case = {"name": "blocked", "input": {}, "output": {"result": False}}
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "exception", "tests")
+
+
 @pytest.mark.parametrize(
     ("formula", "ordinary_output", "exception_output", "expected_issue"),
     [
@@ -8734,8 +8986,31 @@ def test_unrelated_excluding_selector_cannot_witness_source_exception():
     assert _has_issue(result, "exception", "test")
 
 
+def test_generic_exception_name_cannot_witness_unrelated_source_condition():
+    source = "(1) The claim does not apply when a certificate is absent."
+    content = _exception_control_content(
+        "if age_requirement_exception_applies: false else: true"
+    )
+    cases = [
+        {
+            "name": "ordinary age rule",
+            "input": {"age_requirement_exception_applies": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "age exception",
+            "input": {"age_requirement_exception_applies": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
 def test_selector_relevance_uses_tokens_not_substrings():
-    source = "(1) The claim does not apply at a separate status."
+    source = "(1) The claim does not apply when a separate status exists."
     content = _exception_control_content("if rate: false else: true")
     cases = [
         {
@@ -8752,6 +9027,10 @@ def test_selector_relevance_uses_tokens_not_substrings():
 
     result = _analyze(content, source, test_cases=cases)
 
+    assert not completeness_module._source_exception_selector_is_relevant(
+        "at a separate status",
+        "rate",
+    )
     assert _has_issue(result, "exception", "test")
 
 
