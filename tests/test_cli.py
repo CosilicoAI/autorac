@@ -12404,12 +12404,29 @@ class TestCmdEncode:
                 args.output / runner_name / "statutes" / "26" / "1" / "j" / "2.yaml"
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
-            output_file.write_text("format: rulespec/v1\nrules: []\n")
+            attempt_number = len(generated_models)
+            output_file.write_text(
+                f"format: rulespec/v1\n# rejected-attempt-{attempt_number}\nrules: []\n"
+            )
+            output_file.with_suffix(".test.yaml").write_text(
+                f"# historical-and-current-cases-{attempt_number}\n[]\n"
+            )
             result.output_file = str(output_file)
             return [result]
 
         def validate(result, **_kwargs):
             validated_models.append(result.model)
+            attempt_number = len(validated_models)
+            output_file = Path(result.output_file)
+            output_file.write_text(
+                output_file.read_text()
+                + f"# deterministic-post-repair-{attempt_number}\n"
+            )
+            test_file = output_file.with_suffix(".test.yaml")
+            test_file.write_text(
+                test_file.read_text()
+                + f"# deterministic-post-repair-tests-{attempt_number}\n"
+            )
             outcome = remaining_outcomes.pop(0)
             if isinstance(outcome, tuple):
                 passed, issues = outcome
@@ -12856,6 +12873,29 @@ class TestCmdEncode:
             ("terra-2", "terra-1"),
             ("sol-1", "terra-2", "terra-1"),
         ]
+        retry_candidates = [
+            call.kwargs["validation_retry_candidate"]
+            for call in mock_run.call_args_list
+        ]
+        assert retry_candidates[0] is None
+        for attempt_number, candidate in enumerate(retry_candidates[1:], start=1):
+            assert candidate is not None
+            assert candidate.rulespec == (
+                "format: rulespec/v1\n"
+                f"# rejected-attempt-{attempt_number}\n"
+                "rules: []\n"
+                f"# deterministic-post-repair-{attempt_number}\n"
+            )
+            assert candidate.tests is not None
+            assert candidate.tests == (
+                f"# historical-and-current-cases-{attempt_number}\n"
+                "[]\n"
+                f"# deterministic-post-repair-tests-{attempt_number}\n"
+            )
+            if attempt_number > 1:
+                assert (
+                    f"rejected-attempt-{attempt_number - 1}\n" not in candidate.rulespec
+                )
         assert mock_validate.call_count == 4
         mock_apply.assert_called_once()
         assert mock_apply.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
@@ -12897,6 +12937,158 @@ class TestCmdEncode:
             "Generated RuleSpec failed CI validation",
             hint,
         )
+
+    def test_encode_retry_candidate_capture_preserves_rulespec_and_tests(
+        self, tmp_path
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / "codex-terra" / "us-nj/statutes/54a/4-7.yaml"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\n# ty2000-and-current\nrules: []\n")
+        output_file.with_suffix(".test.yaml").write_text(
+            "# ty2000-companion\n# ty2026-companion\n[]\n"
+        )
+
+        candidate = cli_module._capture_validation_retry_candidate(
+            SimpleNamespace(runner="codex-terra", output_file=str(output_file)),
+            output_root=output_root,
+        )
+
+        assert "ty2000-and-current" in candidate.rulespec
+        assert candidate.tests is not None
+        assert "ty2000-companion" in candidate.tests
+        assert "ty2026-companion" in candidate.tests
+        assert (
+            candidate.rulespec_sha256
+            == hashlib.sha256(candidate.rulespec.encode("utf-8")).hexdigest()
+        )
+
+    def test_encode_retry_candidate_capture_allows_missing_tests(self, tmp_path):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / "codex-terra" / "statutes/26/1.yaml"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+
+        candidate = cli_module._capture_validation_retry_candidate(
+            SimpleNamespace(runner="codex-terra", output_file=str(output_file)),
+            output_root=output_root,
+        )
+
+        assert candidate.tests is None
+
+    @pytest.mark.parametrize("unsafe_kind", ["symlink", "invalid-utf8", "oversize"])
+    def test_encode_retry_candidate_capture_rejects_unsafe_content(
+        self, tmp_path, unsafe_kind
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / "codex-terra" / "statutes/26/1.yaml"
+        output_file.parent.mkdir(parents=True)
+        if unsafe_kind == "symlink":
+            external = tmp_path / "external.yaml"
+            external.write_text("format: rulespec/v1\nrules: []\n")
+            output_file.symlink_to(external)
+        elif unsafe_kind == "invalid-utf8":
+            output_file.write_bytes(b"\xff\xfe")
+        else:
+            output_file.write_bytes(
+                b"x" * (cli_module.VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES + 1)
+            )
+
+        with pytest.raises((OSError, UnicodeError, ValueError)):
+            cli_module._capture_validation_retry_candidate(
+                SimpleNamespace(runner="codex-terra", output_file=str(output_file)),
+                output_root=output_root,
+            )
+
+    @pytest.mark.parametrize(
+        ("runner", "relative_output"),
+        [
+            ("../escape", Path("statutes/26/1.yaml")),
+            ("codex-terra", Path("metrics/result.yaml")),
+        ],
+    )
+    def test_encode_retry_candidate_capture_rejects_unsafe_identity(
+        self, tmp_path, runner, relative_output
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / runner / relative_output
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+
+        with pytest.raises(RuntimeError):
+            cli_module._capture_validation_retry_candidate(
+                SimpleNamespace(runner=runner, output_file=str(output_file)),
+                output_root=output_root,
+            )
+
+    def test_encode_retry_capture_failure_stops_before_delete_or_second_model(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+
+        with patch(
+            "axiom_encode.cli._capture_validation_retry_candidate",
+            side_effect=RuntimeError("unsafe retry candidate"),
+        ):
+            exit_code, generated, _validated, mock_run, _validate, mock_apply = (
+                self._run_validator_escalation_case(args, [False])
+            )
+
+        assert exit_code == 1
+        assert generated == [DEFAULT_OPENAI_MODEL]
+        mock_run.assert_called_once()
+        mock_apply.assert_not_called()
+        output_file = (
+            args.output / f"codex-{DEFAULT_OPENAI_MODEL}" / "statutes/26/1/j/2.yaml"
+        )
+        assert output_file.is_file()
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert run.outcome["generation_retry_blocked"] == {
+            "reason": "RuntimeError",
+            "message": "Retry candidate capture failed closed before output cleanup",
+        }
+
+    def test_encode_retry_cleanup_rejects_symlinked_next_runner_root(self, tmp_path):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        current_output = output_root / "codex-terra" / "statutes/26/1.yaml"
+        current_output.parent.mkdir(parents=True)
+        current_output.write_text("format: rulespec/v1\nrules: []\n")
+        external_root = tmp_path / "external"
+        external_output = external_root / "statutes/26/1.yaml"
+        external_output.parent.mkdir(parents=True)
+        external_output.write_text("must remain\n")
+        external_output.with_suffix(".test.yaml").write_text("must remain\n")
+        (output_root / "codex-sol").symlink_to(external_root)
+
+        with pytest.raises(OSError):
+            cli_module._clear_retry_destination(
+                SimpleNamespace(
+                    runner="codex-terra",
+                    output_file=str(current_output),
+                ),
+                output_root=output_root,
+                backend="codex",
+                next_model="sol",
+            )
+
+        assert external_output.read_text() == "must remain\n"
+        assert external_output.with_suffix(".test.yaml").read_text() == "must remain\n"
 
     def test_encode_rejects_incompatible_escalation_model_before_generation(
         self, tmp_path
