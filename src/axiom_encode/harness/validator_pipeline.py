@@ -1192,6 +1192,25 @@ _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN = re.compile(
     r"""(?=$|[\s,.;:)\]}\'"”’–—])""",
     re.IGNORECASE,
 )
+_STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_TARGET = (
+    r"54A:\d+[A-Za-z]?\-\d+[A-Za-z]?(?:\.\d+)*"
+    r"(?:\([A-Za-z0-9]+\)[A-Za-z0-9]*)*"
+)
+_STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    + _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_TARGET
+    + r"(?=[ \t]+[A-Z][^.!?\n]{0,160}\s*\.)"
+)
+_STRUCTURAL_INLINE_NJ_LEGAL_ORDINAL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    + r"(?P<citation>"
+    + _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_TARGET
+    + r")"
+    + r"[ \t]+[A-Z][^.!?\n]{0,160}\s*\.[ \t]+"
+    + r"(?P=citation)"
+    + r"[ \t]+[A-Z][^.!?\n]{0,160}\s*\.[ \t]+"
+    + r"(?P<ordinal>[1-9]\d?)\.(?=[ \t]+[A-Z])"
+)
 _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN = re.compile(
     r"(?<![\w$£€])\d+(?:\.\d+){2,}(?![\w%])"
 )
@@ -6402,11 +6421,16 @@ def _structural_numeric_component_spans(
             _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
             _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
             _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
+            _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN,
             _STRUCTURAL_LINE_MARKER_PATTERN,
             _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
         )
         for match in pattern.finditer(text)
     }
+    spans.update(
+        match.span("ordinal")
+        for match in _STRUCTURAL_INLINE_NJ_LEGAL_ORDINAL_PATTERN.finditer(text)
+    )
     return tuple(sorted(spans))
 
 

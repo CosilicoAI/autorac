@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1440"')
+        .startswith('__version__ = "0.2.1441"')
     )
 
 
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1440"
+    assert encoder_package["version"] == "0.2.1441"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1440"
+    assert project["project"]["version"] == "0.2.1441"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1440"')
+        .startswith('__version__ = "0.2.1441"')
     )
 
 
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1440"
+    assert encoder_package["version"] == "0.2.1441"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1440"
+    assert project["project"]["version"] == "0.2.1441"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1440"')
+        .startswith('__version__ = "0.2.1441"')
     )
 
 
@@ -13007,6 +13007,113 @@ rules:
 
     assert result.passed is True
     assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_comma_shorthand_numeric_sibling():
+    excerpt = "(4) A resident individual who is at least 18 years of age is eligible."
+    content = f"""format: rulespec/v1
+rules:
+  - name: age_modified_credit
+    kind: derived
+    dtype: Money
+    source: N.J.S. 54A:4-7(a)(1), (4)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_undeclared_comma_shorthand_sibling():
+    excerpt = "(5) A different eligibility rule applies."
+    content = f"""format: rulespec/v1
+rules:
+  - name: age_modified_credit
+    kind: derived
+    dtype: Money
+    source: N.J.S. 54A:4-7(a)(1), (4)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(5)" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "N.J.S. 54A:4-7(a)(1), as amended",
+        "N.J.S. 54A:4-7(a)(1), N.J.S. 54A:4-8",
+        "N.J.S. 54A:4-7(a)(1), as amended, (5)",
+        "N.J.S. 54A:4-7(a)(1), N.J.S. 54A:4-8, (5)",
+    ],
+)
+def test_rulespec_proof_validator_does_not_broaden_scope_for_comma_suffixes(
+    rule_source: str,
+):
+    excerpt = "(5) A different eligibility rule applies."
+    content = f"""format: rulespec/v1
+rules:
+  - name: age_modified_credit
+    kind: derived
+    dtype: Money
+    source: {rule_source}
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(5)" in issue
+        for issue in result.issues
+    )
 
 
 def test_rulespec_proof_validator_allows_numeric_excerpt_under_broad_subsection():
