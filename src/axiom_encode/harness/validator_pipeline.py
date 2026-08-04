@@ -88,7 +88,11 @@ from axiom_encode.repo_routing import (
     monorepo_checkout_name,
 )
 from axiom_encode.rules_engine_compat import run_rulespec_compile
-from axiom_encode.statute import citation_to_citation_path, parse_usc_citation
+from axiom_encode.statute import (
+    citation_to_citation_path,
+    normalize_rulespec_path_segment,
+    parse_usc_citation,
+)
 
 from .dependency_stubs import (
     UnsafeRulespecContextPath,
@@ -2031,13 +2035,13 @@ def _citation_to_normalized_target(citation: str) -> tuple[str, ...] | None:
     if corpus_target is not None:
         return corpus_target
     try:
-        parts = parse_usc_citation(citation)
+        parts = parse_usc_citation(normalize_rulespec_path_segment(citation))
     except Exception:
         return None
     if parts is None:
         return None
     pieces = ["statutes", parts.title, parts.section, *parts.fragments]
-    return tuple(p.lower() for p in pieces if p)
+    return tuple(normalize_rulespec_path_segment(p).lower() for p in pieces if p)
 
 
 def _corpus_citation_to_normalized_target(citation: str) -> tuple[str, ...] | None:
@@ -2055,7 +2059,11 @@ def _corpus_citation_to_normalized_target(citation: str) -> tuple[str, ...] | No
     target_ref = _parse_rulespec_target(candidate)
     if target_ref is not None:
         return _rulespec_relative_path_parts(target_ref.relative_path)
-    parts = [part.strip().lower() for part in candidate.split("/") if part.strip()]
+    parts = [
+        normalize_rulespec_path_segment(part.strip()).lower()
+        for part in candidate.split("/")
+        if part.strip()
+    ]
     if len(parts) < 3 or not (parts[0] == "us" or parts[0].startswith("us-")):
         return None
     class_part = parts[1]
@@ -2397,7 +2405,7 @@ def _range_endpoint_normalized_target(
 
 
 def _clean_source_citation_fragment(fragment: str) -> str:
-    cleaned = fragment.strip()
+    cleaned = normalize_rulespec_path_segment(fragment.strip())
     cleaned = re.sub(r"^(?:and|or)\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.rstrip(".")
     cleaned = _USC_ABBREVIATION_RE.sub("USC", cleaned)

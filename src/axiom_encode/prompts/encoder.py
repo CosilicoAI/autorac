@@ -1649,6 +1649,13 @@ Complete-source-unit mode is enabled for this request:
   `blocked_by` only for known exact RuleSpec targets with a `#rule_fragment`;
   otherwise omit `blocked_by` and name the exact missing legal dependency or
   citation in `reason`. Never guess a blocker target.
+- Before returning YAML, inventory every top-level structural branch in the
+  authoritative source and verify that each branch has either an executable
+  rule whose `source:` cites that branch or one `module.deferred_outputs` entry
+  whose absolute output path preserves the branch label. Do not return while
+  any branch is absent. A deferral reason must identify the exact branch and a
+  concrete missing input, dependency, or runtime capability; generic omission
+  language is not coverage.
 - Companion tests must execute every source-stated formula branch, boundary,
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
@@ -1671,6 +1678,11 @@ Corpus source path: {corpus_citation_path}
 Include `{corpus_citation_path}` in `module.source_verification`.
 Use exactly
 `module.source_verification.corpus_citation_path: {corpus_citation_path}`.
+Use that exact same `{corpus_citation_path}` value in every source-backed proof
+atom's `source.corpus_citation_path`. Do not rewrite it as a display citation
+and do not append subsection markers or other path segments. Express narrower
+support through the rule-level `source:`, the proof excerpt, and the legal
+output path while keeping the corpus machine identity unchanged.
 Never emit `corpus_citation_paths`. A provision split across storage rows must
 be composed by the corpus resolver under this one canonical path. If another
 legal source is required, import its separately attested RuleSpec or defer the
