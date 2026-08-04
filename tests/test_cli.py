@@ -12938,6 +12938,77 @@ class TestCmdEncode:
             hint,
         )
 
+    def test_encode_retry_feedback_round_robins_across_failed_attempts(self):
+        import axiom_encode.cli as cli_module
+
+        generic_error = "Generated RuleSpec failed CI validation"
+
+        def failed_attempt(*issues):
+            return cli_module._FailedEncodeAttempt(
+                result=SimpleNamespace(
+                    metrics=SimpleNamespace(
+                        compile_issues=[],
+                        ci_issues=list(issues),
+                    )
+                ),
+                error=generic_error,
+            )
+
+        formula_output = (
+            "[complete-source-unit:formula-output] parameter-only representation "
+            "is invalid; bind the computation to a principal derived output"
+        )
+        latest_flood = tuple(
+            f"latest test execution failure {index}" for index in range(20)
+        )
+        feedback = cli_module._encode_validation_retry_feedback(
+            [
+                failed_attempt(formula_output),
+                failed_attempt("middle companion-test failure"),
+                failed_attempt("latest branch-test failure", *latest_flood),
+            ]
+        )
+
+        assert len(feedback) == 12
+        assert feedback[:4] == (
+            generic_error,
+            "latest branch-test failure",
+            "middle companion-test failure",
+            formula_output,
+        )
+        assert feedback.index(formula_output) < feedback.index(latest_flood[0])
+
+    def test_encode_retry_feedback_bounds_diagnostic_flood_inspection(self):
+        import axiom_encode.cli as cli_module
+
+        class CountingIssues(list):
+            def __init__(self):
+                super().__init__()
+                self.inspected = 0
+
+            def __iter__(self):
+                for index in range(10_000):
+                    self.inspected += 1
+                    yield f"unique validator diagnostic {index} {'x' * 3000}"
+
+        issues = CountingIssues()
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(
+                    compile_issues=[],
+                    ci_issues=issues,
+                )
+            ),
+            error="Generated RuleSpec failed CI validation",
+        )
+
+        feedback = cli_module._encode_validation_retry_feedback([failed_attempt])
+
+        assert issues.inspected == 12
+        assert len(feedback) == 12
+        assert feedback[0] == "Generated RuleSpec failed CI validation"
+        assert all(len(item) <= 2000 for item in feedback)
+
     def test_encode_retry_candidate_capture_preserves_rulespec_and_tests(
         self, tmp_path
     ):

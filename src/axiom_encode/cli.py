@@ -25098,29 +25098,57 @@ def _latest_validation_retry_candidate(
 def _encode_validation_retry_feedback(
     prior_attempts: Sequence[_FailedEncodeAttempt],
 ) -> tuple[str, ...]:
-    """Return bounded, deduplicated validator guidance for the next attempt."""
+    """Return bounded validator guidance without starving older attempts."""
+
+    feedback_limit = 12
+    attempt_feedback: list[list[str]] = []
+
+    for failed_attempt in reversed(prior_attempts[-feedback_limit:]):
+        items: list[str] = []
+        seen_in_attempt: set[str] = set()
+
+        def add_attempt_item(raw_item: object) -> None:
+            if len(items) >= feedback_limit or not isinstance(raw_item, str):
+                return
+            item = raw_item.strip()[:2000]
+            if not item or item in seen_in_attempt:
+                return
+            seen_in_attempt.add(item)
+            items.append(item)
+
+        add_attempt_item(failed_attempt.error)
+        metrics = getattr(failed_attempt.result, "metrics", None)
+        inspected_issues = 0
+        for attribute in ("compile_issues", "ci_issues"):
+            issues = getattr(metrics, attribute, ())
+            if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
+                issue_iterator = iter(issues)
+                for _ in range(feedback_limit - inspected_issues):
+                    try:
+                        issue = next(issue_iterator)
+                    except StopIteration:
+                        break
+                    inspected_issues += 1
+                    add_attempt_item(issue)
+            if inspected_issues >= feedback_limit:
+                break
+        if items:
+            attempt_feedback.append(items)
 
     feedback: list[str] = []
     seen: set[str] = set()
 
-    def add(raw_item: object) -> None:
-        if len(feedback) >= 12 or not isinstance(raw_item, str):
+    def add(raw_item: str) -> None:
+        if len(feedback) >= feedback_limit or raw_item in seen:
             return
-        item = raw_item.strip()[:2000]
-        if not item or item in seen:
-            return
-        seen.add(item)
-        feedback.append(item)
+        seen.add(raw_item)
+        feedback.append(raw_item)
 
-    for failed_attempt in reversed(prior_attempts):
-        add(failed_attempt.error)
-        metrics = getattr(failed_attempt.result, "metrics", None)
-        for attribute in ("compile_issues", "ci_issues"):
-            issues = getattr(metrics, attribute, ())
-            if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
-                for issue in issues:
-                    add(issue)
-        if len(feedback) >= 12:
+    for item_index in range(max((len(items) for items in attempt_feedback), default=0)):
+        for items in attempt_feedback:
+            if item_index < len(items):
+                add(items[item_index])
+        if len(feedback) >= feedback_limit:
             break
     return tuple(feedback)
 
