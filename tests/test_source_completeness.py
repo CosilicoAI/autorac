@@ -3573,6 +3573,14 @@ rules: []
         "42 USC 1437f(o).",
         "(b) The Social Security Act governs records and NPS saw benefits under "
         "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records the policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records this policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA benefits the program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rules the program "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3660,6 +3668,12 @@ rules: []
         "SNAP earnings requirements",
         "VA benefits eligibility",
         "IRS records policy",
+        "Medicaid income eligibility",
+        "SSI disability eligibility",
+        "Medicare coverage rules",
+        "SNAP training requirements",
+        "TANF participation requirements",
+        "VA disability eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
