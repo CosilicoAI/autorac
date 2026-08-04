@@ -40,6 +40,7 @@ from axiom_encode.harness.validator_pipeline import (
     OracleSubprocessResult,
     _corpus_citation_to_normalized_target,
     _extract_json_object,
+    _formula_is_syntactically_unsatisfiable_false,
     _infer_us_state_code_from_rulespec_path,
     _literal_comparison_truth_value,
     _normalize_us_tax_filing_status,
@@ -2576,6 +2577,7 @@ rules:
         '"same" != "same"',
         "9007199254740992.0 == 9007199254740993.0",
         'source_condition and "same" != "same"',
+        "(true or false) and false",
     ],
 )
 def test_judgment_positive_companion_output_allows_false_literal_comparison(
@@ -2623,6 +2625,7 @@ rules:
         '"A" != "a"',
         "9007199254740992.0 != 9007199254740993.0",
         'source_condition and "A" != "a"',
+        "true or false and false",
     ],
 )
 def test_judgment_positive_companion_output_requires_positive_for_true_literal_comparison(
@@ -2687,6 +2690,11 @@ rules:
 )
 def test_literal_comparison_truth_value_matches_rulespec_semantics(formula, expected):
     assert _literal_comparison_truth_value(formula) is expected
+
+
+def test_constant_false_detection_respects_rulespec_boolean_precedence():
+    assert not _formula_is_syntactically_unsatisfiable_false("true or false and false")
+    assert _formula_is_syntactically_unsatisfiable_false("(true or false) and false")
 
 
 @pytest.mark.parametrize(

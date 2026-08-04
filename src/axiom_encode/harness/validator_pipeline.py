@@ -11459,6 +11459,8 @@ def _formula_is_syntactically_unsatisfiable_false(formula: str) -> bool:
     literal_comparison = _literal_comparison_truth_value(exact)
     if literal_comparison is not None:
         return not literal_comparison
+    if len(_split_top_level_boolean_operator(exact, "or")) > 1:
+        return False
     conjuncts = _split_top_level_boolean_operator(exact, "and")
     return len(conjuncts) > 1 and any(
         _formula_is_syntactically_unsatisfiable_false(conjunct)
