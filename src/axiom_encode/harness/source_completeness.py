@@ -389,7 +389,7 @@ _REVERSED_USC_DEFERRAL_DEPENDENCY = re.compile(
     r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
     r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
     r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)"
-    r"\s*,?\s*(?:of|as\s+codified\s+in)\s+title\s+(?P<title>\d+)\b",
+    r"\s*,?\s*(?:of|in|as\s+codified\s+in)\s+title\s+(?P<title>\d+)\b",
     flags=re.IGNORECASE,
 )
 _TITLE_FIRST_USC_DEFERRAL_DEPENDENCY = re.compile(
@@ -1902,29 +1902,82 @@ def _reason_match_names_missing_dependency(
         "fehlt",
         "nicht codiert",
     }:
-        for dependency in _qualified_usc_dependencies(before[: signal.start()]):
+        prior_scope = before[: signal.start()]
+        prior_dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(prior_scope),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(prior_scope),
+            ),
+            key=lambda dependency: (dependency.end(), dependency.start()),
+            reverse=True,
+        )
+        for dependency in prior_dependencies:
             between = before[dependency.end() : signal.start()]
             if re.fullmatch(
-                r"\s*(?:(?:is|are|was|were|remains?|ist|sind)\s*)?",
+                r"\s*,?\s*(?:which\s+)?"
+                r"(?:(?:is|are|was|were|remains?|ist|sind)\s+)?"
+                r"(?:(?:[a-z]+ly|still|currently|bereits|weiterhin)\s+){0,3}",
                 between,
                 flags=re.IGNORECASE,
             ):
                 return False
 
     if signal_text == "until":
-        return bool(
-            re.search(
-                r"\b(?:"
-                r"(?:is|are|must\s+be)\s+"
-                r"(?:encoded|implemented|available|missing|unavailable|required|needed)|"
-                r"(?:has|have)\s+not\s+been\s+"
-                r"(?:encoded|implemented|made\s+available)"
-                r")\b",
-                after,
-                flags=re.IGNORECASE,
-            )
-        )
+        return _reason_suffix_has_dependency_state(after)
     return True
+
+
+def _reason_suffix_has_dependency_state(after: str) -> bool:
+    """Require a state predicate for this citation or its coordinated list."""
+
+    bounded = re.split(
+        r"\b(?:but|however|although|whereas|aber|jedoch)\b",
+        after,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    state_pattern = re.compile(
+        r"\b(?:"
+        r"(?:is|are|was|were|must\s+be)\s+"
+        r"(?P<state>[a-z]+(?:ed|en)|available|missing|unavailable|known)|"
+        r"(?:has|have)\s+(?:not\s+)?been\s+"
+        r"(?P<perfect_state>[a-z]+(?:ed|en)|available|known)"
+        r")\b",
+        flags=re.IGNORECASE,
+    )
+    contextual_states = {
+        "cited",
+        "described",
+        "included",
+        "mentioned",
+        "noted",
+        "referenced",
+    }
+    for state in state_pattern.finditer(bounded):
+        state_word = (state.group("state") or state.group("perfect_state")).lower()
+        if state_word in contextual_states:
+            continue
+        prefix = bounded[: state.start()]
+        masked_prefix = list(prefix)
+        dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(prefix),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(prefix),
+            ),
+            key=lambda dependency: (dependency.start(), -dependency.end()),
+        )
+        for dependency in dependencies:
+            masked_prefix[dependency.start() : dependency.end()] = " " * (
+                dependency.end() - dependency.start()
+            )
+        remainder = "".join(masked_prefix)
+        if re.fullmatch(
+            r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
+            remainder,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _usc_dependency_is_external(
