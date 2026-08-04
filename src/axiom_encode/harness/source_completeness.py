@@ -715,15 +715,33 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
         "chip",
         "d",
         "ebt",
+        "epsdt",
+        "esrd",
+        "fmap",
+        "fpl",
         "hcbs",
+        "hea",
         "irmaa",
+        "lis",
+        "ltss",
+        "ma",
         "magi",
         "moe",
+        "msp",
+        "pass",
         "poms",
+        "qdwi",
+        "qi",
         "qmb",
+        "rsdi",
         "sga",
         "slmb",
+        "ssdi",
+        "ssp",
         "sua",
+        "tfp",
+        "tpl",
+        "wpr",
     }
 )
 _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
@@ -3298,7 +3316,8 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|secretar(?:y|ies)|services?|"
             r"federal\s+(?:(?:[a-z-]+\s+){0,4}"
-            r"(?:bureau|commission|corporation|judiciary|reserve)|"
+            r"(?:administration|agency|authority|board|bureau|commission|"
+            r"corporation|department|judiciary|office|reserve|service)|"
             r"bureaus?\s+of\s+investigation)|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
