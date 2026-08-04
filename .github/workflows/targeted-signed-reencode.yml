@@ -446,6 +446,11 @@ jobs:
           done
           normalized_existing_imports="$("${existing_import_args[@]}")"
           if [ "$normalized_source_bundle" != "[]" ] && \
+             [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            echo "source bundles require legacy replacements to merge first" >&2
+            exit 1
+          fi
+          if [ "$normalized_source_bundle" != "[]" ] && \
              [ -n "$REPLACE_RULESPEC_PATH" ] && \
              { [ -n "$DEPENDENT_CITATION" ] || \
                [ -n "$SECOND_DEPENDENT_CITATION" ] || \
@@ -1088,6 +1093,11 @@ jobs:
             required_imports_enabled=true
           fi
           if [ "$source_bundle_enabled" = "true" ] && \
+             [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            echo "source bundles require legacy replacements to merge first" >&2
+            exit 1
+          fi
+          if [ "$source_bundle_enabled" = "true" ] && \
              [ -n "$REPLACE_RULESPEC_PATH" ] && \
              { [ -n "$DEPENDENT_CITATION" ] || \
                [ -n "$SECOND_DEPENDENT_CITATION" ] || \
@@ -1128,18 +1138,16 @@ jobs:
               commit -m "$message"
           }
 
-          final_legacy_source_path="$REPLACE_LEGACY_RULESPEC_PATH"
           if [ "$source_bundle_enabled" = "true" ] && \
-             [ -n "$REPLACE_RULESPEC_PATH" ]; then
+             [ -n "$REPLACE_RULESPEC_PATH" ] && \
+             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
             run_signed_encode \
               "$CITATION" "" false target-preflight \
-              "$REPLACE_RULESPEC_PATH" \
-              "$REPLACE_LEGACY_RULESPEC_PATH" false
+              "$REPLACE_RULESPEC_PATH" "" false
             checkpoint_signed_changes \
               "Canonicalize signed replacement target before source bundle"
             cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
               "$RUNNER_TEMP/target-preflight-guard-generated.json"
-            final_legacy_source_path=""
           fi
 
           source_index=0
@@ -1157,7 +1165,7 @@ jobs:
           if [ -n "$DEPENDENT_CITATION" ]; then
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" true target \
-              "$REPLACE_RULESPEC_PATH" "$final_legacy_source_path" \
+              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
               "$required_imports_enabled"
             dependent_target_only=false
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
@@ -1175,7 +1183,7 @@ jobs:
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" false \
               target "$REPLACE_RULESPEC_PATH" \
-              "$final_legacy_source_path" \
+              "$REPLACE_LEGACY_RULESPEC_PATH" \
               "$required_imports_enabled"
           fi
 
@@ -2520,11 +2528,13 @@ jobs:
           guard_candidates = [
               guard_root / "guard-generated.json",
               guard_root / "checkpoint-guard-generated.json",
+              guard_root / "target-preflight-guard-generated.json",
               *[
                   guard_root / f"source-{index:02d}-guard-generated.json"
                   for index in range(1, 17)
               ],
           ]
+          guard_inventory = []
           for guard_generated in guard_candidates:
               if not guard_generated.exists() and not guard_generated.is_symlink():
                   continue
@@ -2557,6 +2567,13 @@ jobs:
               guard_destination = artifact / "guards" / guard_generated.name
               guard_destination.parent.mkdir(parents=True, exist_ok=True)
               guard_destination.write_bytes(guard_payload)
+              guard_inventory.append(
+                  {
+                      "path": f"guards/{guard_generated.name}",
+                      "sha256": hashlib.sha256(guard_payload).hexdigest(),
+                      "size": len(guard_payload),
+                  }
+              )
 
           inventory.sort(key=lambda item: item["path"])
           step_env_prefixes = {
@@ -2610,6 +2627,7 @@ jobs:
               "failed_steps": failed_steps,
               "files": inventory,
               "generated_lanes": generated_lanes,
+              "guards": sorted(guard_inventory, key=lambda item: item["path"]),
               "legacy_exact_dependent_rulespec_path": os.environ.get(
                   "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
               )

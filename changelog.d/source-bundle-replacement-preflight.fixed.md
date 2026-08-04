@@ -1,1 +1,1 @@
-Canonicalize signed replacement targets before applying source bundles so legacy path duplicates cannot invalidate source-module compilation.
+Validate and checkpoint signed canonical replacement targets before applying source bundles, while requiring legacy path migrations to complete in a separate signed transaction.
