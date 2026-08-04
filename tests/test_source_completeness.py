@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from axiom_encode.harness import source_completeness as completeness_module
 from axiom_encode.harness import validator_pipeline as validator_pipeline_module
@@ -31,6 +32,10 @@ CORPUS_CITATION_PATH = "de/statute/estg/32a"
 DE_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
     extract_typed_numeric_inventory_occurrences_from_text,
     profile="de-DE",
+)
+EN_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
+    extract_typed_numeric_inventory_occurrences_from_text,
+    profile="en-US",
 )
 
 
@@ -1153,6 +1158,121 @@ def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
     assert [(branch.label, branch.path) for branch in formula_branches] == [
         ("source unit formula clause 2", ()),
     ]
+
+
+def test_nj_historical_rate_has_source_faithful_runtime_witness():
+    source = (
+        "For taxable year 2000, an eligible resident's New Jersey earned income "
+        "tax credit is 10% of the federal earned income tax credit. "
+        "L.2000, c.80, s.2; amended 2007, c.109; 2020, c.98; 2021, c.130."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-nj/statute/54a:4-7
+rules:
+  - name: nj_earned_income_tax_credit_percentage
+    kind: parameter
+    dtype: Rate
+    source: us-nj/statute/54a:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        effective_to: '2000-12-31'
+        formula: 0.10
+      - effective_from: '2020-01-01'
+        formula: 0.40
+  - name: nj_earned_income_tax_credit_before_proration
+    kind: derived
+    dtype: Money
+    source: us-nj/statute/54a:4-7
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: >-
+                For taxable year 2000, an eligible resident's New Jersey earned
+                income tax credit is 10% of the federal earned income tax credit.
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          if regular_nj_earned_income_tax_credit_eligible: federal_earned_income_tax_credit * nj_earned_income_tax_credit_percentage else: 0
+  - name: regular_nj_earned_income_tax_credit_eligible
+    kind: derived
+    dtype: Judgment
+    source: us-nj/statute/54a:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          claimant_is_resident
+          and eligible_for_federal_earned_income_tax_credit
+"""
+    test_cases = [
+        {
+            "name": "historical 10 percent branch",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2000-01-01",
+                "end": "2000-12-31",
+            },
+            "input": {
+                "claimant_is_resident": True,
+                "eligible_for_federal_earned_income_tax_credit": True,
+                "federal_earned_income_tax_credit": 1000,
+            },
+            "output": {
+                "regular_nj_earned_income_tax_credit_eligible": "holds",
+                "nj_earned_income_tax_credit_before_proration": 100,
+            },
+        },
+        {
+            "name": "current 40 percent branch",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+            },
+            "input": {
+                "claimant_is_resident": True,
+                "eligible_for_federal_earned_income_tax_credit": True,
+                "federal_earned_income_tax_credit": 1000,
+            },
+            "output": {
+                "regular_nj_earned_income_tax_credit_eligible": "holds",
+                "nj_earned_income_tax_credit_before_proration": 400,
+            },
+        },
+    ]
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=test_cases,
+    )
+
+    assert not _has_issue(result, "formula branch", "test")
+    environment = completeness_module._constant_rule_environment(
+        yaml.safe_load(content)
+    )
+    assert completeness_module._formula_environment_for_case(
+        environment,
+        test_cases[0],
+    )["nj_earned_income_tax_credit_percentage"] == pytest.approx(0.10)
+    assert completeness_module._formula_environment_for_case(
+        environment,
+        test_cases[1],
+    )["nj_earned_income_tax_credit_percentage"] == pytest.approx(0.40)
+    current_only = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=test_cases[1:],
+    )
+    assert _has_issue(current_only, "formula branch", "test")
 
 
 def test_colon_satz_markers_are_recognized_and_independently_required():
@@ -2889,6 +3009,137 @@ def test_en_us_inline_legal_ordinal_is_structural_after_collapsed_heading():
     )
 
     assert [(item.value, item.raw) for item in inventory] == [(2.0, "2")]
+
+
+@pytest.mark.parametrize(
+    "history_tail",
+    (
+        "L.2000, c.80, s.2; amended 2007, c.109; 2020, c.98; 2021, c.130.",
+        "\nL.2000, c.80, s.2; amended by L.2007, c.109; 2021, c.130.",
+        "History: 2020, c.98.",
+        "Source.— L.2020, c.98.",
+        "L.2000, c.80; as amended L.2021, c.130.",
+        "\n\nL.2000,c.80,s.1.",
+        "\n\nL.1976, c.47, s.54A:1-1, eff. July 8, 1976, operative Aug. 30, 1976.",
+        "\n\namended 1982, c.229, s.1; 2020, c.94, s.1.",
+        "\n\nL.1976, c.47, s.54A:9-14, eff. July 8, 1976. "
+        "Amended by L.1983, c.36, s.49, eff. Jan. 26, 1983.",
+        "\n\nL. 1976, c.47, s.54A:9-14, eff. July 8, 1976. "
+        "Amended by L. 1983, c.36, s.49, eff. Jan. 26, 1983.",
+        "\n\nP. L. 1976, c.73, s.3. Amended by L. 1978, c.66, s.1, eff. July 3, 1978.",
+        "\n\namended 1977, c.40, s.1; 1998, c.57, s.1. "
+        "2017, c.313, s.5; 2018, c.131, s.8.",
+    ),
+)
+def test_terminal_session_law_history_is_not_numeric_recall(history_tail):
+    operative = "The credit is 40% for 12 months."
+
+    cleaned = authoritative_numeric_recall_text(f"{operative} {history_tail}")
+
+    assert cleaned == operative
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "The credit is 40% for taxable year 2020 and the amount is $2,020.",
+        "The governing act is L.2020, c.98.",
+        "The governing acts are L.2020, c.98; 2021, c.130.",
+        "L.2020, c.98; amended prose does not identify another session law.",
+        "L.2020, c.98; amended 2021, c.130. Operative text follows.",
+    ),
+)
+def test_numeric_recall_preserves_non_history_session_law_text(source_text):
+    assert authoritative_numeric_recall_text(source_text) == source_text
+
+
+@pytest.mark.parametrize(
+    "terminal_block",
+    (
+        "L.2020, c.98. The same block creates a $500 refundable credit.",
+        "L.2020, c.98 governs only citations, but taxable year 2024 is operative.",
+        "L.2020, c.98; malformed tail; the benefit is 12 months.",
+        "History: 2020, c.98. Operative amount: $500.",
+    ),
+)
+def test_blank_line_history_leader_does_not_hide_operative_text(terminal_block):
+    source = f"The credit is 40%.\n\n{terminal_block}"
+
+    assert authoritative_numeric_recall_text(source) == source
+
+
+def test_formula_branch_interval_reads_range_after_chapeau_colon():
+    text = "The amount shall be: for income up to 100 dollars, income * 3"
+    branch = completeness_module.SourceStructureBranch(
+        path=("1",),
+        kind="paragraph",
+        label="1.",
+        text=text,
+        start=0,
+        end=len(text),
+    )
+
+    interval = completeness_module._formula_branch_interval(
+        branch,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is None
+    assert interval.upper is not None
+    assert interval.upper.value == 100
+    assert interval.upper_inclusive is True
+
+
+def test_formula_branch_interval_ignores_formula_constant_after_range():
+    text = "Between 10 and 20 dollars: amount * 5"
+    branch = completeness_module.SourceStructureBranch(
+        path=("1",),
+        kind="paragraph",
+        label="1.",
+        text=text,
+        start=0,
+        end=len(text),
+    )
+
+    interval = completeness_module._formula_branch_interval(
+        branch,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None
+    assert interval.lower.value == 10
+    assert interval.upper is not None
+    assert interval.upper.value == 20
+
+
+def test_formula_selector_supports_parenthesized_multiline_continuation():
+    selector = "eligible\nand resident\nand not disqualified"
+
+    assert (
+        completeness_module._evaluate_formula_selector(
+            selector,
+            {"eligible": True, "resident": True, "disqualified": False},
+        )
+        is True
+    )
+    assert (
+        completeness_module._evaluate_formula_selector(
+            selector,
+            {"eligible": True, "resident": False, "disqualified": False},
+        )
+        is False
+    )
+
+
+def test_formula_selector_keeps_adjacent_multiline_statements_unresolved():
+    result = completeness_module._evaluate_formula_selector(
+        "eligible\nresident",
+        {"eligible": True, "resident": True},
+    )
+
+    assert result is completeness_module._UNRESOLVED_CONDITION_VALUE
 
 
 @pytest.mark.parametrize(
