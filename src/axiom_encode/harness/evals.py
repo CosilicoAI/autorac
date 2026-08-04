@@ -9549,7 +9549,13 @@ Preferred principal output:
   legal facts directly, add `oracle_inputs.policyengine` with equivalent
   PolicyEngine-native scenario inputs instead of weakening the RuleSpec `input:`
   coverage.
-- Prefer a contemporary monthly `.test.yaml` period like `2022-01` or `2024-01` when the source is current-effective and lacks a better effective date; avoid pre-2015 historical periods that PolicyEngine US cannot evaluate.
+- For PolicyEngine oracle-comparison cases covering current-effective source text
+  with no better effective date, prefer a contemporary monthly `.test.yaml`
+  period like `2022-01` or `2024-01`. Avoid pre-2015 periods only for cases
+  intended to supply PolicyEngine oracle evidence. Never replace or omit a
+  source-required historical branch merely to make it oracle-comparable; keep
+  its companion case at the legally applicable period even when it cannot
+  contribute oracle evidence.
 - If that output has a durable `jurisdiction:path#rule` id, key the test by that id rather than the friendly local name.
 - Key inputs by their resolving legal RuleSpec target too, e.g. `jurisdiction:path#input.fact`, `jurisdiction:path#relation.name`, or `jurisdiction:path#upstream_rule`.
 - If a copied downstream output with the oracle hint's local name is available, assert that canonical copied output rather than replacing it with a helper-only local test.
@@ -9651,6 +9657,10 @@ Complete-source-unit mode is enabled for this request:
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
   metadata is not coverage evidence.
+- A historical branch's runtime evidence must use that branch's legally
+  applicable period. If an external oracle cannot evaluate that period, keep
+  the source-faithful companion case and omit oracle inputs or expectations
+  from that case; never move or omit the branch to gain oracle compatibility.
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 

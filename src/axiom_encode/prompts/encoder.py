@@ -1660,6 +1660,10 @@ Complete-source-unit mode is enabled for this request:
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
   metadata is not coverage evidence.
+- A historical branch's runtime evidence must use that branch's legally
+  applicable period. If an external oracle cannot evaluate that period, keep
+  the source-faithful companion case and omit oracle inputs or expectations
+  from that case; never move or omit the branch to gain oracle compatibility.
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 

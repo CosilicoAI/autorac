@@ -9,6 +9,7 @@ from the source-unit admission policy implemented here.
 from __future__ import annotations
 
 import ast
+import bisect
 import contextlib
 import math
 import re
@@ -427,6 +428,53 @@ _STRUCTURAL_REFERENCE = re.compile(
     r"Nummer(?:n)?|Nr\.|Buchstabe(?:n)?|Buchst\."
     r")\s*\d*[a-z]?"
     r"(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*\b",
+    flags=re.IGNORECASE,
+)
+_SESSION_LAW_TAIL_START = re.compile(
+    r"(?:(?P<history_label>history|source)\s*[:.\-–—]+\s*|"
+    r"(?P<action>amended(?:\s+by)?|as\s+amended|added|supplemented|repealed)"
+    r"\s+)?"
+    r"(?:(?:P\.?\s*L\.?|L\.)\s*)?"
+    r"\d{4}\s*,\s*c\.\s*\d+",
+    flags=re.IGNORECASE,
+)
+_SESSION_LAW_ENTRY = re.compile(
+    r"\s*"
+    r"(?:(?P<history_label>history|source)\s*[:.\-–—]+\s*)?"
+    r"(?:(?P<action>amended(?:\s+by)?|as\s+amended|added|supplemented|repealed)"
+    r"\s+)?"
+    r"(?:(?:P\.?\s*L\.?|L\.)\s*)?"
+    r"\d{4}\s*,\s*c\.\s*\d+"
+    r"(?:\s*(?:,|\.)\s*(?:s|ss)\.\s*[A-Za-z0-9]+"
+    r"(?:[.:\-–—][A-Za-z0-9]+)*"
+    r"(?:\s*(?:through|to|[-–—])\s*[A-Za-z0-9]+)?)?"
+    r"(?:\s*,\s*eff(?:ective)?\.\s*"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|"
+    r"Aug(?:ust)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\.?\s+\d{1,2}\s*,\s*\d{4})?"
+    r"(?:\s*,\s*operative\s+"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|"
+    r"Aug(?:ust)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\.?\s+\d{1,2}\s*,\s*\d{4})?"
+    r"\s*\.?\s*",
+    flags=re.IGNORECASE,
+)
+_SESSION_LAW_SENTENCE_SEPARATOR = re.compile(
+    r"(?<=\d)\.\s+(?=(?:(?:amended(?:\s+by)?|as\s+amended|added|supplemented|repealed)"
+    r"\s+)?(?:(?:P\.?\s*L\.?|L\.)\s*)?\d{4}\s*,\s*c\.)",
+    flags=re.IGNORECASE,
+)
+_STANDALONE_HISTORY_LEADER = re.compile(
+    r"(?:(?:history|source)\s*[:.\-–—]+\s*"
+    r"(?:(?:P\.?\s*L\.?|L\.)\s*)?|"
+    r"(?:amended(?:\s+by)?|as\s+amended|added|supplemented|repealed)\s+"
+    r"(?:(?:P\.?\s*L\.?|L\.)\s*)?|"
+    r"(?:P\.?\s*L\.?|L\.)\s*)"
+    r"\d{4}\s*,\s*c\.\s*\d+",
+    flags=re.IGNORECASE,
+)
+_SESSION_LAW_YEAR_CHAPTER = re.compile(
+    r"(?:(?:P\.?\s*L\.?|L\.)\s*)?\d{4}\s*,\s*c\.\s*\d+",
     flags=re.IGNORECASE,
 )
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -854,7 +902,9 @@ def _analyze_rulespec_payload(
             "parameter-only representation is invalid."
         )
 
-    source_occurrences = tuple(extract_numeric_occurrences(source_text))
+    source_occurrences = tuple(
+        extract_numeric_occurrences(authoritative_numeric_recall_text(source_text))
+    )
     named_values = (
         tuple(float(value) for value in artifact_numeric_values)
         if artifact_numeric_values is not None
@@ -1756,10 +1806,92 @@ def _branch_citation(
     return f"{citation}({branch.path[0]}) [{', '.join(components)}]"
 
 
+def _strip_terminal_session_law_history(source_text: str) -> str:
+    """Remove only a fully validated terminal session-law history chain."""
+
+    blank_lines = tuple(re.finditer(r"\n[ \t]*\n", source_text))
+    if blank_lines:
+        block_start = blank_lines[-1].end()
+        history_block = source_text[block_start:].lstrip()
+        normalized_history_block = _SESSION_LAW_SENTENCE_SEPARATOR.sub(
+            "; ",
+            history_block,
+        )
+        history_entries = tuple(
+            _SESSION_LAW_ENTRY.fullmatch(part)
+            for part in normalized_history_block.split(";")
+        )
+        if (
+            _STANDALONE_HISTORY_LEADER.match(history_block)
+            and _SESSION_LAW_YEAR_CHAPTER.search(history_block)
+            and history_entries
+            and all(entry is not None for entry in history_entries)
+        ):
+            return source_text[: blank_lines[-1].start()].rstrip()
+
+    separators = tuple(match.start() for match in re.finditer(";", source_text))
+    segment_starts = (0, *(position + 1 for position in separators))
+    segment_ends = (*separators, len(source_text))
+    segment_matches = tuple(
+        _SESSION_LAW_ENTRY.fullmatch(source_text[start:end])
+        for start, end in zip(segment_starts, segment_ends)
+    )
+    suffix_is_valid = [False] * (len(segment_matches) + 1)
+    suffix_has_action = [False] * (len(segment_matches) + 1)
+    suffix_is_valid[-1] = True
+    for index in range(len(segment_matches) - 1, -1, -1):
+        entry = segment_matches[index]
+        suffix_is_valid[index] = entry is not None and suffix_is_valid[index + 1]
+        suffix_has_action[index] = (
+            entry is not None and entry.group("action") is not None
+        ) or suffix_has_action[index + 1]
+
+    last_candidate_by_segment: dict[int, re.Match[str]] = {}
+    for candidate in _SESSION_LAW_TAIL_START.finditer(source_text):
+        segment_index = bisect.bisect_right(separators, candidate.start())
+        last_candidate_by_segment[segment_index] = candidate
+
+    for segment_index, candidate in sorted(last_candidate_by_segment.items()):
+        first_entry = _SESSION_LAW_ENTRY.fullmatch(
+            source_text[candidate.start() : segment_ends[segment_index]]
+        )
+        if first_entry is None or not suffix_is_valid[segment_index + 1]:
+            continue
+
+        explicitly_labeled = first_entry.group("history_label") is not None
+        has_action = (
+            first_entry.group("action") is not None
+            or suffix_has_action[segment_index + 1]
+        )
+        entry_count = len(segment_matches) - segment_index
+
+        prefix = source_text[: candidate.start()]
+        preceding = prefix.rstrip()
+        separator = prefix[len(preceding) :]
+        strong_layout = not preceding or "\n" in separator
+        if (
+            not explicitly_labeled
+            and not strong_layout
+            and (entry_count < 2 or not has_action)
+        ):
+            continue
+        if (
+            not explicitly_labeled
+            and not strong_layout
+            and preceding
+            and preceding[-1] not in ".!?"
+        ):
+            continue
+        return source_text[: candidate.start()].rstrip()
+
+    return source_text
+
+
 def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
-    cleaned = _GERMAN_LEGAL_CITATION.sub("", source_text)
+    cleaned = _strip_terminal_session_law_history(source_text)
+    cleaned = _GERMAN_LEGAL_CITATION.sub("", cleaned)
     cleaned = _ENGLISH_LEGAL_CITATION.sub("", cleaned)
     cleaned = _STRUCTURAL_REFERENCE.sub("", cleaned)
     cleaned = re.sub(
@@ -4107,7 +4239,10 @@ def _evaluate_formula_selector(
     try:
         expression = ast.parse(selector.strip(), mode="eval").body
     except SyntaxError:
-        return _UNRESOLVED_CONDITION_VALUE
+        try:
+            expression = ast.parse(f"(\n{selector.strip()}\n)", mode="eval").body
+        except SyntaxError:
+            return _UNRESOLVED_CONDITION_VALUE
     return _evaluate_condition_expression(expression, environment)
 
 
@@ -5044,7 +5179,7 @@ def _formula_branch_interval(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> _NumericInterval | None:
     first_line = branch.text.splitlines()[0] if branch.text.splitlines() else ""
-    range_text = authoritative_numeric_recall_text(first_line.split(":", 1)[0])
+    range_text = authoritative_numeric_recall_text(first_line)
     return _formula_interval_from_text(
         range_text,
         extract_numeric_occurrences=extract_numeric_occurrences,
@@ -7242,7 +7377,12 @@ def _formula_environment_for_case(
 
 
 def _normalized_case_period(case: dict[str, Any]) -> str:
-    period = str(case.get("period") or "").strip()
+    raw_period = case.get("period")
+    if isinstance(raw_period, dict):
+        start = raw_period.get("start")
+        period = str(start or "").strip()
+    else:
+        period = str(raw_period or "").strip()
     if re.fullmatch(r"\d{4}", period):
         return f"{period}-01-01"
     if re.fullmatch(r"\d{4}-\d{2}", period):
