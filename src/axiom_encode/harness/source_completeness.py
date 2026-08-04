@@ -21,7 +21,11 @@ from typing import Any, Protocol
 
 import yaml
 
-from axiom_encode.statute import normalize_rulespec_path_segment
+from axiom_encode.statute import (
+    CitationParts,
+    normalize_rulespec_path_segment,
+    parse_usc_citation,
+)
 
 _UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT = 32
 _UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT = 8
@@ -236,7 +240,8 @@ _SYMBOLIC_ARITHMETIC_OPERAND = (
     r")"
 )
 _WORDED_ARITHMETIC_EXPRESSION = re.compile(
-    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}\s+(?:plus|minus|mal)\s+"
+    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}\s+"
+    r"(?:plus|minus|mal|less(?!\s+than\b))\s+(?:the\s+)?"
     r"(?!(?:beträgt|gilt|ist|sind|wird|werden|equals?|applies?)\b)"
     rf"{_SYMBOLIC_ARITHMETIC_OPERAND}",
     flags=re.IGNORECASE,
@@ -412,13 +417,607 @@ _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
     r")",
     flags=re.IGNORECASE,
 )
+_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\b(?P<title>\d+)\s+U\.?\s*S\.?\s*C\.?(?:\s*[,;:])?\s*"
+    r"(?:(?:§{1,2}|sections?)\s*)?"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
+    flags=re.IGNORECASE,
+)
+_REVERSED_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"(?:\bsections?|§{1,2})\s*"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)"
+    r"\s*,?\s*(?:of|in|as\s+codified\s+in)\s+title\s+(?P<title>\d+)\b",
+    flags=re.IGNORECASE,
+)
+_TITLE_FIRST_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\btitle\s+(?P<title>\d+)\s*,?\s*(?:sections?|§{1,2})\s*"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
+    flags=re.IGNORECASE,
+)
+_RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\bsections?\s+"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
+    flags=re.IGNORECASE,
+)
 _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r"\b(?:"
     r"requires?|depends?\s+on|missing|not\s+yet\s+encoded|unavailable|"
-    r"cannot\s+be\s+(?:computed|encoded|resolved)|until|"
+    r"cannot\s+be\s+(?:computed|encoded|resolved)|until|without|"
     r"benötigt|abhängig|fehlt|nicht\s+codiert"
     r")\b",
     flags=re.IGNORECASE,
+)
+_ADVERSATIVE_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"although|but|despite|even\s+though|except|however|nevertheless|nonetheless|"
+    r"notwithstanding|though|unless|whereas|while|yet|aber|jedoch|obwohl"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_CONTEXTUAL_AUTHORITY_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"(?:included|mentioned|quoted|summarized|discussed|provided|supplied|known)\s+"
+    r"only\s+(?:as|for)\s+(?:an?\s+|the\s+)?"
+    r"(?:background|comparison|context|historical|history|illustration|"
+    r"legislative\s+history|nonbinding\s+authority|orientation)|"
+    r"(?:historical|legislative)\s+(?:background|context|history)|"
+    r"nonbinding\s+authority|for\s+(?:context|orientation)|"
+    r"(?:merely|only)\s+(?:illustrative|nonbinding)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_COORDINATED_FINITE_CLAUSE = re.compile(
+    r"(?:,\s*)?\b(?:and|but|or|yet)\s+"
+    r"(?:the\s+|a\s+|an\s+|this\s+|that\s+|these\s+|those\s+)?"
+    r"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,8}\s+"
+    r"(?:can|could|is|are|was|were|has|have|had|does|do|did|may|might|must|"
+    r"shall|should|will|would)\b",
+    flags=re.IGNORECASE,
+)
+_DEPENDENCY_CONTEXT_COORDINATION = re.compile(
+    r"(?:,\s*)?\b(?:although|and|but|even\s+though|or|though|while|whereas|yet)\s+",
+    flags=re.IGNORECASE,
+)
+
+
+def _has_adversative_language(text: str) -> bool:
+    without_not_yet = re.sub(
+        r"\bnot\s+yet\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return bool(_ADVERSATIVE_LANGUAGE.search(without_not_yet))
+
+
+_DEPENDENCY_SUBJECT_TERMS = frozenset(
+    {
+        "amount",
+        "assistance",
+        "benefit",
+        "calendar",
+        "calculation",
+        "classification",
+        "condition",
+        "criteria",
+        "data",
+        "date",
+        "designation",
+        "determination",
+        "document",
+        "eligibility",
+        "fact",
+        "filing",
+        "form",
+        "guidance",
+        "income",
+        "information",
+        "input",
+        "limit",
+        "management",
+        "notice",
+        "plan",
+        "policy",
+        "payment",
+        "participation",
+        "process",
+        "processing",
+        "procedure",
+        "program",
+        "administration",
+        "rate",
+        "receipt",
+        "record",
+        "regulation",
+        "retention",
+        "requirement",
+        "rule",
+        "size",
+        "standard",
+        "status",
+        "submission",
+        "threshold",
+        "timing",
+        "verification",
+        "workflow",
+    }
+)
+_DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
+    "a",
+    "an",
+    "administrative",
+    "adjusted",
+    "and",
+    "agency",
+    "annual",
+    "applicable",
+    "asset",
+    "background-check",
+    "failing-score",
+    "federal",
+    "fiscal",
+    "fiscal-year",
+    "gross",
+    "historical",
+    "household",
+    "initial",
+    "legal",
+    "local",
+    "of",
+    "or",
+    "plan",
+    "plan-submission",
+    "program",
+    "public",
+    "public-housing",
+    "residency",
+    "state",
+    "tax",
+    "taxable",
+    "the",
+    "troubled",
+    "troubled-agency",
+    "year",
+}
+_DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
+    {
+        "administered",
+        "applied",
+        "approved",
+        "available",
+        "authorized",
+        "awarded",
+        "calculated",
+        "cited",
+        "defined",
+        "described",
+        "determined",
+        "eligible",
+        "established",
+        "furnished",
+        "issued",
+        "implemented",
+        "obtained",
+        "paid",
+        "payable",
+        "promulgated",
+        "provided",
+        "received",
+        "referenced",
+        "required",
+        "set",
+        "specified",
+        "supplied",
+        "verified",
+    }
+)
+_DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
+    {
+        "already",
+        "also",
+        "not",
+        "now",
+        "otherwise",
+        "still",
+        "then",
+        "yet",
+    }
+)
+_DEPENDENCY_DETERMINER_TERMS = frozenset(
+    {
+        "a",
+        "all",
+        "an",
+        "another",
+        "any",
+        "both",
+        "each",
+        "either",
+        "every",
+        "few",
+        "her",
+        "his",
+        "its",
+        "many",
+        "more",
+        "most",
+        "my",
+        "neither",
+        "no",
+        "our",
+        "one",
+        "several",
+        "some",
+        "that",
+        "the",
+        "their",
+        "these",
+        "this",
+        "those",
+        "your",
+    }
+)
+_DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
+    {"benefit", "limit", "process", "program", "rate", "record", "rule"}
+)
+_DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS = frozenset(
+    {"based", "condition", "limit", "process", "rate"}
+)
+_DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
+_DEPENDENCY_NUMBER_AMBIGUOUS_TERMS = frozenset({"data"})
+_DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS = frozenset(
+    {"cost", "cut", "hit", "input", "put", "read", "set", "spread"}
+)
+_DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS = frozenset(
+    {
+        "amendment",
+        "benefit",
+        "blind",
+        "cash",
+        "child",
+        "drug",
+        "earning",
+        "elderly",
+        "family",
+        "household",
+        "immigrant",
+        "medical",
+        "noncitizen",
+        "parent",
+        "payment",
+        "policy",
+        "premium",
+        "prescription",
+        "program",
+        "record",
+        "refugee",
+        "resource",
+        "rule",
+        "saving",
+        "school",
+        "senior",
+        "shelter",
+        "spenddown",
+        "student",
+        "utility",
+        "wage",
+        "waiver",
+        "work",
+    }
+)
+_DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS = frozenset(
+    {
+        "administration",
+        "criteria",
+        "eligibility",
+        "limit",
+        "policy",
+        "procedure",
+        "program",
+        "requirement",
+        "rule",
+        "standard",
+        "threshold",
+    }
+)
+_DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
+    {
+        "abawd",
+        "bbce",
+        "c",
+        "chip",
+        "d",
+        "dsh",
+        "ebt",
+        "epsdt",
+        "esrd",
+        "fmap",
+        "fpl",
+        "hcbs",
+        "hea",
+        "hipp",
+        "hmo",
+        "i",
+        "irmaa",
+        "ism",
+        "lis",
+        "lieap",
+        "liheap",
+        "ltss",
+        "ma",
+        "magi",
+        "mco",
+        "moe",
+        "msp",
+        "pace",
+        "pass",
+        "pd",
+        "pdp",
+        "poms",
+        "ppo",
+        "qdwi",
+        "qi",
+        "qmb",
+        "rsdi",
+        "sga",
+        "snp",
+        "spa",
+        "slmb",
+        "ssdi",
+        "ssp",
+        "sua",
+        "tfp",
+        "tpl",
+        "wpr",
+    }
+)
+_DEPENDENCY_POLICY_PROGRAM_SUBJECT_TERMS = frozenset(
+    {
+        "afdc",
+        "chip",
+        "liheap",
+        "medicaid",
+        "medicare",
+        "rsdi",
+        "snap",
+        "ssdi",
+        "ssi",
+        "tanf",
+        "wic",
+    }
+)
+_DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
+    {"based", "non", "part", "waiver"}
+)
+_DEPENDENCY_POLICY_LEADING_ONLY_TERMS = frozenset(
+    {"based", "chip", "pace", "part", "pass"}
+)
+_DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
+    {
+        "administration",
+        "calculation",
+        "management",
+        "participation",
+        "payment",
+        "processing",
+        "retention",
+        "verification",
+    }
+)
+_DEPENDENCY_NESTED_NOMINAL_COMPOUNDS = frozenset(
+    {
+        ("records", "management"),
+        ("records", "retention"),
+        ("rules", "administration"),
+    }
+)
+_LEGAL_ACTOR_HEAD_TERMS = frozenset(
+    {
+        "administrator",
+        "agency",
+        "authority",
+        "board",
+        "bureau",
+        "commission",
+        "commissioner",
+        "corporation",
+        "department",
+        "judiciary",
+        "office",
+        "reserve",
+        "secretary",
+        "service",
+    }
+)
+_LEGAL_ACTOR_ACRONYMS = frozenset(
+    {
+        "acf",
+        "acl",
+        "aphis",
+        "atf",
+        "bjs",
+        "bls",
+        "bop",
+        "cdc",
+        "cfpb",
+        "cftc",
+        "cia",
+        "cms",
+        "cpsc",
+        "csb",
+        "dea",
+        "dhs",
+        "dod",
+        "doe",
+        "doj",
+        "dol",
+        "dot",
+        "eeoc",
+        "ebsa",
+        "epa",
+        "faa",
+        "fbi",
+        "fcc",
+        "fda",
+        "fdic",
+        "fec",
+        "fema",
+        "fha",
+        "fhfa",
+        "fincen",
+        "fmc",
+        "fmcs",
+        "fns",
+        "fra",
+        "ftc",
+        "gao",
+        "gsa",
+        "hhs",
+        "hrsa",
+        "hud",
+        "ice",
+        "irs",
+        "nara",
+        "nasa",
+        "ncua",
+        "nih",
+        "nlrb",
+        "nrc",
+        "nsa",
+        "ntsb",
+        "occ",
+        "omb",
+        "opm",
+        "osc",
+        "osha",
+        "pbgc",
+        "sba",
+        "samhsa",
+        "sec",
+        "ssa",
+        "tva",
+        "tsa",
+        "usaid",
+        "uscis",
+        "usda",
+        "usps",
+        "usss",
+        "ustr",
+        "va",
+    }
+)
+_LEGAL_INSTRUMENT_TERMS = frozenset(
+    {
+        "act",
+        "administrative",
+        "affordable",
+        "assessment",
+        "assistance",
+        "benefit",
+        "benefits",
+        "care",
+        "choice",
+        "code",
+        "education",
+        "energy",
+        "families",
+        "fair",
+        "federal",
+        "food",
+        "housing",
+        "home",
+        "internal",
+        "labor",
+        "low-income",
+        "management",
+        "needy",
+        "nutrition",
+        "patient",
+        "procedure",
+        "program",
+        "protection",
+        "public",
+        "regulation",
+        "regulations",
+        "revenue",
+        "section",
+        "security",
+        "social",
+        "standards",
+        "statute",
+        "supplemental",
+        "temporary",
+        "veterans",
+        "voucher",
+    }
+)
+_DEPENDENCY_STATE_VALUE = (
+    r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
+    r"established|furnished|implemented|known|made\s+available|missing|"
+    r"issued|needed|obtained|produced|provided|received|required|resolved|set|"
+    r"supplied|unavailable|verified)"
+)
+_SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"administrative|calendar|capabilit(?:y|ies)|classification|complaint|"
+    r"content|data|date\s+arithmetic|designation|determination|document|event|"
+    r"fact|filing|form|hearing|information|input|investigation|membership|"
+    r"notice|process|procedure|record|relation|representation|status|submission|"
+    r"timing|workflow"
+    r")[a-z-]*\b",
+    flags=re.IGNORECASE,
+)
+_ADMINISTRATIVE_SOURCE_ARTIFACT_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"amendment|approval|audit|certification|comment|complaint|consultation|"
+    r"document|filing|hearing|inspection|notice|plan|procedure|recommendation|"
+    r"record|report|submission|waiver"
+    r")[a-z-]*\b",
+    flags=re.IGNORECASE,
+)
+_ADMINISTRATIVE_SOURCE_ACTION_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"adopt|approve|certif|consult|contain|conduct|disapprov|enforce|establish|"
+    r"file|investigat|notify|prescrib|publish|recommend|review|submit|waiv"
+    r")[a-z-]*\b",
+    flags=re.IGNORECASE,
+)
+_SOURCE_BOUND_RUNTIME_GAP_STOPWORDS = frozenset(
+    {
+        "administrative",
+        "available",
+        "because",
+        "cannot",
+        "capability",
+        "capabilities",
+        "computed",
+        "current",
+        "encoded",
+        "encoding",
+        "exact",
+        "input",
+        "inputs",
+        "missing",
+        "required",
+        "requires",
+        "representation",
+        "representations",
+        "runtime",
+        "section",
+        "source",
+        "statute",
+        "under",
+        "unavailable",
+        "until",
+    }
 )
 _IMPRECISE_DEFERRAL_RETRY_SHAPE = """\
 Required shape (adapt the output and cited dependency to the omitted branch):
@@ -427,7 +1026,9 @@ module:
     - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
       reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
-must list exact absolute upstream RuleSpec outputs."""
+must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
+exists, cite the exact current source branch and name its concrete source-stated missing \
+input or runtime capability; a generic claim that the branch is unavailable is invalid."""
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -1406,10 +2007,6 @@ def _deferred_coverage(
                 for item in blocker_targets
             )
         )
-        reason_identifies_dependency = _reason_names_external_dependency(
-            reason,
-            corpus_citation_path=corpus_citation_path,
-        )
         source_scope_text = _deferred_source_scope_text(
             path,
             source_text=source_text,
@@ -1437,13 +2034,15 @@ def _deferred_coverage(
                 )
             )
         else:
-            precise = (
-                reason_identifies_dependency
-                and _reason_dependency_is_source_bound(
-                    reason,
-                    source_scope_text,
-                    corpus_citation_path=corpus_citation_path,
-                )
+            precise = _reason_dependency_is_source_bound(
+                reason,
+                source_scope_text,
+                corpus_citation_path=corpus_citation_path,
+            ) or _reason_names_source_bound_runtime_gap(
+                reason,
+                source_scope_text,
+                path=path,
+                corpus_citation_path=corpus_citation_path,
             )
         if precise:
             covered.add(path)
@@ -1454,8 +2053,8 @@ def _deferred_coverage(
                 "[complete-source-unit:deferral] "
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
-                "name an exact missing "
-                f"dependency/citation.\n{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
+                "name an exact missing dependency, input, or runtime capability.\n"
+                f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
             )
     return covered, issues
 
@@ -1632,6 +2231,85 @@ def _source_clause_links_dependency(
     )
 
 
+def _source_scope_cites_usc_dependency(
+    source_scope_text: str,
+    *,
+    title: str,
+    section: str,
+    fragments: tuple[str, ...],
+    allow_relative_reference: bool,
+) -> bool:
+    """Return whether an operative source clause cites the same USC provision."""
+
+    normalized_section = normalize_rulespec_path_segment(section.lower())
+    qualified_references = _qualified_usc_dependencies(source_scope_text)
+    references: list[re.Match[str]] = list(qualified_references)
+    if allow_relative_reference:
+        references.extend(
+            reference
+            for reference in _RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(
+                source_scope_text
+            )
+            if not any(
+                qualified.start() <= reference.start()
+                and reference.end() <= qualified.end()
+                for qualified in qualified_references
+            )
+        )
+    for reference in references:
+        reference_title = reference.groupdict().get("title")
+        if (
+            (reference_title is not None and reference_title.lower() != title.lower())
+            or normalize_rulespec_path_segment(reference.group("section").lower())
+            != normalized_section
+            or _usc_dependency_fragments(reference) != fragments
+        ):
+            continue
+        clause_start = (
+            max(
+                source_scope_text.rfind(separator, 0, reference.start())
+                for separator in (".", ";", "\n")
+            )
+            + 1
+        )
+        following_stops = [
+            position
+            for separator in (".", ";", "\n")
+            if (position := source_scope_text.find(separator, reference.end())) >= 0
+        ]
+        clause_end = min(following_stops, default=len(source_scope_text))
+        if _source_clause_links_dependency(
+            source_scope_text[clause_start:clause_end],
+            reference_start=reference.start() - clause_start,
+            reference_end=reference.end() - clause_start,
+        ):
+            return True
+    return False
+
+
+def _usc_dependency_fragments(match: re.Match[str]) -> tuple[str, ...]:
+    return tuple(
+        fragment.lower()
+        for fragment in re.findall(
+            r"\(\s*([A-Za-z0-9]+)\s*\)",
+            match.group("tail") or "",
+        )
+    )
+
+
+def _qualified_usc_dependencies(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        sorted(
+            (
+                *_USC_DEFERRAL_DEPENDENCY.finditer(text),
+                *_REVERSED_USC_DEFERRAL_DEPENDENCY.finditer(text),
+                *_TITLE_FIRST_USC_DEFERRAL_DEPENDENCY.finditer(text),
+            ),
+            key=lambda match: (match.start(), match.end()),
+        )
+    )
+
+
 def _citation_instrument_identity(
     citation: str,
 ) -> tuple[str, str, str] | None:
@@ -1686,10 +2364,58 @@ def _reason_dependency_is_source_bound(
     *,
     corpus_citation_path: str,
 ) -> bool:
-    """Require a prose-only dependency citation to occur in the deferred source."""
+    """Require one external dependency citation to bind to the deferred source."""
 
+    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
+        return False
+    try:
+        current_citation = parse_usc_citation(corpus_citation_path)
+    except ValueError:
+        current_citation = None
+    usc_dependencies = _qualified_usc_dependencies(reason)
+    for match in usc_dependencies:
+        if not _reason_match_names_missing_dependency(
+            reason,
+            match,
+            source_scope_text=source_scope_text,
+            current_usc_title=(current_citation.title if current_citation else None),
+        ) or not _usc_dependency_is_external(
+            match,
+            current_citation=current_citation,
+        ):
+            continue
+        section = normalize_rulespec_path_segment(match.group("section"))
+        if _source_scope_cites_usc_dependency(
+            source_scope_text,
+            title=match.group("title"),
+            section=section,
+            fragments=_usc_dependency_fragments(match),
+            allow_relative_reference=(
+                current_citation is not None
+                and current_citation.title.lower() == match.group("title").lower()
+            ),
+        ):
+            return True
+
+    current_section = normalize_rulespec_path_segment(
+        corpus_citation_path.rstrip("/").rsplit("/", 1)[-1].lower()
+    )
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
+        if any(
+            dependency.start() <= match.start() and match.end() <= dependency.end()
+            for dependency in usc_dependencies
+        ):
+            continue
         dependency = match.group(0).strip()
+        if not _reason_match_names_missing_dependency(
+            reason,
+            match,
+            source_scope_text=source_scope_text,
+            current_usc_title=(current_citation.title if current_citation else None),
+        ) or not _prose_dependency_is_external(
+            dependency, current_section=current_section
+        ):
+            continue
         if "#" in dependency and ":" in dependency:
             if _source_scope_identifies_blocker(
                 source_scope_text,
@@ -1724,43 +2450,1182 @@ def _reason_dependency_is_source_bound(
     return False
 
 
-def _reason_names_external_dependency(
+def _reason_match_names_missing_dependency(
     reason: str,
+    match: re.Match[str],
     *,
-    corpus_citation_path: str,
+    source_scope_text: str,
+    current_usc_title: str | None,
 ) -> bool:
-    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
+    clause_start, clause_end = _reason_clause_bounds(reason, match)
+    clause = reason[clause_start:clause_end]
+    reference_start = match.start() - clause_start
+    reference_end = match.end() - clause_start
+    before = clause[:reference_start]
+    after = clause[reference_end:]
+    if _reason_dependency_occurrence_is_contextual(
+        reason,
+        match,
+        current_usc_title=current_usc_title,
+    ):
         return False
-    current_section = corpus_citation_path.rstrip("/").rsplit("/", 1)[-1].lower()
-    for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
-        dependency = match.group(0).strip()
-        normalized = dependency.lower()
-        if any(
-            pattern.fullmatch(dependency)
-            for pattern in (
-                _ABSATZ_REFERENCE,
-                _SATZ_REFERENCE,
-                _NUMMER_REFERENCE,
-                _BUCHSTABE_REFERENCE,
+    if not _reason_named_instruments_are_source_bound(
+        before,
+        source_scope_text,
+        dependency_match=match,
+    ):
+        return False
+    direct_missing_state = re.match(
+        r"\s*(?:"
+        r"(?:is|are)\s+(?:missing|unavailable|not\s+(?:yet\s+)?(?:encoded|implemented|available))|"
+        r"(?:has|have)\s+not\s+been\s+(?:encoded|implemented|made\s+available)|"
+        r"fehlt|fehlen|ist\s+nicht\s+codiert|sind\s+nicht\s+codiert"
+        r")\b",
+        after,
+        flags=re.IGNORECASE,
+    )
+    direct_signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
+    direct_signal_text = direct_signals[-1].group(0) if direct_signals else ""
+    if (
+        direct_missing_state
+        and direct_signals
+        and not re.fullmatch(
+            r"depends?\s+on|requires?",
+            direct_signal_text,
+            flags=re.IGNORECASE,
+        )
+        and _reason_direct_missing_introduction_is_bounded(
+            before[direct_signals[-1].end() :],
+            signal=direct_signal_text,
+        )
+        and not (
+            _qualified_usc_dependencies(before)
+            or _PRECISE_DEFERRAL_DEPENDENCY.search(before)
+        )
+        and _reason_state_tail_is_bounded(after[direct_missing_state.end() :])
+    ):
+        return True
+
+    signals = direct_signals
+    if not signals:
+        return False
+    signal = signals[-1]
+    if re.fullmatch(
+        r"cannot\s+be\s+(?:computed|encoded|resolved)",
+        signal.group(0),
+        flags=re.IGNORECASE,
+    ):
+        return False
+    bridge = before[signal.end() :]
+    if len(bridge) > 240 or _has_adversative_language(bridge):
+        return False
+
+    signal_text = signal.group(0).lower()
+    if re.fullmatch(r"depends?\s+on|requires?", signal_text):
+        introduction = before[: signal.end()]
+        introduction = re.sub(
+            r"^\s*cannot\s+be\s+(?:computed|encoded|resolved)\s+"
+            r"(?:until|because|since)\s+",
+            "",
+            introduction,
+            flags=re.IGNORECASE,
+        )
+        return _reason_dependency_introduction_is_bounded(
+            introduction
+        ) and _reason_suffix_has_dependency_state(
+            after,
+            allow_descriptive_list=False,
+        )
+    if signal_text in {
+        "missing",
+        "unavailable",
+        "not yet encoded",
+        "fehlt",
+        "nicht codiert",
+    }:
+        prior_scope = before[: signal.start()]
+        prior_dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(prior_scope),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(prior_scope),
+            ),
+            key=lambda dependency: (dependency.end(), dependency.start()),
+            reverse=True,
+        )
+        if prior_dependencies:
+            return False
+
+    if signal_text == "until":
+        before_reference = clause[:reference_start]
+        if not _reason_reference_introduction_is_bounded(bridge):
+            return False
+        operative_reference = _source_clause_links_dependency(
+            clause,
+            reference_start=reference_start,
+            reference_end=reference_end,
+        ) or bool(
+            re.search(
+                r"\b(?:cited|defined|described|provided|required|set|specified)"
+                r"\s+(?:by|in)\s*$",
+                before_reference,
+                flags=re.IGNORECASE,
             )
-        ):
-            # A bare structural reference names another part of this same
-            # authoritative unit, not a missing external dependency.
+        )
+        return _reason_suffix_has_dependency_state(
+            after,
+            allow_descriptive_list=operative_reference,
+        )
+    return True
+
+
+def _reason_dependency_occurrence_is_contextual(
+    reason: str,
+    match: re.Match[str],
+    *,
+    current_usc_title: str | None,
+) -> bool:
+    """Reject context attached to this citation without crossing into another one."""
+
+    groups = match.groupdict()
+    title = groups.get("title")
+    section = groups.get("section")
+    if title and section:
+        dependencies = _reason_dependencies(reason)
+        candidates = (
+            *_qualified_usc_dependencies(reason),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
+        )
+        for candidate in candidates:
+            if _usc_dependency_occurrences_match(
+                reason,
+                candidate,
+                match,
+                current_usc_title=current_usc_title,
+            ) and (
+                _CONTEXTUAL_AUTHORITY_LANGUAGE.search(
+                    _reason_dependency_local_context(
+                        reason,
+                        candidate,
+                        dependencies=dependencies,
+                    )
+                )
+            ):
+                return True
+
+    remainder = reason[match.end() :]
+    stop = min(
+        (
+            position
+            for separator in (".", ";", "\n")
+            if (position := remainder.find(separator)) >= 0
+        ),
+        default=-1,
+    )
+    if stop < 0:
+        return False
+    trailing_clause = re.split(r"[.;\n]", remainder[stop + 1 :], maxsplit=1)[0]
+    return bool(
+        not _reason_dependencies(trailing_clause)
+        and _has_adversative_language(trailing_clause)
+    )
+
+
+def _reason_dependencies(reason: str) -> list[re.Match[str]]:
+    return sorted(
+        (
+            *_qualified_usc_dependencies(reason),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
+            *_PRECISE_DEFERRAL_DEPENDENCY.finditer(reason),
+        ),
+        key=lambda dependency: (dependency.start(), -dependency.end()),
+    )
+
+
+def _reason_dependency_local_context(
+    reason: str,
+    match: re.Match[str],
+    *,
+    dependencies: list[re.Match[str]],
+) -> str:
+    clause_start, clause_end = _reason_clause_bounds(reason, match)
+    previous_end = max(
+        (
+            dependency.end()
+            for dependency in dependencies
+            if clause_start <= dependency.start() and dependency.end() <= match.start()
+        ),
+        default=clause_start,
+    )
+    next_start = min(
+        (
+            dependency.start()
+            for dependency in dependencies
+            if match.end() <= dependency.start() < clause_end
+        ),
+        default=clause_end,
+    )
+    before = reason[previous_end : match.start()]
+    after = reason[match.end() : next_start]
+    preceding_coordinations = list(_DEPENDENCY_CONTEXT_COORDINATION.finditer(before))
+    if preceding_coordinations:
+        before = before[preceding_coordinations[-1].end() :]
+    following_coordination = _DEPENDENCY_CONTEXT_COORDINATION.search(after)
+    if following_coordination:
+        after = after[: following_coordination.start()]
+    return before + after
+
+
+def _usc_dependencies_match(left: re.Match[str], right: re.Match[str]) -> bool:
+    left_groups = left.groupdict()
+    right_groups = right.groupdict()
+    return bool(
+        left_groups.get("title")
+        and right_groups.get("title")
+        and left_groups["title"].lower() == right_groups["title"].lower()
+        and normalize_rulespec_path_segment(left_groups["section"])
+        == normalize_rulespec_path_segment(right_groups["section"])
+        and _usc_dependency_fragments(left) == _usc_dependency_fragments(right)
+    )
+
+
+def _usc_dependency_occurrences_match(
+    reason: str,
+    left: re.Match[str],
+    right: re.Match[str],
+    *,
+    current_usc_title: str | None,
+) -> bool:
+    if _usc_dependencies_match(left, right):
+        return True
+    left_groups = left.groupdict()
+    right_groups = right.groupdict()
+    if (
+        left_groups.get("title")
+        or not right_groups.get("title")
+        or not current_usc_title
+        or right_groups["title"].lower() != current_usc_title.lower()
+    ):
+        return False
+    if not re.match(
+        r"\s+of\s+this\s+title\b",
+        reason[left.end() :],
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        normalize_rulespec_path_segment(left_groups["section"])
+        == normalize_rulespec_path_segment(right_groups["section"])
+        and _usc_dependency_fragments(left) == _usc_dependency_fragments(right)
+    )
+
+
+def _reason_clause_bounds(
+    reason: str,
+    match: re.Match[str],
+) -> tuple[int, int]:
+    masked = list(reason)
+    for dependency in _qualified_usc_dependencies(reason):
+        for position in range(dependency.start(), dependency.end()):
+            if masked[position] in {".", ";"}:
+                masked[position] = " "
+    masked_reason = "".join(masked)
+    preceding_stops = [
+        position
+        for separator in (".", ";", "\n")
+        if (position := masked_reason.rfind(separator, 0, match.start())) >= 0
+    ]
+    following_stops = [
+        position
+        for separator in (".", ";", "\n")
+        if (position := masked_reason.find(separator, match.end())) >= 0
+    ]
+    return (
+        max(preceding_stops, default=-1) + 1,
+        min(following_stops, default=len(reason)),
+    )
+
+
+def _reason_suffix_has_dependency_state(
+    after: str,
+    *,
+    allow_descriptive_list: bool,
+) -> bool:
+    """Require a state predicate for this citation or its coordinated list."""
+
+    if _has_adversative_language(after):
+        return False
+    bounded = after
+    state_pattern = re.compile(
+        r"\b(?:"
+        r"(?:is|are|was|were|must\s+be)\s+(?:not\s+(?:yet\s+)?)?"
+        + _DEPENDENCY_STATE_VALUE
+        + r"|(?:has|have)\s+(?:not\s+)?been\s+"
+        + _DEPENDENCY_STATE_VALUE
+        + r")\b",
+        flags=re.IGNORECASE,
+    )
+    for state in state_pattern.finditer(bounded):
+        prefix = bounded[: state.start()]
+        tail = bounded[state.end() :]
+        if not _reason_state_tail_is_bounded(tail):
             continue
-        if section_match := re.fullmatch(
-            r"§{1,2}\s*(\d+[a-z]?)",
-            dependency,
+        if not prefix.strip():
+            return True
+        masked_prefix = list(prefix)
+        dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(prefix),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(prefix),
+            ),
+            key=lambda dependency: (dependency.start(), -dependency.end()),
+        )
+        for dependency in dependencies:
+            masked_prefix[dependency.start() : dependency.end()] = " " * (
+                dependency.end() - dependency.start()
+            )
+        remainder = "".join(masked_prefix)
+        if re.fullmatch(
+            r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
+            remainder,
             flags=re.IGNORECASE,
         ):
-            if section_match.group(1).lower() == current_section:
+            return True
+        if allow_descriptive_list and _reason_descriptive_dependency_list_is_bounded(
+            prefix
+        ):
+            return True
+    return False
+
+
+def _reason_state_tail_is_bounded(tail: str) -> bool:
+    if re.fullmatch(
+        r"[\s,)]*(?:by\s+(?:the\s+)?"
+        r"(?:(?:a|an|the)\s+)?"
+        r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
+        r"(?:agency|administrator|authority|commission|"
+        r"commissioner(?:\s+of\s+(?:internal\s+revenue|social\s+security))?|hud|irs|"
+        r"internal\s+revenue\s+service|social\s+security\s+administration|"
+        r"(?:department|secretary)(?:\s+of\s+(?:the\s+)?(?:agriculture|housing\s+and\s+"
+        r"urban\s+development|education|health\s+and\s+human\s+services|labor|"
+        r"treasury|veterans\s+affairs))?))?"
+        r"[\s,)]*",
+        tail,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    coordination = re.match(
+        r"\s*,?\s+(?:and|or)\s+",
+        tail,
+        flags=re.IGNORECASE,
+    )
+    if not coordination:
+        return False
+    continuation = tail[coordination.end() :]
+    dependencies = sorted(
+        (
+            *_qualified_usc_dependencies(continuation),
+            *_PRECISE_DEFERRAL_DEPENDENCY.finditer(continuation),
+        ),
+        key=lambda dependency: (dependency.start(), -dependency.end()),
+    )
+    dependency = dependencies[0] if dependencies else None
+    if dependency is None:
+        return False
+    introduction = continuation[: dependency.start()]
+    if not _reason_dependency_introduction_is_bounded(introduction):
+        return False
+    return _reason_suffix_has_dependency_state(
+        continuation[dependency.end() :],
+        allow_descriptive_list=False,
+    )
+
+
+def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
+    if not re.match(r"\s*,?\s+(?:and|or)\s+", prefix, flags=re.IGNORECASE):
+        return False
+    masked_prefix = list(prefix)
+    for dependency in _qualified_usc_dependencies(prefix):
+        for position in range(dependency.start(), dependency.end()):
+            if masked_prefix[position] == ",":
+                masked_prefix[position] = " "
+    items = [
+        re.sub(r"^\s*(?:and|or)\s+", "", item, flags=re.IGNORECASE).strip()
+        for item in "".join(masked_prefix).split(",")
+        if item.strip()
+    ]
+    if not items:
+        return False
+    for item in items:
+        dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(item),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(item),
+            ),
+            key=lambda dependency: (dependency.end(), -dependency.start()),
+            reverse=True,
+        )
+        if not dependencies:
+            return False
+        dependency = dependencies[0]
+        if item[dependency.end() :].strip():
+            return False
+        introduction = item[: dependency.start()]
+        if not _reason_dependency_introduction_is_bounded(introduction):
+            return False
+    return True
+
+
+def _reason_reference_introduction_is_bounded(bridge: str) -> bool:
+    if not bridge.strip() or _reason_dependency_introduction_is_bounded(bridge):
+        return True
+    masked = list(bridge)
+    dependencies = (
+        *_qualified_usc_dependencies(bridge),
+        *_PRECISE_DEFERRAL_DEPENDENCY.finditer(bridge),
+    )
+    if not dependencies:
+        return False
+    for dependency in dependencies:
+        masked[dependency.start() : dependency.end()] = " " * (
+            dependency.end() - dependency.start()
+        )
+    remainder = "".join(masked)
+    if re.fullmatch(
+        r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
+        remainder,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.fullmatch(
+            r"\s*(?:(?:is|are|was|were|must\s+be)\s+"
+            + _DEPENDENCY_STATE_VALUE
+            + r"|(?:has|have)\s+(?:not\s+)?been\s+"
+            + _DEPENDENCY_STATE_VALUE
+            + r")\s*,?\s*(?:and|or)\s*",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
+    if not introduction.strip():
+        return True
+    strong_linker = re.search(
+        r"\b(?:depends?\s+on|requires?)\s*$",
+        introduction,
+        flags=re.IGNORECASE,
+    )
+    if strong_linker:
+        return _dependency_subject_phrase_is_bounded(
+            introduction[: strong_linker.start()]
+        )
+    linker = re.search(
+        r"\b(?:"
+        r"under|pursuant\s+to|according\s+to|"
+        r"(?:cited|defined|described|provided|required|set|specified|referenced)"
+        r"\s+(?:by|in)"
+        r")\s*$",
+        introduction,
+        flags=re.IGNORECASE,
+    )
+    if not linker:
+        return False
+    subject_scope = introduction[: linker.start()]
+    if _dependency_subject_phrase_is_bounded(subject_scope):
+        return True
+    chain = re.fullmatch(
+        r"(?P<subject>.+?)\s+under\s+(?:the\s+)?"
+        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulations?|statute))\s*",
+        subject_scope,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        chain
+        and _dependency_subject_phrase_is_bounded(chain.group("subject"))
+        and _legal_instrument_phrase_is_bounded(chain.group("instrument"))
+        and re.match(
+            r"(?:cited|defined|described|provided|required|set|specified|referenced)"
+            r"\s+(?:by|in)",
+            introduction[linker.start() :],
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _dependency_subject_phrase_is_bounded(phrase: str) -> bool:
+    tokens = []
+    for raw_token in re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", phrase):
+        token = raw_token.lower()
+        if token not in _DEPENDENCY_MODIFIER_TERMS:
+            candidates = []
+            if token.endswith("ies"):
+                candidates.append(f"{token[:-3]}y")
+            if token.endswith("es"):
+                candidates.append(token[:-2])
+            if token.endswith("s"):
+                candidates.append(token[:-1])
+            token = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate in _DEPENDENCY_MODIFIER_TERMS
+                ),
+                token,
+            )
+        tokens.append(token)
+    return bool(
+        tokens
+        and tokens[-1] in _DEPENDENCY_SUBJECT_TERMS
+        and all(token in _DEPENDENCY_MODIFIER_TERMS for token in tokens)
+    )
+
+
+def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
+    tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*|\d+", phrase)
+    if not tokens or tokens[-1].lower() not in {
+        "act",
+        "code",
+        "program",
+        "regulation",
+        "regulations",
+        "statute",
+    }:
+        return False
+    connectors = {"and", "for", "of", "the", "to"}
+    return all(
+        token.isdigit()
+        or token.lower() in connectors
+        or token.lower() in _LEGAL_INSTRUMENT_TERMS
+        for token in tokens[:-1]
+    )
+
+
+def _reason_named_instruments_are_source_bound(
+    before: str,
+    source_scope_text: str,
+    *,
+    dependency_match: re.Match[str],
+) -> bool:
+    named_instrument = re.compile(
+        r"\bunder\s+(?:the\s+)?"
+        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulations?|statute))"
+        r"\s+(?:cited|defined|described|provided|required|set|specified|referenced)"
+        r"\s+(?:by|in)\s*$",
+        flags=re.IGNORECASE,
+    )
+    match = named_instrument.search(before)
+    if match is None:
+        return True
+    instrument = re.sub(r"[^a-z0-9]+", " ", match.group("instrument").lower()).strip()
+    if not instrument:
+        return False
+
+    match_groups = dependency_match.groupdict()
+    dependency_title = match_groups.get("title")
+    dependency_section = match_groups.get("section")
+    if dependency_title and dependency_section:
+        dependency_fragments = _usc_dependency_fragments(dependency_match)
+        source_matches = (
+            *_qualified_usc_dependencies(source_scope_text),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text),
+        )
+        instrument_pattern = re.compile(
+            r"(?<![a-z0-9])"
+            + r"[^a-z0-9]+".join(map(re.escape, instrument.split()))
+            + r"(?![a-z0-9])",
+            flags=re.IGNORECASE,
+        )
+        instrument_link = re.compile(
+            r"\b(?:authorizes?|defines?|establishes?|governs?|provides?|"
+            r"regulates?|requires?)\b[^.;\n]{0,200}\b"
+            r"(?:according\s+to|pursuant\s+to|under)\s*$",
+            flags=re.IGNORECASE,
+        )
+        for source_match in source_matches:
+            source_title = source_match.groupdict().get("title")
+            if (
+                (source_title and source_title.lower() != dependency_title.lower())
+                or normalize_rulespec_path_segment(source_match.group("section"))
+                != normalize_rulespec_path_segment(dependency_section)
+                or _usc_dependency_fragments(source_match) != dependency_fragments
+            ):
                 continue
+            clause_start, clause_end = _reason_clause_bounds(
+                source_scope_text,
+                source_match,
+            )
+            clause = source_scope_text[clause_start:clause_end]
+            reference_start = source_match.start() - clause_start
+            reference_end = source_match.end() - clause_start
+            if not _source_clause_links_dependency(
+                clause,
+                reference_start=reference_start,
+                reference_end=reference_end,
+            ):
+                continue
+            for title_match in instrument_pattern.finditer(clause, 0, reference_start):
+                bridge = clause[title_match.end() : reference_start]
+                if (
+                    not _has_adversative_language(bridge)
+                    and not _bridge_crosses_coordinated_finite_clause(bridge)
+                    and instrument_link.search(bridge)
+                ):
+                    return True
+        return False
+
+    normalized_source = re.sub(r"[^a-z0-9]+", " ", source_scope_text.lower()).strip()
+    return bool(
+        re.search(
+            rf"(?:^|\s){re.escape(instrument)}(?:$|\s)",
+            normalized_source,
+        )
+    )
+
+
+def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
+    if _COORDINATED_FINITE_CLAUSE.search(bridge):
+        return True
+    for coordination in re.finditer(
+        r"(?:,\s*)?\b(?:and|but|or|yet)\s+",
+        bridge,
+        flags=re.IGNORECASE,
+    ):
+        coordinated = bridge[coordination.end() :]
+        linker = re.search(
+            r"\b(?:according\s+to|pursuant\s+to|under)\s*$",
+            coordinated,
+            flags=re.IGNORECASE,
+        )
+        if linker is None:
+            continue
+        tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", coordinated[: linker.start()])
+        if len(tokens) < 2:
+            continue
+        if _coordinated_phrase_has_finite_predicate(tokens):
+            return True
+        if _coordinated_dependency_object_phrase_is_bounded(
+            tokens
+        ) or _coordinated_dependency_object_modifier_is_bounded(tokens):
+            continue
+        for subject_end in range(1, len(tokens)):
+            subject = " ".join(tokens[:subject_end])
+            if _dependency_subject_phrase_is_bounded(
+                subject
+            ) or _legal_actor_subject_phrase_is_bounded(subject):
+                return True
+    return False
+
+
+def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
+    for actor_end in range(1, len(tokens)):
+        if not _legal_actor_subject_phrase_is_bounded(" ".join(tokens[:actor_end])):
+            continue
+        if _actor_nominal_object_is_bounded(tokens, actor_end=actor_end):
+            return True
+        object_tokens = tokens[actor_end:]
+        if not _dependency_subject_phrase_is_bounded(" ".join(object_tokens)):
+            continue
         if (
-            normalized.rstrip("/").endswith(f"/{current_section}")
-            and "#" not in normalized
+            len(object_tokens) == 1
+            and (
+                _dependency_token_forms(object_tokens[0])
+                & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+            )
+            and not _legal_actor_acronym_phrase_is_bounded(" ".join(tokens[:actor_end]))
+        ):
+            return False
+        return True
+    return _dependency_subject_phrase_is_bounded(" ".join(tokens))
+
+
+def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
+    if _actor_acronym_sequence_starts_finite_clause(tokens):
+        return True
+    if _unlisted_actor_acronym_starts_finite_clause(tokens):
+        return True
+    for subject_end in range(1, len(tokens)):
+        subject = " ".join(tokens[:subject_end])
+        subject_is_actor = _legal_actor_subject_phrase_is_bounded(subject)
+        if not (subject_is_actor or _dependency_subject_phrase_is_bounded(subject)):
+            continue
+        predicate = tokens[subject_end]
+        trailing_object = tokens[subject_end + 1 :]
+        if predicate.lower() in _DEPENDENCY_COMPOUND_NOMINAL_TERMS:
+            continue
+        if subject_is_actor and _actor_nominal_object_is_bounded(
+            tokens,
+            actor_end=subject_end,
         ):
             continue
-        return True
+        if trailing_object:
+            if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
+                continue
+            is_input_requirement = (
+                predicate.lower() == "input"
+                and len(trailing_object) == 1
+                and "requirement" in _dependency_token_forms(trailing_object[-1])
+                and not {
+                    "a",
+                    "an",
+                    "that",
+                    "the",
+                    "these",
+                    "this",
+                    "those",
+                }
+                & {token.lower() for token in trailing_object}
+            )
+            if is_input_requirement:
+                continue
+            if predicate.lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS:
+                return True
+        elif not (
+            subject_is_actor
+            and _dependency_token_forms(predicate)
+            & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+            and not _legal_actor_acronym_phrase_is_bounded(subject)
+        ):
+            continue
+        if _dependency_subject_and_predicate_agree(tokens[subject_end - 1], predicate):
+            return True
     return False
+
+
+def _actor_acronym_sequence_starts_finite_clause(tokens: list[str]) -> bool:
+    predicate_index = _legal_actor_acronym_sequence_end(tokens)
+    if predicate_index is None or predicate_index >= len(tokens) - 1:
+        return False
+    if _actor_nominal_object_is_bounded(tokens, actor_end=predicate_index):
+        return False
+    predicate = tokens[predicate_index].lower()
+    return not (
+        _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS
+    ) and _dependency_subject_phrase_is_bounded(" ".join(tokens[predicate_index + 1 :]))
+
+
+def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
+    recognized_actor_end = _legal_actor_acronym_sequence_end(tokens)
+    if (
+        len(tokens) < 3
+        or (recognized_actor_end is not None and recognized_actor_end > 1)
+        or not re.fullmatch(r"[A-Za-z]{2,16}", tokens[0])
+        or _dependency_token_forms(tokens[0]) & _DEPENDENCY_MODIFIER_TERMS
+    ):
+        return False
+    if _actor_nominal_object_is_bounded(tokens, actor_end=1):
+        return False
+    return True
+
+
+def _legal_actor_acronym_sequence_end(tokens: list[str]) -> int | None:
+    actor_count = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index].lower()
+        if token in _LEGAL_ACTOR_ACRONYMS:
+            actor_count += 1
+            index += 1
+            continue
+        if (
+            token in {"and", "or"}
+            and actor_count
+            and index + 1 < len(tokens)
+            and tokens[index + 1].lower() in _LEGAL_ACTOR_ACRONYMS
+        ):
+            index += 1
+            continue
+        break
+    return index if actor_count else None
+
+
+def _actor_nominal_object_is_bounded(
+    tokens: list[str],
+    *,
+    actor_end: int,
+) -> bool:
+    object_tokens = tokens[actor_end:]
+    predicate_forms = _dependency_token_forms(object_tokens[0])
+    if (
+        len(object_tokens) < 2
+        or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
+        or predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
+        or _actor_nominal_object_contains_finite_clause(object_tokens)
+        or any(
+            token.lower() in _DEPENDENCY_DETERMINER_TERMS for token in object_tokens[1:]
+        )
+    ):
+        return False
+    policy_program_subject = (
+        actor_end == 1 and tokens[0].lower() in _DEPENDENCY_POLICY_PROGRAM_SUBJECT_TERMS
+    )
+    if _dependency_token_forms(
+        object_tokens[-1]
+    ) & _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS and all(
+        _dependency_token_is_actor_nominal_component(
+            token,
+            component_index=component_index,
+            allow_policy_terms=policy_program_subject,
+        )
+        for component_index, token in enumerate(object_tokens[:-1])
+    ):
+        return True
+    if (
+        len(object_tokens) >= 3
+        and predicate_forms & _DEPENDENCY_MODIFIER_TERMS
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens[1:]))
+    ):
+        return True
+    if (
+        _dependency_token_is_actor_nominal_prefix(object_tokens[0])
+        and _dependency_token_forms(object_tokens[-1])
+        & _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens[1:]))
+    ):
+        return True
+    if len(object_tokens) >= 3 and _dependency_subject_phrase_is_bounded(
+        " ".join(object_tokens[1:])
+    ):
+        return bool(predicate_forms & _DEPENDENCY_COMPOUND_NOMINAL_TERMS)
+    return False
+
+
+def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bool:
+    for predicate_index in range(1, len(object_tokens) - 1):
+        subject_tokens = object_tokens[:predicate_index]
+        if not _dependency_subject_phrase_is_bounded(" ".join(subject_tokens)):
+            continue
+        predicate = object_tokens[predicate_index].lower()
+        predicate_forms = _dependency_token_forms(predicate)
+        trailing_object = object_tokens[predicate_index + 1 :]
+        if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
+            continue
+        if predicate_forms & _DEPENDENCY_COMPOUND_NOMINAL_TERMS:
+            continue
+        if (
+            predicate_forms
+            & (
+                _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
+                - _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+            )
+            and not predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
+        ):
+            continue
+        if (
+            predicate,
+            trailing_object[0].lower(),
+        ) in _DEPENDENCY_NESTED_NOMINAL_COMPOUNDS:
+            continue
+        is_input_requirement = (
+            predicate == "input"
+            and len(trailing_object) == 1
+            and "requirement" in _dependency_token_forms(trailing_object[0])
+        )
+        if is_input_requirement:
+            continue
+        if _dependency_subject_and_predicate_agree(
+            subject_tokens[-1],
+            predicate,
+        ):
+            return True
+    return False
+
+
+def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
+    lowered = token.lower()
+    forms = _dependency_token_forms(lowered)
+    if forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS:
+        return False
+    return bool(
+        forms
+        & (
+            _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS
+            | _DEPENDENCY_MODIFIER_TERMS
+            | _LEGAL_INSTRUMENT_TERMS
+        )
+        or lowered.endswith(
+            (
+                "age",
+                "al",
+                "ance",
+                "ence",
+                "ful",
+                "ic",
+                "ing",
+                "ion",
+                "ity",
+                "ive",
+                "less",
+                "ment",
+                "ness",
+                "ory",
+                "ous",
+                "ship",
+            )
+        )
+    )
+
+
+def _dependency_token_is_actor_nominal_component(
+    token: str,
+    *,
+    component_index: int,
+    allow_policy_terms: bool,
+) -> bool:
+    parts = token.lower().split("-")
+    return all(
+        (
+            allow_policy_terms
+            and (
+                (
+                    part in _DEPENDENCY_POLICY_ACRONYM_TERMS
+                    or part in _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS
+                )
+                and (
+                    part not in _DEPENDENCY_POLICY_LEADING_ONLY_TERMS
+                    or component_index == 0
+                )
+            )
+        )
+        or _dependency_token_is_actor_nominal_prefix(part)
+        for part in parts
+    )
+
+
+def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:
+    for subject_end in range(1, len(tokens)):
+        if not _dependency_subject_phrase_is_bounded(" ".join(tokens[:subject_end])):
+            continue
+        modifier_tokens = tokens[subject_end:]
+        while len(modifier_tokens) > 1 and _dependency_token_is_object_modifier_adverb(
+            modifier_tokens[0]
+        ):
+            modifier_tokens = modifier_tokens[1:]
+        if modifier_tokens[0].lower() in _DEPENDENCY_OBJECT_MODIFIER_TERMS and all(
+            _dependency_token_is_object_modifier_adverb(token)
+            for token in modifier_tokens[1:]
+        ):
+            return True
+    return False
+
+
+def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
+    if _legal_actor_acronym_phrase_is_bounded(phrase):
+        return True
+    if re.fullmatch(
+        r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
+        r"(?:Administration|Agency|Authority|Board|Bureau|Commission|Corporation|Department|Judiciary|Office|Reserve|Service)s?",
+        phrase,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?:the\s+)?Office\s+of\s+(?:[A-Z][A-Za-z-]*\s*){1,6}"
+        r"(?:and\s+(?:[A-Z][A-Za-z-]*\s*){1,3})?",
+        phrase,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?:the\s+)?offices?\s+of\s+"
+        r"(?:management\s+and\s+budget|personnel\s+management)",
+        phrase,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:a|an|the|this|that|these|those)?\s*"
+            r"(?:(?:administering|federal|local|public(?:-|\s+)housing|state)\s+)?"
+            r"(?:"
+            r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
+            r"commissioners?|departments?|secretar(?:y|ies)|services?|"
+            r"federal\s+(?:(?:[a-z-]+\s+){0,4}"
+            r"(?:administrations?|administrators?|agenc(?:y|ies)|authorit(?:y|ies)|"
+            r"boards?|bureaus?|commissions?|commissioners?|corporations?|"
+            r"departments?|judiciar(?:y|ies)|offices?|reserves?|"
+            r"secretar(?:y|ies)|services?)|"
+            r"bureaus?\s+of\s+investigation)|"
+            r"internal\s+revenue\s+services?|"
+            r"social\s+security\s+administrations?|"
+            r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"
+            r"(?:agriculture|commerce|defense|education|energy|"
+            r"health\s+and\s+human\s+services|homeland\s+security|"
+            r"housing\s+and\s+urban\s+development|interior|justice|labor|state|"
+            r"transportation|treasury|veterans\s+affairs)|"
+            r"secretar(?:y|ies)\s+of\s+(?:the\s+)?"
+            r"(?:agriculture|commerce|defense|education|energy|"
+            r"health\s+and\s+human\s+services|homeland\s+security|"
+            r"housing\s+and\s+urban\s+development|interior|labor|state|"
+            r"transportation|treasury|veterans\s+affairs)|"
+            r"commissioners?\s+of\s+(?:internal\s+revenue|social\s+security)"
+            r")",
+            phrase,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _legal_actor_acronym_phrase_is_bounded(phrase: str) -> bool:
+    normalized = re.sub(r"^(?:the\s+)", "", phrase.strip(), flags=re.IGNORECASE)
+    tokens = re.findall(r"[A-Za-z]+", normalized)
+    sequence_end = _legal_actor_acronym_sequence_end(tokens)
+    return sequence_end == len(tokens)
+
+
+def _dependency_token_is_object_modifier_adverb(token: str) -> bool:
+    lowered = token.lower()
+    return lowered in _DEPENDENCY_OBJECT_MODIFIER_ADVERBS or lowered.endswith("ly")
+
+
+def _dependency_token_forms(token: str) -> set[str]:
+    lowered = token.lower()
+    candidates = {lowered}
+    if lowered.endswith("ies"):
+        candidates.add(f"{lowered[:-3]}y")
+    if lowered.endswith("es"):
+        candidates.add(lowered[:-2])
+    if lowered.endswith("s"):
+        candidates.add(lowered[:-1])
+    return candidates
+
+
+def _dependency_subject_and_predicate_agree(
+    subject_token: str,
+    predicate_token: str,
+) -> bool:
+    subject = subject_token.lower()
+    if subject in _DEPENDENCY_NUMBER_AMBIGUOUS_TERMS:
+        return True
+    subject_is_plural = subject in _DEPENDENCY_IRREGULAR_PLURAL_TERMS or any(
+        candidate in _DEPENDENCY_SUBJECT_TERMS or candidate in _LEGAL_ACTOR_HEAD_TERMS
+        for candidate in _dependency_token_forms(subject) - {subject}
+    )
+    predicate = predicate_token.lower()
+    predicate_is_singular = predicate.endswith(
+        ("s", "es", "ies")
+    ) and not predicate.endswith(("ss", "us", "is"))
+    return subject_is_plural != predicate_is_singular
+
+
+def _reason_direct_missing_introduction_is_bounded(
+    introduction: str,
+    *,
+    signal: str,
+) -> bool:
+    if re.fullmatch(
+        r"cannot\s+be\s+(?:computed|encoded|resolved)",
+        signal,
+        flags=re.IGNORECASE,
+    ):
+        dependency_introduction = re.sub(
+            r"^\s*(?:because|since|as|when)\s+",
+            "",
+            introduction,
+            flags=re.IGNORECASE,
+        )
+        return not dependency_introduction.strip() or (
+            _reason_dependency_introduction_is_bounded(dependency_introduction)
+        )
+    return _reason_reference_introduction_is_bounded(introduction)
+
+
+def _usc_dependency_is_external(
+    match: re.Match[str],
+    *,
+    current_citation: CitationParts | None,
+) -> bool:
+    if current_citation is None:
+        return True
+    return match.group(
+        "title"
+    ).lower() != current_citation.title.lower() or normalize_rulespec_path_segment(
+        match.group("section").lower()
+    ) != normalize_rulespec_path_segment(current_citation.section.lower())
+
+
+def _prose_dependency_is_external(
+    dependency: str,
+    *,
+    current_section: str,
+) -> bool:
+    normalized = dependency.lower()
+    if any(
+        pattern.fullmatch(dependency)
+        for pattern in (
+            _ABSATZ_REFERENCE,
+            _SATZ_REFERENCE,
+            _NUMMER_REFERENCE,
+            _BUCHSTABE_REFERENCE,
+        )
+    ):
+        return False
+    if section_match := re.fullmatch(
+        r"§{1,2}\s*(\d+[a-z]?)",
+        dependency,
+        flags=re.IGNORECASE,
+    ):
+        if section_match.group(1).lower() == current_section:
+            return False
+    return not (
+        normalized.rstrip("/").endswith(f"/{current_section}") and "#" not in normalized
+    )
+
+
+def _reason_names_source_bound_runtime_gap(
+    reason: str,
+    source_scope_text: str,
+    *,
+    path: tuple[str, ...],
+    corpus_citation_path: str,
+) -> bool:
+    """Accept a concrete runtime gap anchored to the exact current USC branch."""
+
+    if (
+        not path
+        or not source_scope_text.strip()
+        or not _MISSING_DEPENDENCY_LANGUAGE.search(reason)
+        or not _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE.search(reason)
+        or not _ADMINISTRATIVE_SOURCE_ARTIFACT_LANGUAGE.search(source_scope_text)
+        or not _ADMINISTRATIVE_SOURCE_ACTION_LANGUAGE.search(source_scope_text)
+        or source_states_explicit_computation(source_scope_text)
+        or not corpus_citation_path.startswith("us/statute/")
+    ):
+        return False
+    try:
+        citation = parse_usc_citation(corpus_citation_path)
+    except ValueError:
+        return False
+
+    dash_pattern = (
+        "[-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212\\ufe58\\ufe63\\uff0d]"
+    )
+    section_pattern = re.escape(
+        normalize_rulespec_path_segment(citation.section)
+    ).replace(r"\-", dash_pattern)
+    branch_pattern = r"\s*".join(
+        rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
+        for part in path
+    )
+    descendant_guard = r"(?!\s*\()" if len(path) > 1 else ""
+    exact_branch_citation = re.compile(
+        rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
+        rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}{descendant_guard}",
+        flags=re.IGNORECASE,
+    )
+    if not exact_branch_citation.search(reason):
+        return False
+
+    def substantive_tokens(text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z][a-z0-9]+", text.lower())
+            if len(token) >= 5 and token not in _SOURCE_BOUND_RUNTIME_GAP_STOPWORDS
+        }
+
+    # Two shared source terms keep an exact self-citation from laundering a vague
+    # or invented capability assertion into complete-source coverage.
+    return len(substantive_tokens(reason) & substantive_tokens(source_scope_text)) >= 2
 
 
 def _rulespec_target_base(corpus_citation_path: str) -> str:

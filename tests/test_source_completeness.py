@@ -1973,6 +1973,2566 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
+@pytest.mark.parametrize("dash", ["-", "‐", "‑", "‒", "–", "—", "−"])
+def test_exact_usc_branch_can_name_source_bound_runtime_gap(dash: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a#five_year_agency_plan
+      reason: >-
+        Cannot be computed until the agency fiscal-year calendar and plan-submission
+        event required by 42 USC 1437c{dash}1(a)(3) are encoded.
+rules: []
+"""
+    source = "(a) Each agency shall submit a plan for its fiscal year."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be encoded because 42 USC 1437c-1(a) is unavailable.",
+        (
+            "Cannot be computed until the agency fiscal-year calendar and "
+            "plan-submission event required by 42 USC 1437c-1(b) are encoded."
+        ),
+        (
+            "Cannot be computed until the agency fiscal-year calendar and "
+            "plan-submission event required by 42 USC 1437c-2(a) are encoded."
+        ),
+        (
+            "Cannot be computed until the fictional assessment-record workflow "
+            "required by 42 USC 1437c-1(a) is encoded."
+        ),
+    ],
+)
+def test_current_usc_branch_does_not_launder_imprecise_runtime_gap(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a#five_year_agency_plan
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = "(a) Each agency shall submit a plan for its fiscal year."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_current_usc_branch_cannot_defer_directly_computable_source():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999/a#household_benefit
+      reason: >-
+        Cannot be computed until the household benefit input and household income
+        formula required by 42 USC 9999(a) are encoded.
+rules: []
+"""
+    source = "(a) The household benefit equals household income plus an adjustment."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_administrative_runtime_gap_cannot_hide_worded_computation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999/a#household_benefit
+      reason: >-
+        Cannot be computed until the agency report document and household benefit
+        input required by 42 USC 9999(a) are encoded.
+rules: []
+"""
+    source = (
+        "(a) The agency shall submit a report showing the household benefit, "
+        "which is household income less the adjustment."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "source_dependency",
+    [
+        "section 1437f(o) of this title",
+        "42 U.S.C. 1437f(o)",
+        "42 U.S.C. § 1437f(o)",
+        "42 USC section 1437f(o)",
+    ],
+)
+def test_source_bound_usc_dependency_can_defer_computable_source(
+    source_dependency: str,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance eligibility under 42 USC 1437f(o)
+        is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        f"{source_dependency} and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_unrelated_usc_dependency_cannot_defer_computable_source():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance eligibility under 42 USC 9999(a)
+        is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "section 1437f(o) of this title and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_usc_dependency_requires_exact_subsection_tail():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance eligibility under 42 USC 1437f(o)
+        is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(q) and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "7 USC 2014",
+        "7 USC section 2014",
+        "7 U.S.C. § 2014",
+        "7 U.S.C., section 2014",
+        "7 U.S.C., § 2014",
+        "section 2014 of title 7",
+        "§ 2014 of title 7",
+        "section 2014 in title 7",
+        "title 7, section 2014",
+    ],
+)
+def test_relative_usc_dependency_cannot_bind_wrong_title_from_unrelated_number(
+    dependency: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: Cannot be computed until {dependency} eligibility is encoded.
+rules: []
+"""
+    source = (
+        "(b) The agency shall submit a report within 7 days under section 2014 "
+        "of this title and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "source_dependency",
+    [
+        "section 1437f(o) of title 7",
+        "section 1437f(o) in title 7",
+        "section 1437f(o), as codified in title 7",
+    ],
+)
+def test_relative_usc_dependency_cannot_fall_through_qualified_wrong_title(
+    source_dependency: str,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        f"{source_dependency}."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_same_external_citation_must_be_missing_and_source_bound():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 7 USC 9999 is encoded.
+        For context, the source mentions 42 USC 1437f(o).
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o) and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_same_clause_cannot_launder_missingness_between_usc_citations():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 7 USC 9999 is encoded, but 42 USC 1437f(o)
+        is available.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_postpositive_missingness_cannot_transfer_to_later_usc_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed because 7 USC 9999 is missing and 42 USC 1437f(o)
+        applies.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed because 7 USC 9999 is clearly missing and 42 USC 1437f(o) applies.",
+        "Cannot be computed because 7 USC 9999 is very clearly missing and 42 USC 1437f(o) applies.",
+        "Cannot be computed because 7 USC 9999, which is missing, and 42 USC 1437f(o) applies.",
+        "Cannot be computed because 7 USC 9999, which the agency reports is missing, and 42 USC 1437f(o) applies.",
+        "Cannot be computed because § 9999 is missing and 42 USC 1437f(o) applies.",
+    ],
+)
+def test_modified_postpositive_missingness_cannot_transfer(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_until_state_cannot_transfer_from_later_contextual_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 42 USC 1437f(o) is mentioned only for context,
+        but 7 USC 9999 is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "is discussed only for legislative history",
+        "is quoted only for legislative history",
+        "is summarized only for legislative history",
+    ],
+)
+def test_contextual_passive_is_not_a_missing_dependency_state(predicate: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 42 USC 1437f(o) {predicate}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_required_citation_cannot_borrow_prior_sentence_missingness():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 7 USC 9999 is encoded. For context,
+        42 USC 1437f(o) is required by a separate example.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize("state", ["missing", "unavailable", "not yet encoded"])
+def test_explicit_missing_state_requires_local_computation_framing(state: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 7 USC 9999 is encoded. For context,
+        42 USC 1437f(o) is {state}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_explicit_missing_state_rejects_contextual_same_sentence_framing():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed because 7 USC 9999 is missing and, for comparison,
+        42 USC 1437f(o) is unavailable.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "is provided only for legislative history",
+        "is known only as historical background",
+        "is supplied only for comparison",
+    ],
+)
+def test_dependency_state_rejects_contextual_tail(predicate: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: Cannot be computed until 42 USC 1437f(o) {predicate}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_coordinated_state_tail_must_begin_with_next_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 42 USC 1437f(o) is provided and, according
+        to 7 USC 9999, the former provision is cited only for legislative history.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_coordinated_state_tail_requires_next_dependency_state():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 42 USC 1437f(o) is provided and 7 USC 9999
+        states that the former provision is cited only for legislative history.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until 42 USC 1437f(o), included solely as historical authority, and 7 USC 9999 are encoded.",
+        "Cannot be computed until 42 USC 1437f(o), supplied solely for comparison, and 7 USC 9999 are encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies, yet 7 USC 9999 is encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies, while 7 USC 9999 is encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies, even though 7 USC 9999 is encoded.",
+        "Cannot be computed until 42 USC 1437f(o) applies; nevertheless 7 USC 9999 is encoded.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) and, albeit the former citation is included only for context, 7 USC 9999 are encoded.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) and, even if the former citation is included only for context, 7 USC 9999 are encoded.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) and the former citation governs only as context under 7 USC 9999 are encoded.",
+    ],
+)
+def test_contextual_list_cannot_borrow_terminal_dependency_state(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until 7 USC 9999 and 42 USC 1437f(o) are encoded.",
+        "Cannot be computed until 7 USC 9999 is encoded and 42 USC 1437f(o) is encoded.",
+    ],
+)
+def test_coordinated_usc_dependencies_can_bind_later_citation(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_coordinated_state_tail_accepts_introduced_next_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 42 USC 1437f(o) is encoded and eligibility
+        under 7 USC 9999 is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_descriptive_dependency_list_can_share_terminal_state_predicate():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance receipt under 42 USC 1437f(o) and
+        42 USC 1437g, troubled-agency designation under 42 USC 1437d(j)(2),
+        and the failing-score determination under the Section 8 Management
+        Assessment Program referenced by 42 USC 1437c-1(b)(3)(C) are encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "section 1437f(o) of this title."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        "7 U.S.C., section 2014",
+        "7 U.S.C.; section 2014",
+        "title 7, section 2014",
+    ],
+)
+def test_descriptive_dependency_list_preserves_qualified_citation_commas(
+    dependency: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance under 42 USC 1437f(o) and
+        program eligibility under {dependency} are encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_descriptive_dependency_list_accepts_benefit_amount_subject():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance under 42 USC 1437f(o) and benefit
+        amount under 7 USC 9999 are encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "income threshold",
+        "agency policy",
+        "tax rate",
+        "eligibility criteria",
+        "agency rule",
+    ],
+)
+def test_descriptive_dependency_list_accepts_common_legal_subjects(subject: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance under 42 USC 1437f(o) and {subject}
+        under 7 USC 9999 are encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is determined.",
+        "Cannot be computed until information required by 42 USC 1437f(o) is provided.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is set.",
+        "Cannot be computed until information under 42 USC 1437f(o) is made available.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is verified.",
+        "Cannot be computed until information under 42 USC 1437f(o) is issued.",
+        "Cannot be computed until eligibility under 42 USC 1437f(o) is approved.",
+    ],
+)
+def test_until_dependency_accepts_non_contextual_result_predicates(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "is verified by the agency",
+        "is issued by the agency",
+        "is approved by HUD",
+        "is verified by a public housing agency",
+        "is issued by the state agency",
+        "is approved by the Secretary of Housing and Urban Development",
+        "is verified by the administering agency",
+        "is issued by the Department of Housing and Urban Development",
+        "is verified by the Social Security Administration",
+        "is issued by the Commissioner",
+        "is verified by the Internal Revenue Service",
+        "is approved by the Department of Education",
+        "is verified by the Commissioner of Social Security",
+        "is verified by the Commissioner of Internal Revenue",
+        "is approved by the Department of Veterans Affairs",
+        "is approved by the Department of the Treasury",
+        "is issued by the Secretary of Veterans Affairs",
+        "is issued by the Secretary of the Treasury",
+        "is verified by the IRS",
+    ],
+)
+def test_until_dependency_accepts_legal_actor_tail(predicate: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 42 USC 1437f(o) {predicate}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_legal_actor_tail_rejects_context_after_actor_name():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 42 USC 1437f(o) is approved
+        by the Secretary of Housing and Urban Development only for historical
+        comparison.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_operative_introduction_is_not_source_bound_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until the citation included only for legislative
+        history under 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "context",
+    ["included only as nonbinding authority", "included for orientation"],
+)
+def test_non_dependency_subject_cannot_become_operative_via_under(context: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until the citation {context} under
+        42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_direct_missing_state_requires_bounded_dependency_introduction():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until the citation included only as nonbinding
+        authority under 42 USC 1437f(o) is unavailable.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_incidental_dependency_noun_cannot_launder_weak_linker():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until comparison amount included only as nonbinding
+        authority under 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "nonbinding comparison amount",
+        "the merely illustrative eligibility status",
+        "comparison amount under nonbinding authority referenced by",
+    ],
+)
+@pytest.mark.parametrize("state", ["encoded", "unavailable"])
+def test_descriptive_subject_cannot_launder_weak_dependency_linker(
+    subject: str,
+    state: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until {subject} 42 USC 1437f(o) is {state}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "the nonbinding claim that this example depends on",
+        "the assertion that this historical example requires",
+        "benefit amount under the nonbinding example program referenced by",
+        "eligibility status under the merely illustrative statute cited in",
+        "benefit amount under the Nonbinding Example Program referenced by",
+        "eligibility status under the Merely Illustrative Statute cited in",
+    ],
+)
+def test_contextual_subject_cannot_launder_dependency_linker(subject: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until {subject} 42 USC 1437f(o) is verified.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    [
+        "Section 8 Management Assessment Program",
+        "Food and Nutrition Act",
+        "Internal Revenue Code",
+        "Social Security Act",
+        "Administrative Procedure Act",
+        "Veterans Benefits Act",
+        "Patient Protection and Affordable Care Act",
+        "Fair Labor Standards Act",
+        "Code of Federal Regulations",
+        "Low-Income Home Energy Assistance Program",
+        "Housing Choice Voucher Program",
+    ],
+)
+def test_named_legal_instrument_dependency_is_bounded(instrument: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = f"(b) The {instrument} governs assistance received under 42 USC 1437f(o)."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    [
+        "Social Security Act",
+        "Internal Revenue Code",
+        "Food and Nutrition Act",
+    ],
+)
+def test_named_legal_instrument_must_be_bound_to_source(instrument: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(b) The Social Security Act appears only in historical context. "
+        "Assistance is received under 42 USC 1437f(o).",
+        "(b) An unfair labor standards action is discussed under 42 USC 1437f(o).",
+    ],
+)
+def test_named_legal_instrument_requires_exact_title_in_citation_clause(source: str):
+    instrument = (
+        "Social Security Act"
+        if "Social Security Act" in source
+        else "Fair Labor Standards Act"
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_named_instrument_cannot_mix_contextual_and_operative_citation_occurrences():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    sources = [
+        "(b) The Social Security Act and 42 USC 1437f(o) appear only as "
+        "historical context. Assistance is received under 42 USC 1437f(o).",
+        "(b) The Social Security Act is included only for historical context, "
+        "but assistance is received under 42 USC 1437f(o).",
+    ]
+
+    for source in sources:
+        result = _analyze(
+            content,
+            source,
+            corpus_citation_path="us/statute/42/1437c-1",
+            test_cases=[],
+        )
+        assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_named_instrument_cannot_cross_coordinated_finite_clause():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs historical records, and assistance "
+        "is received under 42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_named_instrument_cannot_cross_punctuation_free_finite_coordination():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs historical records and assistance "
+        "is received under 42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_named_instrument_cannot_cross_unlisted_finite_coordination():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs historical records and assistance "
+        "qualifies under 42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(b) The Social Security Act governs historical records and assistance "
+        "may qualify under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs historical records and benefits "
+        "qualify under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and an agency provides "
+        "assistance under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and assistance remains "
+        "available under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and benefits qualify "
+        "independently under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and assistance existed "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and an agency processes "
+        "applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and criteria qualify under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and data qualify under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and agencies process "
+        "applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Department of "
+        "Agriculture processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Secretary of "
+        "Agriculture approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the authority rules "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and agencies apply rules "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and agencies supply benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Internal Revenue "
+        "Service processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Social Security "
+        "Administration processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the authority benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and agencies misapply rules "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and agencies tally "
+        "applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency made rules "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the United States "
+        "Department of Agriculture processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Department of "
+        "Commerce processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and eligibility rules limit "
+        "benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and benefit programs limit "
+        "assistance under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency records data "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Office of Management "
+        "and Budget approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency input data "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the department input "
+        "records under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and data limits benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the office of management "
+        "and budget approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the OFFICE OF MANAGEMENT "
+        "AND BUDGET approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input data "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OMB approves benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and omb approves benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSA determines benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and USDA administers benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CMS determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency input the "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input the data "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency input applicable "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input federal "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FEMA administers benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FDA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FTC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and DOJ enforces requirements "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and DOT administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OPM administers benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SBA administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CFPB issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EEOC enforces requirements "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CFTC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FHA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EBSA issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SAMHSA administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and HRSA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OCC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FEC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA ran programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FHA made eligibility "
+        "determinations under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EBSA wrote rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SAMHSA gave assistance "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and HRSA chose eligibility "
+        "criteria under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OCC kept records under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA and FHA administer "
+        "programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA, FHA, and EBSA "
+        "administer programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Tsa administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and tsa administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA ran programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA made eligibility "
+        "determinations under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS wrote rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and USGS gave information "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EIA kept records under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and nhtsa administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA limits benefits under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA inputs data under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA processes data under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and USGS records information "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EIA rates programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA input the requirements "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and nhtsa limits benefits under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA oversaw programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA sought information under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS saw benefits under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records the policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records this policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA benefits the program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rules the program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records its policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records each policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA benefits every program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rules some program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA limits any benefit "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processes each record "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rates all programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA oversaw enforcement "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA sought approval under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS saw violations under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processed applications "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA administers approval "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records another policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA limits one benefit "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processes most records "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rates more programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA conditions eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA conditions program "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA and BIA condition "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and AmeriCorps administers "
+        "programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Reserve determines "
+        "rates under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Reserve issued rules "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA DETERMINES eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA APPROVES eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA ISSUES rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Bureau of "
+        "Investigation administers programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Deposit Insurance "
+        "Corporation issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal Judiciary determines "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA based eligibility under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA based program "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal deposit insurance "
+        "corporation issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Federal deposit insurance "
+        "Corporation issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal judiciary determines "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commission issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal aviation "
+        "administration issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal emergency management "
+        "agency administers programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal housing finance "
+        "agency determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal labor relations "
+        "authority determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA and FHA pass rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSA and VA pass eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal highway administrator "
+        "determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commissioner issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal treasury secretary "
+        "issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal energy secretary "
+        "determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal highway administrators "
+        "determine eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commissioners issue rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal treasury secretaries "
+        "issue rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal housing agencies "
+        "administer programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSI benefits pass rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CHIP programs pass eligibility "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicare programs pace "
+        "implementation rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SNAP benefits based eligibility "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicaid programs chip "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SNAP benefits part eligibility "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs record "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program records "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs work "
+        "eligibility requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicaid programs record "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs manage "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs influence "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs condition "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs record "
+        "retention policies under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs work "
+        "participation requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs manage "
+        "retention policies under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs influence "
+        "management procedures under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs wage payment "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program conditions "
+        "retention policies under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program limits payment "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program processes "
+        "payment rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program rates payment "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program works "
+        "participation requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program cashes payment "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program schools "
+        "participation requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program shelters "
+        "management procedures under 42 USC 1437f(o).",
+    ],
+)
+def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "object_phrase",
+    [
+        "assistance received",
+        "benefits eligible",
+        "assistance received directly",
+        "benefits otherwise eligible",
+        "benefits generally available",
+        "assistance received recently",
+        "benefits now available",
+        "benefits not available",
+        "agency procedures",
+        "department policies",
+        "agency requirements",
+        "agency guidance",
+        "department regulations",
+        "benefit payment amounts",
+        "rules applied",
+        "assistance furnished",
+        "benefits payable",
+        "records management policies",
+        "program administration records",
+        "benefit calculation amounts",
+        "rules authorized",
+        "programs established",
+        "benefits calculated",
+        "assistance administered",
+        "data input requirements",
+        "payment processing rules",
+        "records retention policies",
+        "program participation requirements",
+        "income verification procedures",
+        "eligibility determined",
+        "requirements implemented",
+        "benefits verified",
+        "information obtained",
+        "program input requirements",
+        "SNAP benefits",
+        "SSI benefits",
+        "TANF program",
+        "USC rules",
+        "SSA benefits",
+        "VA benefits",
+        "IRS rules",
+        "SNAP benefits program",
+        "TSA records retention policies",
+        "EBSA benefits eligibility criteria",
+        "FHA programs administration records",
+        "SSA and VA benefit programs",
+        "SSA and VA records retention policies",
+        "SNAP work requirements",
+        "TANF work participation requirements",
+        "SSI resource limits",
+        "USC amendment rules",
+        "Medicaid waiver eligibility rules",
+        "Medicare prescription benefit rules",
+        "TSA benefits program",
+        "Medicare Savings Program rules",
+        "SNAP earnings requirements",
+        "VA benefits eligibility",
+        "IRS records policy",
+        "Medicaid income eligibility",
+        "SSI disability eligibility",
+        "Medicare coverage rules",
+        "SNAP training requirements",
+        "TANF participation requirements",
+        "VA disability eligibility",
+        "SNAP student eligibility",
+        "SNAP categorical eligibility",
+        "SSI child eligibility",
+        "Medicare premium rules",
+        "Medicaid spenddown eligibility",
+        "SNAP noncitizen eligibility",
+        "SNAP immigrant eligibility",
+        "Medicare drug rules",
+        "Medicaid parent eligibility",
+        "SSI blind eligibility",
+        "Medicaid MAGI eligibility",
+        "SNAP ABAWD eligibility",
+        "Medicare Part D eligibility",
+        "Medicaid HCBS eligibility",
+        "SNAP EBT rules",
+        "SSI SGA rules",
+        "Medicare IRMAA rules",
+        "Medicaid MAGI-based eligibility",
+        "Medicaid non-MAGI eligibility",
+        "Medicaid magi eligibility",
+        "Medicare part d eligibility",
+        "SNAP ebt rules",
+        "Medicaid HCBS-waiver eligibility",
+        "Medicaid CHIP eligibility",
+        "Medicare QMB eligibility",
+        "Medicare SLMB eligibility",
+        "SNAP BBCE eligibility",
+        "SNAP SUA rules",
+        "SSI POMS rules",
+        "TANF MOE requirements",
+        "Medicare QI eligibility",
+        "Medicare QDWI eligibility",
+        "Medicare LIS rules",
+        "Medicare MSP eligibility",
+        "Medicaid EPSDT rules",
+        "Medicaid LTSS eligibility",
+        "SNAP HEA eligibility",
+        "TANF SSP requirements",
+        "SSI PASS rules",
+        "Medicare SNP eligibility",
+        "Medicare PACE eligibility",
+        "Medicaid MCO rules",
+        "Medicaid DSH rules",
+        "Medicaid SPA rules",
+        "SNAP LIEAP rules",
+        "Medicare D-SNP eligibility",
+        "CHIP MAGI eligibility",
+        "CHIP FMAP rules",
+        "SSDI SGA rules",
+        "RSDI SGA rules",
+        "Medicare HMO rules",
+        "Medicare PPO rules",
+        "Medicare PDP rules",
+        "Medicare C-SNP eligibility",
+        "SSI ISM rules",
+        "Medicaid HIPP eligibility",
+        "SNAP LIHEAP rules",
+        "Medicare MA-PD rules",
+        "Medicare I-SNP eligibility",
+        "NHTSA program records retention policies",
+        "NHTSA benefit rules administration procedures",
+        "NHTSA policy records management procedures",
+    ],
+)
+def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs historical records and "
+        f"{object_phrase} under 42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_named_instrument_accepts_relative_source_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs assistance under section 1437f(o) "
+        "of this title."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "historical eligibility data",
+        "background-check status",
+        "adjusted gross income",
+        "household size",
+        "residency requirement",
+        "eligibility statuses",
+        "administrative processes",
+        "taxable income",
+        "asset limit",
+        "income and asset limit",
+        "income or asset limit",
+    ],
+)
+def test_dependency_subject_allows_operative_legal_terms(subject: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until {subject} under 42 USC 1437f(o) is provided.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize("linker", ["depends on", "requires"])
+@pytest.mark.parametrize("framing", ["until", "because", "since"])
+def test_dependency_subject_allows_strong_linker(linker: str, framing: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed {framing} benefit amount {linker} 42 USC 1437f(o) is
+        verified.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until benefit amount depends on 42 USC 1437f(o), "
+        "but the citation is only nonbinding authority.",
+        "Cannot be computed until benefit amount requires 42 USC 1437f(o) "
+        "only for historical comparison.",
+        "Cannot be computed until the nonbinding assertion requires "
+        "benefit amount depends on 42 USC 1437f(o) to be verified.",
+        "Cannot be computed until the nonbinding assertion requires "
+        "benefit amount depends on 42 USC 1437f(o) is verified.",
+    ],
+)
+def test_strong_linker_requires_bounded_introduction_and_tail(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize("linker", ["depends on", "requires"])
+@pytest.mark.parametrize(
+    "state",
+    ["not yet encoded", "not yet available", "not  yet encoded"],
+)
+def test_strong_linker_accepts_not_yet_state(linker: str, state: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount {linker} 42 USC 1437f(o) is
+        {state}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "is encoded, but the citation is only nonbinding authority",
+        "is unavailable even though it is included only for historical comparison",
+        "is encoded; but the citation is only nonbinding authority",
+        "is encoded. However, the citation is only nonbinding authority",
+    ],
+)
+@pytest.mark.parametrize("linker", ["under", "depends on", "requires"])
+def test_dependency_state_rejects_adversative_tail(linker: str, tail: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount {linker} 42 USC 1437f(o)
+        {tail}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_prior_occurrence_cannot_launder_same_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        For context, 42 USC 1437f(o) is included only as nonbinding authority.
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_prior_occurrence_recognizes_merely_illustrative():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        42 USC 1437f(o) is merely illustrative. Cannot be computed until benefit
+        amount depends on 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_other_prior_citation_context_is_not_attributed_to_selected_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        42 USC 1437f(o) is binding, while 7 USC 9999 is included only as
+        nonbinding authority. Cannot be computed until benefit amount depends
+        on 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_prior_citation_context_before_selected_citation_is_not_attributed():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        7 USC 9999 is included only as nonbinding authority, while 42 USC
+        1437f(o) is binding. Cannot be computed until benefit amount depends on
+        42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_prior_citation_context_across_although_is_not_attributed():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        7 USC 9999 is included only as nonbinding authority, although 42 USC
+        1437f(o) is binding. Cannot be computed until benefit amount depends on
+        42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize("coordination", ["even though", "though"])
+def test_prior_citation_context_across_though_is_not_attributed(coordination: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        7 USC 9999 is included only as nonbinding authority, {coordination} 42 USC
+        1437f(o) is binding. Cannot be computed until benefit amount depends on
+        42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_contextual_later_occurrence_is_found_after_other_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded. 7 USC 9999 is also required. However, 42 USC 1437f(o) is
+        included only as nonbinding authority.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_later_relative_occurrence_disqualifies_dependency():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded. However, section 1437f(o) of this title is included only as
+        nonbinding authority.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_relative_occurrence_from_current_title_does_not_match_external_title():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 7 USC 2014(a) is
+        encoded. However, section 2014(a) of this title is included only as
+        nonbinding authority.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "7 USC 2014(a)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_later_independent_dependency_does_not_qualify_selected_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded. However, 7 USC 9999 is also required.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_later_independent_rulespec_dependency_does_not_qualify_selected_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded. However, us:manuals/example#table is also required.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o), and the applicable table appears in the example "
+        "manual."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_source_bound_usc_dependency_accepts_without_wording():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed without the eligibility standard in 42 USC 1437f(o).
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "cited_path",
+    ["(a)", "(a)(1)", "(a)(3)", "(a)(2)(i)"],
+)
+def test_source_bound_runtime_gap_requires_full_nested_branch(cited_path: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a/2#agency_plan_contents
+      reason: >-
+        Cannot be computed until the agency policies document and submission
+        event required by 42 USC 1437c-1{cited_path} are encoded.
+rules: []
+"""
+    source = (
+        "(a) Agency plans shall contain:\n"
+        "1. goals;\n"
+        "2. Agency shall submit plan policies."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_source_bound_runtime_gap_accepts_exact_nested_branch():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a/2#agency_plan_contents
+      reason: >-
+        Cannot be computed until the agency policies document and submission
+        event required by 42 USC 1437c-1(a)(2) are encoded.
+rules: []
+"""
+    source = (
+        "(a) Agency plans shall contain:\n"
+        "1. goals;\n"
+        "2. Agency shall submit plan policies."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+
+
 @pytest.mark.parametrize(
     "reason",
     [

@@ -1,0 +1,1 @@
+Accept concrete source-bound missing-input and runtime-capability deferrals when they cite the exact current USC branch, while rejecting vague, wrong-branch, wrong-section, and source-unrelated claims.
