@@ -10,6 +10,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tarfile
 import threading
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
@@ -2246,6 +2247,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "generated diagnostics exceed entry limit" in failure_package_command
     assert "generated diagnostics exceed file limit" in failure_package_command
     assert "generated diagnostics exceed size limit" in failure_package_command
+    assert 'tar -cf "$RUNNER_TEMP/targeted-reencode-failure.tar"' in (
+        failure_package_command
+    )
+    assert '-C "$artifact" .' in failure_package_command
     assert '"failed_steps": failed_steps' in failure_package_command
     assert '"generated_lanes": generated_lanes' in failure_package_command
     assert '"queue_item_generation_sha256"' in failure_package_command
@@ -2269,7 +2274,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "name": (
             "targeted-reencode-failure-${{ github.run_id }}-${{ github.run_attempt }}"
         ),
-        "path": "${{ runner.temp }}/targeted-reencode-failure",
+        "path": "${{ runner.temp }}/targeted-reencode-failure.tar",
         "if-no-files-found": "error",
         "retention-days": 90,
     }
@@ -2449,7 +2454,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     generated = tmp_path / "generated" / "target" / "model"
     generated.mkdir(parents=True)
     (generated / "statutes").mkdir()
-    (generated / "statutes/target.yaml").write_text("format: rulespec/v1\n")
+    (generated / "statutes/54a:4-7.test.yaml").write_text("format: rulespec/v1\n")
     (generated / "target.repair.json").write_text('{"outcome": "blocked"}\n')
     (generated / "ignored.bin").write_bytes(b"not diagnostic output")
     env = {
@@ -2476,15 +2481,30 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
 
     subprocess.run(["bash", "-c", command], env=env, check=True)
 
-    artifact = tmp_path / "targeted-reencode-failure"
-    assert (
-        artifact / "generated/target/model/statutes/target.yaml"
-    ).read_text() == "format: rulespec/v1\n"
-    assert json.loads(
-        (artifact / "generated/target/model/target.repair.json").read_text()
-    ) == {"outcome": "blocked"}
-    assert not (artifact / "generated/target/model/ignored.bin").exists()
-    metadata = json.loads((artifact / "metadata.json").read_text())
+    archive = tmp_path / "targeted-reencode-failure.tar"
+    with tarfile.open(archive, mode="r") as bundle:
+        file_member_names = {
+            member.name.removeprefix("./")
+            for member in bundle.getmembers()
+            if member.isfile()
+        }
+        assert file_member_names == {
+            "generated/target/model/statutes/54a:4-7.test.yaml",
+            "generated/target/model/target.repair.json",
+            "metadata.json",
+        }
+        assert "generated/target/model/ignored.bin" not in file_member_names
+        target = bundle.extractfile(
+            "./generated/target/model/statutes/54a:4-7.test.yaml"
+        )
+        repair = bundle.extractfile("./generated/target/model/target.repair.json")
+        metadata_file = bundle.extractfile("./metadata.json")
+        assert target is not None
+        assert repair is not None
+        assert metadata_file is not None
+        assert target.read() == b"format: rulespec/v1\n"
+        assert json.loads(repair.read()) == {"outcome": "blocked"}
+        metadata = json.loads(metadata_file.read())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
     assert metadata["workflow_run_id"] == "1234"
     assert metadata["failed_steps"] == ["encode_apply"]
@@ -2504,9 +2524,15 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         },
     }
     assert [item["path"] for item in metadata["files"]] == [
-        "target/model/statutes/target.yaml",
+        "target/model/statutes/54a:4-7.test.yaml",
         "target/model/target.repair.json",
     ]
+    target_inventory = metadata["files"][0]
+    assert target_inventory["size"] == len(b"format: rulespec/v1\n")
+    assert (
+        target_inventory["sha256"]
+        == hashlib.sha256(b"format: rulespec/v1\n").hexdigest()
+    )
 
 
 def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(
@@ -2556,6 +2582,7 @@ def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(
     assert not (
         tmp_path / "targeted-reencode-failure/generated/candidate.yaml"
     ).exists()
+    assert not (tmp_path / "targeted-reencode-failure.tar").exists()
 
 
 def test_signed_snap_queue_dispatcher_is_bounded_and_idempotent() -> None:
