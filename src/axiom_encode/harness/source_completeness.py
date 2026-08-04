@@ -385,11 +385,18 @@ _USC_DEFERRAL_DEPENDENCY = re.compile(
     flags=re.IGNORECASE,
 )
 _REVERSED_USC_DEFERRAL_DEPENDENCY = re.compile(
-    r"\bsections?\s+"
+    r"(?:\bsections?|§{1,2})\s*"
     r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
     r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
     r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)"
-    r"\s+of\s+title\s+(?P<title>\d+)\b",
+    r"\s*,?\s*(?:of|as\s+codified\s+in)\s+title\s+(?P<title>\d+)\b",
+    flags=re.IGNORECASE,
+)
+_TITLE_FIRST_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\btitle\s+(?P<title>\d+)\s*,?\s*(?:sections?|§{1,2})\s*"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
     flags=re.IGNORECASE,
 )
 _RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
@@ -1696,6 +1703,7 @@ def _qualified_usc_dependencies(text: str) -> tuple[re.Match[str], ...]:
             (
                 *_USC_DEFERRAL_DEPENDENCY.finditer(text),
                 *_REVERSED_USC_DEFERRAL_DEPENDENCY.finditer(text),
+                *_TITLE_FIRST_USC_DEFERRAL_DEPENDENCY.finditer(text),
             ),
             key=lambda match: (match.start(), match.end()),
         )
@@ -1885,10 +1893,38 @@ def _reason_match_names_missing_dependency(
         flags=re.IGNORECASE,
     ):
         return False
-    return not any(
-        dependency.end() <= len(bridge)
-        for dependency in _qualified_usc_dependencies(bridge)
-    )
+
+    signal_text = signal.group(0).lower()
+    if signal_text in {
+        "missing",
+        "unavailable",
+        "not yet encoded",
+        "fehlt",
+        "nicht codiert",
+    }:
+        for dependency in _qualified_usc_dependencies(before[: signal.start()]):
+            between = before[dependency.end() : signal.start()]
+            if re.fullmatch(
+                r"\s*(?:(?:is|are|was|were|remains?|ist|sind)\s*)?",
+                between,
+                flags=re.IGNORECASE,
+            ):
+                return False
+
+    if signal_text == "until":
+        return bool(
+            re.search(
+                r"\b(?:"
+                r"(?:is|are|must\s+be)\s+"
+                r"(?:encoded|implemented|available|missing|unavailable|required|needed)|"
+                r"(?:has|have)\s+not\s+been\s+"
+                r"(?:encoded|implemented|made\s+available)"
+                r")\b",
+                after,
+                flags=re.IGNORECASE,
+            )
+        )
+    return True
 
 
 def _usc_dependency_is_external(

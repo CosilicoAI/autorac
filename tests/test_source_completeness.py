@@ -1516,6 +1516,8 @@ rules: []
         "7 U.S.C., section 2014",
         "7 U.S.C., § 2014",
         "section 2014 of title 7",
+        "§ 2014 of title 7",
+        "title 7, section 2014",
     ],
 )
 def test_relative_usc_dependency_cannot_bind_wrong_title_from_unrelated_number(
@@ -1546,7 +1548,16 @@ rules: []
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
-def test_relative_usc_dependency_cannot_fall_through_qualified_wrong_title():
+@pytest.mark.parametrize(
+    "source_dependency",
+    [
+        "section 1437f(o) of title 7",
+        "section 1437f(o), as codified in title 7",
+    ],
+)
+def test_relative_usc_dependency_cannot_fall_through_qualified_wrong_title(
+    source_dependency: str,
+):
     content = """\
 format: rulespec/v1
 module:
@@ -1560,7 +1571,7 @@ rules: []
 """
     source = (
         "(b) The annual plan applies when an agency receives assistance under "
-        "section 1437f(o) of title 7."
+        f"{source_dependency}."
     )
 
     result = _analyze(
@@ -1627,6 +1638,67 @@ rules: []
     )
 
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_postpositive_missingness_cannot_transfer_to_later_usc_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed because 7 USC 9999 is missing and 42 USC 1437f(o)
+        applies.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until 7 USC 9999 and 42 USC 1437f(o) are encoded.",
+        "Cannot be computed until 7 USC 9999 is encoded and 42 USC 1437f(o) is encoded.",
+    ],
+)
+def test_coordinated_usc_dependencies_can_bind_later_citation(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
 
 
 def test_source_bound_usc_dependency_accepts_without_wording():
