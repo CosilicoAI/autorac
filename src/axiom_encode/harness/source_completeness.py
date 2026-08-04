@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 import yaml
 
-from axiom_encode.statute import normalize_rulespec_path_segment
+from axiom_encode.statute import normalize_rulespec_path_segment, parse_usc_citation
 
 
 class NumericOccurrenceLike(Protocol):
@@ -379,6 +379,45 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"administrative|calendar|capabilit(?:y|ies)|classification|complaint|"
+    r"content|data|date\s+arithmetic|designation|determination|document|event|"
+    r"fact|filing|form|hearing|information|input|investigation|membership|"
+    r"notice|process|procedure|record|relation|representation|status|submission|"
+    r"timing|workflow"
+    r")[a-z-]*\b",
+    flags=re.IGNORECASE,
+)
+_SOURCE_BOUND_RUNTIME_GAP_STOPWORDS = frozenset(
+    {
+        "administrative",
+        "available",
+        "because",
+        "cannot",
+        "capability",
+        "capabilities",
+        "computed",
+        "current",
+        "encoded",
+        "encoding",
+        "exact",
+        "input",
+        "inputs",
+        "missing",
+        "required",
+        "requires",
+        "representation",
+        "representations",
+        "runtime",
+        "section",
+        "source",
+        "statute",
+        "under",
+        "unavailable",
+        "until",
+    }
+)
 _IMPRECISE_DEFERRAL_RETRY_SHAPE = """\
 Required shape (adapt the output and cited dependency to the omitted branch):
 module:
@@ -386,7 +425,9 @@ module:
     - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
       reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
-must list exact absolute upstream RuleSpec outputs."""
+must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
+exists, cite the exact current source branch and name its concrete source-stated missing \
+input or runtime capability; a generic claim that the branch is unavailable is invalid."""
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -1354,6 +1395,11 @@ def _deferred_coverage(
                     source_scope_text,
                     corpus_citation_path=corpus_citation_path,
                 )
+            ) or _reason_names_source_bound_runtime_gap(
+                reason,
+                source_scope_text,
+                path=path,
+                corpus_citation_path=corpus_citation_path,
             )
         if precise:
             covered.add(path)
@@ -1364,8 +1410,8 @@ def _deferred_coverage(
                 "[complete-source-unit:deferral] "
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
-                "name an exact missing "
-                f"dependency/citation.\n{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
+                "name an exact missing dependency, input, or runtime capability.\n"
+                f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
             )
     return covered, issues
 
@@ -1632,6 +1678,55 @@ def _reason_dependency_is_source_bound(
         if normalized_dependency and normalized_dependency in normalized_source:
             return True
     return False
+
+
+def _reason_names_source_bound_runtime_gap(
+    reason: str,
+    source_scope_text: str,
+    *,
+    path: tuple[str, ...],
+    corpus_citation_path: str,
+) -> bool:
+    """Accept a concrete runtime gap anchored to the exact current USC branch."""
+
+    if (
+        not path
+        or not source_scope_text.strip()
+        or not _MISSING_DEPENDENCY_LANGUAGE.search(reason)
+        or not _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE.search(reason)
+        or not corpus_citation_path.startswith("us/statute/")
+    ):
+        return False
+    try:
+        citation = parse_usc_citation(corpus_citation_path)
+    except ValueError:
+        return False
+
+    dash_pattern = (
+        "[-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212\\ufe58\\ufe63\\uff0d]"
+    )
+    section_pattern = re.escape(
+        normalize_rulespec_path_segment(citation.section)
+    ).replace(r"\-", dash_pattern)
+    branch_pattern = re.escape(normalize_rulespec_path_segment(path[0]))
+    exact_branch_citation = re.compile(
+        rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
+        rf"(?:§{{1,2}}\s*)?{section_pattern}\s*\(\s*{branch_pattern}\s*\)",
+        flags=re.IGNORECASE,
+    )
+    if not exact_branch_citation.search(reason):
+        return False
+
+    def substantive_tokens(text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z][a-z0-9]+", text.lower())
+            if len(token) >= 5 and token not in _SOURCE_BOUND_RUNTIME_GAP_STOPWORDS
+        }
+
+    # Two shared source terms keep an exact self-citation from laundering a vague
+    # or invented capability assertion into complete-source coverage.
+    return len(substantive_tokens(reason) & substantive_tokens(source_scope_text)) >= 2
 
 
 def _reason_names_external_dependency(

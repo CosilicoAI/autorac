@@ -1257,6 +1257,74 @@ rules: []
     assert _has_issue(result, "(6)", "deferral", "dependency")
 
 
+@pytest.mark.parametrize("dash", ["-", "‐", "‑", "‒", "–", "—", "−"])
+def test_exact_usc_branch_can_name_source_bound_runtime_gap(dash: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a#five_year_agency_plan
+      reason: >-
+        Cannot be computed until the agency fiscal-year calendar and plan-submission
+        event required by 42 USC 1437c{dash}1(a)(3) are encoded.
+rules: []
+"""
+    source = "(a) Each agency shall submit a plan for its fiscal year."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be encoded because 42 USC 1437c-1(a) is unavailable.",
+        (
+            "Cannot be computed until the agency fiscal-year calendar and "
+            "plan-submission event required by 42 USC 1437c-1(b) are encoded."
+        ),
+        (
+            "Cannot be computed until the agency fiscal-year calendar and "
+            "plan-submission event required by 42 USC 1437c-2(a) are encoded."
+        ),
+        (
+            "Cannot be computed until the fictional assessment-record workflow "
+            "required by 42 USC 1437c-1(a) is encoded."
+        ),
+    ],
+)
+def test_current_usc_branch_does_not_launder_imprecise_runtime_gap(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a#five_year_agency_plan
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = "(a) Each agency shall submit a plan for its fiscal year."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
 @pytest.mark.parametrize(
     "reason",
     [
