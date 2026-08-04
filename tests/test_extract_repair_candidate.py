@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.extract_repair_candidate import MAX_ARCHIVE_MEMBERS, extract_candidate
+from scripts.extract_repair_candidate import (
+    MAX_ARCHIVE_MEMBERS,
+    MAX_CANDIDATE_BYTES,
+    SINGLE_TARGET_MODE_FIELDS,
+    extract_candidate,
+)
 
 
 def _archive(tmp_path: Path, *, candidate: bytes | None = None) -> tuple[Path, dict]:
@@ -40,6 +45,7 @@ def _archive(tmp_path: Path, *, candidate: bytes | None = None) -> tuple[Path, d
         "workflow_run_attempt": 1,
         "failed_steps": ["encode_apply"],
         "generated_lanes": ["target"],
+        **SINGLE_TARGET_MODE_FIELDS,
         "files": [
             {
                 "path": path,
@@ -58,6 +64,26 @@ def _archive(tmp_path: Path, *, candidate: bytes | None = None) -> tuple[Path, d
             info.size = len(body)
             bundle.addfile(info, io.BytesIO(body))
     return archive, metadata
+
+
+def _rewrite_metadata(
+    source_archive: Path,
+    destination: Path,
+    metadata: dict,
+) -> Path:
+    with (
+        tarfile.open(source_archive, "r") as source,
+        tarfile.open(destination, "w") as target,
+    ):
+        for member in source.getmembers():
+            extracted = source.extractfile(member)
+            assert extracted is not None
+            body = extracted.read()
+            if member.name == "metadata.json":
+                body = json.dumps(metadata).encode()
+                member.size = len(body)
+            target.addfile(member, io.BytesIO(body))
+    return destination
 
 
 def _args(tmp_path: Path, archive: Path, **overrides) -> Namespace:
@@ -101,14 +127,11 @@ def test_rejects_candidate_digest_mismatch(tmp_path):
         item for item in metadata["files"] if item["path"].endswith("1437c-1.yaml")
     )
     candidate_entry["sha256"] = "0" * 64
-    replacement = tmp_path / "tampered.tar"
-    with tarfile.open(archive, "r") as source, tarfile.open(replacement, "w") as target:
-        for member in source.getmembers():
-            body = source.extractfile(member).read()
-            if member.name == "metadata.json":
-                body = json.dumps(metadata).encode()
-                member.size = len(body)
-            target.addfile(member, io.BytesIO(body))
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "tampered.tar",
+        metadata,
+    )
 
     with pytest.raises(ValueError, match="digest mismatch"):
         extract_candidate(_args(tmp_path, replacement))
@@ -136,4 +159,53 @@ def test_rejects_archive_member_flood(tmp_path):
             bundle.addfile(info, io.BytesIO())
 
     with pytest.raises(ValueError, match="member limit"):
+        extract_candidate(_args(tmp_path, archive))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dependent_citation", "us/statute/42/other"),
+        ("existing_signed_imports_input", '["us/statutes/import.yaml"]'),
+        ("legacy_exact_dependent_rulespec_path", "us/statutes/dependent.yaml"),
+        ("legacy_retained_successor_rulespec_paths_input", '["old.yaml"]'),
+        ("queue_dispatcher_run_id", "999"),
+        ("queue_id", "queue"),
+        ("queue_item_generation_sha256", "a" * 64),
+        ("queue_item_id", "item"),
+        ("queue_manifest_sha256", "b" * 64),
+        ("replace_legacy_rulespec_path", "us/statutes/old.yaml"),
+        ("second_dependent_citation", "us/statute/42/second"),
+        (
+            "second_legacy_exact_dependent_rulespec_path",
+            "us/statutes/second.yaml",
+        ),
+        ("source_bundle_input", '["us/statute/42/source"]'),
+    ],
+)
+def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
+    archive, metadata = _archive(tmp_path)
+    metadata[field] = value
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "incompatible.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match=f"single-target run: {field}"):
+        extract_candidate(_args(tmp_path, replacement))
+
+
+def test_candidate_size_bound_is_shared_at_exact_limit(tmp_path):
+    archive, _ = _archive(tmp_path, candidate=b"x" * MAX_CANDIDATE_BYTES)
+
+    result = extract_candidate(_args(tmp_path, archive))
+
+    assert Path(result["root"], result["path"]).stat().st_size == MAX_CANDIDATE_BYTES
+
+
+def test_candidate_size_bound_rejects_limit_plus_one(tmp_path):
+    archive, _ = _archive(tmp_path, candidate=b"x" * (MAX_CANDIDATE_BYTES + 1))
+
+    with pytest.raises(ValueError, match="exceeds its size limit"):
         extract_candidate(_args(tmp_path, archive))

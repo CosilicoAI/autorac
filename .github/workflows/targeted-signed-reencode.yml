@@ -923,6 +923,8 @@ jobs:
           REVIEW_FINDING: ${{ inputs.review_finding }}
           REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
           REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -1039,10 +1041,16 @@ jobs:
               args+=(--review-findings "$review_finding_path")
             fi
             if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ]; then
-              test -n "${REPAIR_CANDIDATE_PATH:-}"
+              test -n "${REPAIR_CANDIDATE_PATH:-}" \
+                && test -n "${REPAIR_CANDIDATE_RULESPEC_SHA256:-}" \
+                && test -n "${REPAIR_CANDIDATE_TESTS_SHA256:-}"
               args+=(
                 --repair-candidate-root "$REPAIR_CANDIDATE_ROOT"
                 --repair-candidate-path "$REPAIR_CANDIDATE_PATH"
+                --repair-candidate-rulespec-sha256 \
+                  "$REPAIR_CANDIDATE_RULESPEC_SHA256"
+                --repair-candidate-tests-sha256 \
+                  "$REPAIR_CANDIDATE_TESTS_SHA256"
               )
             fi
             args+=("$citation")

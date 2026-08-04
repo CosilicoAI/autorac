@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -16,10 +17,28 @@ ATOMIC_ROOTS = frozenset(
     {"guidance", "manuals", "policies", "programs", "regulations", "statutes"}
 )
 MAX_METADATA_BYTES = 4 * 1024 * 1024
-MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 8192
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 RUNNER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+CONTRACT = runpy.run_path(
+    Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
+)
+MAX_CANDIDATE_BYTES = CONTRACT["VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES"]
+SINGLE_TARGET_MODE_FIELDS = {
+    "dependent_citation": None,
+    "existing_signed_imports_input": "[]",
+    "legacy_exact_dependent_rulespec_path": None,
+    "legacy_retained_successor_rulespec_paths_input": "[]",
+    "queue_dispatcher_run_id": None,
+    "queue_id": None,
+    "queue_item_generation_sha256": None,
+    "queue_item_id": None,
+    "queue_manifest_sha256": None,
+    "replace_legacy_rulespec_path": None,
+    "second_dependent_citation": None,
+    "second_legacy_exact_dependent_rulespec_path": None,
+    "source_bundle_input": "[]",
+}
 
 
 def _normalized_member_name(raw_name: str) -> str:
@@ -169,6 +188,11 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         for field, expected in expected_fields.items():
             if metadata.get(field) != expected:
                 raise ValueError(f"repair artifact metadata mismatch: {field}")
+        for field, expected in SINGLE_TARGET_MODE_FIELDS.items():
+            if metadata.get(field) != expected:
+                raise ValueError(
+                    f"repair artifact is not a compatible single-target run: {field}"
+                )
         if metadata.get("workflow_run_attempt") != 1:
             raise ValueError("repair artifact must come from workflow attempt 1")
         if metadata.get("failed_steps") != ["encode_apply"]:
@@ -207,9 +231,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
 
         candidate_path = f"target/{runner}/{expected_module}"
         test_path = candidate_path.removesuffix(".yaml") + ".test.yaml"
-        candidate = _verified_generated_file(
-            bundle, members, files, candidate_path
-        )
+        candidate = _verified_generated_file(bundle, members, files, candidate_path)
         tests = _verified_generated_file(bundle, members, files, test_path)
 
     root = destination / runner

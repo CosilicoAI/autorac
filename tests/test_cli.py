@@ -12243,6 +12243,12 @@ class TestCmdEncode:
         args.review_findings = overrides.get("review_findings", [])
         args.repair_candidate_root = overrides.get("repair_candidate_root", None)
         args.repair_candidate_path = overrides.get("repair_candidate_path", None)
+        args.repair_candidate_rulespec_sha256 = overrides.get(
+            "repair_candidate_rulespec_sha256", None
+        )
+        args.repair_candidate_tests_sha256 = overrides.get(
+            "repair_candidate_tests_sha256", None
+        )
         args.policyengine_rule_hint = overrides.get("policyengine_rule_hint", None)
         args.db = overrides.get("db", tmp_path / "encodings.db")
         args.sync = overrides.get("sync", True)
@@ -13088,11 +13094,17 @@ class TestCmdEncode:
         output_file.parent.mkdir(parents=True)
         output_file.write_text("format: rulespec/v1\n# preserved-rule\nrules: []\n")
         output_file.with_suffix(".test.yaml").write_text("# preserved-companion\n[]\n")
+        rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        tests_sha256 = hashlib.sha256(
+            output_file.with_suffix(".test.yaml").read_bytes()
+        ).hexdigest()
 
         candidate = cli_module._load_initial_validation_retry_candidate(
             SimpleNamespace(
                 repair_candidate_root=candidate_root,
                 repair_candidate_path=candidate_path,
+                repair_candidate_rulespec_sha256=rulespec_sha256,
+                repair_candidate_tests_sha256=tests_sha256,
             )
         )
 
@@ -13112,6 +13124,12 @@ class TestCmdEncode:
             tmp_path,
             repair_candidate_root=candidate_root,
             repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=hashlib.sha256(
+                output_file.read_bytes()
+            ).hexdigest(),
+            repair_candidate_tests_sha256=hashlib.sha256(
+                output_file.with_suffix(".test.yaml").read_bytes()
+            ).hexdigest(),
         )
 
         mock_run, exit_code = self._run_encode(args, self._make_eval_result(True))
@@ -13142,6 +13160,8 @@ class TestCmdEncode:
                 SimpleNamespace(
                     repair_candidate_root=tmp_path / root if root else None,
                     repair_candidate_path=relative_path,
+                    repair_candidate_rulespec_sha256=("a" * 64 if root else None),
+                    repair_candidate_tests_sha256=("b" * 64 if root else None),
                 )
             )
 
@@ -13161,8 +13181,37 @@ class TestCmdEncode:
                 SimpleNamespace(
                     repair_candidate_root=candidate_root,
                     repair_candidate_path=candidate_path,
+                    repair_candidate_rulespec_sha256="a" * 64,
+                    repair_candidate_tests_sha256="b" * 64,
                 )
             )
+
+    def test_encode_rejects_mutated_cross_run_candidate_before_model_call(
+        self, tmp_path
+    ):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("[]\n")
+        expected_rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        expected_tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
+        output_file.write_text("format: rulespec/v1\n# mutated\nrules: []\n")
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=expected_rulespec_sha256,
+            repair_candidate_tests_sha256=expected_tests_sha256,
+        )
+
+        with patch("axiom_encode.cli.run_model_eval") as model_call:
+            with pytest.raises(ValueError, match="RuleSpec SHA-256 mismatch"):
+                cmd_encode(args)
+
+        model_call.assert_not_called()
 
     @pytest.mark.parametrize("unsafe_kind", ["symlink", "invalid-utf8", "oversize"])
     def test_encode_retry_candidate_capture_rejects_unsafe_content(

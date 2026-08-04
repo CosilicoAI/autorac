@@ -2194,11 +2194,21 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'args+=(--review-findings "$review_finding_path")' in command
     assert '--repair-candidate-root "$REPAIR_CANDIDATE_ROOT"' in command
     assert '--repair-candidate-path "$REPAIR_CANDIDATE_PATH"' in command
+    assert "--repair-candidate-rulespec-sha256" in command
+    assert '"$REPAIR_CANDIDATE_RULESPEC_SHA256"' in command
+    assert "--repair-candidate-tests-sha256" in command
+    assert '"$REPAIR_CANDIDATE_TESTS_SHA256"' in command
     assert apply_step["env"]["REPAIR_CANDIDATE_ROOT"] == (
         "${{ steps.repair_candidate.outputs.root }}"
     )
     assert apply_step["env"]["REPAIR_CANDIDATE_PATH"] == (
         "${{ steps.repair_candidate.outputs.path }}"
+    )
+    assert apply_step["env"]["REPAIR_CANDIDATE_RULESPEC_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.rulespec_sha256 }}"
+    )
+    assert apply_step["env"]["REPAIR_CANDIDATE_TESTS_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.tests_sha256 }}"
     )
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command

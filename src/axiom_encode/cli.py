@@ -2226,6 +2226,14 @@ def main():
         ),
     )
     encode_parser.add_argument(
+        "--repair-candidate-rulespec-sha256",
+        help="Expected SHA-256 of the preserved repair candidate RuleSpec",
+    )
+    encode_parser.add_argument(
+        "--repair-candidate-tests-sha256",
+        help="Expected SHA-256 of the preserved repair candidate companion tests",
+    )
+    encode_parser.add_argument(
         "--policyengine-rule-hint",
         dest="policyengine_rule_hint",
         default=None,
@@ -25185,13 +25193,26 @@ def _load_initial_validation_retry_candidate(
 
     raw_root = getattr(args, "repair_candidate_root", None)
     raw_relative_output = getattr(args, "repair_candidate_path", None)
-    if (raw_root is None) != (raw_relative_output is None):
-        raise ValueError(
-            "encode --repair-candidate-root and --repair-candidate-path must be "
-            "supplied together"
-        )
-    if raw_root is None:
+    expected_rulespec_sha256 = getattr(args, "repair_candidate_rulespec_sha256", None)
+    expected_tests_sha256 = getattr(args, "repair_candidate_tests_sha256", None)
+    identity = (
+        raw_root,
+        raw_relative_output,
+        expected_rulespec_sha256,
+        expected_tests_sha256,
+    )
+    if all(value is None for value in identity):
         return None
+    if any(value is None for value in identity):
+        raise ValueError(
+            "encode repair candidate root, path, RuleSpec SHA-256, and tests "
+            "SHA-256 must be supplied together"
+        )
+    if any(
+        not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        for digest in (expected_rulespec_sha256, expected_tests_sha256)
+    ):
+        raise ValueError("encode repair candidate SHA-256 values must be lowercase hex")
 
     generated_root = Path(os.path.abspath(Path(raw_root)))
     relative_output = Path(raw_relative_output)
@@ -25222,24 +25243,27 @@ def _load_initial_validation_retry_candidate(
         )
 
     output_file = generated_root / relative_output
-    rulespec = read_bounded_regular_file(
+    rulespec_bytes = read_bounded_regular_file(
         generated_root,
         output_file,
         label="preserved validator-rejected RuleSpec",
         max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
-    ).decode("utf-8", errors="strict")
-    test_file = generated_root / _rulespec_test_path(relative_output)
-    tests = (
-        read_bounded_regular_file(
-            generated_root,
-            test_file,
-            label="preserved validator-rejected companion tests",
-            max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
-        ).decode("utf-8", errors="strict")
-        if test_file.exists() or test_file.is_symlink()
-        else None
     )
-    return ValidationRetryCandidate(rulespec=rulespec, tests=tests)
+    if hashlib.sha256(rulespec_bytes).hexdigest() != expected_rulespec_sha256:
+        raise ValueError("preserved repair candidate RuleSpec SHA-256 mismatch")
+    test_file = generated_root / _rulespec_test_path(relative_output)
+    tests_bytes = read_bounded_regular_file(
+        generated_root,
+        test_file,
+        label="preserved validator-rejected companion tests",
+        max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+    )
+    if hashlib.sha256(tests_bytes).hexdigest() != expected_tests_sha256:
+        raise ValueError("preserved repair candidate tests SHA-256 mismatch")
+    return ValidationRetryCandidate(
+        rulespec=rulespec_bytes.decode("utf-8", errors="strict"),
+        tests=tests_bytes.decode("utf-8", errors="strict"),
+    )
 
 
 def _latest_validation_retry_candidate(
