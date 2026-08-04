@@ -443,6 +443,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "income",
         "information",
         "input",
+        "limit",
         "notice",
         "policy",
         "process",
@@ -466,9 +467,11 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "an",
     "administrative",
     "adjusted",
+    "and",
     "agency",
     "annual",
     "applicable",
+    "asset",
     "background-check",
     "failing-score",
     "federal",
@@ -481,6 +484,7 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "legal",
     "local",
     "of",
+    "or",
     "plan",
     "plan-submission",
     "program",
@@ -489,6 +493,7 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "residency",
     "state",
     "tax",
+    "taxable",
     "the",
     "troubled",
     "troubled-agency",
@@ -504,28 +509,39 @@ _LEGAL_INSTRUMENT_TERMS = frozenset(
         "benefit",
         "benefits",
         "care",
+        "choice",
         "code",
         "education",
+        "energy",
         "families",
+        "fair",
         "federal",
         "food",
         "housing",
+        "home",
         "internal",
+        "labor",
+        "low-income",
         "management",
         "needy",
         "nutrition",
+        "patient",
         "procedure",
         "program",
+        "protection",
         "public",
         "regulation",
+        "regulations",
         "revenue",
         "section",
         "security",
         "social",
+        "standards",
         "statute",
         "supplemental",
         "temporary",
         "veterans",
+        "voucher",
     }
 )
 _DEPENDENCY_STATE_VALUE = (
@@ -1944,7 +1960,7 @@ def _reason_dependency_is_source_bound(
     usc_dependencies = _qualified_usc_dependencies(reason)
     for match in usc_dependencies:
         if not _reason_match_names_missing_dependency(
-            reason, match
+            reason, match, source_scope_text=source_scope_text
         ) or not _usc_dependency_is_external(
             match,
             current_citation=current_citation,
@@ -1976,6 +1992,7 @@ def _reason_dependency_is_source_bound(
         if not _reason_match_names_missing_dependency(
             reason,
             match,
+            source_scope_text=source_scope_text,
         ) or not _prose_dependency_is_external(
             dependency, current_section=current_section
         ):
@@ -2017,6 +2034,8 @@ def _reason_dependency_is_source_bound(
 def _reason_match_names_missing_dependency(
     reason: str,
     match: re.Match[str],
+    *,
+    source_scope_text: str,
 ) -> bool:
     clause_start, clause_end = _reason_clause_bounds(reason, match)
     clause = reason[clause_start:clause_end]
@@ -2024,6 +2043,8 @@ def _reason_match_names_missing_dependency(
     reference_end = match.end() - clause_start
     before = clause[:reference_start]
     after = clause[reference_end:]
+    if not _reason_named_instruments_are_source_bound(before, source_scope_text):
+        return False
     direct_missing_state = re.match(
         r"\s*(?:"
         r"(?:is|are)\s+(?:missing|unavailable|not\s+(?:yet\s+)?(?:encoded|implemented|available))|"
@@ -2065,9 +2086,19 @@ def _reason_match_names_missing_dependency(
 
     signal_text = signal.group(0).lower()
     if re.fullmatch(r"depends?\s+on|requires?", signal_text):
-        introduction_start = signals[-2].end() if len(signals) > 1 else 0
+        introduction = before[: signal.end()]
+        introduction = re.sub(
+            r"^\s*cannot\s+be\s+(?:computed|encoded|resolved)\s+"
+            r"(?:until|because|since)\s+",
+            "",
+            introduction,
+            flags=re.IGNORECASE,
+        )
         return _reason_dependency_introduction_is_bounded(
-            before[introduction_start : signal.end()]
+            introduction
+        ) and _reason_suffix_has_dependency_state(
+            after,
+            allow_descriptive_list=False,
         )
     if signal_text in {
         "missing",
@@ -2193,9 +2224,9 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
         r"(?:(?:a|an|the)\s+)?"
         r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
         r"(?:agency|administrator|authority|commission|"
-        r"commissioner(?:\s+of\s+social\s+security)?|hud|irs|"
+        r"commissioner(?:\s+of\s+(?:internal\s+revenue|social\s+security))?|hud|irs|"
         r"internal\s+revenue\s+service|social\s+security\s+administration|"
-        r"(?:department|secretary)(?:\s+of\s+(?:agriculture|housing\s+and\s+"
+        r"(?:department|secretary)(?:\s+of\s+(?:the\s+)?(?:agriculture|housing\s+and\s+"
         r"urban\s+development|education|health\s+and\s+human\s+services|labor|"
         r"treasury|veterans\s+affairs))?))?"
         r"[\s,)]*",
@@ -2327,7 +2358,7 @@ def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
         return True
     chain = re.fullmatch(
         r"(?P<subject>.+?)\s+under\s+(?:the\s+)?"
-        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulation|statute))\s*",
+        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulations?|statute))\s*",
         subject_scope,
         flags=re.IGNORECASE,
     )
@@ -2379,6 +2410,7 @@ def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
         "code",
         "program",
         "regulation",
+        "regulations",
         "statute",
     }:
         return False
@@ -2389,6 +2421,27 @@ def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
         or token.lower() in _LEGAL_INSTRUMENT_TERMS
         for token in tokens[:-1]
     )
+
+
+def _reason_named_instruments_are_source_bound(
+    before: str,
+    source_scope_text: str,
+) -> bool:
+    named_instrument = re.compile(
+        r"\bunder\s+(?:the\s+)?"
+        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulations?|statute))"
+        r"\s+(?:cited|defined|described|provided|required|set|specified|referenced)"
+        r"\s+(?:by|in)\s*$",
+        flags=re.IGNORECASE,
+    )
+    match = named_instrument.search(before)
+    if match is None:
+        return True
+    instrument = re.sub(
+        r"[^a-z0-9]+", " ", match.group("instrument").lower()
+    ).strip()
+    source = re.sub(r"[^a-z0-9]+", " ", source_scope_text.lower()).strip()
+    return bool(instrument and instrument in source)
 
 
 def _reason_direct_missing_introduction_is_bounded(

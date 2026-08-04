@@ -2443,8 +2443,11 @@ rules: []
         "is verified by the Internal Revenue Service",
         "is approved by the Department of Education",
         "is verified by the Commissioner of Social Security",
+        "is verified by the Commissioner of Internal Revenue",
         "is approved by the Department of Veterans Affairs",
+        "is approved by the Department of the Treasury",
         "is issued by the Secretary of Veterans Affairs",
+        "is issued by the Secretary of the Treasury",
         "is verified by the IRS",
     ],
 )
@@ -2706,9 +2709,50 @@ rules: []
         "Social Security Act",
         "Administrative Procedure Act",
         "Veterans Benefits Act",
+        "Patient Protection and Affordable Care Act",
+        "Fair Labor Standards Act",
+        "Code of Federal Regulations",
+        "Low-Income Home Energy Assistance Program",
+        "Housing Choice Voucher Program",
     ],
 )
 def test_named_legal_instrument_dependency_is_bounded(instrument: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        f"(b) The {instrument} governs assistance received under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    [
+        "Social Security Act",
+        "Internal Revenue Code",
+        "Food and Nutrition Act",
+    ],
+)
+def test_named_legal_instrument_must_be_bound_to_source(instrument: str):
     content = f"""\
 format: rulespec/v1
 module:
@@ -2733,7 +2777,7 @@ rules: []
         test_cases=[],
     )
 
-    assert not _has_issue(result, "(b)", "deferral")
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
 @pytest.mark.parametrize(
@@ -2746,6 +2790,10 @@ rules: []
         "residency requirement",
         "eligibility statuses",
         "administrative processes",
+        "taxable income",
+        "asset limit",
+        "income and asset limit",
+        "income or asset limit",
     ],
 )
 def test_dependency_subject_allows_operative_legal_terms(subject: str):
@@ -2776,7 +2824,8 @@ rules: []
 
 
 @pytest.mark.parametrize("linker", ["depends on", "requires"])
-def test_dependency_subject_allows_strong_linker(linker: str):
+@pytest.mark.parametrize("framing", ["until", "because", "since"])
+def test_dependency_subject_allows_strong_linker(linker: str, framing: str):
     content = f"""\
 format: rulespec/v1
 module:
@@ -2785,7 +2834,7 @@ module:
   deferred_outputs:
     - output: us:statutes/42/1437c-1/b#annual_plan_requirement
       reason: >-
-        Cannot be computed until benefit amount {linker} 42 USC 1437f(o) is
+        Cannot be computed {framing} benefit amount {linker} 42 USC 1437f(o) is
         verified.
 rules: []
 """
@@ -2802,6 +2851,44 @@ rules: []
     )
 
     assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Cannot be computed until benefit amount depends on 42 USC 1437f(o), "
+        "but the citation is only nonbinding authority.",
+        "Cannot be computed until benefit amount requires 42 USC 1437f(o) "
+        "only for historical comparison.",
+        "Cannot be computed until the nonbinding assertion requires "
+        "benefit amount depends on 42 USC 1437f(o) to be verified.",
+    ],
+)
+def test_strong_linker_requires_bounded_introduction_and_tail(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
 def test_source_bound_usc_dependency_accepts_without_wording():
