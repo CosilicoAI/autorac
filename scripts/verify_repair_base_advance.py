@@ -71,12 +71,13 @@ def verify_base_advance(
     if ancestor.returncode != 0:
         raise ValueError("repair source RuleSpec ref is not an ancestor of current")
 
+    rulespec_path = PurePosixPath(country, path)
     test_path = path.with_suffix(".test.yaml")
-    manifest_path = PurePosixPath(
-        ".axiom", "encoding-manifests", country, path.with_suffix("")
+    manifest_path = (
+        PurePosixPath(".axiom", "encoding-manifests") / rulespec_path
     ).with_suffix(".json")
     tracked_paths = (
-        PurePosixPath(country, path).as_posix(),
+        rulespec_path.as_posix(),
         PurePosixPath(country, test_path).as_posix(),
         manifest_path.as_posix(),
     )

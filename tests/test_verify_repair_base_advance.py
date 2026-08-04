@@ -20,16 +20,21 @@ def _commit(repository: Path, message: str) -> str:
     return _git(repository, "rev-parse", "HEAD")
 
 
-def _repository(tmp_path: Path) -> tuple[Path, str]:
+def _repository(
+    tmp_path: Path,
+    *,
+    candidate_path: str = "statutes/42/1437c-1.yaml",
+) -> tuple[Path, str]:
     repository = tmp_path / "rulespec-us"
     repository.mkdir()
     subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
     _git(repository, "config", "user.email", "test@example.com")
     _git(repository, "config", "user.name", "Test")
+    rulespec_path = Path("us") / candidate_path
     payloads = {
-        "us/statutes/42/1437c-1.yaml": "format: rulespec/v1\n",
-        "us/statutes/42/1437c-1.test.yaml": "tests: []\n",
-        ".axiom/encoding-manifests/us/statutes/42/1437c-1.json": "{}\n",
+        rulespec_path: "format: rulespec/v1\n",
+        rulespec_path.with_suffix(".test.yaml"): "tests: []\n",
+        Path(".axiom/encoding-manifests") / rulespec_path.with_suffix(".json"): "{}\n",
     }
     for relative_path, content in payloads.items():
         destination = repository / relative_path
@@ -77,6 +82,28 @@ def test_rejects_advance_that_changes_repair_target_identity(
             source_ref=source_ref,
             current_ref=current_ref,
             candidate_path="statutes/42/1437c-1.yaml",
+        )
+
+
+def test_rejects_dotted_section_manifest_change_at_real_manifest_path(
+    tmp_path: Path,
+) -> None:
+    candidate_path = "regulations/10-ccr/4.100.yaml"
+    repository, source_ref = _repository(
+        tmp_path,
+        candidate_path=candidate_path,
+    )
+    manifest = repository / ".axiom/encoding-manifests/us/regulations/10-ccr/4.100.json"
+    manifest.write_text("changed\n", encoding="utf-8")
+    current_ref = _commit(repository, "dotted manifest changed")
+
+    with pytest.raises(ValueError, match="target identity changed"):
+        verify_base_advance(
+            repository,
+            country="us",
+            source_ref=source_ref,
+            current_ref=current_ref,
+            candidate_path=candidate_path,
         )
 
 
