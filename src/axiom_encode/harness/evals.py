@@ -315,6 +315,9 @@ _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
 _OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
 _OPENAI_REQUEST_MAX_ATTEMPTS = 6
 _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
+_OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS = 16384
+_OPENAI_EXTENDED_PROMPT_MAX_OUTPUT_TOKENS = 32768
+_OPENAI_EXTENDED_OUTPUT_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -13918,6 +13921,15 @@ def _extract_openai_response_text(payload: dict) -> str:
     return "\n\n".join(texts).strip()
 
 
+def _openai_prompt_max_output_tokens(model: str) -> int:
+    if any(
+        model == prefix or model.startswith(f"{prefix}-")
+        for prefix in _OPENAI_EXTENDED_OUTPUT_MODEL_PREFIXES
+    ):
+        return _OPENAI_EXTENDED_PROMPT_MAX_OUTPUT_TOKENS
+    return _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS
+
+
 def _run_openai_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
@@ -13940,7 +13952,7 @@ def _run_openai_prompt_eval(
     body = {
         "model": runner.model,
         "input": prompt,
-        "max_output_tokens": 16384,
+        "max_output_tokens": _openai_prompt_max_output_tokens(runner.model),
         "reasoning": {
             "effort": "low",
             "summary": "auto",
