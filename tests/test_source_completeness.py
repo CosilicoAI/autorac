@@ -1325,6 +1325,152 @@ rules: []
     assert _has_issue(result, "(a)", "deferral", "runtime capability")
 
 
+def test_current_usc_branch_cannot_defer_directly_computable_source():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999/a#household_benefit
+      reason: >-
+        Cannot be computed until the household benefit input and household income
+        formula required by 42 USC 9999(a) are encoded.
+rules: []
+"""
+    source = "(a) The household benefit equals household income plus an adjustment."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "source_dependency",
+    ["section 1437f(o) of this title", "42 U.S.C. 1437f(o)"],
+)
+def test_source_bound_usc_dependency_can_defer_computable_source(
+    source_dependency: str,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance eligibility under 42 USC 1437f(o)
+        is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        f"{source_dependency} and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+def test_unrelated_usc_dependency_cannot_defer_computable_source():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance eligibility under 42 USC 9999(a)
+        is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "section 1437f(o) of this title and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize("cited_path", ["(a)", "(a)(1)", "(a)(3)"])
+def test_source_bound_runtime_gap_requires_full_nested_branch(cited_path: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a/2#agency_plan_contents
+      reason: >-
+        Cannot be computed until the agency policies document and submission
+        event required by 42 USC 1437c-1{cited_path} are encoded.
+rules: []
+"""
+    source = (
+        "(a) Agency plans shall contain:\n"
+        "1. goals;\n"
+        "2. Agency shall submit plan policies."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_source_bound_runtime_gap_accepts_exact_nested_branch():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a/2#agency_plan_contents
+      reason: >-
+        Cannot be computed until the agency policies document and submission
+        event required by 42 USC 1437c-1(a)(2) are encoded.
+rules: []
+"""
+    source = (
+        "(a) Agency plans shall contain:\n"
+        "1. goals;\n"
+        "2. Agency shall submit plan policies."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c–1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+
+
 @pytest.mark.parametrize(
     "reason",
     [
