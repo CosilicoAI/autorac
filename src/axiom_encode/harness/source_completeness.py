@@ -3224,6 +3224,7 @@ def _actor_nominal_object_is_bounded(
         len(object_tokens) < 2
         or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
         or predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
+        or _actor_nominal_object_contains_finite_clause(object_tokens)
         or any(
             token.lower() in _DEPENDENCY_DETERMINER_TERMS for token in object_tokens[1:]
         )
@@ -3261,6 +3262,51 @@ def _actor_nominal_object_is_bounded(
         " ".join(object_tokens[1:])
     ):
         return bool(predicate_forms & _DEPENDENCY_COMPOUND_NOMINAL_TERMS)
+    return False
+
+
+def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bool:
+    for predicate_index in range(1, len(object_tokens) - 1):
+        subject_tokens = object_tokens[:predicate_index]
+        if not _dependency_subject_phrase_is_bounded(" ".join(subject_tokens)):
+            continue
+        predicate = object_tokens[predicate_index].lower()
+        trailing_object = object_tokens[predicate_index + 1 :]
+        if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
+            continue
+        if predicate in _DEPENDENCY_COMPOUND_NOMINAL_TERMS or predicate.endswith(
+            (
+                "age",
+                "al",
+                "ance",
+                "ence",
+                "ful",
+                "ic",
+                "ing",
+                "ion",
+                "ity",
+                "ive",
+                "less",
+                "ment",
+                "ness",
+                "ory",
+                "ous",
+                "ship",
+            )
+        ):
+            continue
+        is_input_requirement = (
+            predicate == "input"
+            and len(trailing_object) == 1
+            and "requirement" in _dependency_token_forms(trailing_object[0])
+        )
+        if is_input_requirement:
+            continue
+        if _dependency_subject_and_predicate_agree(
+            subject_tokens[-1],
+            predicate,
+        ):
+            return True
     return False
 
 

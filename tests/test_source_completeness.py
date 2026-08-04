@@ -3689,6 +3689,14 @@ rules: []
         "eligibility rules under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and SNAP benefits part eligibility "
         "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs record "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program records "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs work "
+        "eligibility requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicaid programs record "
+        "eligibility rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
