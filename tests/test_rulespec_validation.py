@@ -26316,6 +26316,31 @@ rules:
     assert issues == []
 
 
+@pytest.mark.parametrize("corpus_dash", ("‐", "‑", "‒", "–", "—", "−"))
+def test_out_of_scope_rule_source_normalizes_section_dash_variants(corpus_dash):
+    content = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c{corpus_dash}1
+rules:
+  - name: five_year_plan_period_fiscal_years
+    kind: parameter
+    dtype: Number
+    source: 42 USC 1437c-1(a)(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+
+    assert (
+        find_out_of_scope_rule_source_issues(
+            content,
+            requested_source=f"us/statute/42/1437c{corpus_dash}1",
+        )
+        == []
+    )
+
+
 def test_out_of_scope_rule_source_rejects_sibling_in_multicitation_source():
     content = """format: rulespec/v1
 rules:

@@ -168,10 +168,29 @@ def test_generic_encoder_prompt_includes_durable_rule_spec_guidance():
         "module.source_verification.corpus_citation_path: us/statute/26/63"
         in normalized_prompt
     )
+    assert (
+        "Use that exact same `us/statute/26/63` value in every source-backed proof"
+        in prompt
+    )
+    assert "do not append subsection markers or other path segments" in prompt
     assert "Never emit `corpus_citation_paths`" in normalized_prompt
     assert "corpus resolver under this one canonical path" in normalized_prompt
     assert "Target citation/source id: 26 USC 63(c)(5)" in prompt
     assert "Expected output path: statutes/26/63/c/5.yaml" in prompt
+
+
+def test_complete_source_prompt_requires_explicit_branch_inventory():
+    prompt = get_encoder_prompt(
+        citation="42 USC 1437c-1",
+        output_path="statutes/42/1437c-1.yaml",
+        corpus_citation_path="us/statute/42/1437c–1",
+        require_complete_source_unit=True,
+    )
+    normalized_prompt = " ".join(prompt.split())
+
+    assert "inventory every top-level structural branch" in normalized_prompt
+    assert "Do not return while any branch is absent" in normalized_prompt
+    assert "absolute output path preserves the branch label" in normalized_prompt
 
 
 class TestClaudeCodeBackend:
