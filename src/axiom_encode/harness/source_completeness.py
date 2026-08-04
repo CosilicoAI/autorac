@@ -454,7 +454,7 @@ _COORDINATED_FINITE_CLAUSE = re.compile(
     flags=re.IGNORECASE,
 )
 _DEPENDENCY_CONTEXT_COORDINATION = re.compile(
-    r"(?:,\s*)?\b(?:and|but|or|while|whereas|yet)\s+",
+    r"(?:,\s*)?\b(?:although|and|but|or|while|whereas|yet)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -2212,8 +2212,12 @@ def _reason_dependency_occurrence_is_contextual(
     section = groups.get("section")
     if title and section:
         dependencies = _reason_dependencies(reason)
-        for candidate in _qualified_usc_dependencies(reason):
-            if _usc_dependencies_match(candidate, match) and (
+        candidates = (
+            *_qualified_usc_dependencies(reason),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
+        )
+        for candidate in candidates:
+            if _usc_dependency_occurrences_match(reason, candidate, match) and (
                 _CONTEXTUAL_AUTHORITY_LANGUAGE.search(
                     _reason_dependency_local_context(
                         reason,
@@ -2246,6 +2250,7 @@ def _reason_dependencies(reason: str) -> list[re.Match[str]]:
     return sorted(
         (
             *_qualified_usc_dependencies(reason),
+            *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
             *_PRECISE_DEFERRAL_DEPENDENCY.finditer(reason),
         ),
         key=lambda dependency: (dependency.start(), -dependency.end()),
@@ -2294,6 +2299,30 @@ def _usc_dependencies_match(left: re.Match[str], right: re.Match[str]) -> bool:
         and right_groups.get("title")
         and left_groups["title"].lower() == right_groups["title"].lower()
         and normalize_rulespec_path_segment(left_groups["section"])
+        == normalize_rulespec_path_segment(right_groups["section"])
+        and _usc_dependency_fragments(left) == _usc_dependency_fragments(right)
+    )
+
+
+def _usc_dependency_occurrences_match(
+    reason: str,
+    left: re.Match[str],
+    right: re.Match[str],
+) -> bool:
+    if _usc_dependencies_match(left, right):
+        return True
+    left_groups = left.groupdict()
+    right_groups = right.groupdict()
+    if left_groups.get("title") or not right_groups.get("title"):
+        return False
+    if not re.match(
+        r"\s+of\s+this\s+title\b",
+        reason[left.end() :],
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        normalize_rulespec_path_segment(left_groups["section"])
         == normalize_rulespec_path_segment(right_groups["section"])
         and _usc_dependency_fragments(left) == _usc_dependency_fragments(right)
     )
@@ -2649,7 +2678,7 @@ def _reason_named_instruments_are_source_bound(
                 bridge = clause[title_match.end() : reference_start]
                 if (
                     not _has_adversative_language(bridge)
-                    and not _COORDINATED_FINITE_CLAUSE.search(bridge)
+                    and not _bridge_crosses_coordinated_finite_clause(bridge)
                     and instrument_link.search(bridge)
                 ):
                     return True
@@ -2662,6 +2691,35 @@ def _reason_named_instruments_are_source_bound(
             normalized_source,
         )
     )
+
+
+def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
+    if _COORDINATED_FINITE_CLAUSE.search(bridge):
+        return True
+    for coordination in re.finditer(
+        r"(?:,\s*)?\b(?:and|but|or|yet)\s+",
+        bridge,
+        flags=re.IGNORECASE,
+    ):
+        coordinated = bridge[coordination.end() :]
+        linker = re.search(
+            r"\b(?:according\s+to|pursuant\s+to|under)\s*$",
+            coordinated,
+            flags=re.IGNORECASE,
+        )
+        if linker is None:
+            continue
+        tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", coordinated[: linker.start()])
+        if len(tokens) < 2:
+            continue
+        predicate = tokens[-1].lower()
+        subject = " ".join(tokens[:-1])
+        if _dependency_subject_phrase_is_bounded(subject) and (
+            predicate in {"is", "are", "was", "were", "has", "have", "had"}
+            or re.fullmatch(r"[a-z]+(?:ed|es|ies|s)", predicate)
+        ):
+            return True
+    return False
 
 
 def _reason_direct_missing_introduction_is_bounded(
