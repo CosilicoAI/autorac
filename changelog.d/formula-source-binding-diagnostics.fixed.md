@@ -1,0 +1,1 @@
+Identify asserted principal formulas that execute a missing source computation but lack clause-specific source binding, and direct encoders to add canonical formula-proof excerpts. Preserve multiline formula comparisons in boundary evidence and the legal windows of singleton effective-dated constants.
