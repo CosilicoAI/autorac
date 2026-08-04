@@ -1888,7 +1888,7 @@ def _reason_match_names_missing_dependency(
         return False
     bridge = before[signal.end() :]
     if len(bridge) > 240 or re.search(
-        r"\b(?:but|however|although|whereas|aber|jedoch)\b",
+        r"\b(?:but|however|although|whereas|while|yet|aber|jedoch)\b",
         bridge,
         flags=re.IGNORECASE,
     ):
@@ -1911,52 +1911,59 @@ def _reason_match_names_missing_dependency(
             key=lambda dependency: (dependency.end(), dependency.start()),
             reverse=True,
         )
-        for dependency in prior_dependencies:
-            between = before[dependency.end() : signal.start()]
-            if re.fullmatch(
-                r"\s*,?\s*(?:which\s+)?"
-                r"(?:(?:is|are|was|were|remains?|ist|sind)\s+)?"
-                r"(?:(?:[a-z]+ly|still|currently|bereits|weiterhin)\s+){0,3}",
-                between,
-                flags=re.IGNORECASE,
-            ):
-                return False
+        if prior_dependencies:
+            return False
 
     if signal_text == "until":
-        return _reason_suffix_has_dependency_state(after)
+        before_reference = clause[:reference_start]
+        operative_reference = _source_clause_links_dependency(
+            clause,
+            reference_start=reference_start,
+            reference_end=reference_end,
+        ) or bool(
+            re.search(
+                r"\b(?:cited|defined|described|provided|required|set|specified)"
+                r"\s+(?:by|in)\s*$",
+                before_reference,
+                flags=re.IGNORECASE,
+            )
+        )
+        return _reason_suffix_has_dependency_state(
+            after,
+            allow_descriptive_list=operative_reference,
+        )
     return True
 
 
-def _reason_suffix_has_dependency_state(after: str) -> bool:
+def _reason_suffix_has_dependency_state(
+    after: str,
+    *,
+    allow_descriptive_list: bool,
+) -> bool:
     """Require a state predicate for this citation or its coordinated list."""
 
     bounded = re.split(
-        r"\b(?:but|however|although|whereas|aber|jedoch)\b",
+        r"\b(?:but|however|although|whereas|while|yet|aber|jedoch)\b",
         after,
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
+    dependency_state = (
+        r"(?:ascertained|available|calculated|computed|determined|encoded|"
+        r"established|furnished|implemented|known|made\s+available|missing|"
+        r"needed|obtained|produced|provided|received|required|resolved|set|"
+        r"supplied|unavailable)"
+    )
     state_pattern = re.compile(
         r"\b(?:"
-        r"(?:is|are|was|were|must\s+be)\s+"
-        r"(?P<state>[a-z]+(?:ed|en)|available|missing|unavailable|known)|"
-        r"(?:has|have)\s+(?:not\s+)?been\s+"
-        r"(?P<perfect_state>[a-z]+(?:ed|en)|available|known)"
-        r")\b",
+        r"(?:is|are|was|were|must\s+be)\s+(?:not\s+(?:yet\s+)?)?"
+        + dependency_state
+        + r"|(?:has|have)\s+(?:not\s+)?been\s+"
+        + dependency_state
+        + r")\b",
         flags=re.IGNORECASE,
     )
-    contextual_states = {
-        "cited",
-        "described",
-        "included",
-        "mentioned",
-        "noted",
-        "referenced",
-    }
     for state in state_pattern.finditer(bounded):
-        state_word = (state.group("state") or state.group("perfect_state")).lower()
-        if state_word in contextual_states:
-            continue
         prefix = bounded[: state.start()]
         if not prefix.strip():
             return True
@@ -1975,22 +1982,18 @@ def _reason_suffix_has_dependency_state(after: str) -> bool:
                 dependency.end() - dependency.start()
             )
         remainder = "".join(masked_prefix)
-        if re.search(
-            r"\b(?:"
-            r"is|are|was|were|has|have|applies?|holds?|exists?|"
-            r"mentions?|cites?|references?"
-            r")\b",
+        if re.fullmatch(
+            r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
             remainder,
             flags=re.IGNORECASE,
         ):
-            continue
-        if re.search(
-            r"\b(?:context|background|illustration|example)\b",
-            remainder,
+            return True
+        if allow_descriptive_list and re.match(
+            r"\s*(?:,?\s+(?:and|or)\b)",
+            prefix,
             flags=re.IGNORECASE,
         ):
-            continue
-        return True
+            return True
     return False
 
 
