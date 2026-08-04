@@ -2295,6 +2295,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "PR_BASE_BRANCH",
         "REPAIR_CANDIDATE_CONCLUSION",
         "REPAIR_CANDIDATE_OUTCOME",
+        "REPAIR_CANDIDATE_PATH",
+        "REPAIR_CANDIDATE_RUNNER",
+        "REPAIR_CANDIDATE_RULESPEC_SHA256",
+        "REPAIR_CANDIDATE_TESTS_SHA256",
         "REPAIR_RUN_ID",
         "PROVISION_SIGNING_SUPERVISOR_CONCLUSION",
         "PUBLISH_LANE_PULL_REQUEST_CONCLUSION",
@@ -2323,7 +2327,18 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         == "${{ steps.provision_signing_supervisor.conclusion }}"
     )
     assert "toJSON(steps)" not in json.dumps(failure_package_step)
-    assert ".outputs" not in json.dumps(failure_package_step["env"])
+    assert failure_package_step["env"]["REPAIR_CANDIDATE_PATH"] == (
+        "${{ steps.repair_candidate.outputs.path }}"
+    )
+    assert failure_package_step["env"]["REPAIR_CANDIDATE_RUNNER"] == (
+        "${{ steps.repair_candidate.outputs.runner }}"
+    )
+    assert failure_package_step["env"]["REPAIR_CANDIDATE_RULESPEC_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.rulespec_sha256 }}"
+    )
+    assert failure_package_step["env"]["REPAIR_CANDIDATE_TESTS_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.tests_sha256 }}"
+    )
     failure_package_command = failure_package_step["run"]
     assert "workflow_python=/usr/bin/python3" in failure_package_command
     assert '"${PROVISION_SIGNING_SUPERVISOR_CONCLUSION:-}" = success' in (
@@ -2350,6 +2365,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"schema": "axiom-encode/failed-reencode-diagnostics/v1"' in (
         failure_package_command
     )
+    assert 'guard_root / "repair-candidate.json"' not in failure_package_command
+    assert "consumed_rulespec_sha256 = os.environ.get(" in failure_package_command
+    assert "consumed_tests_sha256 = os.environ.get(" in failure_package_command
 
     failure_upload_step = next(
         step
@@ -2716,6 +2734,75 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         target_inventory["sha256"]
         == hashlib.sha256(b"format: rulespec/v1\n").hexdigest()
     )
+
+
+def test_failed_reencode_metadata_uses_consumed_identity_after_evidence_mutation(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Package failed re-encode diagnostics"
+    )
+    command = step["run"].replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "repair-candidate.json").write_text(
+        json.dumps(
+            {
+                "path": "statutes/42/mutated.yaml",
+                "root": "/mutated",
+                "rulespec_sha256": "b" * 64,
+                "runner": "mutated-runner",
+                "tests_sha256": "c" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": "us/statute/42/1437c-1",
+            "CORPUS_REF": "corpus-ref",
+            "COUNTRY": "us",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "5678",
+            "GITHUB_SHA": "encoder-ref",
+            "REPAIR_CANDIDATE_CONCLUSION": "success",
+            "REPAIR_CANDIDATE_OUTCOME": "success",
+            "REPAIR_CANDIDATE_PATH": "statutes/42/1437c-1.yaml",
+            "REPAIR_CANDIDATE_RUNNER": "openai-gpt-5.6-sol",
+            "REPAIR_CANDIDATE_RULESPEC_SHA256": "d" * 64,
+            "REPAIR_CANDIDATE_TESTS_SHA256": "e" * 64,
+            "REPAIR_RUN_ID": "1234",
+            "RULES_ENGINE_REF": "rules-engine-ref",
+            "RULESPEC_REF": "rulespec-ref",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    archive = tmp_path / "targeted-reencode-failure.tar"
+    with tarfile.open(archive, mode="r") as bundle:
+        metadata_file = bundle.extractfile("./metadata.json")
+        assert metadata_file is not None
+        metadata = json.loads(metadata_file.read())
+    assert metadata["repair_candidate"] == {
+        "path": "statutes/42/1437c-1.yaml",
+        "rulespec_sha256": "d" * 64,
+        "run_id": "1234",
+        "runner": "openai-gpt-5.6-sol",
+        "tests_sha256": "e" * 64,
+    }
 
 
 @pytest.mark.parametrize(

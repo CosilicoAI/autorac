@@ -2618,6 +2618,10 @@ jobs:
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           REPAIR_CANDIDATE_CONCLUSION: ${{ steps.repair_candidate.conclusion }}
           REPAIR_CANDIDATE_OUTCOME: ${{ steps.repair_candidate.outcome }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           PROVISION_SIGNING_SUPERVISOR_CONCLUSION: ${{ steps.provision_signing_supervisor.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_CONCLUSION: ${{ steps.publish_lane_pull_request.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_OUTCOME: ${{ steps.publish_lane_pull_request.outcome }}
@@ -2657,6 +2661,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import stat
           import sys
           from pathlib import Path
@@ -2901,36 +2906,35 @@ jobs:
               }
           )
           repair_candidate = None
-          repair_candidate_path = guard_root / "repair-candidate.json"
           if os.environ.get("REPAIR_CANDIDATE_CONCLUSION") == "success":
-              try:
-                  repair_candidate_raw = read_bounded_regular_file(
-                      guard_root,
-                      repair_candidate_path,
-                      label="repair candidate evidence",
-                      max_bytes=16 * 1024,
-                  )
-              except UnsafeDiagnosticPathError as exc:
-                  raise SystemExit(str(exc)) from exc
-              repair_candidate_payload = json.loads(repair_candidate_raw)
-              if (
-                  not isinstance(repair_candidate_payload, dict)
-                  or set(repair_candidate_payload)
-                  != {"path", "root", "rulespec_sha256", "runner", "tests_sha256"}
-                  or any(
-                      not isinstance(repair_candidate_payload.get(key), str)
-                      or len(repair_candidate_payload[key]) != 64
-                      or any(character not in "0123456789abcdef" for character in repair_candidate_payload[key])
-                      for key in ("rulespec_sha256", "tests_sha256")
+              consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
+              consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_rulespec_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
+              )
+              consumed_tests_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_TESTS_SHA256", ""
+              )
+              if not consumed_path or not re.fullmatch(
+                  r"[a-z0-9][a-z0-9._:/-]*\.yaml", consumed_path
+              ):
+                  raise SystemExit("repair candidate evidence path is malformed")
+              if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
+                  raise SystemExit("repair candidate evidence runner is malformed")
+              if any(
+                  re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  for digest in (
+                      consumed_rulespec_sha256,
+                      consumed_tests_sha256,
                   )
               ):
                   raise SystemExit("repair candidate evidence is malformed")
               repair_candidate = {
                   "run_id": os.environ.get("REPAIR_RUN_ID") or None,
-                  "path": repair_candidate_payload["path"],
-                  "runner": repair_candidate_payload["runner"],
-                  "rulespec_sha256": repair_candidate_payload["rulespec_sha256"],
-                  "tests_sha256": repair_candidate_payload["tests_sha256"],
+                  "path": consumed_path,
+                  "runner": consumed_runner,
+                  "rulespec_sha256": consumed_rulespec_sha256,
+                  "tests_sha256": consumed_tests_sha256,
               }
           metadata = {
               "schema": "axiom-encode/failed-reencode-diagnostics/v1",
