@@ -712,6 +712,7 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
     {
         "abawd",
         "bbce",
+        "c",
         "chip",
         "d",
         "dsh",
@@ -722,7 +723,10 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
         "fpl",
         "hcbs",
         "hea",
+        "hipp",
+        "hmo",
         "irmaa",
+        "ism",
         "lis",
         "lieap",
         "ltss",
@@ -733,7 +737,9 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
         "msp",
         "pace",
         "pass",
+        "pdp",
         "poms",
+        "ppo",
         "qdwi",
         "qi",
         "qmb",
@@ -751,7 +757,19 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
     }
 )
 _DEPENDENCY_POLICY_PROGRAM_SUBJECT_TERMS = frozenset(
-    {"medicaid", "medicare", "snap", "ssi", "tanf"}
+    {
+        "afdc",
+        "chip",
+        "liheap",
+        "medicaid",
+        "medicare",
+        "rsdi",
+        "snap",
+        "ssdi",
+        "ssi",
+        "tanf",
+        "wic",
+    }
 )
 _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
     {"based", "non", "part", "waiver"}
@@ -3342,7 +3360,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"federal\s+(?:(?:[a-z-]+\s+){0,4}"
             r"(?:administration|administrator|agency|authority|board|bureau|"
             r"commission|commissioner|corporation|department|judiciary|office|"
-            r"reserve|service)|"
+            r"reserve|secretary|service)|"
             r"bureaus?\s+of\s+investigation)|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"

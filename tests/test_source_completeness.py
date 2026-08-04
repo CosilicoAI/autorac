@@ -3665,6 +3665,10 @@ rules: []
         "determines eligibility under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and federal communications "
         "commissioner issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal treasury secretary "
+        "issued rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal energy secretary "
+        "determines eligibility under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3804,6 +3808,16 @@ rules: []
         "Medicaid SPA rules",
         "SNAP LIEAP rules",
         "Medicare D-SNP eligibility",
+        "CHIP MAGI eligibility",
+        "CHIP FMAP rules",
+        "SSDI SGA rules",
+        "RSDI SGA rules",
+        "Medicare HMO rules",
+        "Medicare PPO rules",
+        "Medicare PDP rules",
+        "Medicare C-SNP eligibility",
+        "SSI ISM rules",
+        "Medicaid HIPP eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
