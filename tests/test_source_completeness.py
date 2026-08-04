@@ -12231,9 +12231,13 @@ def test_age_qualification_witness_is_not_allocated_to_joint_return_clause(
         "minimum or maximum age, for the federal earned income tax credit in "
         "order to be eligible for the credit."
     )
-    ordered_clauses = (age_clause, joint_clause) if reverse_clause_order else (
-        joint_clause,
-        age_clause,
+    ordered_clauses = (
+        (age_clause, joint_clause)
+        if reverse_clause_order
+        else (
+            joint_clause,
+            age_clause,
+        )
     )
     source = "(1) " + " ".join(ordered_clauses)
     content = _exception_control_content(f"{joint_selector} and {age_selector}")
