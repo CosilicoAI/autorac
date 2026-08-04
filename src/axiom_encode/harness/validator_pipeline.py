@@ -11582,10 +11582,11 @@ def _rulespec_literal_value(
         magnitude = exact.removeprefix("-").lstrip("0") or "0"
         if len(magnitude) > 19:
             return None
-        value = int(exact)
-        if -(2**63) <= value <= 2**63 - 1:
-            return "integer", value
-        return None
+        unsigned_value = int(magnitude)
+        if unsigned_value > 2**63 - 1:
+            return None
+        value = -unsigned_value if exact.startswith("-") else unsigned_value
+        return "integer", value
 
     if re.fullmatch(r"-?[0-9][0-9_]*\.[0-9][0-9_]*", literal):
         exact = literal.replace("_", "")
