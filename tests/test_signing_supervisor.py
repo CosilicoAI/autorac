@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import struct
@@ -2055,6 +2056,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Provision protected signing supervisor"
     )
+    assert provision_step["id"] == "provision_signing_supervisor"
     assert "sudo chown 0:0 /opt" in provision_step["run"]
     assert "sudo chmod go-w /opt" in provision_step["run"]
     assert "--git /usr/bin/git" in provision_step["run"]
@@ -2254,6 +2256,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "VERIFY_GENERATED_PROVENANCE_CONCLUSION",
         "VERIFY_GENERATED_PROVENANCE_OUTCOME",
     }
+    assert (
+        failure_package_step["env"]["PROVISION_SIGNING_SUPERVISOR_CONCLUSION"]
+        == "${{ steps.provision_signing_supervisor.conclusion }}"
+    )
     assert "toJSON(steps)" not in json.dumps(failure_package_step)
     assert ".outputs" not in json.dumps(failure_package_step["env"])
     failure_package_command = failure_package_step["run"]
@@ -2482,11 +2488,17 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         if item.get("name") == "Package failed re-encode diagnostics"
     )
     protected_python = tmp_path / "protected-python"
+    protected_runtime_marker = tmp_path / "protected-runtime-invoked"
     if protected_runtime_state == "executable-remnant":
         protected_python.write_text("#!/bin/sh\nexit 127\n")
         protected_python.chmod(0o755)
     elif protected_runtime_state == "trusted":
-        protected_python = Path(sys.executable)
+        protected_python.write_text(
+            "#!/bin/sh\n"
+            ': > "$PROTECTED_RUNTIME_MARKER"\n'
+            f'exec {shlex.quote(sys.executable)} "$@"\n'
+        )
+        protected_python.chmod(0o755)
     command = step["run"].replace(
         "/opt/axiom-verification/python/bin/python",
         str(protected_python),
@@ -2535,9 +2547,11 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         "QUEUE_ITEM_ID": "us/statute/42/1437c-1",
         "QUEUE_MANIFEST_SHA256": "manifest-sha",
         "PROVISION_SIGNING_SUPERVISOR_CONCLUSION": provision_conclusion,
+        "PROTECTED_RUNTIME_MARKER": str(protected_runtime_marker),
     }
 
     subprocess.run(["bash", "-c", command], env=env, check=True)
+    assert protected_runtime_marker.exists() is (protected_runtime_state == "trusted")
 
     archive = tmp_path / "targeted-reencode-failure.tar"
     with tarfile.open(archive, mode="r") as bundle:
