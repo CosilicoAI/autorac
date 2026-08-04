@@ -315,6 +315,7 @@ _OPENAI_REQUEST_CONNECT_TIMEOUT_SECONDS = 30
 _OPENAI_REQUEST_READ_TIMEOUT_SECONDS = 180
 _OPENAI_REQUEST_MAX_ATTEMPTS = 6
 _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
+_OPENAI_PROMPT_MAX_OUTPUT_TOKENS = 32768
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -13940,7 +13941,7 @@ def _run_openai_prompt_eval(
     body = {
         "model": runner.model,
         "input": prompt,
-        "max_output_tokens": 16384,
+        "max_output_tokens": _OPENAI_PROMPT_MAX_OUTPUT_TOKENS,
         "reasoning": {
             "effort": "low",
             "summary": "auto",
