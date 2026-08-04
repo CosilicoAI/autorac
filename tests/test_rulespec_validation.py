@@ -26341,6 +26341,51 @@ rules:
     )
 
 
+@pytest.mark.parametrize("source_dash", ("‐", "‑", "‒", "–", "—", "−"))
+def test_out_of_scope_rule_source_normalizes_display_citation_dash_variants(
+    source_dash,
+):
+    content = f"""format: rulespec/v1
+rules:
+  - name: five_year_plan_period_fiscal_years
+    kind: parameter
+    dtype: Number
+    source: 42 USC 1437c{source_dash}1(a)(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+
+    assert (
+        find_out_of_scope_rule_source_issues(
+            content,
+            requested_source="us/statute/42/1437c–1",
+        )
+        == []
+    )
+
+
+def test_out_of_scope_rule_source_rejects_unicode_dash_display_sibling():
+    content = """format: rulespec/v1
+rules:
+  - name: sibling_plan_rule
+    kind: parameter
+    dtype: Number
+    source: 42 USC 1437c–2(a)(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+
+    issues = find_out_of_scope_rule_source_issues(
+        content,
+        requested_source="us/statute/42/1437c–1",
+    )
+
+    assert len(issues) == 1
+    assert "`sibling_plan_rule` source `42 USC 1437c–2(a)(1)`" in issues[0]
+
+
 def test_out_of_scope_rule_source_rejects_sibling_in_multicitation_source():
     content = """format: rulespec/v1
 rules:

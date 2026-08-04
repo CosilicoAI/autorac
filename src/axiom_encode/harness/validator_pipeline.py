@@ -2035,7 +2035,7 @@ def _citation_to_normalized_target(citation: str) -> tuple[str, ...] | None:
     if corpus_target is not None:
         return corpus_target
     try:
-        parts = parse_usc_citation(citation)
+        parts = parse_usc_citation(normalize_rulespec_path_segment(citation))
     except Exception:
         return None
     if parts is None:
