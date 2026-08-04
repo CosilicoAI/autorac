@@ -11459,8 +11459,7 @@ def _formula_is_syntactically_unsatisfiable_false(formula: str) -> bool:
     literal_comparison = _literal_comparison_truth_value(exact)
     if literal_comparison is not None:
         return not literal_comparison
-    normalized = re.sub(r"\s+", " ", exact.lower())
-    conjuncts = _split_top_level_boolean_operator(normalized, "and")
+    conjuncts = _split_top_level_boolean_operator(exact, "and")
     return len(conjuncts) > 1 and any(
         _formula_is_syntactically_unsatisfiable_false(conjunct)
         for conjunct in conjuncts
@@ -11653,11 +11652,26 @@ def _strip_balanced_outer_parentheses(expression: str) -> str:
 def _split_top_level_boolean_operator(expression: str, operator: str) -> list[str]:
     parts: list[str] = []
     depth = 0
+    quote: str | None = None
+    escaped = False
     start = 0
     index = 0
     pattern = re.compile(rf"\b{re.escape(operator)}\b")
     while index < len(expression):
         char = expression[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            continue
         if char == "(":
             depth += 1
             index += 1

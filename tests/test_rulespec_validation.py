@@ -2575,6 +2575,7 @@ rules:
         "true == false",
         '"same" != "same"',
         "9007199254740992.0 == 9007199254740993.0",
+        'source_condition and "same" != "same"',
     ],
 )
 def test_judgment_positive_companion_output_allows_false_literal_comparison(
@@ -2621,6 +2622,7 @@ rules:
         "1 == 1",
         '"A" != "a"',
         "9007199254740992.0 != 9007199254740993.0",
+        'source_condition and "A" != "a"',
     ],
 )
 def test_judgment_positive_companion_output_requires_positive_for_true_literal_comparison(
