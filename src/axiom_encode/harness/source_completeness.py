@@ -386,6 +386,26 @@ _APPLICABILITY_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_SOURCE_SELECTOR_TOKEN_STOPWORDS = frozenset(
+    {
+        "applies",
+        "apply",
+        "case",
+        "condition",
+        "except",
+        "federal",
+        "flag",
+        "for",
+        "has",
+        "is",
+        "no",
+        "non",
+        "not",
+        "status",
+        "the",
+        "without",
+    }
+)
 _NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
     r"\b(?:"
     r"(?:shall|does)\s+not\s+apply|"
@@ -8905,6 +8925,8 @@ def _source_exception_condition_text(text: str) -> str:
     if marker is None:
         return clause
     suffix = clause[marker.start() :]
+    if _source_qualification_exception_idiom(clause, marker):
+        return clause
     condition_cue = re.search(
         r"\b(?:vorausgesetzt\s*,?\s+dass|"
         r"unter\s+der\s+voraussetzung\s*,?\s+dass|"
@@ -8929,6 +8951,27 @@ def _source_exception_condition_text(text: str) -> str:
     if preposed is not None:
         return preposed.group("condition")
     return suffix
+
+
+def _source_qualification_exception_idiom(
+    text: str,
+    marker: re.Match[str],
+) -> bool:
+    """Recognize qualifications preserved except for one stated criterion."""
+
+    return bool(
+        marker.group(0).strip().lower().startswith("except")
+        and re.search(
+            r"\b(?:qualifications?|requirements?|conditions?)\b",
+            text[: marker.start()],
+            flags=re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(?:eligible|qualif(?:y|ied|ication))\b",
+            text[marker.end() :],
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _source_exception_effect_requirement(text: str) -> str:
@@ -9008,19 +9051,7 @@ def _source_exception_effect_requirement(text: str) -> str:
                 return "enable"
             if latest_negative > latest_positive:
                 return "exclude"
-        if (
-            cue.startswith("except")
-            and re.search(
-                r"\b(?:qualifications?|requirements?|conditions?)\b",
-                proposition,
-                flags=re.IGNORECASE,
-            )
-            and re.search(
-                r"\b(?:eligible|qualif(?:y|ied|ication))\b",
-                collapsed[condition.end() :],
-                flags=re.IGNORECASE,
-            )
-        ):
+        if _source_qualification_exception_idiom(collapsed, condition):
             return "enable"
     if re.search(
         r"\b(?:"
@@ -9110,20 +9141,9 @@ def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
     collapsed = _collapse_text(text).lower()
     if _source_selector_concept_matches(collapsed, normalized_name):
         return True
-    ignored = {
-        "applies",
-        "apply",
-        "case",
-        "condition",
-        "flag",
-        "has",
-        "is",
-        "status",
-        "the",
-    }
     return any(
         len(token) >= 4
-        and token not in ignored
+        and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
         and re.search(rf"\b{re.escape(token)}\w*", collapsed) is not None
         for token in normalized_name.split("_")
     )
@@ -9195,26 +9215,10 @@ def _source_selector_concept_matches(
     for concept, pattern in concept_patterns.items():
         if concept in normalized_name:
             patterns.append(pattern)
-    ignored = {
-        "applies",
-        "apply",
-        "case",
-        "condition",
-        "flag",
-        "for",
-        "has",
-        "is",
-        "no",
-        "non",
-        "not",
-        "status",
-        "the",
-        "without",
-    }
     patterns.extend(
         rf"\b{re.escape(token)}\w*"
         for token in normalized_name.split("_")
-        if len(token) >= 4 and token not in ignored
+        if len(token) >= 4 and token not in _SOURCE_SELECTOR_TOKEN_STOPWORDS
     )
     matches = {
         (match.start(), match.end(), match.group(0)): match

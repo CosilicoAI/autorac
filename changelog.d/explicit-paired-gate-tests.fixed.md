@@ -1,0 +1,1 @@
+Prevent generic `federal` and `except` tokens from assigning an exception witness to an unrelated source condition, and require mechanically cloned, single-input test pairs for every source-stated boolean gate in complete-source encoder prompts.

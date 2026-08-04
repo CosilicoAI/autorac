@@ -12182,6 +12182,104 @@ def test_generic_exception_name_cannot_witness_unrelated_source_condition():
     assert _has_issue(result, "exception", "test")
 
 
+def test_federal_except_tokens_cannot_bind_age_witness_to_joint_return_clause():
+    age_selector = (
+        "resident_individual_meets_all_federal_eitc_qualifications_except_age"
+    )
+    joint_return_condition = (
+        "if the claimant is married, except for a claimant who files as a head "
+        "of household or surviving spouse for federal income tax purposes, the "
+        "claimant shall file a joint return"
+    )
+    age_qualification_condition = (
+        "The resident individual shall meet all qualifications, except for the "
+        "minimum or maximum age, for the federal earned income tax credit in "
+        "order to be eligible for the credit"
+    )
+
+    assert not completeness_module._source_exception_selector_is_relevant(
+        joint_return_condition,
+        age_selector,
+    )
+    assert completeness_module._source_exception_selector_is_relevant(
+        age_qualification_condition,
+        age_selector,
+    )
+    assert (
+        completeness_module._source_exception_condition_text(
+            age_qualification_condition
+        )
+        == age_qualification_condition
+    )
+
+
+@pytest.mark.parametrize("reverse_clause_order", [False, True])
+def test_age_qualification_witness_is_not_allocated_to_joint_return_clause(
+    reverse_clause_order: bool,
+):
+    joint_selector = "married_claimant_joint_return_requirement_satisfied"
+    age_selector = (
+        "resident_individual_meets_all_federal_eitc_qualifications_except_age"
+    )
+    joint_clause = (
+        "To qualify for the credit, if the claimant is married, except for a "
+        "claimant who files as a head of household or surviving spouse for "
+        "federal income tax purposes, the claimant shall file a joint return."
+    )
+    age_clause = (
+        "The resident individual shall meet all qualifications, except for the "
+        "minimum or maximum age, for the federal earned income tax credit in "
+        "order to be eligible for the credit."
+    )
+    ordered_clauses = (
+        (age_clause, joint_clause)
+        if reverse_clause_order
+        else (
+            joint_clause,
+            age_clause,
+        )
+    )
+    source = "(1) " + " ".join(ordered_clauses)
+    content = _exception_control_content(f"{joint_selector} and {age_selector}")
+    positive = {
+        joint_selector: True,
+        age_selector: True,
+    }
+    cases = [
+        {
+            "name": "all qualifications met",
+            "input": positive,
+            "output": {"result": True},
+        },
+        {
+            "name": "non-age qualification not met",
+            "input": {**positive, age_selector: False},
+            "output": {"result": False},
+        },
+    ]
+
+    missing_joint = _analyze(content, source, test_cases=cases)
+    exception_issue = next(
+        issue
+        for issue in missing_joint.issues
+        if "[complete-source-unit:tests] Source-stated exceptions" in issue
+    )
+
+    assert "joint return" in exception_issue
+    assert "meet all qualifications" not in exception_issue
+
+    cases.append(
+        {
+            "name": "joint return requirement not met",
+            "input": {**positive, joint_selector: False},
+            "output": {"result": False},
+        }
+    )
+    complete = _analyze(content, source, test_cases=cases)
+
+    assert not _has_issue(complete, "exception", "test")
+
+
 def test_selector_relevance_uses_tokens_not_substrings():
     source = "(1) The claim does not apply when a separate status exists."
     content = _exception_control_content("if rate: false else: true")
