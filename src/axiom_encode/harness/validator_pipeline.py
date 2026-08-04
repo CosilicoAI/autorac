@@ -24144,7 +24144,12 @@ class ValidatorPipeline:
                     continue
                 citation_path = str(source.get("corpus_citation_path") or "").strip()
                 if citation_path:
-                    resolved[citation_path] = fetch_source(citation_path)
+                    try:
+                        resolved[citation_path] = fetch_source(citation_path)
+                    except InvalidCorpusCitationError:
+                        # Model-authored citation errors are validation findings, not
+                        # harness failures that should abort the repair loop.
+                        resolved[citation_path] = None
         return resolved
 
     def _trusted_source_binding_issues(self, content: str) -> list[str]:

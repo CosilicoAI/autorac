@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1439"')
+        .startswith('__version__ = "0.2.1440"')
     )
 
 
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1439"
+    assert encoder_package["version"] == "0.2.1440"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1439"
+    assert project["project"]["version"] == "0.2.1440"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1439"')
+        .startswith('__version__ = "0.2.1440"')
     )
 
 
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1439"
+    assert encoder_package["version"] == "0.2.1440"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1439"
+    assert project["project"]["version"] == "0.2.1440"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1439"')
+        .startswith('__version__ = "0.2.1440"')
     )
 
 
@@ -22826,6 +22826,67 @@ def test_validator_pipeline_resolves_direct_proof_sources_from_authoritative_cor
 
     assert source_texts == {citation_path: "The official amount is $298."}
     assert find_rulespec_proof_issues(content, source_texts=source_texts) == []
+
+
+def test_validator_pipeline_fails_closed_for_invalid_generated_proof_citation(
+    tmp_path,
+    monkeypatch,
+):
+    citation_path = "us/statute/42/1437c–1(a)(1)"
+    content = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c–1
+rules:
+  - name: plan_frequency
+    kind: parameter
+    dtype: Number
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: parameter
+            source:
+              corpus_citation_path: {citation_path}
+              excerpt: every 5 fiscal years
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-us",
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        enable_oracles=False,
+    )
+
+    def reject_invalid_citation(_citation_path):
+        raise validator_pipeline.InvalidCorpusCitationError("invalid generated path")
+
+    monkeypatch.setattr(
+        validator_pipeline,
+        "_fetch_corpus_proof_evidence_text",
+        reject_invalid_citation,
+    )
+    monkeypatch.setattr(
+        validator_pipeline,
+        "_fetch_corpus_source_text",
+        reject_invalid_citation,
+    )
+
+    proof_sources = pipeline._proof_source_texts_for_rulespec_content(
+        content,
+        source_texts=None,
+    )
+    numeric_sources = pipeline._numeric_source_texts_for_rulespec_content(
+        content,
+        source_texts=None,
+    )
+
+    assert proof_sources == {citation_path: None}
+    assert numeric_sources == {citation_path: None}
+    issues = find_rulespec_proof_issues(content, source_texts=proof_sources)
+    assert any("Noncanonical corpus citation path" in issue for issue in issues)
+    assert any("Proof source unresolved" in issue for issue in issues)
 
 
 def test_source_history_proves_excerpt_without_grounding_numeric_literal(tmp_path):
