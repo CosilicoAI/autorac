@@ -2184,6 +2184,48 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert steps.index(cascade_step) < steps.index(apply_step)
     assert steps.index(signed_import_step) < steps.index(apply_step)
 
+    failure_package_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Package failed re-encode diagnostics"
+    )
+    assert steps.index(apply_step) + 1 == steps.index(failure_package_step)
+    assert failure_package_step["if"] == "${{ failure() && !cancelled() }}"
+    assert set(failure_package_step["env"]) == {
+        "CITATION",
+        "CORPUS_REF",
+        "RULES_ENGINE_REF",
+        "RULESPEC_REF",
+    }
+    failure_package_command = failure_package_step["run"]
+    assert "/opt/axiom-verification/python/bin/python -I -" in (failure_package_command)
+    assert "read_bounded_regular_file" in failure_package_command
+    assert "followlinks=False" in failure_package_command
+    assert "generated diagnostics exceed entry limit" in failure_package_command
+    assert "generated diagnostics exceed file limit" in failure_package_command
+    assert "generated diagnostics exceed size limit" in failure_package_command
+    assert '"schema": "axiom-encode/failed-reencode-diagnostics/v1"' in (
+        failure_package_command
+    )
+
+    failure_upload_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload failed re-encode diagnostics"
+    )
+    assert steps.index(failure_package_step) + 1 == steps.index(failure_upload_step)
+    assert "failure() && !cancelled()" in failure_upload_step["if"]
+    assert (
+        "steps.package_failed_reencode_diagnostics.outcome == 'success'"
+        in (failure_upload_step["if"])
+    )
+    assert failure_upload_step["with"] == {
+        "name": "targeted-reencode-failure-${{ github.run_id }}",
+        "path": "${{ runner.temp }}/targeted-reencode-failure",
+        "if-no-files-found": "error",
+        "retention-days": 90,
+    }
+
     integrity_step = next(
         step
         for step in steps
@@ -2331,6 +2373,104 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         step for step in steps if step.get("name") == "Upload signed re-encode artifact"
     )
     assert steps.index(checksum_step) + 1 == steps.index(upload_step)
+
+
+def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Package failed re-encode diagnostics"
+    )
+    command = step["run"].replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    generated = tmp_path / "generated" / "target" / "model"
+    generated.mkdir(parents=True)
+    (generated / "statutes").mkdir()
+    (generated / "statutes/target.yaml").write_text("format: rulespec/v1\n")
+    (generated / "target.repair.json").write_text('{"outcome": "blocked"}\n')
+    (generated / "ignored.bin").write_bytes(b"not diagnostic output")
+    env = {
+        **os.environ,
+        "CITATION": "us/statute/42/1437c-1",
+        "CORPUS_REF": "corpus-ref",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "1234",
+        "GITHUB_SHA": "encoder-ref",
+        "RULES_ENGINE_REF": "rules-engine-ref",
+        "RULESPEC_REF": "rulespec-ref",
+        "RUNNER_TEMP": str(tmp_path),
+    }
+
+    subprocess.run(["bash", "-c", command], env=env, check=True)
+
+    artifact = tmp_path / "targeted-reencode-failure"
+    assert (
+        artifact / "generated/target/model/statutes/target.yaml"
+    ).read_text() == "format: rulespec/v1\n"
+    assert json.loads(
+        (artifact / "generated/target/model/target.repair.json").read_text()
+    ) == {"outcome": "blocked"}
+    assert not (artifact / "generated/target/model/ignored.bin").exists()
+    metadata = json.loads((artifact / "metadata.json").read_text())
+    assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
+    assert metadata["workflow_run_id"] == "1234"
+    assert [item["path"] for item in metadata["files"]] == [
+        "target/model/statutes/target.yaml",
+        "target/model/target.repair.json",
+    ]
+
+
+def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Package failed re-encode diagnostics"
+    )
+    command = step["run"].replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("secret\n")
+    (generated / "candidate.yaml").symlink_to(outside)
+    env = {
+        **os.environ,
+        "CITATION": "us/statute/42/1437c-1",
+        "CORPUS_REF": "corpus-ref",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "1234",
+        "GITHUB_SHA": "encoder-ref",
+        "RULES_ENGINE_REF": "rules-engine-ref",
+        "RULESPEC_REF": "rulespec-ref",
+        "RUNNER_TEMP": str(tmp_path),
+    }
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "non-regular file" in completed.stderr
+    assert not (
+        tmp_path / "targeted-reencode-failure/generated/candidate.yaml"
+    ).exists()
 
 
 def test_signed_snap_queue_dispatcher_is_bounded_and_idempotent() -> None:
