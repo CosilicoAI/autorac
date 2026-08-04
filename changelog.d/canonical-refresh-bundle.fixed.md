@@ -1,0 +1,1 @@
+Allow one signed targeted workflow run to freshly re-encode a bounded set of independent canonical RuleSpec modules, while preserving full-checkout validation and exact per-lane provenance and publication inventory checks.

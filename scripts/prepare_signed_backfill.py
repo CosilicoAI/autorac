@@ -44,6 +44,7 @@ RULESPEC_ATOMIC_ROOTS = frozenset(
 )
 MAX_SOURCE_BUNDLE_CITATIONS = 16
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
+MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS = MAX_SOURCE_BUNDLE_CITATIONS - 1
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
@@ -336,6 +337,347 @@ def parse_source_bundle(
         seen_citations.add(citation)
         seen_paths.add(path)
     return tuple(citations)
+
+
+def parse_canonical_refresh_bundle(
+    repo: Path,
+    refresh_bundle_json: str,
+    *,
+    primary_citation: str,
+    primary_rulespec_path: str,
+) -> tuple[dict[str, str | None], ...]:
+    """Validate independent existing canonical modules for atomic fresh encoding."""
+
+    from axiom_encode.corpus_resolver import (
+        require_canonical_corpus_citation_path,
+    )
+
+    if not isinstance(refresh_bundle_json, str):
+        raise ValueError("canonical refresh bundle JSON must be a string")
+    if len(refresh_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
+        raise ValueError("canonical refresh bundle JSON exceeds the maximum input size")
+    payload = json.loads(refresh_bundle_json)
+    if not isinstance(payload, list):
+        raise ValueError("canonical refresh bundle JSON must be an array")
+    if len(payload) > MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS:
+        raise ValueError(
+            "canonical refresh bundle and its primary contain more than "
+            f"{MAX_SOURCE_BUNDLE_CITATIONS} modules"
+        )
+    if not payload:
+        return ()
+
+    repo = repo.resolve(strict=True)
+    try:
+        primary_citation = require_canonical_corpus_citation_path(primary_citation)
+    except ValueError as exc:
+        raise ValueError(
+            "canonical refresh primary citation must be an exact canonical "
+            "corpus citation path"
+        ) from exc
+    primary_jurisdiction, _primary_relative = _citation_rulespec_path(primary_citation)
+    expected_repo_name = f"rulespec-{primary_jurisdiction.partition('-')[0]}"
+    if repo.name != expected_repo_name:
+        raise ValueError(
+            "repository directory must match the primary citation country: "
+            f"{expected_repo_name}"
+        )
+
+    primary_path = _safe_relative_path(
+        primary_rulespec_path,
+        label="canonical refresh primary RuleSpec",
+    )
+    expected_primary_path = citation_rulespec_path(primary_citation)
+    if primary_path != expected_primary_path:
+        raise ValueError(
+            "canonical refresh primary path must equal the citation's canonical "
+            "RuleSpec path"
+        )
+
+    requested: list[tuple[str, PurePosixPath]] = [(primary_citation, primary_path)]
+    seen_citations = {primary_citation}
+    seen_paths = {primary_path}
+    for index, value in enumerate(payload):
+        label = f"canonical refresh addition #{index + 1}"
+        if not isinstance(value, dict) or set(value) != {
+            "citation",
+            "replace_rulespec_path",
+        }:
+            raise ValueError(
+                f"{label} must contain exactly citation and replace_rulespec_path"
+            )
+        citation = value["citation"]
+        raw_path = value["replace_rulespec_path"]
+        if (
+            not isinstance(citation, str)
+            or not citation
+            or citation != citation.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in citation)
+            or not isinstance(raw_path, str)
+            or not raw_path
+            or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
+        ):
+            raise ValueError(f"{label} fields must be nonempty canonical strings")
+        try:
+            citation = require_canonical_corpus_citation_path(citation)
+        except ValueError as exc:
+            raise ValueError(
+                f"{label} citation must be an exact canonical corpus citation path"
+            ) from exc
+        jurisdiction, _relative = _citation_rulespec_path(citation)
+        if jurisdiction != primary_jurisdiction:
+            raise ValueError(
+                "canonical refresh targets must use the primary citation "
+                "jurisdiction and country"
+            )
+        path = _safe_relative_path(raw_path, label=f"{label} RuleSpec path")
+        expected_path = citation_rulespec_path(citation)
+        if path != expected_path:
+            raise ValueError(
+                f"{label} path must equal the citation's canonical RuleSpec path"
+            )
+        if citation in seen_citations or path in seen_paths:
+            raise ValueError("canonical refresh citations and paths must be unique")
+        requested.append((citation, path))
+        seen_citations.add(citation)
+        seen_paths.add(path)
+
+    return tuple(
+        _canonical_refresh_target_inventory(repo, citation=citation, path=path)
+        for citation, path in requested
+    )
+
+
+def _canonical_refresh_target_inventory(
+    repo: Path,
+    *,
+    citation: str,
+    path: PurePosixPath,
+) -> dict[str, str | None]:
+    """Bind one refresh target and its untrusted predecessor manifest to HEAD."""
+
+    manifest_path = _existing_import_manifest_path(path)
+    companion_path = path.with_name(f"{path.stem}.test.yaml")
+    raw_by_path: dict[PurePosixPath, bytes] = {}
+    for tracked_path, label, max_bytes in (
+        (path, f"canonical refresh RuleSpec for {citation}", 10 * 1024 * 1024),
+        (manifest_path, f"canonical refresh manifest for {citation}", 1024 * 1024),
+    ):
+        try:
+            stage = _git(
+                repo,
+                "ls-files",
+                "--stage",
+                "--",
+                tracked_path.as_posix(),
+            ).decode("utf-8")
+        except (subprocess.CalledProcessError, UnicodeDecodeError) as exc:
+            raise ValueError(f"{label} must be exactly tracked 100644") from exc
+        lines = stage.splitlines()
+        if (
+            len(lines) != 1
+            or not lines[0].startswith("100644 ")
+            or lines[0].split("\t", 1)[-1] != tracked_path.as_posix()
+        ):
+            raise ValueError(f"{label} must be exactly tracked 100644")
+        raw = _read_bounded_regular(
+            repo,
+            tracked_path,
+            label=label,
+            max_bytes=max_bytes,
+        )
+        try:
+            base_raw = _git(repo, "show", f"HEAD:{tracked_path.as_posix()}")
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(f"{label} is absent from HEAD") from exc
+        if raw != base_raw:
+            raise ValueError(f"{label} differs from HEAD")
+        raw_by_path[tracked_path] = raw
+
+    companion_label = f"canonical refresh companion for {citation}"
+    try:
+        companion_stage = _git(
+            repo,
+            "ls-files",
+            "--stage",
+            "--",
+            companion_path.as_posix(),
+        ).decode("utf-8")
+    except (subprocess.CalledProcessError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"{companion_label} tracked state cannot be determined"
+        ) from exc
+    companion_lines = companion_stage.splitlines()
+    if companion_lines:
+        if (
+            len(companion_lines) != 1
+            or not companion_lines[0].startswith("100644 ")
+            or companion_lines[0].split("\t", 1)[-1]
+            != companion_path.as_posix()
+        ):
+            raise ValueError(f"{companion_label} must be exactly tracked 100644")
+        companion_raw = _read_bounded_regular(
+            repo,
+            companion_path,
+            label=companion_label,
+            max_bytes=10 * 1024 * 1024,
+        )
+        try:
+            companion_base_raw = _git(
+                repo,
+                "show",
+                f"HEAD:{companion_path.as_posix()}",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(f"{companion_label} is absent from HEAD") from exc
+        if companion_raw != companion_base_raw:
+            raise ValueError(f"{companion_label} differs from HEAD")
+        companion_sha256: str | None = hashlib.sha256(companion_raw).hexdigest()
+    else:
+        companion = repo.joinpath(*companion_path.parts)
+        if companion.exists() or companion.is_symlink():
+            raise ValueError(f"{companion_label} is untracked")
+        if _git(
+            repo,
+            "ls-tree",
+            "--full-tree",
+            "-z",
+            "HEAD",
+            "--",
+            companion_path.as_posix(),
+        ):
+            raise ValueError(f"{companion_label} differs from HEAD")
+        companion_sha256 = None
+
+    try:
+        manifest = json.loads(raw_by_path[manifest_path].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(
+            f"canonical refresh manifest for {citation} is invalid JSON"
+        ) from exc
+    target_sha256 = hashlib.sha256(raw_by_path[path]).hexdigest()
+    applied_files = manifest.get("applied_files") if isinstance(manifest, dict) else None
+    target_entries = [
+        item
+        for item in applied_files or []
+        if isinstance(item, dict) and item.get("path") == path.as_posix()
+    ]
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != "axiom-encode/applied-rulespec/v5"
+        or manifest.get("tool") != MODEL_APPLY_TOOL
+        or manifest.get("citation") != citation
+        or not isinstance(applied_files, list)
+        or len(target_entries) != 1
+        or target_entries[0].get("sha256") != target_sha256
+    ):
+        raise ValueError(
+            f"canonical refresh manifest for {citation} does not structurally "
+            "cover the requested target"
+        )
+    return {
+        "citation": citation,
+        "rulespec_path": path.as_posix(),
+        "rulespec_sha256": target_sha256,
+        "companion_path": companion_path.as_posix(),
+        "companion_sha256": companion_sha256,
+        "manifest_path": manifest_path.as_posix(),
+        "manifest_sha256": hashlib.sha256(raw_by_path[manifest_path]).hexdigest(),
+    }
+
+
+def verify_canonical_refresh_target(
+    repo: Path,
+    target_json: str,
+) -> dict[str, str | None]:
+    """Require one normalized target to remain byte-identical before its lane."""
+
+    try:
+        target = json.loads(target_json)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("canonical refresh target is invalid JSON") from exc
+    expected_fields = {
+        "citation",
+        "rulespec_path",
+        "rulespec_sha256",
+        "companion_path",
+        "companion_sha256",
+        "manifest_path",
+        "manifest_sha256",
+    }
+    if (
+        not isinstance(target, dict)
+        or set(target) != expected_fields
+        or not all(
+            isinstance(target[field], str) and target[field]
+            for field in expected_fields - {"companion_sha256"}
+        )
+        or (
+            target["companion_sha256"] is not None
+            and (
+                not isinstance(target["companion_sha256"], str)
+                or DIGEST_PATTERN.fullmatch(target["companion_sha256"]) is None
+            )
+        )
+        or DIGEST_PATTERN.fullmatch(target["rulespec_sha256"]) is None
+        or DIGEST_PATTERN.fullmatch(target["manifest_sha256"]) is None
+    ):
+        raise ValueError("canonical refresh target inventory is malformed")
+    repo = repo.resolve(strict=True)
+    rulespec_path = _safe_relative_path(
+        target["rulespec_path"], label="canonical refresh target RuleSpec"
+    )
+    manifest_path = _safe_relative_path(
+        target["manifest_path"], label="canonical refresh target manifest"
+    )
+    companion_path = _safe_relative_path(
+        target["companion_path"], label="canonical refresh target companion"
+    )
+    if (
+        citation_rulespec_path(target["citation"]) != rulespec_path
+        or _existing_import_manifest_path(rulespec_path) != manifest_path
+        or rulespec_path.with_name(f"{rulespec_path.stem}.test.yaml")
+        != companion_path
+    ):
+        raise ValueError("canonical refresh target inventory paths are inconsistent")
+    for path, digest, label, max_bytes in (
+        (
+            rulespec_path,
+            target["rulespec_sha256"],
+            "canonical refresh target RuleSpec",
+            10 * 1024 * 1024,
+        ),
+        (
+            manifest_path,
+            target["manifest_sha256"],
+            "canonical refresh target manifest",
+            1024 * 1024,
+        ),
+    ):
+        raw = _read_bounded_regular(repo, path, label=label, max_bytes=max_bytes)
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError(f"{label} changed before its signed refresh lane")
+    companion_sha256 = target["companion_sha256"]
+    if companion_sha256 is None:
+        companion = repo.joinpath(*companion_path.parts)
+        if companion.exists() or companion.is_symlink():
+            raise ValueError(
+                "canonical refresh target companion changed before its signed "
+                "refresh lane"
+            )
+    else:
+        companion_raw = _read_bounded_regular(
+            repo,
+            companion_path,
+            label="canonical refresh target companion",
+            max_bytes=10 * 1024 * 1024,
+        )
+        if hashlib.sha256(companion_raw).hexdigest() != companion_sha256:
+            raise ValueError(
+                "canonical refresh target companion changed before its signed "
+                "refresh lane"
+            )
+    return target
 
 
 def _existing_import_manifest_path(path: PurePosixPath) -> PurePosixPath:
@@ -1964,6 +2306,26 @@ def main() -> None:
         default=[],
         help="additional forbidden canonical citation; may be repeated",
     )
+    canonical_refresh_parser = subparsers.add_parser(
+        "parse-canonical-refresh-bundle",
+        help=(
+            "validate existing independent canonical modules for one atomic fresh "
+            "signed refresh and emit normalized JSON"
+        ),
+    )
+    canonical_refresh_parser.add_argument("repo", type=Path)
+    canonical_refresh_parser.add_argument(
+        "refresh_bundle_json",
+        help="JSON array containing at most 15 additional canonical citations",
+    )
+    canonical_refresh_parser.add_argument("--primary-citation", required=True)
+    canonical_refresh_parser.add_argument("--primary-rulespec-path", required=True)
+    canonical_refresh_target_parser = subparsers.add_parser(
+        "verify-canonical-refresh-target",
+        help="verify one normalized canonical refresh target remains unchanged",
+    )
+    canonical_refresh_target_parser.add_argument("repo", type=Path)
+    canonical_refresh_target_parser.add_argument("target_json")
     existing_imports_parser = subparsers.add_parser(
         "parse-existing-signed-imports",
         help=(
@@ -2040,6 +2402,26 @@ def main() -> None:
                         excluded_citations=tuple(args.exclude_citation),
                     ),
                     separators=(",", ":"),
+                )
+            )
+        elif args.command == "parse-canonical-refresh-bundle":
+            print(
+                json.dumps(
+                    parse_canonical_refresh_bundle(
+                        args.repo,
+                        args.refresh_bundle_json,
+                        primary_citation=args.primary_citation,
+                        primary_rulespec_path=args.primary_rulespec_path,
+                    ),
+                    separators=(",", ":"),
+                )
+            )
+        elif args.command == "verify-canonical-refresh-target":
+            print(
+                json.dumps(
+                    verify_canonical_refresh_target(args.repo, args.target_json),
+                    separators=(",", ":"),
+                    sort_keys=True,
                 )
             )
         elif args.command == "parse-existing-signed-imports":

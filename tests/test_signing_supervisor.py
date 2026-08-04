@@ -33,6 +33,7 @@ from axiom_encode.cli import (
 )
 from axiom_encode.harness.dependency_stubs import validate_explicit_context_file
 from axiom_encode.harness.evals import resolve_corpus_source_unit
+from scripts.prepare_signed_backfill import parse_canonical_refresh_bundle
 from tests.release_object_fixtures import bind_test_corpus_release
 from tests.signing_broker_fixtures import SigningBrokerFixture
 
@@ -1899,6 +1900,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "default": "[]",
         "type": "string",
     }
+    assert inputs["canonical_refresh_bundle_json"] == {
+        "description": (
+            "JSON array of {citation,replace_rulespec_path} additions to "
+            "fresh-encode independently with the primary in one signed transaction"
+        ),
+        "required": False,
+        "default": "[]",
+        "type": "string",
+    }
     assert inputs["existing_signed_imports_json"] == {
         "description": (
             "JSON array of tracked same-jurisdiction signed-v5 modules to reuse "
@@ -1976,6 +1986,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     source_bundle_command = source_bundle_step["run"]
     assert source_bundle_step["env"]["SOURCE_BUNDLE_JSON"] == (
         "${{ inputs.source_bundle_json }}"
+    )
+    assert source_bundle_step["env"]["CANONICAL_REFRESH_BUNDLE_JSON"] == (
+        "${{ inputs.canonical_refresh_bundle_json }}"
     )
     assert source_bundle_step["env"]["EXISTING_SIGNED_IMPORTS_JSON"] == (
         "${{ inputs.existing_signed_imports_json }}"
@@ -2241,6 +2254,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "dependent review finding is required with dependent citation" in command
     assert "parse-source-bundle" in command
     assert "parse-existing-signed-imports" in command
+    assert "parse-canonical-refresh-bundle" in command
+    assert "verify-canonical-refresh-target" in command
+    assert '"$refresh_citation" "$refresh_finding" false "$refresh_lane"' in command
     assert '"$RUNNER_TEMP/existing-signed-import-paths.txt"' in command
     assert "source_bundle_count + existing_import_count" in command
     assert '> "$RUNNER_TEMP/source-bundle.json"' in command
@@ -2283,6 +2299,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     ) + 1 == steps.index(failure_package_step)
     assert failure_package_step["if"] == "${{ failure() && !cancelled() }}"
     assert set(failure_package_step["env"]) == {
+        "CANONICAL_REFRESH_BUNDLE_JSON",
         "CITATION",
         "CORPUS_REF",
         "COUNTRY",
@@ -2446,6 +2463,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"' in (
         package_command
     )
+    assert (
+        'cp "$RUNNER_TEMP/canonical-refresh-bundle.json" \\\n'
+        '  "$artifact/canonical-refresh-bundle.json"'
+    ) in package_command
     assert '"$artifact/existing-signed-imports.json"' in package_command
     assert '"$artifact/signed-import-inventory.json"' in package_command
     assert '"$artifact/context-manifest.json"' in package_command
@@ -2910,7 +2931,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         if step.get("name") == "Encode, review, validate, and apply"
     )
     checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
-        '\n}\n\nif [ "$source_bundle_enabled"',
+        '\n}\n\nif [ "$canonical_refresh_enabled"',
         1,
     )[0]
     guard_stub = tmp_path / "guard-stub"
@@ -3295,8 +3316,224 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
 
 
 def _prepare_empty_signed_import_inputs(runner_temp: Path) -> None:
+    (runner_temp / "canonical-refresh-bundle.json").write_text("[]\n")
     (runner_temp / "existing-signed-imports.json").write_text("[]\n")
     (runner_temp / "existing-signed-import-paths.txt").write_text("")
+
+
+def _prepare_canonical_refresh_inputs(
+    tmp_path: Path,
+) -> tuple[Path, str, str, list[dict[str, str]]]:
+    repo = tmp_path / "rulespec-us"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    targets = [
+        ("us-la/statute/47:294", "us-la/statutes/47/294.yaml"),
+        ("us-la/statute/47:295", "us-la/statutes/47/295.yaml"),
+        ("us-la/statute/47:297.4", "us-la/statutes/47/297/4.yaml"),
+        ("us-la/statute/47:297.8", "us-la/statutes/47/297/8.yaml"),
+    ]
+    for citation, relative in targets:
+        rule = repo / relative
+        rule.parent.mkdir(parents=True, exist_ok=True)
+        rule.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+        manifest = (
+            repo / ".axiom/encoding-manifests" / Path(relative).with_suffix(".json")
+        )
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": "axiom-encode/applied-rulespec/v5",
+                    "tool": "axiom-encode encode --apply",
+                    "citation": citation,
+                    "applied_files": [
+                        {
+                            "path": relative,
+                            "sha256": hashlib.sha256(rule.read_bytes()).hexdigest(),
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "add canonical refresh fixtures",
+        ],
+        check=True,
+    )
+    primary_citation, primary_path = targets[0]
+    additions = [
+        {"citation": citation, "replace_rulespec_path": relative}
+        for citation, relative in targets[1:]
+    ]
+    return repo, primary_citation, primary_path, additions
+
+
+def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    ).replace(
+        "/opt/axiom-verification/axiom-encode-apply-signer run",
+        '"$SIGNER_STUB"',
+    )
+    before_checkpoint, checkpoint_and_after = command.split(
+        "checkpoint_signed_changes() {",
+        1,
+    )
+    _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
+        '\n}\n\nif [ "$canonical_refresh_enabled"',
+        1,
+    )
+    command = (
+        before_checkpoint
+        + "checkpoint_signed_changes() {\n"
+        + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
+        + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
+        + '}\n\nif [ "$canonical_refresh_enabled"'
+        + after_checkpoint
+    )
+
+    repo, primary_citation, primary_path, additions = _prepare_canonical_refresh_inputs(
+        tmp_path
+    )
+    normalized = parse_canonical_refresh_bundle(
+        repo,
+        json.dumps(additions),
+        primary_citation=primary_citation,
+        primary_rulespec_path=primary_path,
+    )
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    (runner_temp / "canonical-refresh-bundle.json").write_text(
+        json.dumps(normalized, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (runner_temp / "existing-signed-imports.json").write_text("[]\n")
+    (runner_temp / "existing-signed-import-paths.txt").write_text("")
+
+    calls_path = tmp_path / "calls.jsonl"
+    checkpoints_path = tmp_path / "checkpoints.txt"
+    signer_stub = tmp_path / "signer-stub"
+    signer_stub.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+calls_path = Path(os.environ["CALLS_PATH"])
+with calls_path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\\n")
+mutation_path = os.environ.get("MUTATE_AFTER_FIRST_PATH")
+if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) == 1:
+    Path(mutation_path).write_text("[]\\n", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    signer_stub.chmod(0o700)
+
+    environment = {
+        **os.environ,
+        "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+        "AXIOM_TEST_PYTHON": sys.executable,
+        "CALLS_PATH": str(calls_path),
+        "CANONICAL_REFRESH_BUNDLE_JSON": json.dumps(additions),
+        "CHECKPOINTS_PATH": str(checkpoints_path),
+        "CITATION": primary_citation,
+        "DEPENDENT_CITATION": "",
+        "DEPENDENT_REVIEW_FINDING": "",
+        "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "REPLACE_RULESPEC_PATH": primary_path,
+        "REVIEW_FINDING": "Refresh the independent Louisiana modules.",
+        "RULESPEC_CHECKOUT": str(repo),
+        "RULESPEC_REF": "a" * 40,
+        "RUNNER_TEMP": str(runner_temp),
+        "SECOND_DEPENDENT_CITATION": "",
+        "SECOND_DEPENDENT_REVIEW_FINDING": "",
+        "SIGNER_STUB": str(signer_stub),
+        "SOURCE_BUNDLE_JSON": "[]",
+    }
+    subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        check=True,
+        env=environment,
+    )
+
+    calls = [
+        json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(calls) == 4
+    encode_args = [call[call.index("--") + 1 :] for call in calls]
+    expected_citations = [item["citation"] for item in normalized]
+    expected_paths = [item["rulespec_path"] for item in normalized]
+    assert [args[-1] for args in encode_args] == expected_citations
+    assert [
+        args[args.index("--replace-rulespec-path") + 1] for args in encode_args
+    ] == expected_paths
+    assert [Path(args[args.index("--output") + 1]).name for args in encode_args] == [
+        "target",
+        "canonical-refresh-01",
+        "canonical-refresh-02",
+        "canonical-refresh-03",
+    ]
+    assert "--review-findings" in encode_args[0]
+    assert all("--review-findings" not in args for args in encode_args[1:])
+    forbidden = {
+        "--apply-target-only",
+        "--required-import-rulespec-path",
+        "--replace-legacy-rulespec-path",
+        "--legacy-dependent-rulespec-path",
+        "--legacy-exact-dependent-rulespec-path",
+        "--legacy-retained-successor-rulespec-path",
+    }
+    assert all(not forbidden.intersection(args) for args in encode_args)
+    assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
+        f"Refresh signed canonical module for {citation}"
+        for citation in expected_citations
+    ]
+
+    calls_path.unlink()
+    checkpoints_path.unlink()
+    future_companion = repo / str(normalized[1]["companion_path"])
+    blocked = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **environment,
+            "MUTATE_AFTER_FIRST_PATH": str(future_companion),
+        },
+    )
+    assert blocked.returncode != 0
+    assert "companion changed before its signed refresh lane" in blocked.stderr
+    assert len(calls_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
+        f"Refresh signed canonical module for {expected_citations[0]}"
+    ]
 
 
 @pytest.mark.parametrize("dependent_count", [0, 1, 2])
@@ -3431,7 +3668,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         1,
     )
     _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
-        '\n}\n\nif [ "$source_bundle_enabled"',
+        '\n}\n\nif [ "$canonical_refresh_enabled"',
         1,
     )
     command = (
@@ -3439,7 +3676,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         + "checkpoint_signed_changes() {\n"
         + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
         + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
-        + '}\n\nif [ "$source_bundle_enabled"'
+        + '}\n\nif [ "$canonical_refresh_enabled"'
         + after_checkpoint
     )
 
@@ -3572,10 +3809,20 @@ def test_targeted_signed_reencode_rejects_nonatomic_source_bundle_replacements_e
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
     )
-    command = next(
-        step["run"]
-        for step in workflow["jobs"]["encode"]["steps"]
-        if step.get("name") == "Validate atomic source inputs"
+    command = (
+        next(
+            step["run"]
+            for step in workflow["jobs"]["encode"]["steps"]
+            if step.get("name") == "Validate atomic source inputs"
+        )
+        .replace(
+            "axiom-encode/.venv/bin/python",
+            sys.executable,
+        )
+        .replace(
+            "axiom-encode/scripts/prepare_signed_backfill.py",
+            str(ROOT / "scripts/prepare_signed_backfill.py"),
+        )
     )
     checkout = tmp_path / "rulespec-us"
     checkout.mkdir()
@@ -3660,6 +3907,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         normalized_existing + "\n"
     )
     (runner_temp / "existing-signed-import-paths.txt").write_text(existing_path + "\n")
+    (runner_temp / "canonical-refresh-bundle.json").write_text("[]\n")
 
     subprocess.run(
         ["bash", "-c", command],
@@ -4048,6 +4296,7 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
         ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
     ).strip()
     (tmp_path / "source-bundle.json").write_text("[]\n", encoding="utf-8")
+    (tmp_path / "canonical-refresh-bundle.json").write_text("[]\n", encoding="utf-8")
 
     citation = "us-la/statute/47:294"
     review_content = "Preserve every supported provision.\n"
@@ -4144,6 +4393,200 @@ def _targeted_metadata_script() -> str:
     )[0]
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        (None, None),
+        (
+            "swapped-manifests",
+            "canonical refresh apply manifest does not match its exact requested target",
+        ),
+        (
+            "missing-manifest",
+            "canonical refresh changed manifest inventory differs from its exact requested targets",
+        ),
+        (
+            "extra-manifest",
+            "canonical refresh changed manifest inventory differs from its exact requested targets",
+        ),
+        (
+            "unrelated-companion",
+            "canonical refresh apply manifest does not match its exact requested target",
+        ),
+    ],
+)
+def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
+    tmp_path: Path,
+    mutation: str | None,
+    expected_error: str | None,
+) -> None:
+    script = _targeted_package_script()
+    rulespec = tmp_path / "rulespec-us"
+    rulespec.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=rulespec, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=rulespec,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=rulespec, check=True)
+    (rulespec / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=rulespec, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=rulespec, check=True)
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
+    ).strip()
+
+    target_rows = [
+        (
+            "us-la/statute/47:294",
+            "us-la/statutes/47/294.yaml",
+            ".axiom/encoding-manifests/us-la/statutes/47/294.json",
+            "target",
+        ),
+        (
+            "us-la/statute/47:295",
+            "us-la/statutes/47/295.yaml",
+            ".axiom/encoding-manifests/us-la/statutes/47/295.json",
+            "canonical-refresh-01",
+        ),
+    ]
+    inventory: list[dict[str, str | None]] = []
+    manifests: list[tuple[Path, dict[str, object]]] = []
+    expected_contexts: dict[str, bytes] = {}
+    for index, (citation, rulespec_path, manifest_path, lane) in enumerate(target_rows):
+        rule = rulespec / rulespec_path
+        rule.parent.mkdir(parents=True, exist_ok=True)
+        rule.write_text(f"format: rulespec/v1\nrules: [{index}]\n", encoding="utf-8")
+        finding = "Preserve the primary semantics.\n" if index == 0 else ""
+        context = {
+            "citation": citation,
+            "review_findings_files": (
+                [
+                    {
+                        "content": finding,
+                        "sha256": hashlib.sha256(finding.encode()).hexdigest(),
+                    }
+                ]
+                if finding
+                else []
+            ),
+        }
+        context_bytes = json.dumps(context, sort_keys=True).encode()
+        context_path = tmp_path / "generated" / lane / "context-manifest.json"
+        context_path.parent.mkdir(parents=True, exist_ok=True)
+        context_path.write_bytes(context_bytes)
+        expected_contexts[lane] = context_bytes
+        payload: dict[str, object] = {
+            "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+            "tool": "axiom-encode encode --apply",
+            "citation": citation,
+            "context_manifest_file": str(context_path),
+            "context_manifest_sha256": hashlib.sha256(context_bytes).hexdigest(),
+            "applied_files": [
+                {
+                    "path": rulespec_path,
+                    "sha256": hashlib.sha256(rule.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+        manifests.append((rulespec / manifest_path, payload))
+        inventory.append(
+            {
+                "citation": citation,
+                "rulespec_path": rulespec_path,
+                "rulespec_sha256": "a" * 64,
+                "companion_path": str(
+                    Path(rulespec_path).with_name(
+                        f"{Path(rulespec_path).stem}.test.yaml"
+                    )
+                ),
+                "companion_sha256": None,
+                "manifest_path": manifest_path,
+                "manifest_sha256": "b" * 64,
+            }
+        )
+
+    if mutation == "swapped-manifests":
+        first_payload = manifests[0][1]
+        second_payload = manifests[1][1]
+        manifests[0] = (manifests[0][0], second_payload)
+        manifests[1] = (manifests[1][0], first_payload)
+    if mutation == "missing-manifest":
+        manifests.pop()
+    if mutation == "unrelated-companion":
+        applied_files = manifests[0][1]["applied_files"]
+        assert isinstance(applied_files, list)
+        applied_files.append(
+            {
+                "path": "us-la/statutes/47/295.test.yaml",
+                "sha256": "c" * 64,
+            }
+        )
+    for path, payload in manifests:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    if mutation == "extra-manifest":
+        extra = (
+            rulespec / ".axiom/encoding-manifests/us-la/statutes/47/unrequested.json"
+        )
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text(
+            json.dumps(
+                {
+                    "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+                    "tool": "axiom-encode encode --apply",
+                    "citation": "us-la/statute/47:999",
+                    "applied_files": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    (tmp_path / "source-bundle.json").write_text("[]\n", encoding="utf-8")
+    (tmp_path / "canonical-refresh-bundle.json").write_text(
+        json.dumps(inventory) + "\n",
+        encoding="utf-8",
+    )
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    packaged_context = artifact / "context-manifest.json"
+    packaged_inventory = artifact / "apply-manifests.json"
+    completed = subprocess.run(
+        [sys.executable, "-", str(packaged_context), str(packaged_inventory)],
+        cwd=tmp_path,
+        input=script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": target_rows[0][0],
+            "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING_PRESENT": "true",
+            "RUNNER_TEMP": str(tmp_path),
+            "RULESPEC_CHECKOUT": "rulespec-us",
+            "RULESPEC_REF": rulespec_ref,
+            "REPLACE_RULESPEC_PATH": target_rows[0][1],
+        },
+    )
+
+    if expected_error is not None:
+        assert completed.returncode != 0
+        assert expected_error in completed.stderr
+        return
+    assert completed.returncode == 0, completed.stderr
+    assert packaged_context.read_bytes() == expected_contexts["target"]
+    assert (
+        artifact / "canonical-refresh-01-context-manifest.json"
+    ).read_bytes() == expected_contexts["canonical-refresh-01"]
+    packaged = json.loads(packaged_inventory.read_text())
+    assert [item["citation"] for item in packaged["items"]] == [
+        row[0] for row in target_rows
+    ]
+
+
 def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation(
     tmp_path: Path,
 ) -> None:
@@ -4173,6 +4616,7 @@ def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     (runner_temp / "source-bundle.json").write_text("[]\n", encoding="utf-8")
+    (runner_temp / "canonical-refresh-bundle.json").write_text("[]\n", encoding="utf-8")
     (runner_temp / "existing-signed-imports.json").write_text("[]\n", encoding="utf-8")
     (runner_temp / "existing-signed-import-inventory.json").write_text(
         "{}\n", encoding="utf-8"
@@ -4416,6 +4860,7 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
         (json.dumps(outer, sort_keys=True) + "\n").encode(),
     )
     (tmp_path / "source-bundle.json").write_text("[]\n")
+    (tmp_path / "canonical-refresh-bundle.json").write_text("[]\n")
     selected_inputs = list(retained_sources)
     if mutation == "missing-input":
         selected_inputs.pop()
@@ -4543,6 +4988,7 @@ def test_targeted_artifact_preserves_pre_v4_replacement_receipts(
     outer_path.parent.mkdir(parents=True, exist_ok=True)
     outer_path.write_text(json.dumps(outer) + "\n")
     (tmp_path / "source-bundle.json").write_text("[]\n")
+    (tmp_path / "canonical-refresh-bundle.json").write_text("[]\n")
     artifact = tmp_path / "artifact"
     artifact.mkdir()
     completed = subprocess.run(
@@ -4638,6 +5084,7 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
         ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
     ).strip()
     (tmp_path / "source-bundle.json").write_text("[]\n", encoding="utf-8")
+    (tmp_path / "canonical-refresh-bundle.json").write_text("[]\n", encoding="utf-8")
 
     target_citation = "us/regulation/42/435/555"
     dependent_citation = "us/regulation/42/435/559"

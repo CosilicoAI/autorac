@@ -48,6 +48,7 @@ from axiom_encode.legacy_replacement import LegacyReplacementContract
 from axiom_encode.legacy_replacement_overlay import (
     LegacyReplacementOverlayError,
     replacement_excluded_jurisdictions,
+    scope_canonical_replacement_overlay,
     stage_legacy_replacement_overlay,
 )
 from axiom_encode.prompts.encoder import SOURCE_SCOPE_PROTOCOL
@@ -7812,6 +7813,16 @@ def _rulespec_validation_target(
             overlay_repo,
             ignore=overlay_ignore,
         )
+        if replacement_overlay_scope and legacy_replacement is None:
+            try:
+                scope_canonical_replacement_overlay(
+                    overlay_repo,
+                    active_jurisdiction=policy_root.name,
+                )
+            except LegacyReplacementOverlayError as exc:
+                raise UnsafeRulespecContextPath(
+                    f"Canonical replacement validation source is invalid: {exc}"
+                ) from exc
         validation_content_root = overlay_repo / policy_root.name
         if canonical_rulespec_root_identity(validation_content_root) != identity:
             raise UnsafeRulespecContextPath(

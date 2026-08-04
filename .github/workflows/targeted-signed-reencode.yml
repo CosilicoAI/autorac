@@ -43,6 +43,11 @@ on:
         required: false
         default: "[]"
         type: string
+      canonical_refresh_bundle_json:
+        description: JSON array of {citation,replace_rulespec_path} additions to fresh-encode independently with the primary in one signed transaction
+        required: false
+        default: "[]"
+        type: string
       existing_signed_imports_json:
         description: JSON array of tracked same-jurisdiction signed-v5 modules to reuse as direct imports
         required: false
@@ -353,6 +358,7 @@ jobs:
         id: repair_candidate
         if: ${{ inputs.repair_run_id != '' }}
         env:
+          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
           CITATION: ${{ inputs.citation }}
           CORPUS_REF: ${{ inputs.corpus_ref }}
           COUNTRY: ${{ inputs.country }}
@@ -385,6 +391,8 @@ jobs:
              [ -n "$DEPENDENT_CITATION" ] || \
              [ -n "$SECOND_DEPENDENT_CITATION" ] || \
              [ -n "$QUEUE_ID" ] || \
+             ! jq -e 'type == "array" and length == 0' \
+               <<< "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "${SOURCE_BUNDLE_JSON:-[]}" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
@@ -529,12 +537,14 @@ jobs:
 
       - name: Validate atomic source inputs
         env:
+          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           QUEUE_ID: ${{ inputs.queue_id }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
@@ -556,6 +566,14 @@ jobs:
             source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
           normalized_source_bundle="$("${source_bundle_args[@]}")"
+          normalized_canonical_refresh_bundle="$(
+            axiom-encode/.venv/bin/python \
+              axiom-encode/scripts/prepare_signed_backfill.py \
+              parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
+              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              --primary-citation "$CITATION" \
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+          )"
           existing_import_args=(
             axiom-encode/.venv/bin/python
             axiom-encode/scripts/prepare_signed_backfill.py
@@ -596,6 +614,20 @@ jobs:
             fi
           done
           normalized_existing_imports="$("${existing_import_args[@]}")"
+          if [ "$normalized_canonical_refresh_bundle" != "[]" ] && \
+            { [ "$normalized_source_bundle" != "[]" ] || \
+              [ "$normalized_existing_imports" != "[]" ] || \
+              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
+              [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ "${#retained_successor_paths[@]}" -gt 0 ] || \
+              [ -n "$DEPENDENT_CITATION" ] || \
+              [ -n "$SECOND_DEPENDENT_CITATION" ] || \
+              [ -n "$REPAIR_RUN_ID" ] || \
+              [ -n "$QUEUE_ID" ]; }; then
+            echo "canonical refresh bundles cannot mix with imports, composition bundles, legacy/dependent migration, repair replay, or queue authorization" >&2
+            exit 1
+          fi
           if [ "$normalized_source_bundle" != "[]" ] && \
              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
             echo "source bundles require legacy replacements to merge first" >&2
@@ -612,7 +644,8 @@ jobs:
             exit 1
           fi
           if [ -n "$QUEUE_ID" ] && \
-            { [ "$normalized_source_bundle" != "[]" ] || \
+            { [ "$normalized_canonical_refresh_bundle" != "[]" ] || \
+              [ "$normalized_source_bundle" != "[]" ] || \
               [ "$normalized_existing_imports" != "[]" ]; }; then
             echo "queue-authorized re-encodes cannot add source inputs until queue generation identity binds them" >&2
             exit 1
@@ -813,6 +846,7 @@ jobs:
 
       - name: Verify existing signed imports
         env:
+          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
@@ -842,6 +876,15 @@ jobs:
           normalized_source_bundle="$("${source_bundle_args[@]}")"
           printf '%s\n' "$normalized_source_bundle" \
             > "$RUNNER_TEMP/source-bundle.json"
+          normalized_canonical_refresh_bundle="$(
+            "$workflow_python" -I "$backfill_helper" \
+              parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
+              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              --primary-citation "$CITATION" \
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+          )"
+          printf '%s\n' "$normalized_canonical_refresh_bundle" \
+            > "$RUNNER_TEMP/canonical-refresh-bundle.json"
 
           existing_import_args=(
             "$workflow_python" -I "$backfill_helper"
@@ -935,6 +978,7 @@ jobs:
         id: encode_apply
         env:
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
+          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
@@ -1197,6 +1241,20 @@ jobs:
             source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
           normalized_source_bundle="$("${source_bundle_args[@]}")"
+          normalized_canonical_refresh_bundle="$(
+            "$workflow_python" "$backfill_helper" \
+              parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
+              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              --primary-citation "$CITATION" \
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+          )"
+          verified_canonical_refresh_bundle="$(tr -d '\n' \
+            < "$RUNNER_TEMP/canonical-refresh-bundle.json")"
+          if [ "$normalized_canonical_refresh_bundle" != \
+               "$verified_canonical_refresh_bundle" ]; then
+            echo "verified canonical refresh bundle changed before apply" >&2
+            exit 1
+          fi
           existing_import_args=(
             "$workflow_python" "$backfill_helper"
             parse-existing-signed-imports "$RULESPEC_CHECKOUT"
@@ -1251,15 +1309,35 @@ jobs:
             > "$RUNNER_TEMP/required-import-rulespec-paths.txt"
           source_bundle_count="$(jq -er 'length' \
             "$RUNNER_TEMP/source-bundle.json")"
+          canonical_refresh_count="$(jq -er 'length' \
+            "$RUNNER_TEMP/canonical-refresh-bundle.json")"
           existing_import_count="$(jq -er 'length' \
             "$RUNNER_TEMP/existing-signed-imports.json")"
           source_bundle_enabled=false
           if [ "$source_bundle_count" -gt 0 ]; then
             source_bundle_enabled=true
           fi
+          canonical_refresh_enabled=false
+          if [ "$canonical_refresh_count" -gt 0 ]; then
+            canonical_refresh_enabled=true
+          fi
           required_imports_enabled=false
           if [ $((source_bundle_count + existing_import_count)) -gt 0 ]; then
             required_imports_enabled=true
+          fi
+          if [ "$canonical_refresh_enabled" = "true" ] && \
+            { [ "$source_bundle_enabled" = "true" ] || \
+              [ "$existing_import_count" -gt 0 ] || \
+              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
+              [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ "$retained_successor_count" -gt 0 ] || \
+              [ -n "$DEPENDENT_CITATION" ] || \
+              [ -n "$SECOND_DEPENDENT_CITATION" ] || \
+              [ -n "${REPAIR_CANDIDATE_ROOT:-}" ] || \
+              [ -n "$QUEUE_ID" ]; }; then
+            echo "canonical refresh bundles cannot mix with imports, composition bundles, legacy/dependent migration, repair replay, or queue authorization" >&2
+            exit 1
           fi
           if [ "$source_bundle_enabled" = "true" ] && \
              [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
@@ -1307,58 +1385,87 @@ jobs:
               commit -m "$message"
           }
 
-          if [ "$source_bundle_enabled" = "true" ] && \
-             [ -n "$REPLACE_RULESPEC_PATH" ] && \
-             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
-            run_signed_encode \
-              "$CITATION" "" false target-preflight \
-              "$REPLACE_RULESPEC_PATH" "" false
-            checkpoint_signed_changes \
-              "Canonicalize signed replacement target before source bundle"
-            cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
-              "$RUNNER_TEMP/target-preflight-guard-generated.json"
-          fi
-
-          source_index=0
-          while IFS= read -r source_citation; do
-            source_index=$((source_index + 1))
-            source_lane="$(printf 'source-%02d' "$source_index")"
-            run_signed_encode \
-              "$source_citation" "" true "$source_lane" "" "" false
-            checkpoint_signed_changes \
-              "Add signed source module for ${source_citation}"
-            cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
-              "$RUNNER_TEMP/${source_lane}-guard-generated.json"
-          done < "$RUNNER_TEMP/source-bundle-citations.txt"
-
-          if [ -n "$DEPENDENT_CITATION" ]; then
-            run_signed_encode \
-              "$CITATION" "$REVIEW_FINDING" true target \
-              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
-              "$required_imports_enabled"
-            dependent_target_only=false
-            if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
-              dependent_target_only=true
-            fi
-            run_signed_encode \
-              "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \
-              "$dependent_target_only" dependent "" "" false
-            if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+          if [ "$canonical_refresh_enabled" = "true" ]; then
+            refresh_index=0
+            while IFS= read -r refresh_item; do
+              while IFS= read -r pending_refresh_item; do
+                "$workflow_python" "$backfill_helper" \
+                  verify-canonical-refresh-target "$RULESPEC_CHECKOUT" \
+                  "$pending_refresh_item" > /dev/null
+              done < <(jq -c ".[$refresh_index:][]" \
+                "$RUNNER_TEMP/canonical-refresh-bundle.json")
+              refresh_citation="$(jq -er '.citation' <<< "$refresh_item")"
+              refresh_rulespec_path="$(jq -er '.rulespec_path' <<< "$refresh_item")"
+              refresh_lane=target
+              refresh_finding="$REVIEW_FINDING"
+              if [ "$refresh_index" -gt 0 ]; then
+                refresh_lane="$(printf 'canonical-refresh-%02d' "$refresh_index")"
+                refresh_finding=""
+              fi
               run_signed_encode \
-                "$SECOND_DEPENDENT_CITATION" \
-                "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false
-            fi
+                "$refresh_citation" "$refresh_finding" false "$refresh_lane" \
+                "$refresh_rulespec_path" "" false
+              checkpoint_signed_changes \
+                "Refresh signed canonical module for ${refresh_citation}"
+              cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
+                "$RUNNER_TEMP/${refresh_lane}-guard-generated.json"
+              refresh_index=$((refresh_index + 1))
+            done < <(jq -c '.[]' \
+              "$RUNNER_TEMP/canonical-refresh-bundle.json")
           else
-            run_signed_encode \
-              "$CITATION" "$REVIEW_FINDING" false \
-              target "$REPLACE_RULESPEC_PATH" \
-              "$REPLACE_LEGACY_RULESPEC_PATH" \
-              "$required_imports_enabled"
-          fi
+            if [ "$source_bundle_enabled" = "true" ] && \
+               [ -n "$REPLACE_RULESPEC_PATH" ] && \
+               [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+              run_signed_encode \
+                "$CITATION" "" false target-preflight \
+                "$REPLACE_RULESPEC_PATH" "" false
+              checkpoint_signed_changes \
+                "Canonicalize signed replacement target before source bundle"
+              cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
+                "$RUNNER_TEMP/target-preflight-guard-generated.json"
+            fi
 
-          if [ "$source_bundle_enabled" = "true" ]; then
-            checkpoint_signed_changes \
-              "Compose signed source bundle for ${CITATION}"
+            source_index=0
+            while IFS= read -r source_citation; do
+              source_index=$((source_index + 1))
+              source_lane="$(printf 'source-%02d' "$source_index")"
+              run_signed_encode \
+                "$source_citation" "" true "$source_lane" "" "" false
+              checkpoint_signed_changes \
+                "Add signed source module for ${source_citation}"
+              cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
+                "$RUNNER_TEMP/${source_lane}-guard-generated.json"
+            done < "$RUNNER_TEMP/source-bundle-citations.txt"
+
+            if [ -n "$DEPENDENT_CITATION" ]; then
+              run_signed_encode \
+                "$CITATION" "$REVIEW_FINDING" true target \
+                "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
+                "$required_imports_enabled"
+              dependent_target_only=false
+              if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+                dependent_target_only=true
+              fi
+              run_signed_encode \
+                "$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \
+                "$dependent_target_only" dependent "" "" false
+              if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
+                run_signed_encode \
+                  "$SECOND_DEPENDENT_CITATION" \
+                  "$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false
+              fi
+            else
+              run_signed_encode \
+                "$CITATION" "$REVIEW_FINDING" false \
+                target "$REPLACE_RULESPEC_PATH" \
+                "$REPLACE_LEGACY_RULESPEC_PATH" \
+                "$required_imports_enabled"
+            fi
+
+            if [ "$source_bundle_enabled" = "true" ]; then
+              checkpoint_signed_changes \
+                "Compose signed source bundle for ${CITATION}"
+            fi
           fi
 
       - name: Verify generated provenance
@@ -1468,6 +1575,8 @@ jobs:
             "$RULESPEC_REF" HEAD >> "$artifact/status.txt"
           cp "$RUNNER_TEMP/guard-generated.json" "$artifact/guard-generated.json"
           cp "$RUNNER_TEMP/source-bundle.json" "$artifact/source-bundle.json"
+          cp "$RUNNER_TEMP/canonical-refresh-bundle.json" \
+            "$artifact/canonical-refresh-bundle.json"
           cp "$RUNNER_TEMP/existing-signed-imports.json" \
             "$artifact/existing-signed-imports.json"
           cp "$RUNNER_TEMP/existing-signed-import-inventory.json" \
@@ -1477,6 +1586,15 @@ jobs:
               cp "$source_guard" "$artifact/"
             fi
           done
+          for refresh_guard in \
+            "$RUNNER_TEMP"/canonical-refresh-*-guard-generated.json; do
+            if [ -f "$refresh_guard" ]; then
+              cp "$refresh_guard" "$artifact/"
+            fi
+          done
+          if [ -f "$RUNNER_TEMP/target-guard-generated.json" ]; then
+            cp "$RUNNER_TEMP/target-guard-generated.json" "$artifact/"
+          fi
           if [ -f "$RUNNER_TEMP/target-preflight-guard-generated.json" ]; then
             cp "$RUNNER_TEMP/target-preflight-guard-generated.json" "$artifact/"
           fi
@@ -1636,6 +1754,47 @@ jobs:
                   )
               normalized_replacement_path = candidate.as_posix()
           expected_citations = {os.environ["CITATION"]}
+          canonical_refresh_path = (
+              Path(os.environ["RUNNER_TEMP"])
+              / "canonical-refresh-bundle.json"
+          )
+          canonical_refresh_items = json.loads(
+              canonical_refresh_path.read_text()
+          )
+          if not isinstance(canonical_refresh_items, list) or not all(
+              isinstance(item, dict)
+              and set(item)
+              == {
+                  "citation",
+                  "rulespec_path",
+                  "rulespec_sha256",
+                  "companion_path",
+                  "companion_sha256",
+                  "manifest_path",
+                  "manifest_sha256",
+              }
+              and isinstance(item["citation"], str)
+              and item["citation"]
+              and isinstance(item["rulespec_path"], str)
+              and item["rulespec_path"]
+              and isinstance(item["companion_path"], str)
+              and item["companion_path"]
+              and (
+                  item["companion_sha256"] is None
+                  or (
+                      isinstance(item["companion_sha256"], str)
+                      and re.fullmatch(
+                          r"[0-9a-f]{64}", item["companion_sha256"]
+                      )
+                      is not None
+                  )
+              )
+              for item in canonical_refresh_items
+          ):
+              raise SystemExit("normalized canonical refresh bundle is malformed")
+          expected_citations.update(
+              item["citation"] for item in canonical_refresh_items
+          )
           source_bundle_path = Path(os.environ["RUNNER_TEMP"]) / "source-bundle.json"
           source_bundle_citations = json.loads(source_bundle_path.read_text())
           if not isinstance(source_bundle_citations, list) or not all(
@@ -1678,14 +1837,61 @@ jobs:
                       (relative_path, payload, effective)
                   )
 
-          expected = [
-              (
-                  os.environ["CITATION"],
-                  os.environ["REVIEW_FINDING_PRESENT"] == "true",
-                  Path(sys.argv[1]),
-                  "target",
+          if canonical_refresh_items:
+              requested_manifest_paths = {
+                  Path(item["manifest_path"])
+                  for item in canonical_refresh_items
+              }
+              if (
+                  len(requested_manifest_paths) != len(canonical_refresh_items)
+                  or requested_manifest_paths != manifest_paths
+                  or deleted_manifest_paths
+              ):
+                  raise SystemExit(
+                      "canonical refresh changed manifest inventory differs "
+                      "from its exact requested targets"
+                  )
+
+          expected = []
+          if canonical_refresh_items:
+              for refresh_index, refresh_item in enumerate(
+                  canonical_refresh_items
+              ):
+                  refresh_lane = (
+                      "target"
+                      if refresh_index == 0
+                      else f"canonical-refresh-{refresh_index:02d}"
+                  )
+                  expected.append(
+                      (
+                          refresh_item["citation"],
+                          refresh_index == 0
+                          and os.environ["REVIEW_FINDING_PRESENT"] == "true",
+                          (
+                              Path(sys.argv[1])
+                              if refresh_index == 0
+                              else Path(sys.argv[1]).with_name(
+                                  f"{refresh_lane}-context-manifest.json"
+                              )
+                          ),
+                          refresh_lane,
+                          refresh_item["rulespec_path"],
+                          refresh_item["companion_path"],
+                          refresh_item["manifest_path"],
+                      )
+                  )
+          else:
+              expected.append(
+                  (
+                      os.environ["CITATION"],
+                      os.environ["REVIEW_FINDING_PRESENT"] == "true",
+                      Path(sys.argv[1]),
+                      "target",
+                      normalized_replacement_path or None,
+                      None,
+                      None,
+                  )
               )
-          ]
           for source_index, source_citation in enumerate(
               source_bundle_citations, start=1
           ):
@@ -1698,6 +1904,9 @@ jobs:
                           f"{source_lane}-context-manifest.json"
                       ),
                       source_lane,
+                      None,
+                      None,
+                      None,
                   )
               )
           if dependent_citation:
@@ -1707,6 +1916,9 @@ jobs:
                       os.environ["DEPENDENT_REVIEW_FINDING_PRESENT"] == "true",
                       Path(sys.argv[1]).with_name("dependent-context-manifest.json"),
                       "dependent",
+                      None,
+                      None,
+                      None,
                   )
               )
           if second_dependent_citation:
@@ -1721,12 +1933,23 @@ jobs:
                           "dependent-2-context-manifest.json"
                       ),
                       "dependent-2",
+                      None,
+                      None,
+                      None,
                   )
               )
 
           generated_root = (Path(os.environ["RUNNER_TEMP"]) / "generated").resolve()
           applied_inventory = []
-          for citation, finding_required, destination, lane in expected:
+          for (
+              citation,
+              finding_required,
+              destination,
+              lane,
+              expected_primary_path,
+              expected_companion_path,
+              expected_manifest_path,
+          ) in expected:
               citation_matches = matches.get(citation, [])
               if len(citation_matches) != 1:
                   raise SystemExit(
@@ -1737,7 +1960,34 @@ jobs:
                   citation_matches[0]
               )
               manifest_path = Path(os.environ["RULESPEC_CHECKOUT"]) / relative_path
-              if lane == "target" and legacy_source_path:
+              if canonical_refresh_items:
+                  applied_files = applied_manifest.get("applied_files")
+                  applied_paths = [
+                      item.get("path")
+                      for item in applied_files or []
+                      if isinstance(item, dict)
+                      and isinstance(item.get("path"), str)
+                  ]
+                  applied_path_set = set(applied_paths)
+                  allowed_paths = {
+                      expected_primary_path,
+                      expected_companion_path,
+                  }
+                  if (
+                      relative_path.as_posix() != expected_manifest_path
+                      or applied_manifest.get("tool")
+                      != "axiom-encode encode --apply"
+                      or not isinstance(applied_files, list)
+                      or len(applied_paths) != len(applied_files)
+                      or len(applied_path_set) != len(applied_paths)
+                      or expected_primary_path not in applied_path_set
+                      or not applied_path_set.issubset(allowed_paths)
+                  ):
+                      raise SystemExit(
+                          "canonical refresh apply manifest does not match its "
+                          "exact requested target"
+                      )
+              elif lane == "target" and legacy_source_path:
                   if (
                       applied_manifest.get("tool")
                       != "axiom-encode encode --apply "
@@ -2416,6 +2666,12 @@ jobs:
           payload = {
               "schema": "axiom-encode/targeted-reencode-artifact/v1",
               "citation": os.environ["CITATION"],
+              "canonical_refresh_bundle": json.loads(
+                  (
+                      Path(os.environ["RUNNER_TEMP"])
+                      / "canonical-refresh-bundle.json"
+                  ).read_text(encoding="utf-8")
+              ),
               "source_bundle": json.loads(
                   (
                       Path(os.environ["RUNNER_TEMP"]) / "source-bundle.json"
@@ -2499,7 +2755,9 @@ jobs:
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           git -C "$RULESPEC_CHECKOUT" switch -c "$branch"
           if jq -e 'length > 0' \
-            "$RUNNER_TEMP/source-bundle.json" > /dev/null; then
+               "$RUNNER_TEMP/source-bundle.json" > /dev/null || \
+             jq -e 'length > 0' \
+               "$RUNNER_TEMP/canonical-refresh-bundle.json" > /dev/null; then
             test -z "$(git -C "$RULESPEC_CHECKOUT" status --porcelain)"
           else
             "${workflow_python[@]}" \
@@ -2548,12 +2806,15 @@ jobs:
             axiom-encode/scripts/prepare_signed_backfill.py branch-name \
             "$COUNTRY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT")"
           source_bundle="$(tr -d '\n' < "$RUNNER_TEMP/source-bundle.json")"
+          canonical_refresh_bundle="$(tr -d '\n' \
+            < "$RUNNER_TEMP/canonical-refresh-bundle.json")"
           existing_signed_imports="$(tr -d '\n' \
             < "$RUNNER_TEMP/existing-signed-imports.json")"
           body="$(printf '%s\n' \
             '## Signed apply manifest' \
             '' \
             "Citation: \`${CITATION}\`" \
+            "Independent canonical refresh bundle: \`${canonical_refresh_bundle}\`" \
             "Atomic source bundle: \`${source_bundle}\`" \
             "Existing signed imports: \`${existing_signed_imports}\`" \
             "Direct dependent: \`${DEPENDENT_CITATION:-n/a}\`" \
@@ -2623,6 +2884,7 @@ jobs:
         id: package_failed_reencode_diagnostics
         if: ${{ failure() && !cancelled() }}
         env:
+          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
           CITATION: ${{ inputs.citation }}
           CORPUS_REF: ${{ inputs.corpus_ref }}
           COUNTRY: ${{ inputs.country }}
@@ -3023,6 +3285,9 @@ jobs:
               )
               or None,
               "source_bundle_input": os.environ.get("SOURCE_BUNDLE_JSON", "[]"),
+              "canonical_refresh_bundle_input": os.environ.get(
+                  "CANONICAL_REFRESH_BUNDLE_JSON", "[]"
+              ),
               "step_outcomes": step_outcomes,
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
