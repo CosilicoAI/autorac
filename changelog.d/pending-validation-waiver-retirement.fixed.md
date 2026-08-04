@@ -1,1 +1,1 @@
-Allow authenticated generated deletions to retire matching pending validation-waiver state while continuing to reject pending retirement for live modules and unrelated waiver removals.
+Allow authenticated legacy-replacement deletions to retire matching pending validation-waiver state with distinct pre- and post-migration bindings, while continuing to reject live, unrelated, and symlink-aliased retirement paths.

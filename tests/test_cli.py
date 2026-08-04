@@ -14337,10 +14337,16 @@ class TestCmdEncode:
             + "\n"
         )
         known_gaps = checkout / "known-validation-gaps.yaml"
+        waiver_expiry = (date.today() + timedelta(days=30)).isoformat()
         known_gaps.write_text(
-            "".join(
-                f"'{module}':\n  reason: "
-                f"{'legacy' if module in old_modules else 'canonical'}\n"
+            "validate_failures:\n"
+            + "".join(
+                f"  {module}:\n"
+                f"    {'pending' if module == source_relative.as_posix() else 'active'}:\n"
+                f"      fingerprint: sha256:{hashlib.sha256(module.encode()).hexdigest()}\n"
+                "      owner: '@axiom-test'\n"
+                "      issue: https://github.com/TheAxiomFoundation/axiom-encode/issues/1\n"
+                f"      expires: '{waiver_expiry}'\n"
                 for module in [*old_modules, *canonical_modules]
             )
         )
@@ -14400,6 +14406,7 @@ class TestCmdEncode:
         _git(checkout, "config", "user.name", "Test User")
         _git(checkout, "add", ".")
         _git(checkout, "commit", "-m", "legacy cascade base")
+        base_ref = _git(checkout, "rev-parse", "HEAD").stdout.strip()
         with patch.dict(
             os.environ,
             {"AXIOM_CORPUS_RELEASE_PUBLIC_KEY": TEST_RELEASE_PUBLIC_KEY},
@@ -14812,6 +14819,33 @@ class TestCmdEncode:
             )
             assert issues == [], "\n".join(issues)
             assert verified is not None
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: (
+                        TEST_APPLY_PUBLIC_KEY_B64
+                    ),
+                    "AXIOM_CORPUS_RELEASE_PUBLIC_KEY": TEST_RELEASE_PUBLIC_KEY,
+                },
+            ),
+            patch(
+                "axiom_encode.cli._read_only_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
+                "axiom_encode.cli._applied_encoding_manifest_verifier",
+                return_value=TEST_APPLY_SIGNING_BROKER,
+            ),
+        ):
+            guard_issues = guard_generated_change_issues(
+                checkout,
+                corpus_path=corpus_path,
+                base_ref=base_ref,
+                head_ref="HEAD",
+            )
+        assert guard_issues == [], "\n".join(guard_issues)
 
         from scripts.prepare_signed_backfill import authorized_changed_paths
 
@@ -37275,6 +37309,35 @@ class TestGuardGenerated:
             for issue in issues
         )
 
+    def test_rejects_pending_waiver_retirement_with_symlinked_ancestor(self, tmp_path):
+        relative = "us/regulations/example.yaml"
+        repo, base_ref = self._waiver_retirement_repo(
+            tmp_path,
+            base_waiver_text=(
+                "validate_failures:\n"
+                + self._waiver_entry_text(relative, state="pending")
+            ),
+            delete_rule=True,
+        )
+        parent = (repo / relative).parent
+        parent.rmdir()
+        parent.symlink_to("missing-regulations")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "--amend", "--no-edit")
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            base_ref=base_ref,
+            head_ref="HEAD",
+        )
+
+        assert any(
+            "pending state may be removed only with its deleted protected "
+            "RuleSpec module" in issue
+            for issue in issues
+        )
+
     def test_preexisting_guard_accepts_post_apply_waiver_retirement(self, tmp_path):
         relative = "us/regulations/example.yaml"
         repo = self._canonical_guard_repo(tmp_path)
@@ -38336,6 +38399,33 @@ rules: []
         rule = tmp_path / "us/regulations/example.yaml"
         rule.parent.mkdir(parents=True)
         rule.write_text("format: rulespec/v1\nrules: []\n")
+        manifest = tmp_path / ".axiom/encoding-manifests/us/regulations/removal.json"
+        manifest.parent.mkdir(parents=True)
+        manifest_payload = self._retirement_manifest(["us/regulations/example.yaml"])
+        manifest.write_text(json.dumps(manifest_payload) + "\n")
+
+        with patch.dict(
+            os.environ,
+            {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+        ):
+            issues = guard_generated_change_issues(
+                tmp_path,
+                corpus_path=self.corpus_path,
+                changed_files=[
+                    "us/regulations/example.yaml",
+                    ".axiom/encoding-manifests/us/regulations/removal.json",
+                ],
+            )
+
+        assert issues == [
+            ".axiom/encoding-manifests/us/regulations/removal.json lists "
+            "us/regulations/example.yaml as deleted but it exists"
+        ]
+
+    def test_rejects_deletion_entry_with_symlinked_ancestor(self, tmp_path):
+        regulations = tmp_path / "us/regulations"
+        regulations.parent.mkdir(parents=True, exist_ok=True)
+        regulations.symlink_to("missing-regulations")
         manifest = tmp_path / ".axiom/encoding-manifests/us/regulations/removal.json"
         manifest.parent.mkdir(parents=True)
         manifest_payload = self._retirement_manifest(["us/regulations/example.yaml"])
