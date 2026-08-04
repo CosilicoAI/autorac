@@ -2203,10 +2203,21 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "CORPUS_REF",
         "COUNTRY",
         "DEPENDENT_CITATION",
+        "ENCODE_APPLY_CONCLUSION",
+        "ENCODE_APPLY_OUTCOME",
         "EXISTING_SIGNED_IMPORTS_JSON",
+        "FINALIZE_SIGNED_REENCODE_ARTIFACT_CONCLUSION",
+        "FINALIZE_SIGNED_REENCODE_ARTIFACT_OUTCOME",
         "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH",
+        "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON",
         "OPEN_PR",
+        "PACKAGE_EXACT_GENERATED_CHANGES_CONCLUSION",
+        "PACKAGE_EXACT_GENERATED_CHANGES_OUTCOME",
+        "COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION",
+        "COMMIT_REVIEWED_LANE_CHANGES_OUTCOME",
         "PR_BASE_BRANCH",
+        "PUBLISH_LANE_PULL_REQUEST_CONCLUSION",
+        "PUBLISH_LANE_PULL_REQUEST_OUTCOME",
         "QUEUE_DISPATCHER_RUN_ID",
         "QUEUE_ID",
         "QUEUE_ITEM_GENERATION_SHA256",
@@ -2219,9 +2230,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "SECOND_DEPENDENT_CITATION",
         "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH",
         "SOURCE_BUNDLE_JSON",
-        "STEP_CONTEXT_JSON",
+        "UPLOAD_SIGNED_REENCODE_ARTIFACT_CONCLUSION",
+        "UPLOAD_SIGNED_REENCODE_ARTIFACT_OUTCOME",
+        "VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_CONCLUSION",
+        "VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_OUTCOME",
+        "VERIFY_GENERATED_PROVENANCE_CONCLUSION",
+        "VERIFY_GENERATED_PROVENANCE_OUTCOME",
     }
-    assert failure_package_step["env"]["STEP_CONTEXT_JSON"] == "${{ toJSON(steps) }}"
+    assert "toJSON(steps)" not in json.dumps(failure_package_step)
+    assert ".outputs" not in json.dumps(failure_package_step["env"])
     failure_package_command = failure_package_step["run"]
     assert "/opt/axiom-verification/python/bin/python -I -" in (failure_package_command)
     assert "read_bounded_regular_file" in failure_package_command
@@ -2443,22 +2460,14 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_RUN_ID": "1234",
         "GITHUB_SHA": "encoder-ref",
+        "ENCODE_APPLY_CONCLUSION": "failure",
+        "ENCODE_APPLY_OUTCOME": "failure",
+        "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": '["us/statutes/old.yaml"]',
         "RULES_ENGINE_REF": "rules-engine-ref",
         "RULESPEC_REF": "rulespec-ref",
         "RUNNER_TEMP": str(tmp_path),
-        "STEP_CONTEXT_JSON": json.dumps(
-            {
-                "encode_apply": {
-                    "conclusion": "failure",
-                    "outcome": "failure",
-                    "outputs": {"sensitive": "must-not-be-copied"},
-                },
-                "verify_generated_provenance": {
-                    "conclusion": "skipped",
-                    "outcome": "skipped",
-                },
-            }
-        ),
+        "VERIFY_GENERATED_PROVENANCE_CONCLUSION": "skipped",
+        "VERIFY_GENERATED_PROVENANCE_OUTCOME": "skipped",
         "QUEUE_ID": "us-snap-all-states-2026-07",
         "QUEUE_ITEM_GENERATION_SHA256": "generation-sha",
         "QUEUE_ITEM_ID": "us/statute/42/1437c-1",
@@ -2480,6 +2489,9 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     assert metadata["workflow_run_id"] == "1234"
     assert metadata["failed_steps"] == ["encode_apply"]
     assert metadata["generated_lanes"] == ["target"]
+    assert metadata["legacy_retained_successor_rulespec_paths_input"] == (
+        '["us/statutes/old.yaml"]'
+    )
     assert metadata["queue_id"] == "us-snap-all-states-2026-07"
     assert metadata["queue_item_generation_sha256"] == "generation-sha"
     assert metadata["queue_item_id"] == "us/statute/42/1437c-1"
@@ -2525,17 +2537,11 @@ def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_RUN_ID": "1234",
         "GITHUB_SHA": "encoder-ref",
+        "ENCODE_APPLY_CONCLUSION": "failure",
+        "ENCODE_APPLY_OUTCOME": "failure",
         "RULES_ENGINE_REF": "rules-engine-ref",
         "RULESPEC_REF": "rulespec-ref",
         "RUNNER_TEMP": str(tmp_path),
-        "STEP_CONTEXT_JSON": json.dumps(
-            {
-                "encode_apply": {
-                    "conclusion": "failure",
-                    "outcome": "failure",
-                }
-            }
-        ),
     }
 
     completed = subprocess.run(

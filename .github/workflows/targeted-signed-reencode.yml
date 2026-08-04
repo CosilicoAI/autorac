@@ -2347,10 +2347,21 @@ jobs:
           CORPUS_REF: ${{ inputs.corpus_ref }}
           COUNTRY: ${{ inputs.country }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          ENCODE_APPLY_CONCLUSION: ${{ steps.encode_apply.conclusion }}
+          ENCODE_APPLY_OUTCOME: ${{ steps.encode_apply.outcome }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
+          FINALIZE_SIGNED_REENCODE_ARTIFACT_CONCLUSION: ${{ steps.finalize_signed_reencode_artifact.conclusion }}
+          FINALIZE_SIGNED_REENCODE_ARTIFACT_OUTCOME: ${{ steps.finalize_signed_reencode_artifact.outcome }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           OPEN_PR: ${{ inputs.open_pr }}
+          PACKAGE_EXACT_GENERATED_CHANGES_CONCLUSION: ${{ steps.package_exact_generated_changes.conclusion }}
+          PACKAGE_EXACT_GENERATED_CHANGES_OUTCOME: ${{ steps.package_exact_generated_changes.outcome }}
+          COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION: ${{ steps.commit_reviewed_lane_changes.conclusion }}
+          COMMIT_REVIEWED_LANE_CHANGES_OUTCOME: ${{ steps.commit_reviewed_lane_changes.outcome }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
+          PUBLISH_LANE_PULL_REQUEST_CONCLUSION: ${{ steps.publish_lane_pull_request.conclusion }}
+          PUBLISH_LANE_PULL_REQUEST_OUTCOME: ${{ steps.publish_lane_pull_request.outcome }}
           QUEUE_DISPATCHER_RUN_ID: ${{ inputs.queue_dispatcher_run_id }}
           QUEUE_ID: ${{ inputs.queue_id }}
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
@@ -2363,7 +2374,12 @@ jobs:
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
-          STEP_CONTEXT_JSON: ${{ toJSON(steps) }}
+          UPLOAD_SIGNED_REENCODE_ARTIFACT_CONCLUSION: ${{ steps.upload_signed_reencode_artifact.conclusion }}
+          UPLOAD_SIGNED_REENCODE_ARTIFACT_OUTCOME: ${{ steps.upload_signed_reencode_artifact.outcome }}
+          VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_CONCLUSION: ${{ steps.verify_existing_signed_import_integrity.conclusion }}
+          VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_OUTCOME: ${{ steps.verify_existing_signed_import_integrity.outcome }}
+          VERIFY_GENERATED_PROVENANCE_CONCLUSION: ${{ steps.verify_generated_provenance.conclusion }}
+          VERIFY_GENERATED_PROVENANCE_OUTCOME: ${{ steps.verify_generated_provenance.outcome }}
         run: |
           set -euo pipefail
           generated="$RUNNER_TEMP/generated"
@@ -2449,19 +2465,28 @@ jobs:
                       )
 
           inventory.sort(key=lambda item: item["path"])
-          raw_step_context = json.loads(os.environ["STEP_CONTEXT_JSON"])
-          if not isinstance(raw_step_context, dict):
-              raise SystemExit("workflow step context is malformed")
+          step_env_prefixes = {
+              "commit_reviewed_lane_changes": "COMMIT_REVIEWED_LANE_CHANGES",
+              "encode_apply": "ENCODE_APPLY",
+              "finalize_signed_reencode_artifact": (
+                  "FINALIZE_SIGNED_REENCODE_ARTIFACT"
+              ),
+              "package_exact_generated_changes": "PACKAGE_EXACT_GENERATED_CHANGES",
+              "publish_lane_pull_request": "PUBLISH_LANE_PULL_REQUEST",
+              "upload_signed_reencode_artifact": (
+                  "UPLOAD_SIGNED_REENCODE_ARTIFACT"
+              ),
+              "verify_existing_signed_import_integrity": (
+                  "VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY"
+              ),
+              "verify_generated_provenance": "VERIFY_GENERATED_PROVENANCE",
+          }
           step_outcomes = {}
-          for step_id, payload in sorted(raw_step_context.items()):
-              if not isinstance(step_id, str) or not isinstance(payload, dict):
-                  raise SystemExit("workflow step context entry is malformed")
-              outcome = payload.get("outcome")
-              conclusion = payload.get("conclusion")
-              if outcome is not None and not isinstance(outcome, str):
-                  raise SystemExit("workflow step outcome is malformed")
-              if conclusion is not None and not isinstance(conclusion, str):
-                  raise SystemExit("workflow step conclusion is malformed")
+          for step_id, env_prefix in step_env_prefixes.items():
+              outcome = os.environ.get(f"{env_prefix}_OUTCOME") or None
+              conclusion = os.environ.get(f"{env_prefix}_CONCLUSION") or None
+              if outcome is None and conclusion is None:
+                  continue
               step_outcomes[step_id] = {
                   "conclusion": conclusion,
                   "outcome": outcome,
@@ -2495,6 +2520,9 @@ jobs:
                   "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
               )
               or None,
+              "legacy_retained_successor_rulespec_paths_input": os.environ.get(
+                  "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON", "[]"
+              ),
               "open_pr": os.environ.get("OPEN_PR") == "true",
               "pr_base_branch": os.environ.get("PR_BASE_BRANCH") or None,
               "queue_dispatcher_run_id": os.environ.get(
