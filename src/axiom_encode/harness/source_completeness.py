@@ -579,12 +579,18 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
 _DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
     {
         "already",
+        "also",
+        "not",
+        "now",
         "otherwise",
+        "still",
+        "then",
+        "yet",
     }
 )
 _DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
-_DEPENDENCY_AMBIGUOUS_FINITE_VERB_TERMS = frozenset(
-    {"process", "program", "record", "rule"}
+_DEPENDENCY_NON_ADVERB_LY_TERMS = frozenset(
+    {"apply", "comply", "imply", "multiply", "rely", "reply", "supply"}
 )
 _LEGAL_INSTRUMENT_TERMS = frozenset(
     {
@@ -2822,10 +2828,7 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
             if (
                 len(predicate_tokens) == 1
                 and predicate_candidates & _DEPENDENCY_MODIFIER_TERMS
-                and not (
-                    subject_is_actor
-                    and predicate_candidates & _DEPENDENCY_AMBIGUOUS_FINITE_VERB_TERMS
-                )
+                and not subject_is_actor
             ):
                 continue
             if predicate in _DEPENDENCY_OBJECT_MODIFIER_TERMS and all(
@@ -2846,10 +2849,12 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
     return bool(
         re.fullmatch(
             r"(?:a|an|the|this|that|these|those)?\s*"
-            r"(?:(?:administering|federal|local|public-housing|state)\s+)?"
+            r"(?:(?:administering|federal|local|public(?:-|\s+)housing|state)\s+)?"
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|hud|irs|secretar(?:y|ies)|services?|"
+            r"internal\s+revenue\s+services?|"
+            r"social\s+security\s+administrations?|"
             r"(?:departments?|secretar(?:y|ies))\s+of\s+(?:the\s+)?"
             r"(?:agriculture|education|health\s+and\s+human\s+services|"
             r"housing\s+and\s+urban\s+development|labor|treasury|"
@@ -2864,7 +2869,9 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
 
 def _dependency_token_is_object_modifier_adverb(token: str) -> bool:
     lowered = token.lower()
-    return lowered in _DEPENDENCY_OBJECT_MODIFIER_ADVERBS or lowered.endswith("ly")
+    return lowered in _DEPENDENCY_OBJECT_MODIFIER_ADVERBS or (
+        lowered.endswith("ly") and lowered not in _DEPENDENCY_NON_ADVERB_LY_TERMS
+    )
 
 
 def _dependency_subject_token_is_plural(token: str) -> bool:
