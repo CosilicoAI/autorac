@@ -40,7 +40,9 @@ from axiom_encode.harness.validator_pipeline import (
     OracleSubprocessResult,
     _corpus_citation_to_normalized_target,
     _extract_json_object,
+    _formula_is_syntactically_unsatisfiable_false,
     _infer_us_state_code_from_rulespec_path,
+    _literal_comparison_truth_value,
     _normalize_us_tax_filing_status,
     _normalize_validation_staging_text,
     _policyengine_expected_float,
@@ -2565,6 +2567,174 @@ rules:
     )
 
     assert issues == []
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 == 0",
+        "true == false",
+        '"same" != "same"',
+        "9007199254740992.0 == 9007199254740993.0",
+        'source_condition and "same" != "same"',
+        "(true or false) and false",
+    ],
+)
+def test_judgment_positive_companion_output_allows_false_literal_comparison(
+    tmp_path, formula
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
+    rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = f"""format: rulespec/v1
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Year
+    source: N.J.S.54A:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          {formula}
+"""
+    cases = [
+        {
+            "name": "subsection_f_does_not_apply",
+            "period": "2026",
+            "input": {},
+            "output": {"us-nj:statutes/54a/4-7#subsection_f_applies": "not_holds"},
+        }
+    ]
+
+    issues = find_judgment_positive_companion_output_issues(
+        content,
+        cases,
+        rules_file=rules_file,
+        policy_repo_path=policy_repo,
+    )
+
+    assert issues == []
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 == 1",
+        '"A" != "a"',
+        "9007199254740992.0 != 9007199254740993.0",
+        'source_condition and "A" != "a"',
+        "true or false and false",
+    ],
+)
+def test_judgment_positive_companion_output_requires_positive_for_true_literal_comparison(
+    tmp_path, formula
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
+    rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = f"""format: rulespec/v1
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Year
+    source: N.J.S.54A:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          {formula}
+"""
+    cases = [
+        {
+            "name": "incorrect_negative_only_case",
+            "period": "2026",
+            "input": {},
+            "output": {"us-nj:statutes/54a/4-7#subsection_f_applies": "not_holds"},
+        }
+    ]
+
+    issues = find_judgment_positive_companion_output_issues(
+        content,
+        cases,
+        rules_file=rules_file,
+        policy_repo_path=policy_repo,
+    )
+
+    assert issues == [
+        "Judgment rule missing positive companion output coverage: "
+        "`us-nj:statutes/54a/4-7#subsection_f_applies` is not asserted as "
+        "`holds` by the companion `.test.yaml` file."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("formula", "expected"),
+    [
+        ("1 == 0", False),
+        ("1 != 0", True),
+        ("1 < 2", True),
+        ("2 <= 1", False),
+        ("2 > 1", True),
+        ("2 >= 3", False),
+        ('"A" != "a"', True),
+        ("9007199254740992.0 != 9007199254740993.0", True),
+        ("true == false", False),
+        ("False != false", False),
+        (r'"line\n" == "line\n"', True),
+        ('(")") == (")")', True),
+        ('("(") == (")")', False),
+    ],
+)
+def test_literal_comparison_truth_value_matches_rulespec_semantics(formula, expected):
+    assert _literal_comparison_truth_value(formula) is expected
+
+
+def test_constant_false_detection_respects_rulespec_boolean_precedence():
+    assert not _formula_is_syntactically_unsatisfiable_false("true or false and false")
+    assert _formula_is_syntactically_unsatisfiable_false("(true or false) and false")
+
+
+def test_constant_false_detection_fails_closed_above_nesting_limit():
+    deeply_wrapped_false = f"{'(' * 300}1 == 0{')' * 300}"
+    deeply_nested_conjunction = "false"
+    for _ in range(300):
+        deeply_nested_conjunction = f"true and ({deeply_nested_conjunction})"
+
+    assert not _formula_is_syntactically_unsatisfiable_false(deeply_wrapped_false)
+    assert not _formula_is_syntactically_unsatisfiable_false(deeply_nested_conjunction)
+
+
+def test_literal_comparison_handles_deep_parentheses_without_recursive_parsing():
+    deeply_wrapped_false = f"{'(' * 10_000}1{')' * 10_000} == 0"
+
+    assert _literal_comparison_truth_value(deeply_wrapped_false) is False
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        '"a" < "b"',
+        "true > false",
+        "1 == true",
+        "1 < 2 < 3",
+        "None == None",
+        "claim_count == 0",
+        "1e3 == 1000",
+        '"unterminated == 1',
+        "9223372036854775808 == 0",
+        "-9223372036854775808 == 0",
+        f"{'9' * 5000} == 0",
+        "0.00000000000000000000000000001 == 0.0",
+        f"{'9' * 5000}.0 == 0.0",
+    ],
+)
+def test_literal_comparison_truth_value_rejects_unsupported_rulespec_forms(
+    formula,
+):
+    assert _literal_comparison_truth_value(formula) is None
 
 
 def test_synthetic_source_authorized_input_rejected_for_prohibition():
@@ -5753,7 +5923,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1514"')
+        .startswith('__version__ = "0.2.1517"')
     )
 
 
@@ -5985,13 +6155,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1514"
+    assert encoder_package["version"] == "0.2.1517"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1514"
+    assert project["project"]["version"] == "0.2.1517"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1514"')
+        .startswith('__version__ = "0.2.1517"')
     )
 
 
@@ -6253,13 +6423,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1514"
+    assert encoder_package["version"] == "0.2.1517"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1514"
+    assert project["project"]["version"] == "0.2.1517"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1514"')
+        .startswith('__version__ = "0.2.1517"')
     )
 
 

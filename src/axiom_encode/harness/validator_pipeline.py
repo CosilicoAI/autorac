@@ -11443,7 +11443,7 @@ def find_synthetic_source_authorized_input_issues(content: str) -> list[str]:
 
 def _rule_versions_are_constant_false(versions: list[Any]) -> bool:
     formulas = [
-        str(version.get("formula") or "").strip().lower()
+        str(version.get("formula") or "").strip()
         for version in versions
         if isinstance(version, dict) and isinstance(version.get("formula"), str)
     ]
@@ -11453,47 +11453,296 @@ def _rule_versions_are_constant_false(versions: list[Any]) -> bool:
 
 
 def _formula_is_syntactically_unsatisfiable_false(formula: str) -> bool:
-    normalized = re.sub(r"\s+", " ", formula.strip().lower())
-    normalized = _strip_balanced_outer_parentheses(normalized)
-    if normalized == "false":
-        return True
-    conjuncts = _split_top_level_boolean_operator(normalized, "and")
-    return len(conjuncts) > 1 and any(
-        _formula_is_syntactically_unsatisfiable_false(conjunct)
-        for conjunct in conjuncts
-    )
+    if not _rulespec_expression_nesting_within_limit(formula):
+        return False
+
+    pending = [formula]
+    while pending:
+        exact = _strip_balanced_outer_parentheses(pending.pop().strip())
+        if exact in {"false", "False"}:
+            return True
+        literal_comparison = _literal_comparison_truth_value(exact)
+        if literal_comparison is not None:
+            if not literal_comparison:
+                return True
+            continue
+        if len(_split_top_level_boolean_operator(exact, "or")) > 1:
+            continue
+        conjuncts = _split_top_level_boolean_operator(exact, "and")
+        if len(conjuncts) > 1:
+            pending.extend(conjuncts)
+    return False
+
+
+def _literal_comparison_truth_value(expression: str) -> bool | None:
+    """Evaluate one comparison using RuleSpec literal and operator semantics."""
+
+    split = _split_rulespec_literal_comparison(expression)
+    if split is None:
+        return None
+    left_text, operator, right_text = split
+    left = _rulespec_literal_value(left_text)
+    right = _rulespec_literal_value(right_text)
+    if left is None or right is None:
+        return None
+    left_kind, left_value = left
+    right_kind, right_value = right
+
+    if left_kind in {"integer", "decimal"} and right_kind in {
+        "integer",
+        "decimal",
+    }:
+        left_value = Decimal(left_value)
+        right_value = Decimal(right_value)
+    elif left_kind == right_kind and left_kind in {"boolean", "text"}:
+        if operator not in {"==", "!="}:
+            return None
+    else:
+        return None
+
+    if operator == "==":
+        return left_value == right_value
+    if operator == "!=":
+        return left_value != right_value
+    if operator == "<":
+        return left_value < right_value
+    if operator == "<=":
+        return left_value <= right_value
+    if operator == ">":
+        return left_value > right_value
+    if operator == ">=":
+        return left_value >= right_value
+    return None
+
+
+def _split_rulespec_literal_comparison(
+    expression: str,
+) -> tuple[str, str, str] | None:
+    """Split exactly one top-level RuleSpec comparison outside quoted text."""
+
+    operators: list[tuple[int, str]] = []
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+            index += 1
+            continue
+        if depth == 0:
+            operator = next(
+                (
+                    candidate
+                    for candidate in ("<=", ">=", "==", "!=", "<", ">")
+                    if expression.startswith(candidate, index)
+                ),
+                None,
+            )
+            if operator is not None:
+                operators.append((index, operator))
+                index += len(operator)
+                continue
+        index += 1
+    if quote is not None or depth != 0 or len(operators) != 1:
+        return None
+    operator_index, operator = operators[0]
+    left = expression[:operator_index].strip()
+    right = expression[operator_index + len(operator) :].strip()
+    if not left or not right:
+        return None
+    return left, operator, right
+
+
+def _rulespec_literal_value(
+    expression: str,
+) -> tuple[str, bool | int | Decimal | str] | None:
+    """Parse the literal subset accepted by the RuleSpec formula lexer."""
+
+    literal = _strip_balanced_outer_parentheses(expression.strip())
+    if literal in {"true", "True"}:
+        return "boolean", True
+    if literal in {"false", "False"}:
+        return "boolean", False
+
+    if re.fullmatch(r"-?[0-9][0-9_]*", literal):
+        exact = literal.replace("_", "")
+        magnitude = exact.removeprefix("-").lstrip("0") or "0"
+        if len(magnitude) > 19:
+            return None
+        unsigned_value = int(magnitude)
+        if unsigned_value > 2**63 - 1:
+            return None
+        value = -unsigned_value if exact.startswith("-") else unsigned_value
+        return "integer", value
+
+    if re.fullmatch(r"-?[0-9][0-9_]*\.[0-9][0-9_]*", literal):
+        exact = literal.replace("_", "")
+        unsigned = exact.removeprefix("-")
+        whole, fractional = unsigned.split(".", 1)
+        coefficient_text = f"{whole}{fractional}".lstrip("0") or "0"
+        if len(fractional) > 28 or len(coefficient_text) > 29:
+            return None
+        coefficient = int(coefficient_text)
+        if coefficient > 2**96 - 1:
+            return None
+        try:
+            return "decimal", Decimal(exact)
+        except InvalidOperation:
+            return None
+
+    if len(literal) < 2 or literal[0] not in {'"', "'"}:
+        return None
+    quote = literal[0]
+    if literal[-1] != quote:
+        return None
+    value: list[str] = []
+    index = 1
+    while index < len(literal) - 1:
+        char = literal[index]
+        if char == quote:
+            return None
+        if char != "\\":
+            value.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(literal) - 1:
+            return None
+        escaped = literal[index + 1]
+        value.append(
+            {
+                "\\": "\\",
+                '"': '"',
+                "'": "'",
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+            }.get(escaped, escaped)
+        )
+        index += 2
+    return "text", "".join(value)
 
 
 def _strip_balanced_outer_parentheses(expression: str) -> str:
     stripped = expression.strip()
-    while stripped.startswith("(") and stripped.endswith(")"):
-        depth = 0
-        encloses_all = True
-        for index, char in enumerate(stripped):
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0 and index != len(stripped) - 1:
-                    encloses_all = False
-                    break
+    if not stripped.startswith("(") or not stripped.endswith(")"):
+        return stripped
+
+    matching_parentheses: dict[int, int] = {}
+    opening_parentheses: list[int] = []
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(stripped):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            opening_parentheses.append(index)
+            continue
+        if char != ")":
+            continue
+        if not opening_parentheses:
+            return stripped
+        matching_parentheses[opening_parentheses.pop()] = index
+    if quote is not None or opening_parentheses:
+        return stripped
+
+    start = 0
+    end = len(stripped) - 1
+    while start < end and matching_parentheses.get(start) == end:
+        start += 1
+        end -= 1
+        while start <= end and stripped[start].isspace():
+            start += 1
+        while end >= start and stripped[end].isspace():
+            end -= 1
+    return stripped[start : end + 1]
+
+
+def _rulespec_expression_nesting_within_limit(
+    expression: str,
+    *,
+    max_depth: int = 256,
+) -> bool:
+    """Bound heuristic-only parsing and reject malformed delimiters safely."""
+
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for char in expression:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            if depth > max_depth:
+                return False
+        elif char == ")":
+            depth -= 1
             if depth < 0:
-                encloses_all = False
-                break
-        if not encloses_all or depth != 0:
-            break
-        stripped = stripped[1:-1].strip()
-    return stripped
+                return False
+    return quote is None and depth == 0
 
 
 def _split_top_level_boolean_operator(expression: str, operator: str) -> list[str]:
     parts: list[str] = []
     depth = 0
+    quote: str | None = None
+    escaped = False
     start = 0
     index = 0
     pattern = re.compile(rf"\b{re.escape(operator)}\b")
     while index < len(expression):
         char = expression[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            continue
         if char == "(":
             depth += 1
             index += 1
