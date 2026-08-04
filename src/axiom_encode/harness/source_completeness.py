@@ -3311,6 +3311,7 @@ def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bo
         ) & _DEPENDENCY_COMPOUND_NOMINAL_TERMS and (
             not _dependency_token_is_plural_nominal(subject_tokens[-1])
             and _dependency_token_is_plural_nominal(predicate)
+            and not predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
         ):
             continue
         is_input_requirement = (

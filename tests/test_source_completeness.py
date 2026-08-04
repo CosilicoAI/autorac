@@ -3713,6 +3713,14 @@ rules: []
         "management procedures under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and NHTSA programs wage payment "
         "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program conditions "
+        "retention policies under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program limits payment "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program processes "
+        "payment rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA program rates payment "
+        "rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
