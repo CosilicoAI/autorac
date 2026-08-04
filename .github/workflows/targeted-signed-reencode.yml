@@ -365,6 +365,7 @@ jobs:
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
           RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
