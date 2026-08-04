@@ -429,16 +429,21 @@ _CONTEXTUAL_AUTHORITY_LANGUAGE = re.compile(
     r"(?:background|comparison|context|historical|history|illustration|"
     r"legislative\s+history|nonbinding\s+authority|orientation)|"
     r"(?:historical|legislative)\s+(?:background|context|history)|"
-    r"nonbinding\s+authority|for\s+(?:context|orientation)"
+    r"nonbinding\s+authority|for\s+(?:context|orientation)|"
+    r"(?:merely|only)\s+(?:illustrative|nonbinding)"
     r")\b",
     flags=re.IGNORECASE,
 )
 _COORDINATED_FINITE_CLAUSE = re.compile(
-    r",\s*(?:and|but|or|yet)\s+"
+    r"(?:,\s*)?\b(?:and|but|or|yet)\s+"
     r"(?:the\s+|a\s+|an\s+|this\s+|that\s+|these\s+|those\s+)?"
     r"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,8}\s+"
     r"(?:is|are|was|were|has|have|had|does|do|did|receives?|received|"
     r"depends?|requires?|uses?|includes?|applies?|governs?)\b",
+    flags=re.IGNORECASE,
+)
+_DEPENDENCY_CONTEXT_COORDINATION = re.compile(
+    r"(?:,\s*)?\b(?:and|but|or|while|whereas|yet)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -2195,13 +2200,18 @@ def _reason_dependency_occurrence_is_contextual(
     title = groups.get("title")
     section = groups.get("section")
     if title and section:
+        dependencies = _reason_dependencies(reason)
         for candidate in _qualified_usc_dependencies(reason):
-            if candidate.start() >= match.start():
-                break
-            if _usc_dependencies_match(candidate, match):
-                start, end = _reason_clause_bounds(reason, candidate)
-                if _CONTEXTUAL_AUTHORITY_LANGUAGE.search(reason[start:end]):
-                    return True
+            if _usc_dependencies_match(candidate, match) and (
+                _CONTEXTUAL_AUTHORITY_LANGUAGE.search(
+                    _reason_dependency_local_context(
+                        reason,
+                        candidate,
+                        dependencies=dependencies,
+                    )
+                )
+            ):
+                return True
 
     remainder = reason[match.end() :]
     stop = min(
@@ -2214,24 +2224,55 @@ def _reason_dependency_occurrence_is_contextual(
     )
     if stop < 0:
         return False
-    trailing_clauses = re.split(r"[.;\n]", remainder[stop + 1 :])
-    for trailing_clause in trailing_clauses:
-        dependencies = _qualified_usc_dependencies(trailing_clause)
-        if dependencies:
-            if (
-                title
-                and section
-                and any(
-                    _usc_dependencies_match(candidate, match)
-                    and _CONTEXTUAL_AUTHORITY_LANGUAGE.search(trailing_clause)
-                    for candidate in dependencies
-                )
-            ):
-                return True
-            return False
-        if _has_adversative_language(trailing_clause):
-            return True
-    return False
+    trailing_clause = re.split(r"[.;\n]", remainder[stop + 1 :], maxsplit=1)[0]
+    return bool(
+        not _reason_dependencies(trailing_clause)
+        and _has_adversative_language(trailing_clause)
+    )
+
+
+def _reason_dependencies(reason: str) -> list[re.Match[str]]:
+    return sorted(
+        (
+            *_qualified_usc_dependencies(reason),
+            *_PRECISE_DEFERRAL_DEPENDENCY.finditer(reason),
+        ),
+        key=lambda dependency: (dependency.start(), -dependency.end()),
+    )
+
+
+def _reason_dependency_local_context(
+    reason: str,
+    match: re.Match[str],
+    *,
+    dependencies: list[re.Match[str]],
+) -> str:
+    clause_start, clause_end = _reason_clause_bounds(reason, match)
+    previous_end = max(
+        (
+            dependency.end()
+            for dependency in dependencies
+            if clause_start <= dependency.start() and dependency.end() <= match.start()
+        ),
+        default=clause_start,
+    )
+    next_start = min(
+        (
+            dependency.start()
+            for dependency in dependencies
+            if match.end() <= dependency.start() < clause_end
+        ),
+        default=clause_end,
+    )
+    before = reason[previous_end : match.start()]
+    after = reason[match.end() : next_start]
+    preceding_coordinations = list(_DEPENDENCY_CONTEXT_COORDINATION.finditer(before))
+    if preceding_coordinations:
+        before = before[preceding_coordinations[-1].end() :]
+    following_coordination = _DEPENDENCY_CONTEXT_COORDINATION.search(after)
+    if following_coordination:
+        after = after[: following_coordination.start()]
+    return before + after
 
 
 def _usc_dependencies_match(left: re.Match[str], right: re.Match[str]) -> bool:
