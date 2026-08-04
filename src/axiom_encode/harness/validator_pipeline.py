@@ -1182,9 +1182,13 @@ _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN = re.compile(
     r"""(?=$|[\s,.;:)\]}\'"”’–—])""",
     re.IGNORECASE,
 )
-_STRUCTURAL_SOURCE_CODE_EDITION_PATTERN = re.compile(
-    r"\b(?:federal\s+)?Internal Revenue Code\s+of\s+(?:19|20)\d{2}\b",
-    re.IGNORECASE,
+_STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN = re.compile(
+    r"\b(?:"
+    r"(?i:(?:federal\s+)?Internal Revenue Code)|"
+    r"[A-Z][A-Za-z'-]*"
+    r"(?:\s+(?:[A-Z][A-Za-z'-]*|and|of|the|for|with|to|in)){0,10}"
+    r"\s+Act"
+    r")\s+of\s+(?:18|19|20)\d{2}\b"
 )
 _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET = (
     r"\d+[A-Za-z]?:\d+[A-Za-z]?-\d+[A-Za-z]?(?:\.\d+)*"
@@ -5032,7 +5036,7 @@ def _clean_source_text_for_numeric_extraction(text: str) -> str:
     cleaned = _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_FORM_LINE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN.sub(" ", cleaned)
-    cleaned = _STRUCTURAL_SOURCE_CODE_EDITION_PATTERN.sub(" ", cleaned)
+    cleaned = _STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_SECTION_PATTERN.sub(" ", cleaned)

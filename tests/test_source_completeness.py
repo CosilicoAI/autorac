@@ -5468,6 +5468,38 @@ def test_en_us_internal_revenue_code_edition_year_is_structural():
     assert [(item.value, item.raw) for item in inventory] == [(1986.0, "1986")]
 
 
+@pytest.mark.parametrize("profile", ("legacy", "en-US"))
+def test_named_act_year_is_structural_but_equal_amount_is_preserved(profile):
+    source = (
+        "The certification must conform to title VI of the Civil Rights Act of "
+        "1964, while a separate program has a 1964 dollar threshold."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile=profile,
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(1964.0, "1964")]
+
+
+@pytest.mark.parametrize("profile", ("legacy", "en-US"))
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A household qualifies when its category has a code of 2000.",
+        "A household qualifies based on an act of 2000.",
+    ),
+)
+def test_common_noun_act_or_code_year_remains_substantive(source, profile):
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile=profile,
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(2000.0, "2000")]
+
+
 def test_en_us_inline_legal_ordinal_is_structural_after_collapsed_heading():
     source = (
         "54A:4-7 New Jersey Earned Income Tax Credit program. "
