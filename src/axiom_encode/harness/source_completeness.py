@@ -616,6 +616,7 @@ _DEPENDENCY_DETERMINER_TERMS = frozenset(
         "a",
         "all",
         "an",
+        "another",
         "any",
         "both",
         "each",
@@ -626,10 +627,13 @@ _DEPENDENCY_DETERMINER_TERMS = frozenset(
         "his",
         "its",
         "many",
+        "more",
+        "most",
         "my",
         "neither",
         "no",
         "our",
+        "one",
         "several",
         "some",
         "that",
@@ -645,7 +649,7 @@ _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
     {"benefit", "limit", "process", "program", "rate", "record", "rule"}
 )
 _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS = frozenset(
-    {"limit", "process", "rate"}
+    {"condition", "limit", "process", "rate"}
 )
 _DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
 _DEPENDENCY_NUMBER_AMBIGUOUS_TERMS = frozenset({"data"})
@@ -656,13 +660,18 @@ _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS = frozenset(
     {
         "amendment",
         "benefit",
+        "blind",
         "cash",
         "child",
+        "drug",
         "earning",
         "elderly",
         "family",
         "household",
+        "immigrant",
         "medical",
+        "noncitizen",
+        "parent",
         "payment",
         "policy",
         "premium",
@@ -3094,15 +3103,15 @@ def _actor_acronym_sequence_starts_finite_clause(tokens: list[str]) -> bool:
 
 
 def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
+    recognized_actor_end = _legal_actor_acronym_sequence_end(tokens)
     if (
         len(tokens) < 3
+        or (recognized_actor_end is not None and recognized_actor_end > 1)
         or not re.fullmatch(r"[A-Za-z]{2,8}", tokens[0])
         or _dependency_token_forms(tokens[0]) & _DEPENDENCY_MODIFIER_TERMS
     ):
         return False
     if _actor_nominal_object_is_bounded(tokens, actor_end=1):
-        return False
-    if not _dependency_predicate_object_is_bounded(tokens[2:]):
         return False
     return True
 
@@ -3134,15 +3143,16 @@ def _actor_nominal_object_is_bounded(
     actor_end: int,
 ) -> bool:
     object_tokens = tokens[actor_end:]
+    predicate_forms = _dependency_token_forms(object_tokens[0])
     if (
         len(object_tokens) < 2
         or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
+        or predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
         or any(
             token.lower() in _DEPENDENCY_DETERMINER_TERMS for token in object_tokens[1:]
         )
     ):
         return False
-    predicate_forms = _dependency_token_forms(object_tokens[0])
     if (
         len(object_tokens) >= 3
         and predicate_forms & _DEPENDENCY_MODIFIER_TERMS
@@ -3197,13 +3207,6 @@ def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
             )
         )
     )
-
-
-def _dependency_predicate_object_is_bounded(tokens: list[str]) -> bool:
-    object_tokens = list(tokens)
-    while object_tokens and object_tokens[0].lower() in _DEPENDENCY_DETERMINER_TERMS:
-        object_tokens = object_tokens[1:]
-    return _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
 
 
 def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:

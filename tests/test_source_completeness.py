@@ -3595,6 +3595,30 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and NHTSA rates all programs "
         "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA oversaw enforcement "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA sought approval under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS saw violations under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processed applications "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA administers approval "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records another policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA limits one benefit "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processes most records "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rates more programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA conditions eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA conditions program "
+        "eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA and BIA condition "
+        "eligibility under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3693,6 +3717,11 @@ rules: []
         "SSI child eligibility",
         "Medicare premium rules",
         "Medicaid spenddown eligibility",
+        "SNAP noncitizen eligibility",
+        "SNAP immigrant eligibility",
+        "Medicare drug rules",
+        "Medicaid parent eligibility",
+        "SSI blind eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
