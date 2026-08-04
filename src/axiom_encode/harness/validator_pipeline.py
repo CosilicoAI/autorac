@@ -11457,11 +11457,58 @@ def _formula_is_syntactically_unsatisfiable_false(formula: str) -> bool:
     normalized = _strip_balanced_outer_parentheses(normalized)
     if normalized == "false":
         return True
+    literal_comparison = _literal_comparison_truth_value(normalized)
+    if literal_comparison is not None:
+        return not literal_comparison
     conjuncts = _split_top_level_boolean_operator(normalized, "and")
     return len(conjuncts) > 1 and any(
         _formula_is_syntactically_unsatisfiable_false(conjunct)
         for conjunct in conjuncts
     )
+
+
+def _literal_comparison_truth_value(expression: str) -> bool | None:
+    """Evaluate a side-effect-free comparison whose operands are literals."""
+
+    try:
+        parsed = ast.parse(expression, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(parsed, ast.Compare):
+        return None
+
+    operands = (parsed.left, *parsed.comparators)
+    values: list[bool | int | float | str | None] = []
+    for operand in operands:
+        try:
+            value = ast.literal_eval(operand)
+        except (ValueError, SyntaxError):
+            return None
+        if not isinstance(value, (bool, int, float, str, type(None))):
+            return None
+        values.append(value)
+
+    results: list[bool] = []
+    for left, operation, right in zip(values, parsed.ops, values[1:]):
+        try:
+            if isinstance(operation, ast.Eq):
+                result = left == right
+            elif isinstance(operation, ast.NotEq):
+                result = left != right
+            elif isinstance(operation, ast.Lt):
+                result = left < right
+            elif isinstance(operation, ast.LtE):
+                result = left <= right
+            elif isinstance(operation, ast.Gt):
+                result = left > right
+            elif isinstance(operation, ast.GtE):
+                result = left >= right
+            else:
+                return None
+        except TypeError:
+            return None
+        results.append(result)
+    return all(results)
 
 
 def _strip_balanced_outer_parentheses(expression: str) -> str:

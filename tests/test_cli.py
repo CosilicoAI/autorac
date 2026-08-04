@@ -27844,6 +27844,55 @@ rules:
             "us-co:regulations/10-ccr-2506-1/4.801.43#voluntary_payment_reactivates_terminated_claim": "not_holds"
         }
 
+    def test_judgment_positive_test_repair_skips_false_literal_comparison(
+        self, tmp_path
+    ):
+        repo_path = _canonical_rulespec_content_root(tmp_path, "us-nj")
+        rules_file = repo_path / "statutes" / "54a" / "4-7.yaml"
+        test_file = repo_path / "statutes" / "54a" / "4-7.test.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Year
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 1 == 0
+"""
+        )
+        test_file.write_text(
+            """- name: subsection_f_does_not_apply
+  period: 2026
+  input: {}
+  output:
+    us-nj:statutes/54a/4-7#subsection_f_applies: not_holds
+"""
+        )
+
+        repaired = _append_generated_judgment_positive_tests_if_missing(
+            rules_file=rules_file,
+            test_file=test_file,
+            repo_path=repo_path,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            relative_output=Path("statutes/54a/4-7.yaml"),
+            issues=[
+                "Judgment rule missing positive companion output coverage: "
+                "`us-nj:statutes/54a/4-7#subsection_f_applies` is not asserted "
+                "as `holds` by the companion `.test.yaml` file."
+            ],
+        )
+
+        assert repaired == []
+        test_payload = yaml.safe_load(test_file.read_text())
+        assert len(test_payload) == 1
+        assert test_payload[0]["output"] == {
+            "us-nj:statutes/54a/4-7#subsection_f_applies": "not_holds"
+        }
+
     def test_judgment_positive_test_repair_synthesizes_formula_inputs(self, tmp_path):
         repo_path = tmp_path / "rulespec-us" / "us"
         rules_file = repo_path / "statutes" / "26" / "3303.yaml"

@@ -2567,6 +2567,84 @@ rules:
     assert issues == []
 
 
+def test_judgment_positive_companion_output_allows_false_literal_comparison(
+    tmp_path,
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
+    rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = """format: rulespec/v1
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Year
+    source: N.J.S.54A:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 1 == 0
+"""
+    cases = [
+        {
+            "name": "subsection_f_does_not_apply",
+            "period": "2026",
+            "input": {},
+            "output": {"us-nj:statutes/54a/4-7#subsection_f_applies": "not_holds"},
+        }
+    ]
+
+    issues = find_judgment_positive_companion_output_issues(
+        content,
+        cases,
+        rules_file=rules_file,
+        policy_repo_path=policy_repo,
+    )
+
+    assert issues == []
+
+
+def test_judgment_positive_companion_output_requires_positive_for_true_literal_comparison(
+    tmp_path,
+):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
+    rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
+    rules_file.parent.mkdir(parents=True)
+    content = """format: rulespec/v1
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    entity: Person
+    dtype: Judgment
+    period: Year
+    source: N.J.S.54A:4-7
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 1 == 1
+"""
+    cases = [
+        {
+            "name": "incorrect_negative_only_case",
+            "period": "2026",
+            "input": {},
+            "output": {"us-nj:statutes/54a/4-7#subsection_f_applies": "not_holds"},
+        }
+    ]
+
+    issues = find_judgment_positive_companion_output_issues(
+        content,
+        cases,
+        rules_file=rules_file,
+        policy_repo_path=policy_repo,
+    )
+
+    assert issues == [
+        "Judgment rule missing positive companion output coverage: "
+        "`us-nj:statutes/54a/4-7#subsection_f_applies` is not asserted as "
+        "`holds` by the companion `.test.yaml` file."
+    ]
+
+
 def test_synthetic_source_authorized_input_rejected_for_prohibition():
     content = """format: rulespec/v1
 rules:
