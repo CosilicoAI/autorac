@@ -8238,17 +8238,7 @@ rules:
 
 
 def test_multiline_direct_formula_returns_every_boolean_selector_name():
-    rule = {
-        "versions": [
-            {
-                "formula": (
-                    "eligible\n"
-                    "and resident\n"
-                    "and not disqualified"
-                )
-            }
-        ]
-    }
+    rule = {"versions": [{"formula": ("eligible\nand resident\nand not disqualified")}]}
 
     assert completeness_module._rule_exception_selector_names(rule) == {
         "eligible",
@@ -8330,12 +8320,8 @@ def test_positive_eligibility_condition_requires_enabling_effect():
     source = """\
 (1) The claimant shall be eligible if the claimant is ineligible due to age.
 """
-    correct = _exception_control_content(
-        "if ineligible_due_to_age: true else: false"
-    )
-    wrong = _exception_control_content(
-        "if ineligible_due_to_age: false else: true"
-    )
+    correct = _exception_control_content("if ineligible_due_to_age: true else: false")
+    wrong = _exception_control_content("if ineligible_due_to_age: false else: true")
     correct_cases = [
         {
             "name": "ordinary",
@@ -8382,6 +8368,30 @@ def test_positive_eligibility_condition_requires_enabling_effect():
 def test_enabling_effect_is_independent_of_proposition_order(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == (
         "enable"
+    )
+
+
+def test_preposed_german_negative_condition_enables_positive_result():
+    source = """\
+(1) Wenn der Antragsteller nicht berechtigt ist, ist er ausnahmsweise berechtigt.
+"""
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The claimant is not allowed if a disqualification applies.",
+        "(1) The claimant is not qualified when a disqualification applies.",
+        "(1) The claimant is not entitled if a disqualification applies.",
+    ],
+)
+def test_explicit_negative_eligibility_condition_is_excluding(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "exclude"
     )
 
 
@@ -8441,9 +8451,7 @@ def test_non_toggleable_cross_reference_does_not_require_paired_cases(
     ],
 )
 def test_formal_cross_reference_does_not_require_synthetic_toggle(source: str):
-    assert not completeness_module._source_exception_requires_paired_witness(
-        source
-    )
+    assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
 @pytest.mark.parametrize(
@@ -8488,6 +8496,24 @@ rules:
     assert _has_issue(result, "non-applicability", "tests") is expected_issue
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The provisions of section 5 shall not apply.",
+        "(1) The requirements of section 5 shall not apply.",
+        "(1) The limitations under subsection (b) shall not apply.",
+        "(1) The preceding sentence shall not apply.",
+        "(1) Subsections (a) and (b) shall not apply.",
+        "(1) Subsections (a), (b), and (c) shall not apply.",
+        "(1) Section 5 of this title shall not apply.",
+        "(1) Paragraphs (1) through (3) shall not apply.",
+    ],
+)
+def test_unconditional_legal_reference_subject_is_recognized(source: str):
+    assert completeness_module._source_unconditional_nonapplicability(source)
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
 def test_german_unconditional_nonapplicability_requires_false_output():
     source = "(1) Absatz 2 findet keine Anwendung."
     content = """\
@@ -8520,6 +8546,183 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit shall not apply to nonresidents.",
+        "(1) The credit shall not apply after December 31.",
+        "(1) The credit shall not apply for taxpayers with income over 100.",
+        "(1) The credit shall not apply until the claimant reaches age 65.",
+        "(1) The credit shall not apply while the claimant is incarcerated.",
+        "(1) The credit shall not apply on a joint return.",
+        "(1) The credit shall not apply in respect of foreign income.",
+        "(1) The credit shall not apply under subsection (b).",
+        "(1) The credit shall not apply in taxable years ending in 2025.",
+        "(1) The credit shall not apply whenever the claimant is married.",
+        "(1) After December 31, the credit shall not apply.",
+        "(1) After December 31 the credit shall not apply.",
+        "(1) Taxpayers earning more than 100 dollars are not eligible.",
+        "(1) Credits exceeding 100 shall not apply.",
+        "(1) Credits claimed by nonresidents shall not apply.",
+        "(1) Individuals aged 65 or older are not eligible.",
+        "(1) The married taxpayers are not eligible.",
+        "(1) The nonresident taxpayer is not eligible.",
+        "(1) The taxpayer, a nonresident, is not eligible.",
+        "(1) Der Anspruch gilt für Nichtansässige nicht.",
+    ],
+)
+def test_scoped_nonapplicability_is_not_treated_as_unconditional(source: str):
+    assert not completeness_module._source_unconditional_nonapplicability(source)
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to income restrictions.",
+        "(1) The credit is subject to residency restrictions.",
+        "(1) The credit is subject to restrictions on married taxpayers.",
+    ],
+)
+def test_local_restrictions_are_not_treated_as_formal_cross_references(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to this chapter.",
+        "(1) The credit is subject to chapter 5.",
+        "(1) The credit is subject to title 54A.",
+        "(1) The credit is subject to the provisions of chapter 5.",
+        "(1) The credit is subject to the provisions of title 54A.",
+        "(1) The credit is subject to this article.",
+        "(1) The credit is subject to Article IV.",
+        "(1) The credit is subject to this part.",
+        "(1) The credit is subject to Part II.",
+        "(1) The credit is subject to subchapter B.",
+        "(1) The credit is subject to subtitle A.",
+        "(1) The credit is subject to division 2.",
+        "(1) The credit is subject to the provisions of Article IV.",
+        (
+            "(1) The credit is subject to the restrictions of this subsection "
+            "and subsections b., c., d. and e. of this section."
+        ),
+        (
+            "(1) The credit is subject to all provisions of N.J.S.54A:1-1 et "
+            "seq., except as may be otherwise specifically provided in "
+            "P.L.2000, c.80 (C.54A:4-6 et al.)."
+        ),
+    ],
+)
+def test_direct_chapter_and_title_cross_references_are_formal(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        ("(1) The credit is subject to section 5 and the claimant must be a resident."),
+        "(1) The credit is subject to section 5 and residency restrictions.",
+        ("(1) The credit is subject to chapter 5, but only for married taxpayers."),
+        (
+            "(1) The credit is subject to the provisions of chapter 5 and an "
+            "income limit."
+        ),
+        ("(1) The credit is subject to section 5, the claimant must be a resident."),
+        ("(1) The credit is subject to section 5; the claimant must be a resident."),
+        "(1) The credit is subject to section 5 with an income limit.",
+        "(1) The credit is subject to section 5 for married taxpayers.",
+        (
+            "(1) The credit is subject to section 5 as modified by residency "
+            "requirements."
+        ),
+        "(1) The credit is subject to section 5 or residency restrictions.",
+        "(1) The credit is subject to section 5 except for nonresidents.",
+    ],
+)
+def test_mixed_reference_and_local_condition_requires_paired_evidence(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "part time employment",
+        "division of income",
+        "title requirements",
+        "article requirements",
+        "section eligibility rules",
+        "part ownership",
+    ],
+)
+def test_ordinary_language_is_not_a_formal_structural_reference(text: str):
+    assert not completeness_module._source_has_formal_cross_reference(text)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit applies except as otherwise provided.",
+        "(1) The credit applies except as may otherwise be provided.",
+        "(1) The credit applies except as may be provided.",
+        "(1) The credit applies except as provided by law.",
+    ],
+)
+def test_terminal_boilerplate_reservation_does_not_require_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Except as otherwise provided, the credit applies.",
+        "(1) Except as may otherwise be provided by law, the credit applies.",
+        "(1) Except as provided in section 5, the credit applies.",
+        "(1) Subject to section 5, the credit applies.",
+        "(1) Subject to the provisions of this chapter, the credit applies.",
+        "(1) Vorbehaltlich § 5 gilt der Anspruch.",
+        "(1) Subject to section 5, a credit applies.",
+        "(1) Subject to section 5, such credit applies.",
+        "(1) Subject to section 5, the tax credit applies.",
+        ("(1) Subject to section 5, the state earned income tax credit applies."),
+        ("(1) Subject to section 5, the federal earned income tax credit applies."),
+        "(1) Subject to section 5, the claimant is eligible.",
+        "(1) Subject to section 5, the deduction is allowed.",
+        "(1) Except as provided in section 5, a benefit is available.",
+        "(1) Vorbehaltlich § 5 besteht der Anspruch.",
+    ],
+)
+def test_preposed_reference_reservation_does_not_require_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Subject to section 5, but only for married taxpayers, "
+            "the credit applies."
+        ),
+        "(1) Subject to section 5, the claimant must be a resident.",
+        ("(1) Subject to section 5 and residency restrictions, the credit applies."),
+        ("(1) Except as provided in section 5, the credit applies only to residents."),
+        "(1) Subject to section 5, the credit applies if income is low.",
+        "(1) Subject to section 5, the credit applies to residents.",
+        "(1) Subject to section 5, the credit applies only when married.",
+        "(1) Subject to section 5, if eligible the credit applies.",
+        "(1) Subject to section 5, when eligible the credit applies.",
+        "(1) Subject to section 5, if resident the benefit is available.",
+        "(1) Subject to section 5, while eligible the credit applies.",
+        "(1) Subject to section 5, once eligible the credit applies.",
+        "(1) Subject to section 5, assuming eligibility the credit applies.",
+        "(1) Subject to section 5, the resident-only credit applies.",
+    ],
+)
+def test_preposed_reference_with_local_condition_requires_toggle(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
 
 
 def test_one_false_case_cannot_cover_two_unconditional_obligations():

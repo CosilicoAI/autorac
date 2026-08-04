@@ -6468,27 +6468,32 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
         r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
         collapsed,
         flags=re.IGNORECASE,
-    ):
+    ) and _source_reference_reservation_is_only_references(collapsed):
         return False
-    if (
-        _NEGATIVE_NONAPPLICABILITY_LANGUAGE.search(collapsed)
-        and _LOCAL_CONDITION_LANGUAGE.search(collapsed) is None
-    ):
+    if _source_unconditional_nonapplicability(collapsed):
         return False
     if re.search(
         r"\b(?:subject\s+to|vorbehaltlich)\b",
         collapsed,
         flags=re.IGNORECASE,
-    ) and _source_has_formal_cross_reference(collapsed):
+    ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
 
 
 def _source_has_formal_cross_reference(text: str) -> bool:
+    target = (
+        r"(?:chapter|title|article|part|subchapter|subtitle|division|section|"
+        r"subsection|paragraph|act|law|code|gesetz|absatz|absätze)"
+    )
+    label = r"(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|[IVXLCDM]+)"
+    deictic = r"(?:this|that|the|these|those|dies(?:e[rmns]?))"
     if re.search(
-        r"\b(?:all\s+)?(?:provisions?|restrictions?|subsections?|paragraphs?|"
-        r"sections?|chapters?|vorschriften?|bestimmungen?|absätze?|paragraphen?)"
-        r"\b|§",
+        r"\b(?:all\s+)?(?:provisions?|restrictions?|vorschriften?|bestimmungen?)"
+        rf"\s+(?:of|in|under|nach|gemäß)\s+(?:{deictic}\s+{target}"
+        rf"(?:\s+{label})?|{target}\s+{label})(?=\W|$)|"
+        rf"\b{deictic}\s+{target}\b|"
+        rf"\b{target}\s+{label}(?=\W|$)|§",
         text,
         flags=re.IGNORECASE,
     ):
@@ -6516,12 +6521,213 @@ def _source_has_formal_cross_reference(text: str) -> bool:
     )
 
 
-def _source_unconditional_nonapplicability(text: str) -> bool:
-    collapsed = _collapse_text(text)
-    return bool(
-        _NEGATIVE_NONAPPLICABILITY_LANGUAGE.search(collapsed)
-        and _LOCAL_CONDITION_LANGUAGE.search(collapsed) is None
+def _source_is_simple_main_proposition(text: str) -> bool:
+    proposition = text.strip(" \t,;:.")
+    determiner = r"(?:(?:a|an|the|this|that|such)\s+)?"
+    program_modifier = (
+        r"(?:(?:income|earned|child|dependent|property|sales|use|tax|"
+        r"refundable|nonrefundable|standard|itemized|personal|business|"
+        r"corporate|individual|state|federal|local|earned-income|child-tax|"
+        r"income-tax|property-tax|sales-tax|use-tax)\s+)"
     )
+    program_subject = (
+        rf"(?:{program_modifier})*"
+        r"(?:credit|claim|benefit|deduction|exemption|allowance|provision|"
+        r"section|subsection|paragraph|rule)"
+    )
+    program_predicate = (
+        r"(?:applies|shall\s+apply|is\s+applicable|is\s+allowed|is\s+available)"
+    )
+    eligible_subject = r"(?:claimant|taxpayer|person|individual)"
+    german_subject = r"(?:der|die|das)\s+(?:anspruch|leistung|regel|vorschrift)"
+    return bool(
+        re.fullmatch(
+            rf"(?:{determiner}{program_subject}\s+{program_predicate}|"
+            rf"{determiner}{eligible_subject}\s+is\s+eligible|"
+            rf"{german_subject}\s+(?:gilt|besteht)|"
+            rf"(?:gilt|besteht)\s+{german_subject})",
+            proposition,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_reference_reservation_is_only_references(text: str) -> bool:
+    clause = _strip_source_clause_marker(_collapse_text(text)).strip()
+    marker = re.search(
+        r"\b(?P<marker>subject\s+to|vorbehaltlich|except\s+as)\b",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if marker is None:
+        return False
+    complement = clause[marker.end() :].strip(" \t,;:.")
+    if marker.start() == 0:
+        tail = clause[marker.end() :]
+        delimiter = re.search(r"[,;]", tail)
+        if delimiter is not None and _source_is_simple_main_proposition(
+            tail[delimiter.end() :]
+        ):
+            complement = tail[: delimiter.start()].strip(" \t,;:.")
+        elif delimiter is None:
+            for proposition_start in re.finditer(
+                r"\b(?:a|an|the|this|that|such|der|die|das|gilt|besteht)\b",
+                tail,
+                flags=re.IGNORECASE,
+            ):
+                if _source_is_simple_main_proposition(
+                    tail[proposition_start.start() :]
+                ):
+                    complement = tail[: proposition_start.start()].strip(" \t,;:.")
+                    break
+    if marker.group("marker").lower().startswith("except") and re.fullmatch(
+        r"(?:(?:may|might)\s+)?(?:otherwise\s+)?(?:specifically\s+)?"
+        r"(?:be\s+)?provided(?:\s+by\s+law)?",
+        complement,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if not _source_has_formal_cross_reference(complement):
+        return False
+    target = (
+        r"(?:chapters?|titles?|articles?|parts?|subchapters?|subtitles?|"
+        r"divisions?|sections?|subsections?|paragraphs?|acts?|laws?|codes?|"
+        r"gesetz|absatz|absätze)"
+    )
+    label = r"(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|[IVXLCDM]+)"
+    deictic = r"(?:this|that|the|these|those|dies(?:e[rmns]?))"
+    remainder = complement
+    for pattern in (
+        _GERMAN_LEGAL_CITATION,
+        _ENGLISH_LEGAL_CITATION,
+        _STRUCTURAL_REFERENCE,
+    ):
+        remainder = pattern.sub(" ", remainder)
+    for pattern in (
+        rf"\b{deictic}\s+{target}(?:\s+{label})?\b",
+        rf"\b{target}\s+{label}(?=\W|$)",
+        r"\b\d+\s+U\.?\s*S\.?\s*C\.?\s*(?:§|s\.)?\s*\d+[a-z0-9.-]*\b",
+    ):
+        remainder = re.sub(pattern, " ", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(
+        r"\b[A-Z][A-Z.]{1,8}\s*\d+[A-Za-z0-9:.-]*",
+        " ",
+        remainder,
+    )
+    allowed_words = (
+        r"all|the|this|that|these|those|provisions?|restrictions?|"
+        r"modifications?|requirements?|limitations?|of|in|under|and|or|except|"
+        r"as|may|might|be|otherwise|specifically|provided|by|law|code|act|et|al|"
+        r"seq|chapters?|titles?|articles?|parts?|subchapters?|subtitles?|"
+        r"divisions?|sections?|subsections?|paragraphs?|vorschriften?|"
+        r"bestimmungen?|dies(?:e[rmns]?)|gemäß|nach|und|oder|gesetz|absatz|absätze"
+    )
+    remainder = re.sub(
+        rf"\b(?:{allowed_words})\b",
+        " ",
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    remainder = re.sub(
+        r"(?<![A-Za-z0-9])(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|"
+        r"[IVXLCDM]+)(?![A-Za-z0-9])",
+        " ",
+        remainder,
+    )
+    return re.fullmatch(r"[\s.,;:()§'/-]*", remainder) is not None
+
+
+def _source_unconditional_nonapplicability(text: str) -> bool:
+    clause = _strip_source_clause_marker(_collapse_text(text)).strip()
+    clause = re.sub(
+        r"^provided\s+however\s*,?\s+(?:that\s+)?",
+        "",
+        clause,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    negative_matches = tuple(_NEGATIVE_NONAPPLICABILITY_LANGUAGE.finditer(clause))
+    if not negative_matches:
+        return False
+    negative = negative_matches[-1]
+    if (
+        re.match(r"gilt\b", negative.group(0), flags=re.IGNORECASE)
+        and re.fullmatch(
+            r"gilt\s+nicht",
+            negative.group(0),
+            flags=re.IGNORECASE,
+        )
+        is None
+    ):
+        return False
+    if clause[negative.end() :].strip(" \t,;:."):
+        return False
+    subject = clause[: negative.start()].strip(" \t,;:")
+    return _source_is_unconditional_subject(subject)
+
+
+def _source_is_unconditional_subject(text: str) -> bool:
+    """Accept only bare subjects or explicit legal-reference noun phrases."""
+
+    subject = re.sub(
+        r"^(?:the|this|that|such|der|die|das|dies(?:e[rmns]?))\s+",
+        "",
+        text.strip(),
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    bare_subjects = (
+        r"claimants?|persons?|individuals?|taxpayers?|residents?|claims?|credits?|"
+        r"benefits?|payments?|deductions?|exemptions?|rules?|anspr(?:uch|üche)|"
+        r"leistungen?|regeln?"
+    )
+    if re.fullmatch(bare_subjects, subject, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(
+        r"(?:preceding|previous|following|vorherige[rmns]?|folgende[rmns]?)\s+"
+        r"(?:sentence|paragraph|clause|satz|absatz)",
+        subject,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    reference_head = (
+        r"provisions?|requirements?|limitations?|subsections?|sections?|"
+        r"paragraphs?|clauses?|sentences?|chapters?|titles?|articles?|parts?|"
+        r"subchapters?|subtitles?|divisions?|absatz|absätze|satz|sätze|nummern?"
+    )
+    head = re.match(rf"^(?P<head>{reference_head})\b", subject, flags=re.IGNORECASE)
+    if head is None:
+        return False
+    tail = subject[head.end() :].strip()
+    if not tail:
+        return True
+    reference_split = re.fullmatch(
+        r"(?:(?P<labels>.*?)\s+)?(?:of|under|des|der)\s+(?P<reference>.+)",
+        tail,
+        flags=re.IGNORECASE,
+    )
+    if reference_split is not None:
+        labels = (reference_split.group("labels") or "").strip()
+        return (
+            not labels or _source_reference_labels_are_structural(labels)
+        ) and _source_has_formal_cross_reference(reference_split.group("reference"))
+    return _source_reference_labels_are_structural(tail)
+
+
+def _source_reference_labels_are_structural(text: str) -> bool:
+    if re.fullmatch(r"[A-Za-z0-9()., -]+", text) is None:
+        return False
+    connectors = {"and", "or", "through", "to", "und", "oder", "bis"}
+    for token in re.findall(r"[A-Za-z0-9]+", text):
+        if (
+            token.lower() in connectors
+            or len(token) == 1
+            or any(character.isdigit() for character in token)
+            or re.fullmatch(r"[IVXLCDM]+", token) is not None
+        ):
+            continue
+        return False
+    return True
 
 
 def _source_rounding_obligations(
@@ -6817,6 +7023,18 @@ def _source_exception_effect_requirement(text: str) -> str:
         ):
             return "enable"
         if (
+            negative_proposition
+            and not positive_proposition
+            and re.fullmatch(
+                r"(?:if|when|wenn|falls|sofern|soweit|"
+                r"vorausgesetzt\s*,?\s*dass|"
+                r"unter\s+der\s+voraussetzung\s*,?\s+dass)",
+                cue,
+                flags=re.IGNORECASE,
+            )
+        ):
+            return "exclude"
+        if (
             not negative_proposition
             and not positive_proposition
             and re.fullmatch(
@@ -6892,7 +7110,8 @@ def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
             r"\b(?:shall|is|are|will|may)\s+be\s+"
             r"(?:eligible|qualified|allowed|entitled)\b|"
             r"\b(?:is|are)\s+(?:eligible|qualified|allowed|entitled)\b|"
-            r"\b(?:claim|credit|benefit|provision)\s+applies\b",
+            r"\b(?:claim|credit|benefit|provision)\s+applies\b|"
+            r"\b(?:ist|sind|wird|werden)\s+(?:\w+\s+){0,2}berechtigt\b",
             text,
             flags=re.IGNORECASE,
         )
@@ -6904,7 +7123,8 @@ def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
         re.finditer(
             r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
             r"allowed|entitled)\b|"
-            r"\b(?:ineligible|excluded|disqualified|unqualified)\b",
+            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\bnicht\s+berechtigt\b",
             text,
             flags=re.IGNORECASE,
         )
