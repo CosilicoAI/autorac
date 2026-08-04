@@ -484,6 +484,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "assistance",
         "benefit",
         "calendar",
+        "calculation",
         "classification",
         "condition",
         "criteria",
@@ -501,6 +502,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "information",
         "input",
         "limit",
+        "management",
         "notice",
         "plan",
         "policy",
@@ -508,6 +510,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "process",
         "procedure",
         "program",
+        "administration",
         "rate",
         "receipt",
         "record",
@@ -562,14 +565,23 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
 }
 _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
     {
+        "administered",
+        "applied",
+        "approved",
         "available",
+        "authorized",
+        "awarded",
+        "calculated",
         "cited",
         "defined",
         "described",
         "eligible",
+        "established",
         "furnished",
-        "applied",
+        "issued",
+        "paid",
         "payable",
+        "promulgated",
         "provided",
         "received",
         "referenced",
@@ -595,6 +607,13 @@ _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
     {"benefit", "limit", "process", "program", "rate", "record", "rule"}
 )
 _DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
+_DEPENDENCY_NUMBER_AMBIGUOUS_TERMS = frozenset({"data"})
+_DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS = frozenset(
+    {"cost", "cut", "hit", "input", "put", "read", "set", "spread"}
+)
+_DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
+    {"administration", "calculation", "management", "payment"}
+)
 _LEGAL_ACTOR_HEAD_TERMS = frozenset(
     {
         "administrator",
@@ -2837,9 +2856,16 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
             continue
         predicate = tokens[subject_end]
         trailing_object = tokens[subject_end + 1 :]
+        if predicate.lower() in _DEPENDENCY_COMPOUND_NOMINAL_TERMS:
+            continue
         if trailing_object:
             if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
                 continue
+            if (
+                subject_is_actor
+                and predicate.lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
+            ):
+                return True
         elif not (
             subject_is_actor
             and _dependency_token_forms(predicate)
@@ -2879,6 +2905,13 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
         r"(?:the\s+)?Office\s+of\s+(?:[A-Z][A-Za-z-]*\s*){1,6}"
         r"(?:and\s+(?:[A-Z][A-Za-z-]*\s*){1,3})?",
         phrase,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?:the\s+)?offices?\s+of\s+"
+        r"(?:management\s+and\s+budget|personnel\s+management)",
+        phrase,
+        flags=re.IGNORECASE,
     ):
         return True
     return bool(
@@ -2930,6 +2963,8 @@ def _dependency_subject_and_predicate_agree(
     predicate_token: str,
 ) -> bool:
     subject = subject_token.lower()
+    if subject in _DEPENDENCY_NUMBER_AMBIGUOUS_TERMS:
+        return True
     subject_is_plural = subject in _DEPENDENCY_IRREGULAR_PLURAL_TERMS or any(
         candidate in _DEPENDENCY_SUBJECT_TERMS or candidate in _LEGAL_ACTOR_HEAD_TERMS
         for candidate in _dependency_token_forms(subject) - {subject}
