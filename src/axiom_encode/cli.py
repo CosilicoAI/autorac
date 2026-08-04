@@ -25701,7 +25701,7 @@ def _legacy_metadata_reconciliation_bytes(
         after, count = _remove_index_module_records(before, old_modules=old_modules)
         if count != sum(module_counts[module] for module in old_modules):
             raise ValueError("legacy provision index removal count is inconsistent")
-        rewritten = (json.dumps(after, indent=2, ensure_ascii=True) + "\n").encode()
+        rewritten = (json.dumps(after, indent=2, ensure_ascii=False) + "\n").encode()
         operations = ({"operation": "remove_legacy_module_records", "count": count},)
     elif path == Path(".axiom/pending-validation-fingerprints.json"):
         try:
