@@ -1080,6 +1080,7 @@ jobs:
 
           checkpoint_signed_changes() {
             local message="$1"
+            set +e
             /opt/axiom-verification/axiom-encode-signing-supervisor \
               --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
               --trusted-python-runtime-root /opt/axiom-verification/python \
@@ -1090,6 +1091,14 @@ jobs:
               --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
               --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
               --json > "$RUNNER_TEMP/checkpoint-guard-generated.json"
+            local guard_status="$?"
+            set -e
+            if [ "$guard_status" -ne 0 ]; then
+              if ! jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2; then
+                echo "checkpoint provenance guard returned malformed diagnostics" >&2
+              fi
+              return "$guard_status"
+            fi
             git -C "$RULESPEC_CHECKOUT" diff --check
             "$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"
             git -C "$RULESPEC_CHECKOUT" \
@@ -2392,7 +2401,7 @@ jobs:
           mkdir -p "$artifact"
           /opt/axiom-verification/python/bin/python -I - \
             "$generated" "$artifact" \
-            "$RUNNER_TEMP/guard-generated.json" <<'PY'
+            "$RUNNER_TEMP" <<'PY'
           import hashlib
           import json
           import os
@@ -2407,7 +2416,7 @@ jobs:
 
           generated = Path(os.path.abspath(sys.argv[1]))
           artifact = Path(os.path.abspath(sys.argv[2]))
-          guard_generated = Path(os.path.abspath(sys.argv[3]))
+          guard_root = Path(os.path.abspath(sys.argv[3]))
           allowed_suffixes = {".json", ".log", ".txt", ".yaml", ".yml"}
           max_entries = 4096
           max_files = 1024
@@ -2471,10 +2480,20 @@ jobs:
                           }
                       )
 
-          if guard_generated.exists() or guard_generated.is_symlink():
+          guard_candidates = [
+              guard_root / "guard-generated.json",
+              guard_root / "checkpoint-guard-generated.json",
+              *[
+                  guard_root / f"source-{index:02d}-guard-generated.json"
+                  for index in range(1, 17)
+              ],
+          ]
+          for guard_generated in guard_candidates:
+              if not guard_generated.exists() and not guard_generated.is_symlink():
+                  continue
               try:
                   guard_payload = read_bounded_regular_file(
-                      guard_generated.parent,
+                      guard_root,
                       guard_generated,
                       label="generated provenance guard diagnostics",
                       max_bytes=1024 * 1024,
@@ -2498,7 +2517,9 @@ jobs:
                   raise SystemExit(
                       "generated provenance guard diagnostics have invalid shape"
                   )
-              (artifact / "guard-generated.json").write_bytes(guard_payload)
+              guard_destination = artifact / "guards" / guard_generated.name
+              guard_destination.parent.mkdir(parents=True, exist_ok=True)
+              guard_destination.write_bytes(guard_payload)
 
           inventory.sort(key=lambda item: item["path"])
           step_env_prefixes = {
