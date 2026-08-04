@@ -2365,10 +2365,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert guard_step["id"] == "verify_generated_provenance"
     assert "guard-generated" in guard_step["run"]
-    assert 'guard_ref_args+=(--base-ref "$RULESPEC_REF")' in guard_step["run"]
-    assert (
-        "jq -e 'length > 0' \"$RUNNER_TEMP/source-bundle.json\"" in (guard_step["run"])
-    )
+    assert '--base-ref "$RULESPEC_REF"' in guard_step["run"]
+    assert "guard_ref_args" not in guard_step["run"]
+    assert 'guard_status="$?"' in guard_step["run"]
+    assert 'jq . "$RUNNER_TEMP/guard-generated.json" >&2' in guard_step["run"]
 
     secret_steps = [
         step
@@ -2457,6 +2457,16 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     (generated / "statutes/54a:4-7.test.yaml").write_text("format: rulespec/v1\n")
     (generated / "target.repair.json").write_text('{"outcome": "blocked"}\n')
     (generated / "ignored.bin").write_bytes(b"not diagnostic output")
+    (tmp_path / "guard-generated.json").write_text(
+        json.dumps(
+            {
+                "repo": "/runner/rulespec-us",
+                "passed": False,
+                "issues": ["waiver transition requires protected base"],
+            }
+        )
+        + "\n"
+    )
     env = {
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
@@ -2491,6 +2501,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         assert file_member_names == {
             "generated/target/model/statutes/54a:4-7.test.yaml",
             "generated/target/model/target.repair.json",
+            "guard-generated.json",
             "metadata.json",
         }
         assert "generated/target/model/ignored.bin" not in file_member_names
@@ -2498,12 +2509,19 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "./generated/target/model/statutes/54a:4-7.test.yaml"
         )
         repair = bundle.extractfile("./generated/target/model/target.repair.json")
+        guard = bundle.extractfile("./guard-generated.json")
         metadata_file = bundle.extractfile("./metadata.json")
         assert target is not None
         assert repair is not None
+        assert guard is not None
         assert metadata_file is not None
         assert target.read() == b"format: rulespec/v1\n"
         assert json.loads(repair.read()) == {"outcome": "blocked"}
+        assert json.loads(guard.read()) == {
+            "repo": "/runner/rulespec-us",
+            "passed": False,
+            "issues": ["waiver transition requires protected base"],
+        }
         metadata = json.loads(metadata_file.read())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
     assert metadata["workflow_run_id"] == "1234"

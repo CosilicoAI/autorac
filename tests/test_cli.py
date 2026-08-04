@@ -36858,6 +36858,36 @@ class TestGuardGenerated:
         assert len(issues) == 1
         assert "RuleSpec corpus/toolchain binding is invalid" in issues[0]
 
+    def test_base_guard_includes_committed_and_worktree_changes(self, tmp_path):
+        repo = self._canonical_guard_repo(tmp_path)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test User")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "initialize guard checkout")
+        base_ref = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        committed_rule = repo / "us/regulations/committed.yaml"
+        self._source_backed_rule(committed_rule)
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "add committed candidate")
+        worktree_rule = repo / "us/regulations/worktree.yaml"
+        self._source_backed_rule(worktree_rule)
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            base_ref=base_ref,
+            roots=("regulations",),
+        )
+
+        assert issues == [
+            "us/regulations/committed.yaml changed without a matching "
+            ".axiom/encoding-manifests manifest",
+            "us/regulations/worktree.yaml changed without a matching "
+            ".axiom/encoding-manifests manifest",
+        ]
+
     def test_rejects_rulespec_change_without_encoder_manifest(self, tmp_path):
         rule = tmp_path / "us/regulations/example.yaml"
         rule.parent.mkdir(parents=True)
