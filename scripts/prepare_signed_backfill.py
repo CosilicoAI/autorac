@@ -1449,9 +1449,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                             Path(metadata_path),
                             base_raw,
                             moves=primary_moves,
-                            validation_waiver_set_sha256=(
-                                post_migration_waiver_sha256
-                            ),
+                            validation_waiver_set_sha256=(post_migration_waiver_sha256),
                         )
                     )
                 except ValueError as exc:
@@ -1464,19 +1462,16 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     or reconciliation.get("after_sha256")
                     != hashlib.sha256(live_raw).hexdigest()
                     or live_raw != expected_live
-                    or reconciliation.get("operations")
-                    != list(expected_operations)
+                    or reconciliation.get("operations") != list(expected_operations)
                 ):
                     raise ValueError(
                         f"legacy metadata reconciliation[{index}] state differs"
-                )
+                    )
                 metadata_paths.add(metadata_path)
             expected_metadata_paths: set[PurePosixPath] = set()
             for metadata_path in LEGACY_REPLACEMENT_METADATA_PATHS:
                 try:
-                    base_raw = _git(
-                        repo, "show", f"HEAD:{metadata_path.as_posix()}"
-                    )
+                    base_raw = _git(repo, "show", f"HEAD:{metadata_path.as_posix()}")
                 except subprocess.CalledProcessError:
                     continue
                 try:
@@ -1485,9 +1480,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                             Path(metadata_path),
                             base_raw,
                             moves=primary_moves,
-                            validation_waiver_set_sha256=(
-                                post_migration_waiver_sha256
-                            ),
+                            validation_waiver_set_sha256=(post_migration_waiver_sha256),
                         )
                     )
                 except ValueError:
