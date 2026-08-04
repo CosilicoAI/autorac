@@ -3467,6 +3467,12 @@ rules: []
         "and budget approves benefits under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and the OFFICE OF MANAGEMENT "
         "AND BUDGET approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input data "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OMB approves benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and omb approves benefits "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3520,6 +3526,15 @@ rules: []
         "programs established",
         "benefits calculated",
         "assistance administered",
+        "data input requirements",
+        "payment processing rules",
+        "records retention policies",
+        "program participation requirements",
+        "income verification procedures",
+        "eligibility determined",
+        "requirements implemented",
+        "benefits verified",
+        "information obtained",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):

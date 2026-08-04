@@ -507,7 +507,9 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "plan",
         "policy",
         "payment",
+        "participation",
         "process",
+        "processing",
         "procedure",
         "program",
         "administration",
@@ -515,6 +517,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "receipt",
         "record",
         "regulation",
+        "retention",
         "requirement",
         "rule",
         "size",
@@ -523,6 +526,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "submission",
         "threshold",
         "timing",
+        "verification",
         "workflow",
     }
 )
@@ -575,10 +579,13 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
         "cited",
         "defined",
         "described",
+        "determined",
         "eligible",
         "established",
         "furnished",
         "issued",
+        "implemented",
+        "obtained",
         "paid",
         "payable",
         "promulgated",
@@ -589,6 +596,7 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
         "set",
         "specified",
         "supplied",
+        "verified",
     }
 )
 _DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
@@ -612,7 +620,16 @@ _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS = frozenset(
     {"cost", "cut", "hit", "input", "put", "read", "set", "spread"}
 )
 _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
-    {"administration", "calculation", "management", "payment"}
+    {
+        "administration",
+        "calculation",
+        "management",
+        "participation",
+        "payment",
+        "processing",
+        "retention",
+        "verification",
+    }
 )
 _LEGAL_ACTOR_HEAD_TERMS = frozenset(
     {
@@ -2861,10 +2878,14 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
         if trailing_object:
             if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
                 continue
-            if (
-                subject_is_actor
-                and predicate.lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
-            ):
+            is_data_input_requirement = (
+                tokens[subject_end - 1].lower() == "data"
+                and predicate.lower() == "input"
+                and "requirement" in _dependency_token_forms(trailing_object[-1])
+            )
+            if is_data_input_requirement:
+                continue
+            if predicate.lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS:
                 return True
         elif not (
             subject_is_actor
@@ -2920,7 +2941,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:(?:administering|federal|local|public(?:-|\s+)housing|state)\s+)?"
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
-            r"commissioners?|departments?|hud|irs|secretar(?:y|ies)|services?|"
+            r"commissioners?|departments?|hud|irs|omb|secretar(?:y|ies)|services?|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"
