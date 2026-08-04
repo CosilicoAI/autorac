@@ -1025,10 +1025,18 @@ module:
   deferred_outputs:
     - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
       reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
+For a current-source administrative runtime gap, use this shape instead:
+module:
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/c#plan_submission_procedures
+      reason: >-
+        Cannot be computed until the plan-submission procedure, timing, and form
+        required by 42 U.S.C. 1437c-1(c) are available at runtime.
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
 must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
 exists, cite the exact current source branch and name its concrete source-stated missing \
-input or runtime capability; a generic claim that the branch is unavailable is invalid."""
+input or runtime capability in the `reason` itself; the output path is not a source \
+citation, and a generic claim that the branch is unavailable is invalid."""
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,

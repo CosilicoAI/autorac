@@ -1949,6 +1949,8 @@ rules: []
     )
     assert "Required shape" in issue
     assert "module:\n  deferred_outputs:" in issue
+    assert "42 U.S.C. 1437c-1(c)" in issue
+    assert "the output path is not a source citation" in issue.lower()
     assert "output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax" in issue
     assert "reason: Cannot be computed until" in issue
     assert "EStG § 26" in issue
