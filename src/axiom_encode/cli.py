@@ -25098,7 +25098,7 @@ def _latest_validation_retry_candidate(
 def _encode_validation_retry_feedback(
     prior_attempts: Sequence[_FailedEncodeAttempt],
 ) -> tuple[str, ...]:
-    """Return bounded validator guidance without starving older attempts."""
+    """Interleave bounded validator guidance across recent failed attempts."""
 
     feedback_limit = 12
     attempt_feedback: list[list[str]] = []
