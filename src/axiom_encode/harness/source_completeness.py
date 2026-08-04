@@ -422,6 +422,25 @@ _ADVERSATIVE_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_CONTEXTUAL_AUTHORITY_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"(?:included|mentioned|quoted|summarized|discussed|provided|supplied|known)\s+"
+    r"only\s+(?:as|for)\s+(?:an?\s+|the\s+)?"
+    r"(?:background|comparison|context|historical|history|illustration|"
+    r"legislative\s+history|nonbinding\s+authority|orientation)|"
+    r"(?:historical|legislative)\s+(?:background|context|history)|"
+    r"nonbinding\s+authority|for\s+(?:context|orientation)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_COORDINATED_FINITE_CLAUSE = re.compile(
+    r",\s*(?:and|but|or|yet)\s+"
+    r"(?:the\s+|a\s+|an\s+|this\s+|that\s+|these\s+|those\s+)?"
+    r"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,8}\s+"
+    r"(?:is|are|was|were|has|have|had|does|do|did|receives?|received|"
+    r"depends?|requires?|uses?|includes?|applies?|governs?)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _has_adversative_language(text: str) -> bool:
@@ -2055,7 +2074,7 @@ def _reason_match_names_missing_dependency(
     reference_end = match.end() - clause_start
     before = clause[:reference_start]
     after = clause[reference_end:]
-    if _has_adversative_language(reason[match.end() :]):
+    if _reason_dependency_occurrence_is_contextual(reason, match):
         return False
     if not _reason_named_instruments_are_source_bound(
         before,
@@ -2164,6 +2183,68 @@ def _reason_match_names_missing_dependency(
             allow_descriptive_list=operative_reference,
         )
     return True
+
+
+def _reason_dependency_occurrence_is_contextual(
+    reason: str,
+    match: re.Match[str],
+) -> bool:
+    """Reject context attached to this citation without crossing into another one."""
+
+    groups = match.groupdict()
+    title = groups.get("title")
+    section = groups.get("section")
+    if title and section:
+        for candidate in _qualified_usc_dependencies(reason):
+            if candidate.start() >= match.start():
+                break
+            if _usc_dependencies_match(candidate, match):
+                start, end = _reason_clause_bounds(reason, candidate)
+                if _CONTEXTUAL_AUTHORITY_LANGUAGE.search(reason[start:end]):
+                    return True
+
+    remainder = reason[match.end() :]
+    stop = min(
+        (
+            position
+            for separator in (".", ";", "\n")
+            if (position := remainder.find(separator)) >= 0
+        ),
+        default=-1,
+    )
+    if stop < 0:
+        return False
+    trailing_clauses = re.split(r"[.;\n]", remainder[stop + 1 :])
+    for trailing_clause in trailing_clauses:
+        dependencies = _qualified_usc_dependencies(trailing_clause)
+        if dependencies:
+            if (
+                title
+                and section
+                and any(
+                    _usc_dependencies_match(candidate, match)
+                    and _CONTEXTUAL_AUTHORITY_LANGUAGE.search(trailing_clause)
+                    for candidate in dependencies
+                )
+            ):
+                return True
+            return False
+        if _has_adversative_language(trailing_clause):
+            return True
+    return False
+
+
+def _usc_dependencies_match(left: re.Match[str], right: re.Match[str]) -> bool:
+    left_groups = left.groupdict()
+    right_groups = right.groupdict()
+    return bool(
+        left_groups.get("title")
+        and right_groups.get("title")
+        and left_groups["title"].lower() == right_groups["title"].lower()
+        and normalize_rulespec_path_segment(left_groups["section"])
+        == normalize_rulespec_path_segment(right_groups["section"])
+        and _usc_dependency_fragments(left) == _usc_dependency_fragments(right)
+    )
 
 
 def _reason_clause_bounds(
@@ -2514,8 +2595,10 @@ def _reason_named_instruments_are_source_bound(
                 continue
             for title_match in instrument_pattern.finditer(clause, 0, reference_start):
                 bridge = clause[title_match.end() : reference_start]
-                if not _has_adversative_language(bridge) and instrument_link.search(
-                    bridge
+                if (
+                    not _has_adversative_language(bridge)
+                    and not _COORDINATED_FINITE_CLAUSE.search(bridge)
+                    and instrument_link.search(bridge)
                 ):
                     return True
         return False

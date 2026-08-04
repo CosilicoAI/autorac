@@ -2844,6 +2844,34 @@ rules: []
         assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
+def test_named_instrument_cannot_cross_coordinated_finite_clause():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the Social Security Act
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The Social Security Act governs historical records, and assistance "
+        "is received under 42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
 def test_named_instrument_accepts_relative_source_citation():
     content = """\
 format: rulespec/v1
@@ -3054,6 +3082,63 @@ rules: []
     )
 
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_contextual_prior_occurrence_cannot_launder_same_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        For context, 42 USC 1437f(o) is included only as nonbinding authority.
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_later_independent_dependency_does_not_qualify_selected_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount depends on 42 USC 1437f(o) is
+        encoded. However, 7 USC 9999 is also required.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
 
 
 def test_source_bound_usc_dependency_accepts_without_wording():
