@@ -2261,7 +2261,16 @@ rules: []
     assert not _has_issue(result, "(b)", "deferral")
 
 
-@pytest.mark.parametrize("subject", ["income threshold", "agency policy"])
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "income threshold",
+        "agency policy",
+        "tax rate",
+        "eligibility criteria",
+        "agency rule",
+    ],
+)
 def test_descriptive_dependency_list_accepts_common_legal_subjects(subject: str):
     content = f"""\
 format: rulespec/v1
@@ -2341,6 +2350,8 @@ rules: []
         "is issued by the Department of Housing and Urban Development",
         "is verified by the Social Security Administration",
         "is issued by the Commissioner",
+        "is verified by the Internal Revenue Service",
+        "is approved by the Department of Education",
     ],
 )
 def test_until_dependency_accepts_legal_actor_tail(predicate: str):
@@ -2498,6 +2509,45 @@ module:
       reason: >-
         Cannot be computed until comparison amount included only as nonbinding
         authority under 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "nonbinding comparison amount",
+        "the merely illustrative eligibility status",
+        "comparison amount under nonbinding authority referenced by",
+    ],
+)
+@pytest.mark.parametrize("state", ["encoded", "unavailable"])
+def test_descriptive_subject_cannot_launder_weak_dependency_linker(
+    subject: str,
+    state: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until {subject} 42 USC 1437f(o) is {state}.
 rules: []
 """
     source = (

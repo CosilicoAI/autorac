@@ -422,15 +422,74 @@ _ADVERSATIVE_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
-_DEPENDENCY_SUBJECT_LANGUAGE = re.compile(
-    r"\b(?:"
-    r"amount|assistance|benefit|calendar|classification|condition|data|date|"
-    r"designation|determination|document|eligibility|fact|filing|form|"
-    r"income|information|input|notice|policy|process|procedure|receipt|record|"
-    r"requirement|standard|status|submission|threshold|timing|workflow"
-    r")s?\b",
-    flags=re.IGNORECASE,
+_DEPENDENCY_SUBJECT_TERMS = frozenset(
+    {
+        "amount",
+        "assistance",
+        "benefit",
+        "calendar",
+        "classification",
+        "condition",
+        "criteria",
+        "data",
+        "date",
+        "designation",
+        "determination",
+        "document",
+        "eligibility",
+        "fact",
+        "filing",
+        "form",
+        "income",
+        "information",
+        "input",
+        "notice",
+        "policy",
+        "process",
+        "procedure",
+        "rate",
+        "receipt",
+        "record",
+        "requirement",
+        "rule",
+        "standard",
+        "status",
+        "submission",
+        "threshold",
+        "timing",
+        "workflow",
+    }
 )
+_DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
+    "a",
+    "an",
+    "administrative",
+    "agency",
+    "annual",
+    "applicable",
+    "background-check",
+    "failing-score",
+    "federal",
+    "fiscal",
+    "fiscal-year",
+    "historical",
+    "household",
+    "initial",
+    "legal",
+    "local",
+    "of",
+    "plan",
+    "plan-submission",
+    "program",
+    "public",
+    "public-housing",
+    "state",
+    "tax",
+    "the",
+    "troubled",
+    "troubled-agency",
+    "year",
+}
 _DEPENDENCY_STATE_VALUE = (
     r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
     r"established|furnished|implemented|known|made\s+available|missing|"
@@ -2091,9 +2150,10 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
         r"(?:(?:a|an|the)\s+)?"
         r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
         r"(?:agency|administrator|authority|commission|commissioner|hud|"
-        r"social\s+security\s+administration|"
+        r"internal\s+revenue\s+service|social\s+security\s+administration|"
         r"(?:department|secretary)(?:\s+of\s+(?:agriculture|housing\s+and\s+"
-        r"urban\s+development|health\s+and\s+human\s+services|labor|treasury))?))?"
+        r"urban\s+development|education|health\s+and\s+human\s+services|labor|"
+        r"treasury))?))?"
         r"[\s,)]*",
         tail,
         flags=re.IGNORECASE,
@@ -2216,24 +2276,40 @@ def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
     if not linker:
         return False
     subject_scope = introduction[: linker.start()]
-    subjects = list(_DEPENDENCY_SUBJECT_LANGUAGE.finditer(subject_scope))
-    if not subjects:
-        return False
-    after_subject = subject_scope[subjects[-1].end() :]
-    if not after_subject.strip(" -"):
+    if _dependency_subject_phrase_is_bounded(subject_scope):
         return True
+    chain = re.fullmatch(
+        r"(?P<subject>.+?)\s+under\s+(?:the\s+)?"
+        r"(?P<instrument>(?:section\s+\d+\s+)?"
+        r"(?:[a-z0-9-]+\s+)*(?:act|code|program|regulation|statute))\s*",
+        subject_scope,
+        flags=re.IGNORECASE,
+    )
     return bool(
-        re.fullmatch(
-            r"\s+under\s+(?:the\s+)?[a-z0-9][a-z0-9 -]*\s*",
-            after_subject,
-            flags=re.IGNORECASE,
-        )
+        chain
+        and _dependency_subject_phrase_is_bounded(chain.group("subject"))
         and re.match(
             r"(?:cited|defined|described|provided|required|set|specified|referenced)"
             r"\s+(?:by|in)",
             introduction[linker.start() :],
             flags=re.IGNORECASE,
         )
+    )
+
+
+def _dependency_subject_phrase_is_bounded(phrase: str) -> bool:
+    tokens = []
+    for raw_token in re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", phrase):
+        token = raw_token.lower()
+        if token not in _DEPENDENCY_MODIFIER_TERMS and token.endswith("ies"):
+            token = f"{token[:-3]}y"
+        if token not in _DEPENDENCY_MODIFIER_TERMS and token.endswith("s"):
+            token = token[:-1]
+        tokens.append(token)
+    return bool(
+        tokens
+        and tokens[-1] in _DEPENDENCY_SUBJECT_TERMS
+        and all(token in _DEPENDENCY_MODIFIER_TERMS for token in tokens)
     )
 
 
