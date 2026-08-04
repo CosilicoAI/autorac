@@ -8203,6 +8203,579 @@ def test_compound_direct_exception_expression_is_discovered():
     assert not result.issues
 
 
+def test_multiline_boolean_applicability_selector_is_discovered():
+    source = "(1) The claimant is eligible if a certificate is present."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: result
+    kind: derived
+    source: de/statute/estg/32a(1)
+    versions:
+      - formula: |-
+          claimant_is_resident
+          and has_certificate
+"""
+    cases = [
+        {
+            "name": "without certificate",
+            "input": {"claimant_is_resident": True, "has_certificate": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "with certificate",
+            "input": {"claimant_is_resident": True, "has_certificate": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+def test_multiline_direct_formula_returns_every_boolean_selector_name():
+    rule = {"versions": [{"formula": ("eligible\nand resident\nand not disqualified")}]}
+
+    assert completeness_module._rule_exception_selector_names(rule) == {
+        "eligible",
+        "resident",
+        "disqualified",
+    }
+
+
+def test_arithmetic_if_clause_is_formula_evidence_not_exception_toggle():
+    source = """\
+(1) If the credit exceeds the tax due, the amount of the excess is an overpayment.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert not exception_branches
+
+
+def test_formula_clause_with_explicit_carveout_keeps_exception_obligation():
+    source = """\
+(1) The amount is computed from income, except when exempt, when it is zero.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert len(exception_branches) == 1
+
+
+def test_formula_clause_keeps_nonarithmetic_applicability_obligation():
+    source = """\
+(1) If the claimant is eligible, the credit is computed as income * 10 percent.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert len(exception_branches) == 1
+
+
+def test_positive_eligibility_condition_requires_enabling_effect():
+    source = """\
+(1) The claimant shall be eligible if the claimant is ineligible due to age.
+"""
+    correct = _exception_control_content("if ineligible_due_to_age: true else: false")
+    wrong = _exception_control_content("if ineligible_due_to_age: false else: true")
+    correct_cases = [
+        {
+            "name": "ordinary",
+            "input": {"ineligible_due_to_age": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "age modification",
+            "input": {"ineligible_due_to_age": True},
+            "output": {"result": True},
+        },
+    ]
+    wrong_cases = [
+        {
+            "name": "ordinary",
+            "input": {"ineligible_due_to_age": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "age modification",
+            "input": {"ineligible_due_to_age": True},
+            "output": {"result": False},
+        },
+    ]
+
+    correct_result = _analyze(correct, source, test_cases=correct_cases)
+    wrong_result = _analyze(wrong, source, test_cases=wrong_cases)
+
+    assert not correct_result.issues
+    assert _has_issue(wrong_result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The claimant is ineligible unless an exception applies.",
+        "(1) The claim is excluded except when a waiver applies.",
+        (
+            "(1) If the claimant is ineligible solely due to age, "
+            "the claimant shall be eligible."
+        ),
+    ],
+)
+def test_enabling_effect_is_independent_of_proposition_order(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+def test_preposed_german_negative_condition_enables_positive_result():
+    source = """\
+(1) Wenn der Antragsteller nicht berechtigt ist, ist er ausnahmsweise berechtigt.
+"""
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The claimant is not allowed if a disqualification applies.",
+        "(1) The claimant is not qualified when a disqualification applies.",
+        "(1) The claimant is not entitled if a disqualification applies.",
+    ],
+)
+def test_explicit_negative_eligibility_condition_is_excluding(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "exclude"
+    )
+
+
+def test_qualification_exception_requires_enabling_effect():
+    source = """\
+(1) The claimant shall meet all qualifications, except the age requirement, in
+order to be eligible for the credit.
+"""
+    content = _exception_control_content(
+        "if age_requirement_exception_applies: true else: false"
+    )
+    cases = [
+        {
+            "name": "ordinary qualification path",
+            "input": {"age_requirement_exception_applies": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "age qualification exception",
+            "input": {"age_requirement_exception_applies": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to the provisions of this chapter.",
+        (
+            "(1) The credit is subject to all provisions of this chapter, "
+            "except as may otherwise be provided."
+        ),
+    ],
+)
+def test_non_toggleable_cross_reference_does_not_require_paired_cases(
+    source: str,
+):
+    content = _exception_control_content("false")
+    case = {"name": "nonapplicable", "input": {}, "output": {"result": False}}
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit applies except as provided in section 5.",
+        "(1) The credit is subject to section 32.",
+        "(1) The credit is subject to 26 U.S.C. 32.",
+    ],
+)
+def test_formal_cross_reference_does_not_require_synthetic_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    ("formula", "output", "expected_issue"),
+    [("false", False, False), ("true", True, True)],
+)
+def test_unconditional_nonapplicability_requires_asserted_false_output(
+    formula: str,
+    output: bool,
+    expected_issue: bool,
+):
+    source = "(1) Subsection (f) shall not apply."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: subsection_f_applies
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Subsection (f) shall not apply
+    versions:
+      - formula: '{formula}'
+"""
+    case = {
+        "name": "subsection f treatment",
+        "input": {},
+        "output": {"subsection_f_applies": output},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "non-applicability", "tests") is expected_issue
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The provisions of section 5 shall not apply.",
+        "(1) The requirements of section 5 shall not apply.",
+        "(1) The limitations under subsection (b) shall not apply.",
+        "(1) The preceding sentence shall not apply.",
+        "(1) Subsections (a) and (b) shall not apply.",
+        "(1) Subsections (a), (b), and (c) shall not apply.",
+        "(1) Section 5 of this title shall not apply.",
+        "(1) Paragraphs (1) through (3) shall not apply.",
+    ],
+)
+def test_unconditional_legal_reference_subject_is_recognized(source: str):
+    assert completeness_module._source_unconditional_nonapplicability(source)
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_german_unconditional_nonapplicability_requires_false_output():
+    source = "(1) Absatz 2 findet keine Anwendung."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: absatz_2_applies
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Absatz 2 findet keine Anwendung
+    versions:
+      - formula: 'false'
+"""
+    case = {
+        "name": "absatz 2 treatment",
+        "input": {},
+        "output": {"absatz_2_applies": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit shall not apply to nonresidents.",
+        "(1) The credit shall not apply after December 31.",
+        "(1) The credit shall not apply for taxpayers with income over 100.",
+        "(1) The credit shall not apply until the claimant reaches age 65.",
+        "(1) The credit shall not apply while the claimant is incarcerated.",
+        "(1) The credit shall not apply on a joint return.",
+        "(1) The credit shall not apply in respect of foreign income.",
+        "(1) The credit shall not apply under subsection (b).",
+        "(1) The credit shall not apply in taxable years ending in 2025.",
+        "(1) The credit shall not apply whenever the claimant is married.",
+        "(1) After December 31, the credit shall not apply.",
+        "(1) After December 31 the credit shall not apply.",
+        "(1) Taxpayers earning more than 100 dollars are not eligible.",
+        "(1) Credits exceeding 100 shall not apply.",
+        "(1) Credits claimed by nonresidents shall not apply.",
+        "(1) Individuals aged 65 or older are not eligible.",
+        "(1) The married taxpayers are not eligible.",
+        "(1) The nonresident taxpayer is not eligible.",
+        "(1) The taxpayer, a nonresident, is not eligible.",
+        "(1) Der Anspruch gilt für Nichtansässige nicht.",
+    ],
+)
+def test_scoped_nonapplicability_is_not_treated_as_unconditional(source: str):
+    assert not completeness_module._source_unconditional_nonapplicability(source)
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to income restrictions.",
+        "(1) The credit is subject to residency restrictions.",
+        "(1) The credit is subject to restrictions on married taxpayers.",
+    ],
+)
+def test_local_restrictions_are_not_treated_as_formal_cross_references(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit is subject to this chapter.",
+        "(1) The credit is subject to chapter 5.",
+        "(1) The credit is subject to title 54A.",
+        "(1) The credit is subject to the provisions of chapter 5.",
+        "(1) The credit is subject to the provisions of title 54A.",
+        "(1) The credit is subject to this article.",
+        "(1) The credit is subject to Article IV.",
+        "(1) The credit is subject to this part.",
+        "(1) The credit is subject to Part II.",
+        "(1) The credit is subject to subchapter B.",
+        "(1) The credit is subject to subtitle A.",
+        "(1) The credit is subject to division 2.",
+        "(1) The credit is subject to the provisions of Article IV.",
+        (
+            "(1) The credit is subject to the restrictions of this subsection "
+            "and subsections b., c., d. and e. of this section."
+        ),
+        (
+            "(1) The credit is subject to all provisions of N.J.S.54A:1-1 et "
+            "seq., except as may be otherwise specifically provided in "
+            "P.L.2000, c.80 (C.54A:4-6 et al.)."
+        ),
+    ],
+)
+def test_direct_chapter_and_title_cross_references_are_formal(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        ("(1) The credit is subject to section 5 and the claimant must be a resident."),
+        "(1) The credit is subject to section 5 and residency restrictions.",
+        ("(1) The credit is subject to chapter 5, but only for married taxpayers."),
+        (
+            "(1) The credit is subject to the provisions of chapter 5 and an "
+            "income limit."
+        ),
+        ("(1) The credit is subject to section 5, the claimant must be a resident."),
+        ("(1) The credit is subject to section 5; the claimant must be a resident."),
+        "(1) The credit is subject to section 5 with an income limit.",
+        "(1) The credit is subject to section 5 for married taxpayers.",
+        (
+            "(1) The credit is subject to section 5 as modified by residency "
+            "requirements."
+        ),
+        "(1) The credit is subject to section 5 or residency restrictions.",
+        "(1) The credit is subject to section 5 except for nonresidents.",
+    ],
+)
+def test_mixed_reference_and_local_condition_requires_paired_evidence(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "part time employment",
+        "division of income",
+        "title requirements",
+        "article requirements",
+        "section eligibility rules",
+        "part ownership",
+    ],
+)
+def test_ordinary_language_is_not_a_formal_structural_reference(text: str):
+    assert not completeness_module._source_has_formal_cross_reference(text)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit applies except as otherwise provided.",
+        "(1) The credit applies except as may otherwise be provided.",
+        "(1) The credit applies except as may be provided.",
+        "(1) The credit applies except as provided by law.",
+    ],
+)
+def test_terminal_boilerplate_reservation_does_not_require_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Except as otherwise provided, the credit applies.",
+        "(1) Except as may otherwise be provided by law, the credit applies.",
+        "(1) Except as provided in section 5, the credit applies.",
+        "(1) Subject to section 5, the credit applies.",
+        "(1) Subject to the provisions of this chapter, the credit applies.",
+        "(1) Vorbehaltlich § 5 gilt der Anspruch.",
+        "(1) Subject to section 5, a credit applies.",
+        "(1) Subject to section 5, such credit applies.",
+        "(1) Subject to section 5, the tax credit applies.",
+        ("(1) Subject to section 5, the state earned income tax credit applies."),
+        ("(1) Subject to section 5, the federal earned income tax credit applies."),
+        "(1) Subject to section 5, the claimant is eligible.",
+        "(1) Subject to section 5, the deduction is allowed.",
+        "(1) Except as provided in section 5, a benefit is available.",
+        "(1) Vorbehaltlich § 5 besteht der Anspruch.",
+    ],
+)
+def test_preposed_reference_reservation_does_not_require_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Subject to section 5, but only for married taxpayers, "
+            "the credit applies."
+        ),
+        "(1) Subject to section 5, the claimant must be a resident.",
+        ("(1) Subject to section 5 and residency restrictions, the credit applies."),
+        ("(1) Except as provided in section 5, the credit applies only to residents."),
+        "(1) Subject to section 5, the credit applies if income is low.",
+        "(1) Subject to section 5, the credit applies to residents.",
+        "(1) Subject to section 5, the credit applies only when married.",
+        "(1) Subject to section 5, if eligible the credit applies.",
+        "(1) Subject to section 5, when eligible the credit applies.",
+        "(1) Subject to section 5, if resident the benefit is available.",
+        "(1) Subject to section 5, while eligible the credit applies.",
+        "(1) Subject to section 5, once eligible the credit applies.",
+        "(1) Subject to section 5, assuming eligibility the credit applies.",
+        "(1) Subject to section 5, the resident-only credit applies.",
+    ],
+)
+def test_preposed_reference_with_local_condition_requires_toggle(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+def test_one_false_case_cannot_cover_two_unconditional_obligations():
+    source = """\
+(1) Subsection (a) shall not apply; subsection (b) shall not apply.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: both_subsections_apply
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Subsection (a) shall not apply
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: subsection (b) shall not apply
+    versions:
+      - formula: 'false'
+"""
+    case = {
+        "name": "aggregate false assertion",
+        "input": {},
+        "output": {"both_subsections_apply": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "non-applicability", "tests")
+
+
+def test_conditional_nonapplicability_still_requires_paired_cases():
+    source = "(1) The credit shall not apply if an exemption applies."
+    content = _exception_control_content("false")
+    case = {"name": "blocked", "input": {}, "output": {"result": False}}
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "exception", "tests")
+
+
 @pytest.mark.parametrize(
     ("formula", "ordinary_output", "exception_output", "expected_issue"),
     [
@@ -8734,8 +9307,31 @@ def test_unrelated_excluding_selector_cannot_witness_source_exception():
     assert _has_issue(result, "exception", "test")
 
 
+def test_generic_exception_name_cannot_witness_unrelated_source_condition():
+    source = "(1) The claim does not apply when a certificate is absent."
+    content = _exception_control_content(
+        "if age_requirement_exception_applies: false else: true"
+    )
+    cases = [
+        {
+            "name": "ordinary age rule",
+            "input": {"age_requirement_exception_applies": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "age exception",
+            "input": {"age_requirement_exception_applies": True},
+            "output": {"result": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert _has_issue(result, "exception", "test")
+
+
 def test_selector_relevance_uses_tokens_not_substrings():
-    source = "(1) The claim does not apply at a separate status."
+    source = "(1) The claim does not apply when a separate status exists."
     content = _exception_control_content("if rate: false else: true")
     cases = [
         {
@@ -8752,6 +9348,10 @@ def test_selector_relevance_uses_tokens_not_substrings():
 
     result = _analyze(content, source, test_cases=cases)
 
+    assert not completeness_module._source_exception_selector_is_relevant(
+        "at a separate status",
+        "rate",
+    )
     assert _has_issue(result, "exception", "test")
 
 
