@@ -1,0 +1,4 @@
+"""Shared bounds for validator-rejected repair candidates."""
+
+VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES = 512 * 1024
+VALIDATION_RETRY_CANDIDATE_MAX_TOTAL_BYTES = 1024 * 1024

@@ -34,6 +34,10 @@ on:
         description: Validator or independent-review finding to address
         required: false
         type: string
+      repair_run_id:
+        description: Prior failed protected run whose final candidate is replayed as untrusted repair context
+        required: false
+        type: string
       source_bundle_json:
         description: JSON array of additional same-jurisdiction citations to encode as signed atomic imports
         required: false
@@ -344,6 +348,138 @@ jobs:
             "$RULESPEC_REF" "$OPEN_PR" "$PR_BASE_BRANCH"
           git -C axiom-corpus merge-base --is-ancestor HEAD refs/remotes/origin/main
           git -C axiom-rules-engine merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+      - name: Resolve trusted prior-run repair candidate
+        id: repair_candidate
+        if: ${{ inputs.repair_run_id != '' }}
+        env:
+          CITATION: ${{ inputs.citation }}
+          CORPUS_REF: ${{ inputs.corpus_ref }}
+          COUNTRY: ${{ inputs.country }}
+          DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
+          QUEUE_ID: ${{ inputs.queue_id }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REPAIR_RUN_ID" =~ ^[0-9]+$ ]] || \
+             [ "$REPAIR_RUN_ID" = "$GITHUB_RUN_ID" ]; then
+            echo "repair_run_id must identify a different decimal workflow run" >&2
+            exit 1
+          fi
+          if [ -z "$REPLACE_RULESPEC_PATH" ] || \
+             [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
+             [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+             [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+             [ -n "$DEPENDENT_CITATION" ] || \
+             [ -n "$SECOND_DEPENDENT_CITATION" ] || \
+             [ -n "$QUEUE_ID" ] || \
+             ! jq -e 'type == "array" and length == 0' \
+               <<< "${SOURCE_BUNDLE_JSON:-[]}" > /dev/null || \
+             ! jq -e 'type == "array" and length == 0' \
+               <<< "${EXISTING_SIGNED_IMPORTS_JSON:-[]}" > /dev/null || \
+             ! jq -e 'type == "array" and length == 0' \
+               <<< "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
+               > /dev/null; then
+            echo "repair replay is limited to one non-legacy target without bundles, imports, dependents, or queue authorization" >&2
+            exit 1
+          fi
+
+          api_version="2026-03-10"
+          gh api \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: $api_version" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$REPAIR_RUN_ID" \
+            > "$RUNNER_TEMP/repair-run.json"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson run_id "$REPAIR_RUN_ID" '
+              .id == $run_id
+              and .status == "completed"
+              and .conclusion == "failure"
+              and .event == "workflow_dispatch"
+              and .head_branch == "main"
+              and .run_attempt == 1
+              and .repository.full_name == $repository
+              and .path == ".github/workflows/targeted-signed-reencode.yml"
+            ' "$RUNNER_TEMP/repair-run.json" > /dev/null
+          repair_encoder_commit="$(jq -er '.head_sha' \
+            "$RUNNER_TEMP/repair-run.json")"
+          git -C axiom-encode merge-base --is-ancestor \
+            "$repair_encoder_commit" "$GITHUB_SHA"
+
+          gh api --paginate --slurp \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: $api_version" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$REPAIR_RUN_ID/jobs?filter=all&per_page=100" \
+            > "$RUNNER_TEMP/repair-jobs.json"
+          jq -e '
+            [.[].jobs[] | select(
+              .name == "Queue protected signed RuleSpec re-encode"
+              and .run_attempt == 1
+              and .status == "completed"
+              and .conclusion == "failure"
+            )] | length == 1
+          ' "$RUNNER_TEMP/repair-jobs.json" > /dev/null
+
+          gh api \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: $api_version" \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$REPAIR_RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/repair-artifacts.json"
+          artifact_name="targeted-reencode-failure-${REPAIR_RUN_ID}-1"
+          jq -e --arg name "$artifact_name" --argjson run_id "$REPAIR_RUN_ID" '
+            [.artifacts[] | select(
+              .name == $name
+              and .expired == false
+              and .workflow_run.id == $run_id
+            )] | length == 1
+          ' "$RUNNER_TEMP/repair-artifacts.json" > /dev/null
+          repair_download="$RUNNER_TEMP/repair-download"
+          mkdir "$repair_download"
+          gh run download "$REPAIR_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$artifact_name" \
+            --dir "$repair_download"
+          repair_archive="$repair_download/targeted-reencode-failure.tar"
+          test -f "$repair_archive" && test ! -L "$repair_archive"
+          python3 axiom-encode/scripts/extract_repair_candidate.py \
+            "$repair_archive" "$RUNNER_TEMP/repair-candidate" \
+            --citation "$CITATION" \
+            --country "$COUNTRY" \
+            --encoder-commit "$repair_encoder_commit" \
+            --corpus-ref "$CORPUS_REF" \
+            --rules-engine-ref "$RULES_ENGINE_REF" \
+            --rulespec-ref "$RULESPEC_REF" \
+            --replace-rulespec-path "$REPLACE_RULESPEC_PATH" \
+            --workflow-run-id "$REPAIR_RUN_ID" \
+            > "$RUNNER_TEMP/repair-candidate.json"
+          jq -e '
+            (.root | type == "string" and length > 0)
+            and (.path | type == "string" and length > 0)
+            and (.rulespec_sha256 | test("^[0-9a-f]{64}$"))
+            and (.tests_sha256 | test("^[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/repair-candidate.json" > /dev/null
+          echo "root=$(jq -r '.root' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
+          echo "path=$(jq -r '.path' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
+          echo "runner=$(jq -r '.runner' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
+          echo "rulespec_sha256=$(jq -r '.rulespec_sha256' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
+          echo "tests_sha256=$(jq -r '.tests_sha256' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -787,6 +923,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -901,6 +1041,19 @@ jobs:
               review_finding_path="$review_finding_dir/review-finding.txt"
               printf '%s\n' "$review_finding" > "$review_finding_path"
               args+=(--review-findings "$review_finding_path")
+            fi
+            if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ]; then
+              test -n "${REPAIR_CANDIDATE_PATH:-}" \
+                && test -n "${REPAIR_CANDIDATE_RULESPEC_SHA256:-}" \
+                && test -n "${REPAIR_CANDIDATE_TESTS_SHA256:-}"
+              args+=(
+                --repair-candidate-root "$REPAIR_CANDIDATE_ROOT"
+                --repair-candidate-path "$REPAIR_CANDIDATE_PATH"
+                --repair-candidate-rulespec-sha256 \
+                  "$REPAIR_CANDIDATE_RULESPEC_SHA256"
+                --repair-candidate-tests-sha256 \
+                  "$REPAIR_CANDIDATE_TESTS_SHA256"
+              )
             fi
             args+=("$citation")
 
@@ -1270,6 +1423,11 @@ jobs:
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -2188,6 +2346,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           import sys
           from pathlib import Path
@@ -2196,6 +2355,39 @@ jobs:
               return subprocess.check_output(
                   ["git", "-C", path, "rev-parse", "HEAD"], text=True
               ).strip()
+
+          repair_run_id = os.environ.get("REPAIR_RUN_ID") or None
+          repair_candidate = None
+          if repair_run_id:
+              consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
+              consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_rulespec_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
+              )
+              consumed_tests_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_TESTS_SHA256", ""
+              )
+              if not consumed_path or not re.fullmatch(
+                  r"[a-z0-9][a-z0-9._:/-]*\.yaml", consumed_path
+              ):
+                  raise SystemExit("repair candidate evidence path is malformed")
+              if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
+                  raise SystemExit("repair candidate evidence runner is malformed")
+              if any(
+                  re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  for digest in (
+                      consumed_rulespec_sha256,
+                      consumed_tests_sha256,
+                  )
+              ):
+                  raise SystemExit("repair candidate evidence is malformed")
+              repair_candidate = {
+                  "run_id": repair_run_id,
+                  "path": consumed_path,
+                  "runner": consumed_runner,
+                  "rulespec_sha256": consumed_rulespec_sha256,
+                  "tests_sha256": consumed_tests_sha256,
+              }
 
           payload = {
               "schema": "axiom-encode/targeted-reencode-artifact/v1",
@@ -2241,6 +2433,8 @@ jobs:
                   )
               ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
+              "repair_candidate": repair_candidate,
+              "repair_run_id": os.environ.get("REPAIR_RUN_ID") or None,
               "queue_id": os.environ.get("QUEUE_ID") or None,
               "queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None,
               "queue_item_generation_sha256": (
@@ -2312,6 +2506,7 @@ jobs:
           QUEUE_ITEM_ID: ${{ inputs.queue_item_id }}
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
         run: |
           set -euo pipefail
@@ -2342,6 +2537,7 @@ jobs:
             "Exact legacy dependent: \`${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
             "Second exact legacy dependent: \`${SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
             "Retained successor legacy paths: \`${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}\`" \
+            "Repair candidate run: \`${REPAIR_RUN_ID:-n/a}\`" \
             "Base commit: \`${RULESPEC_REF}\`" \
             "Base branch: \`${PR_BASE_BRANCH}\`" \
             "Queue item: \`${QUEUE_ID:-ad-hoc}/${QUEUE_ITEM_ID:-ad-hoc}\`" \
@@ -2420,6 +2616,12 @@ jobs:
           COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION: ${{ steps.commit_reviewed_lane_changes.conclusion }}
           COMMIT_REVIEWED_LANE_CHANGES_OUTCOME: ${{ steps.commit_reviewed_lane_changes.outcome }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
+          REPAIR_CANDIDATE_CONCLUSION: ${{ steps.repair_candidate.conclusion }}
+          REPAIR_CANDIDATE_OUTCOME: ${{ steps.repair_candidate.outcome }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           PROVISION_SIGNING_SUPERVISOR_CONCLUSION: ${{ steps.provision_signing_supervisor.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_CONCLUSION: ${{ steps.publish_lane_pull_request.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_OUTCOME: ${{ steps.publish_lane_pull_request.outcome }}
@@ -2428,6 +2630,7 @@ jobs:
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
           QUEUE_ITEM_ID: ${{ inputs.queue_item_id }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
+          REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
@@ -2458,6 +2661,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import stat
           import sys
           from pathlib import Path
@@ -2670,6 +2874,7 @@ jobs:
               ),
               "package_exact_generated_changes": "PACKAGE_EXACT_GENERATED_CHANGES",
               "publish_lane_pull_request": "PUBLISH_LANE_PULL_REQUEST",
+              "repair_candidate": "REPAIR_CANDIDATE",
               "upload_signed_reencode_artifact": (
                   "UPLOAD_SIGNED_REENCODE_ARTIFACT"
               ),
@@ -2700,6 +2905,37 @@ jobs:
                   if len(Path(item["path"]).parts) > 1
               }
           )
+          repair_candidate = None
+          if os.environ.get("REPAIR_CANDIDATE_CONCLUSION") == "success":
+              consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
+              consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_rulespec_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
+              )
+              consumed_tests_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_TESTS_SHA256", ""
+              )
+              if not consumed_path or not re.fullmatch(
+                  r"[a-z0-9][a-z0-9._:/-]*\.yaml", consumed_path
+              ):
+                  raise SystemExit("repair candidate evidence path is malformed")
+              if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
+                  raise SystemExit("repair candidate evidence runner is malformed")
+              if any(
+                  re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  for digest in (
+                      consumed_rulespec_sha256,
+                      consumed_tests_sha256,
+                  )
+              ):
+                  raise SystemExit("repair candidate evidence is malformed")
+              repair_candidate = {
+                  "run_id": os.environ.get("REPAIR_RUN_ID") or None,
+                  "path": consumed_path,
+                  "runner": consumed_runner,
+                  "rulespec_sha256": consumed_rulespec_sha256,
+                  "tests_sha256": consumed_tests_sha256,
+              }
           metadata = {
               "schema": "axiom-encode/failed-reencode-diagnostics/v1",
               "citation": os.environ["CITATION"],
@@ -2741,6 +2977,8 @@ jobs:
               or None,
               "replace_rulespec_path": os.environ.get("REPLACE_RULESPEC_PATH")
               or None,
+              "repair_candidate": repair_candidate,
+              "repair_run_id": os.environ.get("REPAIR_RUN_ID") or None,
               "rules_engine_ref": os.environ["RULES_ENGINE_REF"],
               "rulespec_ref": os.environ["RULESPEC_REF"],
               "second_dependent_citation": os.environ.get(

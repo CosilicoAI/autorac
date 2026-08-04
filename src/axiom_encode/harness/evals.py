@@ -51,6 +51,10 @@ from axiom_encode.legacy_replacement_overlay import (
     stage_legacy_replacement_overlay,
 )
 from axiom_encode.prompts.encoder import SOURCE_SCOPE_PROTOCOL
+from axiom_encode.repair_candidate_contract import (
+    VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+    VALIDATION_RETRY_CANDIDATE_MAX_TOTAL_BYTES,
+)
 from axiom_encode.repo_routing import (
     canonical_rulespec_repo_name,
     canonical_rulespec_root_identity,
@@ -149,8 +153,6 @@ from .validator_pipeline import (
 EvalMode = Literal["cold", "repo-augmented"]
 EvalOracleMode = Literal["none", "policyengine"]
 EvalFailureKind = Literal["timeout", "validation", "error"]
-VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES = 512 * 1024
-VALIDATION_RETRY_CANDIDATE_MAX_TOTAL_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
