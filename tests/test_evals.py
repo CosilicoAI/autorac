@@ -13834,9 +13834,16 @@ rules:
 
 
 class TestOpenAIEvalRequest:
+    @pytest.mark.parametrize(
+        ("model", "expected_max_output_tokens"),
+        [("gpt-5.6-sol", 32768), ("gpt-4o", 16384)],
+        ids=["extended-gpt-5", "compatible-fallback"],
+    )
     def test_openai_prompt_eval_requests_full_rulespec_output_budget(
         self,
         monkeypatch,
+        model,
+        expected_max_output_tokens,
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         ok_response = Mock(status_code=200, headers={}, text="")
@@ -13850,15 +13857,15 @@ class TestOpenAIEvalRequest:
             return_value=ok_response,
         ) as mock_post:
             response = evals_module._run_openai_prompt_eval(
-                parse_runner_spec("openai:gpt-5.6"),
+                parse_runner_spec(f"openai:{model}"),
                 SimpleNamespace(),
                 "encode the complete provision",
             )
 
         expected_body = {
-            "model": "gpt-5.6",
+            "model": model,
             "input": "encode the complete provision",
-            "max_output_tokens": 32768,
+            "max_output_tokens": expected_max_output_tokens,
             "reasoning": {"effort": "low", "summary": "auto"},
         }
         assert mock_post.call_args.kwargs["body"] == expected_body

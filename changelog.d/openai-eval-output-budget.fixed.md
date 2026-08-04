@@ -1,1 +1,1 @@
-Raise the OpenAI prompt-eval output budget so complete RuleSpec encodings are not truncated at the previous 16,384-token boundary.
+Raise the OpenAI prompt-eval output budget for supported GPT-5 runners so complete RuleSpec encodings are not truncated at the previous 16,384-token boundary, while retaining a compatible fallback for other models.
