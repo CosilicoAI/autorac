@@ -60,6 +60,11 @@ on:
         description: Second exact v1/manual direct dependent in the same atomic migration
         required: false
         type: string
+      legacy_retained_successor_rulespec_paths_json:
+        description: JSON array of legacy primaries removed for existing signed-v5 canonical successors
+        required: false
+        default: "[]"
+        type: string
       dependent_citation:
         description: Direct dependent to re-encode atomically after a breaking target
         required: false
@@ -377,6 +382,7 @@ jobs:
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           QUEUE_ID: ${{ inputs.queue_id }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
@@ -415,11 +421,25 @@ jobs:
           if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
             existing_import_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
+          if ! printf '%s\n' "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
+            | jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+              > /dev/null; then
+            echo "retained successor paths must be a JSON array of non-empty strings" >&2
+            exit 1
+          fi
+          retained_successor_paths=()
+          while IFS= read -r retained_successor_path; do
+            retained_successor_paths+=("$retained_successor_path")
+          done < <(
+            printf '%s\n' "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
+              | jq -r '.[]'
+          )
           for reserved_path in \
             "$REPLACE_RULESPEC_PATH" \
             "$REPLACE_LEGACY_RULESPEC_PATH" \
             "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
-            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "${retained_successor_paths[@]-}"; do
             if [ -n "$reserved_path" ]; then
               existing_import_args+=(--exclude-rulespec-path "$reserved_path")
             fi
@@ -630,6 +650,7 @@ jobs:
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
@@ -670,11 +691,25 @@ jobs:
           if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
             existing_import_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
+          if ! printf '%s\n' "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
+            | jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+              > /dev/null; then
+            echo "retained successor paths must be a JSON array of non-empty strings" >&2
+            exit 1
+          fi
+          retained_successor_paths=()
+          while IFS= read -r retained_successor_path; do
+            retained_successor_paths+=("$retained_successor_path")
+          done < <(
+            printf '%s\n' "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}" \
+              | jq -r '.[]'
+          )
           for reserved_path in \
             "$REPLACE_RULESPEC_PATH" \
             "$REPLACE_LEGACY_RULESPEC_PATH" \
             "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
-            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "${retained_successor_paths[@]-}"; do
             if [ -n "$reserved_path" ]; then
               existing_import_args+=(--exclude-rulespec-path "$reserved_path")
             fi
@@ -739,6 +774,7 @@ jobs:
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           QUEUE_ID: ${{ inputs.queue_id }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
@@ -755,6 +791,22 @@ jobs:
           : "${REPLACE_LEGACY_RULESPEC_PATH:=}"
           : "${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:=}"
           : "${SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:=}"
+          : "${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:=[]}"
+          if ! printf '%s\n' "$LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON" \
+            | jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' \
+              > /dev/null; then
+            echo "retained successor paths must be a JSON array of non-empty strings" >&2
+            exit 1
+          fi
+          retained_successor_paths=()
+          retained_successor_count=0
+          while IFS= read -r retained_successor_path; do
+            retained_successor_paths+=("$retained_successor_path")
+            retained_successor_count=$((retained_successor_count + 1))
+          done < <(
+            printf '%s\n' "$LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON" \
+              | jq -r '.[]'
+          )
           : "${SECOND_DEPENDENT_CITATION:=}"
           : "${SECOND_DEPENDENT_REVIEW_FINDING:=}"
           dependent_rulespec_path=""
@@ -813,6 +865,14 @@ jobs:
                   "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
                 )
               fi
+            for retained_successor_path in "${retained_successor_paths[@]-}"; do
+                if [ -n "$retained_successor_path" ]; then
+                  args+=(
+                    --legacy-retained-successor-rulespec-path \
+                    "$retained_successor_path"
+                  )
+                fi
+              done
             fi
             if [ "$require_direct_imports" = "true" ]; then
               while IFS= read -r required_import_path; do
@@ -849,7 +909,8 @@ jobs:
             { [ -n "$REPLACE_RULESPEC_PATH" ] || \
               [ -n "$REPLACE_LEGACY_RULESPEC_PATH" ] || \
               [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
-              [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; }; then
+              [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+              [ "$retained_successor_count" -gt 0 ]; }; then
             echo "queue-authorized re-encodes cannot override the RuleSpec target path" >&2
             exit 1
           fi
@@ -862,6 +923,11 @@ jobs:
                [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ]; } && \
              [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
             echo "exact legacy dependents require a legacy source replacement" >&2
+            exit 1
+          fi
+          if [ "$retained_successor_count" -gt 0 ] && \
+             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            echo "retained successors require a legacy source replacement" >&2
             exit 1
           fi
           if [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] && \
@@ -965,7 +1031,8 @@ jobs:
             "$REPLACE_RULESPEC_PATH" \
             "$REPLACE_LEGACY_RULESPEC_PATH" \
             "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
-            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"; do
+            "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" \
+            "${retained_successor_paths[@]-}"; do
             if [ -n "$reserved_path" ]; then
               existing_import_args+=(--exclude-rulespec-path "$reserved_path")
             fi
@@ -1146,6 +1213,7 @@ jobs:
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
@@ -1189,6 +1257,10 @@ jobs:
               UnsafeCorpusPathError,
               read_bounded_regular_file,
           )
+          from axiom_encode.rulespec_path_migration import (
+              canonical_destination,
+              rewrite_exact_references,
+          )
 
           def git_paths(*args):
               output = subprocess.check_output(
@@ -1199,6 +1271,31 @@ jobs:
                   for value in output.split(b"\0")
                   if value
               }
+
+          def git_blob(relative, *, label, max_bytes):
+              relative = Path(relative)
+              if (
+                  relative.is_absolute()
+                  or not relative.parts
+                  or any(part in {"", ".", ".."} for part in relative.parts)
+              ):
+                  raise SystemExit(f"{label} path is not canonical")
+              completed = subprocess.run(
+                  [
+                      "git",
+                      "-C",
+                      os.environ["RULESPEC_CHECKOUT"],
+                      "show",
+                      f"{os.environ['RULESPEC_REF']}:{relative.as_posix()}",
+                  ],
+                  check=False,
+                  capture_output=True,
+              )
+              if completed.returncode != 0:
+                  raise SystemExit(f"{label} is absent from the base commit")
+              if len(completed.stdout) > max_bytes:
+                  raise SystemExit(f"{label} exceeds its size limit")
+              return completed.stdout
 
           def read_bounded_regular(root, relative, *, label, max_bytes):
               relative = Path(relative)
@@ -1254,6 +1351,40 @@ jobs:
               )
               if value
           ]
+          try:
+              retained_successor_paths = json.loads(
+                  os.environ.get(
+                      "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON", "[]"
+                  )
+              )
+          except json.JSONDecodeError as exc:
+              raise SystemExit(
+                  "retained successor inputs are not valid JSON"
+              ) from exc
+          if not isinstance(retained_successor_paths, list):
+              raise SystemExit("retained successor inputs are not a JSON array")
+          normalized_retained_successor_paths = []
+          for raw_retained_path in retained_successor_paths:
+              if not isinstance(raw_retained_path, str):
+                  raise SystemExit("retained successor input is not a string")
+              retained_path = Path(raw_retained_path)
+              if (
+                  retained_path.is_absolute()
+                  or retained_path.as_posix() != raw_retained_path
+                  or any(
+                      part in {"", ".", ".."} for part in retained_path.parts
+                  )
+                  or retained_path.suffix != ".yaml"
+                  or retained_path.name.endswith(".test.yaml")
+                  or retained_path
+                  == canonical_destination(retained_path)
+                  or raw_retained_path in normalized_retained_successor_paths
+              ):
+                  raise SystemExit(
+                      "retained successor input is not a unique noncanonical "
+                      "primary RuleSpec path"
+                  )
+              normalized_retained_successor_paths.append(raw_retained_path)
           normalized_replacement_path = ""
           if replacement_path:
               candidate = Path(replacement_path)
@@ -1416,6 +1547,8 @@ jobs:
                       receipt_schema not in {
                           "axiom-encode/legacy-fresh-reencode-receipt/v1",
                           "axiom-encode/legacy-fresh-reencode-receipt/v2",
+                          "axiom-encode/legacy-fresh-reencode-receipt/v3",
+                          "axiom-encode/legacy-fresh-reencode-receipt/v4",
                       }
                       or not isinstance(receipt_replacement, dict)
                       or receipt_replacement.get("source")
@@ -1439,13 +1572,314 @@ jobs:
                       or (
                           exact_dependent_paths
                           and receipt_schema
-                          != "axiom-encode/legacy-fresh-reencode-receipt/v2"
+                          == "axiom-encode/legacy-fresh-reencode-receipt/v1"
                       )
                   ):
                       raise SystemExit(
                           "legacy replacement exact dependents differ from inputs"
                       )
                   receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+                  retained_successors = receipt_replacement.get(
+                      "retained_successors"
+                  )
+                  if receipt_schema == (
+                      "axiom-encode/legacy-fresh-reencode-receipt/v4"
+                  ):
+                      if (
+                          not isinstance(retained_successors, list)
+                          or not isinstance(
+                              receipt_replacement.get("metadata_reconciliations"),
+                              list,
+                          )
+                          or [
+                              item.get("source")
+                              for item in retained_successors
+                              if isinstance(item, dict)
+                          ]
+                          != normalized_retained_successor_paths
+                      ):
+                          raise SystemExit(
+                              "legacy replacement retained successors differ "
+                              "from inputs"
+                          )
+                  elif (
+                      normalized_retained_successor_paths
+                      or "retained_successors" in receipt_replacement
+                      or "metadata_reconciliations" in receipt_replacement
+                  ):
+                      raise SystemExit(
+                          "legacy replacement pre-v4 receipt has retained inputs"
+                      )
+                  else:
+                      retained_successors = []
+                  expected_deleted_manifest_paths = set()
+                  for retained_successor in retained_successors:
+                      if (
+                          not isinstance(retained_successor, dict)
+                          or set(retained_successor)
+                          != {
+                              "source",
+                              "destination",
+                              "legacy_owner_class",
+                              "legacy_manifest",
+                              "legacy_files",
+                              "successor_manifest",
+                              "successor_files",
+                          }
+                      ):
+                          raise SystemExit(
+                              "legacy replacement retained successor is malformed"
+                          )
+                      retained_source = retained_successor["source"]
+                      retained_destination = retained_successor.get("destination")
+                      if (
+                          not isinstance(retained_source, str)
+                          or not isinstance(retained_destination, str)
+                          or canonical_destination(Path(retained_source)).as_posix()
+                          != retained_destination
+                          or retained_successor.get("legacy_owner_class")
+                          not in {
+                              "v1-hmac-untrusted",
+                              "v1-manual-hmac-untrusted",
+                          }
+                      ):
+                          raise SystemExit(
+                              "legacy replacement retained successor paths differ"
+                          )
+                      legacy_manifest = retained_successor["legacy_manifest"]
+                      successor_manifest = retained_successor[
+                          "successor_manifest"
+                      ]
+                      expected_legacy_manifest_path = (
+                          Path(".axiom/encoding-manifests")
+                          / Path(retained_source).with_suffix(".json")
+                      )
+                      expected_successor_manifest_path = (
+                          Path(".axiom/encoding-manifests")
+                          / Path(retained_destination).with_suffix(".json")
+                      )
+                      if (
+                          not isinstance(legacy_manifest, dict)
+                          or set(legacy_manifest) != {"path", "sha256"}
+                          or legacy_manifest.get("path")
+                          != expected_legacy_manifest_path.as_posix()
+                          or not isinstance(legacy_manifest.get("sha256"), str)
+                          or re.fullmatch(
+                              r"[0-9a-f]{64}", legacy_manifest["sha256"]
+                          )
+                          is None
+                          or not isinstance(successor_manifest, dict)
+                          or set(successor_manifest)
+                          != {"path", "sha256", "payload"}
+                          or successor_manifest.get("path")
+                          != expected_successor_manifest_path.as_posix()
+                          or not isinstance(successor_manifest.get("sha256"), str)
+                          or re.fullmatch(
+                              r"[0-9a-f]{64}", successor_manifest["sha256"]
+                          )
+                          is None
+                          or not isinstance(
+                              successor_manifest.get("payload"), dict
+                          )
+                      ):
+                          raise SystemExit(
+                              "legacy replacement retained manifest evidence "
+                              "is malformed"
+                          )
+                      legacy_manifest_bytes = git_blob(
+                          expected_legacy_manifest_path,
+                          label="legacy retained predecessor manifest",
+                          max_bytes=1024 * 1024,
+                      )
+                      original_successor_bytes = (
+                          json.dumps(
+                              successor_manifest["payload"],
+                              indent=2,
+                              sort_keys=True,
+                          )
+                          + "\n"
+                      ).encode("utf-8")
+                      if (
+                          hashlib.sha256(legacy_manifest_bytes).hexdigest()
+                          != legacy_manifest["sha256"]
+                          or hashlib.sha256(
+                              git_blob(
+                                  expected_successor_manifest_path,
+                                  label="legacy retained original manifest",
+                                  max_bytes=1024 * 1024,
+                              )
+                          ).hexdigest()
+                          != successor_manifest["sha256"]
+                          or hashlib.sha256(
+                              original_successor_bytes
+                          ).hexdigest()
+                          != successor_manifest["sha256"]
+                      ):
+                          raise SystemExit(
+                              "legacy replacement retained original manifest "
+                              "digest differs"
+                          )
+                      legacy_files = retained_successor["legacy_files"]
+                      successor_files = retained_successor["successor_files"]
+                      allowed_legacy_files = {
+                          retained_source,
+                          Path(retained_source).with_name(
+                              f"{Path(retained_source).stem}.test.yaml"
+                          ).as_posix(),
+                      }
+                      allowed_successor_files = {
+                          retained_destination,
+                          Path(retained_destination).with_name(
+                              f"{Path(retained_destination).stem}.test.yaml"
+                          ).as_posix(),
+                      }
+                      for label, files, required, allowed, must_exist in (
+                          (
+                              "legacy",
+                              legacy_files,
+                              retained_source,
+                              allowed_legacy_files,
+                              False,
+                          ),
+                          (
+                              "successor",
+                              successor_files,
+                              retained_destination,
+                              allowed_successor_files,
+                              True,
+                          ),
+                      ):
+                          if (
+                              not isinstance(files, list)
+                              or not files
+                              or [
+                                  item.get("path")
+                                  for item in files
+                                  if isinstance(item, dict)
+                              ].count(required)
+                              != 1
+                              or len(
+                                  {
+                                      item.get("path")
+                                      for item in files
+                                      if isinstance(item, dict)
+                                  }
+                              )
+                              != len(files)
+                          ):
+                              raise SystemExit(
+                                  f"legacy replacement retained {label} files "
+                                  "are malformed"
+                              )
+                          for item in files:
+                              if (
+                                  not isinstance(item, dict)
+                                  or set(item) != {"path", "sha256"}
+                                  or item.get("path") not in allowed
+                                  or not isinstance(item.get("sha256"), str)
+                                  or re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                                  is None
+                              ):
+                                  raise SystemExit(
+                                      "legacy replacement retained file evidence "
+                                      "is malformed"
+                                  )
+                              live_path = (
+                                  Path(os.environ["RULESPEC_CHECKOUT"])
+                                  / item["path"]
+                              )
+                              if must_exist:
+                                  live_bytes = read_bounded_regular(
+                                      os.environ["RULESPEC_CHECKOUT"],
+                                      Path(item["path"]),
+                                      label="legacy retained successor live file",
+                                      max_bytes=16 * 1024 * 1024,
+                                  )
+                                  if (
+                                      hashlib.sha256(live_bytes).hexdigest()
+                                      != item["sha256"]
+                                      or hashlib.sha256(
+                                          git_blob(
+                                              Path(item["path"]),
+                                              label=(
+                                                  "legacy retained original "
+                                                  "successor file"
+                                              ),
+                                              max_bytes=16 * 1024 * 1024,
+                                          )
+                                      ).hexdigest()
+                                      != item["sha256"]
+                                  ):
+                                      raise SystemExit(
+                                          "legacy replacement retained successor "
+                                          "live file digest differs"
+                                      )
+                              elif live_path.exists() or live_path.is_symlink():
+                                  raise SystemExit(
+                                      "legacy replacement retained legacy file "
+                                      "still exists"
+                                  )
+                              elif hashlib.sha256(
+                                  git_blob(
+                                      Path(item["path"]),
+                                      label="legacy retained predecessor file",
+                                      max_bytes=16 * 1024 * 1024,
+                                  )
+                              ).hexdigest() != item["sha256"]:
+                                  raise SystemExit(
+                                      "legacy replacement retained predecessor "
+                                      "file digest differs"
+                                  )
+                      if expected_successor_manifest_path not in manifest_paths:
+                          raise SystemExit(
+                              "legacy replacement retained successor lacks a "
+                              "changed signed manifest"
+                          )
+                      retained_manifest_bytes = read_bounded_regular(
+                          os.environ["RULESPEC_CHECKOUT"],
+                          expected_successor_manifest_path,
+                          label="legacy retained successor manifest",
+                          max_bytes=1024 * 1024,
+                      )
+                      retained_manifest = json.loads(retained_manifest_bytes)
+                      migration = retained_manifest.get("legacy_migration")
+                      if (
+                          retained_manifest.get("tool")
+                          != "axiom-encode encode --apply "
+                          "--legacy-retained-successor-rulespec-path"
+                          or retained_manifest.get("applied_files")
+                          != successor_files
+                          or retained_manifest.get("retained_successor_manifest")
+                          != successor_manifest["payload"]
+                          or not isinstance(migration, dict)
+                          or migration.get("receipt_path")
+                          != receipt_path.as_posix()
+                          or migration.get("receipt_sha256") != receipt_sha256
+                          or migration.get("source") != retained_source
+                          or migration.get("destination")
+                          != retained_destination
+                          or migration.get("legacy_manifest_path")
+                          != expected_legacy_manifest_path.as_posix()
+                          or migration.get("legacy_manifest_sha256")
+                          != legacy_manifest["sha256"]
+                          or migration.get("successor_manifest_sha256")
+                          != successor_manifest["sha256"]
+                      ):
+                          raise SystemExit(
+                              "legacy retained successor manifest binding differs"
+                          )
+                      expected_deleted_manifest_paths.add(
+                          expected_legacy_manifest_path
+                      )
+                      applied_inventory.append(
+                          {
+                              "citation": None,
+                              "path": expected_successor_manifest_path.as_posix(),
+                              "sha256": hashlib.sha256(
+                                  retained_manifest_bytes
+                              ).hexdigest(),
+                          }
+                      )
                   for exact_dependent in exact_dependents:
                       primary = exact_dependent.get("primary")
                       if not isinstance(primary, str):
@@ -1498,9 +1932,6 @@ jobs:
                       raise SystemExit(
                           "legacy replacement scheduled dependents are malformed"
                       )
-                  from axiom_encode.rulespec_path_migration import (
-                      rewrite_exact_references,
-                  )
                   for dependent in scheduled:
                       if (
                           not isinstance(dependent, dict)
@@ -1563,11 +1994,6 @@ jobs:
                       ".axiom/encoding-manifests"
                   ) / Path(legacy_source_path).with_suffix(".json")
                   if legacy_source_path == normalized_replacement_path:
-                      if deleted_manifest_paths:
-                          raise SystemExit(
-                              "in-place legacy replacement must overwrite, not "
-                              "delete, its ownership manifest"
-                          )
                       if expected_old_manifest != relative_path:
                           raise SystemExit(
                               "in-place legacy replacement manifest path differs"
@@ -1581,16 +2007,17 @@ jobs:
                               "in-place legacy replacement primary is absent"
                           )
                   else:
-                      if deleted_manifest_paths != {expected_old_manifest}:
-                          raise SystemExit(
-                              "legacy replacement must delete exactly its old manifest"
-                          )
+                      expected_deleted_manifest_paths.add(expected_old_manifest)
                       if (
                           Path(os.environ["RULESPEC_CHECKOUT"]) / legacy_source_path
                       ).exists():
                           raise SystemExit(
                               "legacy replacement old primary still exists"
                           )
+                  if deleted_manifest_paths != expected_deleted_manifest_paths:
+                      raise SystemExit(
+                          "legacy replacement deleted manifest inventory differs"
+                      )
                   receipt_artifact = Path(sys.argv[1]).with_name(
                       "legacy-replacement-receipt.json"
                   )
@@ -1744,6 +2171,11 @@ jobs:
                       "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
                   ) or None
               ),
+              "legacy_retained_successor_rulespec_paths": json.loads(
+                  os.environ.get(
+                      "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON", "[]"
+                  )
+              ),
               "pr_base_branch": os.environ["PR_BASE_BRANCH"],
               "queue_id": os.environ.get("QUEUE_ID") or None,
               "queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None,
@@ -1807,6 +2239,7 @@ jobs:
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           QUEUE_ID: ${{ inputs.queue_id }}
@@ -1842,6 +2275,7 @@ jobs:
             "Second direct dependent: \`${SECOND_DEPENDENT_CITATION:-n/a}\`" \
             "Exact legacy dependent: \`${LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
             "Second exact legacy dependent: \`${SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH:-n/a}\`" \
+            "Retained successor legacy paths: \`${LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON:-[]}\`" \
             "Base commit: \`${RULESPEC_REF}\`" \
             "Base branch: \`${PR_BASE_BRANCH}\`" \
             "Queue item: \`${QUEUE_ID:-ad-hoc}/${QUEUE_ITEM_ID:-ad-hoc}\`" \

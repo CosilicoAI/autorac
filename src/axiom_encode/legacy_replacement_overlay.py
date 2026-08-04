@@ -255,6 +255,57 @@ def stage_legacy_replacement_overlay(
                 )
             exact_targets.append((target, live_file))
 
+    retained_deleted_targets: list[Path] = []
+    retained_manifest_targets: list[Path] = []
+    for successor in contract.retained_successors:
+        retained_deleted_targets.extend(
+            _require_overlay_file(
+                root,
+                item,
+                label="Legacy retained-successor input",
+            )
+            for item in successor.legacy_files
+        )
+        retained_manifest_targets.append(
+            _require_overlay_file(
+                root,
+                successor.legacy_manifest,
+                label="Legacy retained-successor ownership manifest",
+            )
+        )
+        _require_overlay_file(
+            root,
+            successor.successor_manifest,
+            label="Legacy retained-successor signed manifest",
+        )
+        for item in successor.successor_files:
+            _require_overlay_file(
+                root,
+                item,
+                label="Legacy retained-successor live file",
+            )
+
+    metadata_targets: list[tuple[Path, LegacyReplacementRewrite]] = []
+    for reconciliation in contract.metadata_reconciliations:
+        target = _require_overlay_file(
+            root,
+            LegacyReplacementFile(
+                reconciliation.path,
+                reconciliation.before_sha256,
+                b"",
+            ),
+            label="Legacy metadata reconciliation input",
+        )
+        if (
+            hashlib.sha256(reconciliation.raw).hexdigest()
+            != reconciliation.after_sha256
+        ):
+            raise LegacyReplacementOverlayError(
+                "Legacy metadata reconciliation output does not match its digest: "
+                f"{reconciliation.path.as_posix()}"
+            )
+        metadata_targets.append((target, reconciliation))
+
     predecessor_present = bool(contract.destination_predecessor_files)
     if (
         predecessor_present
@@ -306,10 +357,16 @@ def stage_legacy_replacement_overlay(
 
     for target in deleted_targets:
         target.unlink()
+    for target in retained_deleted_targets:
+        target.unlink()
     for target in predecessor_targets:
         target.unlink()
     manifest_target.unlink()
+    for target in retained_manifest_targets:
+        target.unlink()
     for target, rewrite in rewrite_targets:
         target.write_bytes(rewrite.raw)
     for target, live_file in exact_targets:
         target.write_bytes(live_file.raw)
+    for target, reconciliation in metadata_targets:
+        target.write_bytes(reconciliation.raw)

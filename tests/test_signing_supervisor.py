@@ -3075,6 +3075,12 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-la/policies/income_tax/2026_resident_core.yaml",
         "us-la/policies/income_tax/pilot_liability_pipeline.yaml",
     ]
+    retained_successors = [
+        "us-la/statutes/47:294.yaml",
+        "us-la/statutes/47:295.yaml",
+        "us-la/statutes/47:297/4.yaml",
+        "us-la/statutes/47:297/8.yaml",
+    ]
     environment = {
         **os.environ,
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
@@ -3085,6 +3091,9 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "DEPENDENT_REVIEW_FINDING": "",
         "GITHUB_WORKSPACE": str(tmp_path),
         "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": exact_dependents[0],
+        "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": json.dumps(
+            retained_successors
+        ),
         "REPLACE_LEGACY_RULESPEC_PATH": source,
         "REPLACE_RULESPEC_PATH": destination,
         "REVIEW_FINDING": "Preserve all supported existing semantics.",
@@ -3115,6 +3124,14 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         if value == "--legacy-exact-dependent-rulespec-path"
     ]
     assert [encode_args[index + 1] for index in exact_indexes] == exact_dependents
+    retained_indexes = [
+        index
+        for index, value in enumerate(encode_args)
+        if value == "--legacy-retained-successor-rulespec-path"
+    ]
+    assert [encode_args[index + 1] for index in retained_indexes] == (
+        retained_successors
+    )
     assert "--apply-target-only" not in encode_args
 
 
@@ -3334,6 +3351,370 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
             "sha256": hashlib.sha256(applied_path.read_bytes()).hexdigest(),
         }
     ]
+
+
+def _targeted_package_script() -> str:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    package_command = next(
+        step
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Package exact generated changes"
+    )["run"]
+    marker = (
+        '"${workflow_python[@]}" - \\\n'
+        '  "$artifact/context-manifest.json" \\\n'
+        "  \"$artifact/apply-manifests.json\" <<'PY'\n"
+    )
+    return package_command.split(marker, 1)[1].split(
+        '\nPY\n"${workflow_python[@]}" - "$artifact/metadata.json"', 1
+    )[0]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("success", None),
+        ("missing-input", "retained successors differ from inputs"),
+        ("extra-input", "retained successors differ from inputs"),
+        ("reordered-input", "retained successors differ from inputs"),
+        ("tampered-evidence", "retained predecessor file digest differs"),
+        ("missing-deleted-manifest", "deleted manifest inventory differs"),
+        ("extra-deleted-manifest", "deleted manifest inventory differs"),
+    ],
+)
+def test_targeted_artifact_packages_v4_retained_successor_closure(
+    tmp_path: Path,
+    mutation: str,
+    error: str | None,
+) -> None:
+    script = _targeted_package_script()
+    rulespec = tmp_path / "rulespec-us"
+    rulespec.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=rulespec, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=rulespec,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=rulespec, check=True)
+
+    def write(path: str, raw: bytes) -> Path:
+        target = rulespec / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        return target
+
+    def evidence(path: Path) -> dict[str, str]:
+        return {
+            "path": path.relative_to(rulespec).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    main_old = write("us/statutes/47:32.yaml", b"old main\n")
+    main_old_manifest = write(
+        ".axiom/encoding-manifests/us/statutes/47:32.json", b"old main manifest\n"
+    )
+    unrelated_manifest = write(
+        ".axiom/encoding-manifests/us/statutes/unrelated.json", b"unrelated\n"
+    )
+    retained_rows: list[dict[str, object]] = []
+    retained_sources = [
+        "us/statutes/47:294.yaml",
+        "us/statutes/47:295.yaml",
+    ]
+    for number in (294, 295):
+        old = write(f"us/statutes/47:{number}.yaml", f"old {number}\n".encode())
+        old_test = write(f"us/statutes/47:{number}.test.yaml", b"[]\n")
+        old_manifest = write(
+            f".axiom/encoding-manifests/us/statutes/47:{number}.json",
+            f"old manifest {number}\n".encode(),
+        )
+        successor = write(f"us/statutes/47/{number}.yaml", old.read_bytes())
+        successor_test = write(
+            f"us/statutes/47/{number}.test.yaml", old_test.read_bytes()
+        )
+        successor_files = [evidence(successor), evidence(successor_test)]
+        original_payload = {
+            "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+            "tool": "axiom-encode encode --apply",
+            "backend": "codex",
+            "citation": f"us/statute/47:{number}",
+            "applied_files": successor_files,
+        }
+        original_raw = (
+            json.dumps(original_payload, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        successor_manifest = write(
+            f".axiom/encoding-manifests/us/statutes/47/{number}.json",
+            original_raw,
+        )
+        retained_rows.append(
+            {
+                "source": old.relative_to(rulespec).as_posix(),
+                "destination": successor.relative_to(rulespec).as_posix(),
+                "legacy_owner_class": "v1-manual-hmac-untrusted",
+                "legacy_manifest": evidence(old_manifest),
+                "legacy_files": [evidence(old), evidence(old_test)],
+                "successor_manifest": {
+                    **evidence(successor_manifest),
+                    "payload": original_payload,
+                },
+                "successor_files": successor_files,
+            }
+        )
+    subprocess.run(["git", "add", "."], cwd=rulespec, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=rulespec, check=True)
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
+    ).strip()
+
+    main_old.unlink()
+    main_old_manifest.unlink()
+    for row in retained_rows:
+        for item in row["legacy_files"]:
+            (rulespec / item["path"]).unlink()
+        (rulespec / row["legacy_manifest"]["path"]).unlink()
+    main_live = write("us/statutes/47/32.yaml", b"new main\n")
+    citation = "us/statute/47:32"
+    review_content = "Retain the canonical successors.\n"
+    context_payload = {
+        "citation": citation,
+        "review_findings_files": [
+            {
+                "content": review_content,
+                "sha256": hashlib.sha256(review_content.encode()).hexdigest(),
+            }
+        ],
+    }
+    context_bytes = json.dumps(context_payload, sort_keys=True).encode()
+    context_path = tmp_path / "generated/target/context-manifest.json"
+    context_path.parent.mkdir(parents=True)
+    context_path.write_bytes(context_bytes)
+    nested = {
+        "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+        "tool": "axiom-encode encode --apply",
+        "backend": "codex",
+        "citation": citation,
+        "context_manifest_file": str(context_path),
+        "context_manifest_sha256": hashlib.sha256(context_bytes).hexdigest(),
+        "applied_files": [evidence(main_live)],
+    }
+    receipt_payload = {
+        "schema_version": "axiom-encode/legacy-fresh-reencode-receipt/v4",
+        "replacement": {
+            "source": "us/statutes/47:32.yaml",
+            "destination": "us/statutes/47/32.yaml",
+            "scheduled_dependents": [],
+            "exact_dependents": [],
+            "retained_successors": retained_rows,
+            "metadata_reconciliations": [],
+        },
+    }
+    receipt_path = rulespec / ".axiom/legacy-replacements" / f"{'a' * 64}.json"
+    receipt_path.parent.mkdir(parents=True)
+
+    if mutation == "tampered-evidence":
+        retained_rows[0]["legacy_files"][0]["sha256"] = "0" * 64
+    if mutation == "missing-deleted-manifest":
+        first_manifest = retained_rows[0]["legacy_manifest"]
+        (rulespec / first_manifest["path"]).write_text("old manifest 294\n")
+    if mutation == "extra-deleted-manifest":
+        unrelated_manifest.unlink()
+
+    receipt_path.write_text(json.dumps(receipt_payload, sort_keys=True) + "\n")
+    receipt_digest = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    for row in retained_rows:
+        refreshed = {
+            "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+            "tool": (
+                "axiom-encode encode --apply --legacy-retained-successor-rulespec-path"
+            ),
+            "applied_files": row["successor_files"],
+            "retained_successor_manifest": row["successor_manifest"]["payload"],
+            "legacy_migration": {
+                "receipt_path": receipt_path.relative_to(rulespec).as_posix(),
+                "receipt_sha256": receipt_digest,
+                "source": row["source"],
+                "destination": row["destination"],
+                "legacy_manifest_path": row["legacy_manifest"]["path"],
+                "legacy_manifest_sha256": row["legacy_manifest"]["sha256"],
+                "successor_manifest_sha256": row["successor_manifest"]["sha256"],
+            },
+        }
+        (rulespec / row["successor_manifest"]["path"]).write_text(
+            json.dumps(refreshed, sort_keys=True) + "\n"
+        )
+    outer = {
+        "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+        "tool": "axiom-encode encode --apply --replace-legacy-rulespec-path",
+        "replacement_manifest": nested,
+        "replacement": {
+            "receipt_path": receipt_path.relative_to(rulespec).as_posix(),
+            "receipt_sha256": receipt_digest,
+        },
+    }
+    outer_path = write(
+        ".axiom/encoding-manifests/us/statutes/47/32.json",
+        (json.dumps(outer, sort_keys=True) + "\n").encode(),
+    )
+    (tmp_path / "source-bundle.json").write_text("[]\n")
+    selected_inputs = list(retained_sources)
+    if mutation == "missing-input":
+        selected_inputs.pop()
+    elif mutation == "extra-input":
+        selected_inputs.append("us/statutes/47:296.yaml")
+    elif mutation == "reordered-input":
+        selected_inputs.reverse()
+    packaged_context = tmp_path / "artifact/context-manifest.json"
+    packaged_inventory = tmp_path / "artifact/apply-manifests.json"
+    packaged_context.parent.mkdir()
+    completed = subprocess.run(
+        [sys.executable, "-", str(packaged_context), str(packaged_inventory)],
+        cwd=tmp_path,
+        input=script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": citation,
+            "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING_PRESENT": "true",
+            "RUNNER_TEMP": str(tmp_path),
+            "RULESPEC_CHECKOUT": "rulespec-us",
+            "RULESPEC_REF": rulespec_ref,
+            "REPLACE_LEGACY_RULESPEC_PATH": "us/statutes/47:32.yaml",
+            "REPLACE_RULESPEC_PATH": "us/statutes/47/32.yaml",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": json.dumps(
+                selected_inputs
+            ),
+        },
+    )
+
+    if error is not None:
+        assert completed.returncode != 0
+        assert error in completed.stderr
+        return
+    assert completed.returncode == 0, completed.stderr
+    inventory_paths = {
+        item["path"] for item in json.loads(packaged_inventory.read_text())["items"]
+    }
+    assert outer_path.relative_to(rulespec).as_posix() in inventory_paths
+    assert {str(row["successor_manifest"]["path"]) for row in retained_rows}.issubset(
+        inventory_paths
+    )
+
+
+@pytest.mark.parametrize("receipt_version", [1, 2, 3])
+def test_targeted_artifact_preserves_pre_v4_replacement_receipts(
+    tmp_path: Path,
+    receipt_version: int,
+) -> None:
+    script = _targeted_package_script()
+    rulespec = tmp_path / "rulespec-us"
+    rulespec.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=rulespec, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=rulespec,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=rulespec, check=True)
+    old = rulespec / "us/statutes/47:32.yaml"
+    old_manifest = rulespec / ".axiom/encoding-manifests/us/statutes/47:32.json"
+    old.parent.mkdir(parents=True)
+    old_manifest.parent.mkdir(parents=True)
+    old.write_text("old\n")
+    old_manifest.write_text("old manifest\n")
+    subprocess.run(["git", "add", "."], cwd=rulespec, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=rulespec, check=True)
+    rulespec_ref = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=rulespec, text=True
+    ).strip()
+    old.unlink()
+    old_manifest.unlink()
+    live = rulespec / "us/statutes/47/32.yaml"
+    live.parent.mkdir(parents=True)
+    live.write_text("new\n")
+    citation = "us/statute/47:32"
+    context_payload = {"citation": citation, "review_findings_files": []}
+    context_bytes = json.dumps(context_payload, sort_keys=True).encode()
+    context_path = tmp_path / "generated/target/context-manifest.json"
+    context_path.parent.mkdir(parents=True)
+    context_path.write_bytes(context_bytes)
+    nested = {
+        "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+        "tool": "axiom-encode encode --apply",
+        "backend": "codex",
+        "citation": citation,
+        "context_manifest_file": str(context_path),
+        "context_manifest_sha256": hashlib.sha256(context_bytes).hexdigest(),
+        "applied_files": [],
+    }
+    receipt_replacement = {
+        "source": "us/statutes/47:32.yaml",
+        "destination": "us/statutes/47/32.yaml",
+        "scheduled_dependents": [],
+    }
+    if receipt_version >= 2:
+        receipt_replacement["exact_dependents"] = []
+    if receipt_version >= 3:
+        receipt_replacement["destination_predecessor_class"] = (
+            "canonicalized-unowned-duplicate"
+        )
+        receipt_replacement["destination_predecessor_files"] = []
+    receipt_payload = {
+        "schema_version": (
+            f"axiom-encode/legacy-fresh-reencode-receipt/v{receipt_version}"
+        ),
+        "replacement": receipt_replacement,
+    }
+    receipt_path = rulespec / ".axiom/legacy-replacements" / f"{'b' * 64}.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps(receipt_payload) + "\n")
+    outer = {
+        "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+        "tool": "axiom-encode encode --apply --replace-legacy-rulespec-path",
+        "replacement_manifest": nested,
+        "replacement": {
+            "receipt_path": receipt_path.relative_to(rulespec).as_posix(),
+            "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        },
+    }
+    outer_path = rulespec / ".axiom/encoding-manifests/us/statutes/47/32.json"
+    outer_path.parent.mkdir(parents=True, exist_ok=True)
+    outer_path.write_text(json.dumps(outer) + "\n")
+    (tmp_path / "source-bundle.json").write_text("[]\n")
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-",
+            str(artifact / "context-manifest.json"),
+            str(artifact / "apply-manifests.json"),
+        ],
+        cwd=tmp_path,
+        input=script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": citation,
+            "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING_PRESENT": "false",
+            "RUNNER_TEMP": str(tmp_path),
+            "RULESPEC_CHECKOUT": "rulespec-us",
+            "RULESPEC_REF": rulespec_ref,
+            "REPLACE_LEGACY_RULESPEC_PATH": "us/statutes/47:32.yaml",
+            "REPLACE_RULESPEC_PATH": "us/statutes/47/32.yaml",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize(

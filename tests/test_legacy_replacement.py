@@ -12,12 +12,17 @@ import pytest
 
 from axiom_encode.cli import (
     _legacy_destination_manifest_claimants_at_base,
+    _legacy_metadata_reconciliation_bytes,
     _legacy_replacement_authoritative_map,
     _require_locked_legacy_replacement_base,
     _resolve_legacy_replacement_contract,
 )
 from axiom_encode.legacy_replacement import (
     LEGACY_MANIFEST_SCHEMA,
+    LegacyReplacementContract,
+    LegacyReplacementFile,
+    LegacyReplacementRetainedSuccessor,
+    LegacyReplacementRewrite,
     legacy_generated_manifest_issues,
     legacy_manual_manifest_issues,
     legacy_receipt_v1_manifest_issues,
@@ -30,6 +35,7 @@ from axiom_encode.legacy_replacement_overlay import (
     LegacyReplacementOverlayError,
     stage_legacy_replacement_overlay,
 )
+from axiom_encode.rulespec_path_migration import PlannedMove
 
 
 @pytest.mark.parametrize(
@@ -377,6 +383,8 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         destination_predecessor_files=[
             {"path": "us-la/statutes/47/32.yaml", "sha256": "f" * 64}
         ],
+        retained_successors=[{"source": "us-la/statutes/47:294.yaml"}],
+        metadata_reconciliations=[{"path": "known-validation-gaps.yaml"}],
     )
     baseline = receipt_identity_sha256(payload)
     for field in (
@@ -391,6 +399,8 @@ def test_receipt_identity_binds_every_transaction_dimension() -> None:
         "exact_dependents",
         "destination_predecessor_class",
         "destination_predecessor_files",
+        "retained_successors",
+        "metadata_reconciliations",
     ):
         changed = copy.deepcopy(payload)
         changed[field] = f"changed-{field}"
@@ -556,6 +566,123 @@ def test_contract_absorbs_exact_unowned_canonical_destination_predecessor(
     assert not (
         checkout / ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
     ).exists()
+
+
+def test_contract_admits_cryptographically_verified_retained_successor(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source_unit = _legacy_checkout(tmp_path)
+    old = checkout / "us-la/statutes/47:294.yaml"
+    old_test = old.with_name("47:294.test.yaml")
+    successor = checkout / "us-la/statutes/47/294.yaml"
+    successor_test = successor.with_name("294.test.yaml")
+    old.parent.mkdir(parents=True, exist_ok=True)
+    successor.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text(
+        "format: rulespec/v1\nmodule:\n  source_verification:\n"
+        "    corpus_citation_path: us-la/statute/47:294\nrules: []\n"
+    )
+    old_test.write_text("[]\n")
+    successor.write_bytes(old.read_bytes())
+    successor_test.write_bytes(old_test.read_bytes())
+    old_manifest = checkout / ".axiom/encoding-manifests/us-la/statutes/47:294.json"
+    old_manifest.parent.mkdir(parents=True, exist_ok=True)
+    old_payload = _manual_manifest()
+    old_payload["applied_files"] = [
+        {
+            "path": path.relative_to(checkout).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in (old, old_test)
+    ]
+    old_manifest.write_text(json.dumps(old_payload) + "\n")
+    successor_manifest = (
+        checkout / ".axiom/encoding-manifests/us-la/statutes/47/294.json"
+    )
+    successor_manifest.parent.mkdir(parents=True, exist_ok=True)
+    successor_payload = {
+        "schema_version": "axiom-encode/applied-rulespec/v5",
+        "tool": "axiom-encode encode --apply",
+        "backend": "openai",
+        "citation": "us-la/statute/47:294",
+        "validation_execution": {"axiom_encode": {"commit": "a" * 40}},
+        "applied_files": [
+            {
+                "path": path.relative_to(checkout).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in (successor, successor_test)
+        ],
+    }
+    successor_manifest.write_text(
+        json.dumps(successor_payload, indent=2, sort_keys=True) + "\n"
+    )
+    index = checkout / ".axiom/index/provisions_to_rules.json"
+    index.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"module": "us-la/statutes/47:32.yaml"},
+                    {"module": "us-la/statutes/47/32.yaml"},
+                    {"module": "us-la/statutes/47:294.yaml"},
+                    {"module": "us-la/statutes/47/294.yaml"},
+                ]
+            }
+        )
+        + "\n"
+    )
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "retained successor base")
+
+    resolved_294 = SimpleNamespace(
+        requested="us-la/statute/47:294",
+        citation_path="us-la/statute/47:294",
+        body="official body",
+        resolved_source=object(),
+    )
+    with (
+        patch(
+            "axiom_encode.cli.resolve_corpus_source_unit",
+            side_effect=lambda citation, _release: (
+                resolved_294 if citation.endswith("47:294") else source_unit
+            ),
+        ),
+        patch(
+            "axiom_encode.cli._applied_encoding_manifest_verifier",
+            return_value=object(),
+        ),
+        patch(
+            "axiom_encode.cli.verify_rulespec_validation_waiver_set",
+            return_value="f" * 64,
+        ),
+        patch(
+            "axiom_encode.cli._load_verified_applied_encoding_manifest_payload",
+            return_value=(
+                successor_payload,
+                "",
+                hashlib.sha256(successor_manifest.read_bytes()).hexdigest(),
+                [],
+            ),
+        ) as verified,
+    ):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path("us-la/statutes/47:32.yaml"),
+            destination_raw=Path("us-la/statutes/47/32.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source_unit,
+            corpus_release=SimpleNamespace(),
+            retained_successor_paths=(Path("us-la/statutes/47:294.yaml"),),
+        )
+
+    assert verified.call_count == 1
+    assert len(contract.retained_successors) == 1
+    assert contract.retained_successors[0].destination == Path(
+        "us-la/statutes/47/294.yaml"
+    )
+    assert [item.path for item in contract.metadata_reconciliations] == [
+        Path(".axiom/index/provisions_to_rules.json")
+    ]
 
 
 def test_destination_manifest_claimant_scan_is_one_conservative_base_query(
@@ -1241,3 +1368,236 @@ def test_locked_recheck_rejects_untracked_file_introduced_after_planning(
 
     with pytest.raises(ValueError, match="exact clean HEAD"):
         _require_locked_legacy_replacement_base(checkout, contract)
+
+
+def test_five_inventory_reconciliation_is_exact_and_deterministic() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    old_module = "us-la/statutes/47:294.yaml"
+    new_module = "us-la/statutes/47/294.yaml"
+    old_identity = "us-la:statutes/47:294"
+    new_identity = "us-la:statutes/47/294"
+    old_manifest = ".axiom/encoding-manifests/us-la/statutes/47:294.json"
+    cases = {
+        Path(".axiom/index/provisions_to_rules.json"): (
+            json.dumps(
+                {
+                    "records": [
+                        {"module": old_module},
+                        {"module": new_module},
+                    ]
+                }
+            ).encode(),
+            "remove_legacy_module_records",
+        ),
+        Path(".axiom/pending-validation-fingerprints.json"): (
+            json.dumps({old_module: "old", new_module: "new"}).encode(),
+            "remove_legacy_fingerprints",
+        ),
+        Path("known-validation-gaps.yaml"): (
+            f"'{old_module}':\n  reason: old\n'{new_module}':\n  reason: new\n".encode(),
+            "remove_legacy_validation_gaps",
+        ),
+        Path("oracle-coverage-pending.yaml"): (
+            (
+                f"- legal_id: {old_identity}#output.tax\n  reason: old\n"
+                f"- legal_id: {new_identity}#output.tax\n  reason: new\n"
+            ).encode(),
+            "remove_legacy_oracle_pending",
+        ),
+        Path("tests/test_encoding_manifests.py"): (
+            f"ALLOW = {{\n    '{old_manifest}',\n    'keep.json',\n}}\n".encode(),
+            "remove_retired_manifest_allowances",
+        ),
+    }
+    for path, (raw, operation) in cases.items():
+        rewritten, operations = _legacy_metadata_reconciliation_bytes(
+            path, raw, moves=moves
+        )
+        assert operations == ({"operation": operation, "count": 1},)
+        assert old_module.encode() not in rewritten
+        assert old_identity.encode() not in rewritten
+        assert old_manifest.encode() not in rewritten
+
+
+def test_toolchain_reconciliation_binds_exact_post_migration_waiver_digest() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    digest = "e" * 64
+    raw = (
+        f'rulespec_root = "rulespec-us"\nvalidation_waiver_set_sha256 = "{"f" * 64}"\n'
+    ).encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path(".axiom/toolchain.toml"),
+        raw,
+        moves=moves,
+        validation_waiver_set_sha256=digest,
+    )
+
+    assert (
+        rewritten
+        == (
+            'rulespec_root = "rulespec-us"\n'
+            f'validation_waiver_set_sha256 = "{digest}"\n'
+        ).encode()
+    )
+    assert operations == (
+        {"operation": "update_validation_waiver_set_sha256", "count": 1},
+    )
+    with pytest.raises(ValueError, match="lacks the post-migration waiver digest"):
+        _legacy_metadata_reconciliation_bytes(
+            Path(".axiom/toolchain.toml"),
+            raw,
+            moves=moves,
+        )
+    with pytest.raises(ValueError, match="not one canonical entry"):
+        _legacy_metadata_reconciliation_bytes(
+            Path(".axiom/toolchain.toml"),
+            raw + raw,
+            moves=moves,
+            validation_waiver_set_sha256=digest,
+        )
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [
+            {"module": "us-la/statutes/47:294.yaml"},
+            {"note": "successor us-la/statutes/47/294.yaml is available"},
+        ],
+        [{"module": "us-la/statutes/47:294.yaml"}],
+        [
+            {"module": "us-la/statutes/47:294.yaml"},
+            {"module": "us-la/statutes/47/295.yaml"},
+        ],
+    ],
+)
+def test_provision_index_requires_exact_canonical_module_record(
+    records: list[dict[str, str]],
+) -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="lacks exact canonical module records: us-la/statutes/47/294.yaml",
+    ):
+        _legacy_metadata_reconciliation_bytes(
+            Path(".axiom/index/provisions_to_rules.json"),
+            json.dumps({"records": records}).encode(),
+            moves=moves,
+        )
+
+
+def test_provision_index_rejects_out_of_band_structured_successor_field() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    payload = {
+        "records": [{"module": "us-la/statutes/47:294.yaml"}],
+        "metadata": {"module": "us-la/statutes/47/294.yaml"},
+    }
+
+    with pytest.raises(ValueError, match="lacks exact canonical module records"):
+        _legacy_metadata_reconciliation_bytes(
+            Path(".axiom/index/provisions_to_rules.json"),
+            json.dumps(payload).encode(),
+            moves=moves,
+        )
+
+
+def test_retained_successor_overlay_preflights_then_removes_one_composite(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "rulespec-us"
+    main = Path("us-la/statutes/47:32.yaml")
+    main_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47:32.json")
+    old = Path("us-la/statutes/47:294.yaml")
+    old_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47:294.json")
+    successor = Path("us-la/statutes/47/294.yaml")
+    successor_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47/294.json")
+    metadata = Path("known-validation-gaps.yaml")
+    for path, raw in {
+        main: b"main\n",
+        main_manifest: b"main manifest\n",
+        old: b"old\n",
+        old_manifest: b"old manifest\n",
+        successor: b"successor\n",
+        successor_manifest: b"signed successor manifest\n",
+        metadata: b"old metadata\n",
+    }.items():
+        target = checkout / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    def evidence(path: Path) -> LegacyReplacementFile:
+        raw = (checkout / path).read_bytes()
+        return LegacyReplacementFile(path, hashlib.sha256(raw).hexdigest(), raw)
+
+    successor_manifest_evidence = evidence(successor_manifest)
+    contract = LegacyReplacementContract(
+        base_commit="a" * 40,
+        base_tree="b" * 40,
+        source=main,
+        destination=main,
+        legacy_manifest=evidence(main_manifest),
+        deleted_files=(evidence(main),),
+        rewrites=(),
+        scheduled_dependents=(),
+        exact_dependents=(),
+        retained_successors=(
+            LegacyReplacementRetainedSuccessor(
+                source=old,
+                destination=successor,
+                legacy_manifest=evidence(old_manifest),
+                legacy_files=(evidence(old),),
+                successor_manifest=successor_manifest_evidence,
+                successor_files=(evidence(successor),),
+            ),
+        ),
+        metadata_reconciliations=(
+            LegacyReplacementRewrite(
+                path=metadata,
+                before_sha256=hashlib.sha256(b"old metadata\n").hexdigest(),
+                after_sha256=hashlib.sha256(b"new metadata\n").hexdigest(),
+                replacements=({"operation": "test", "count": 1},),
+                raw=b"new metadata\n",
+            ),
+        ),
+    )
+
+    (checkout / successor_manifest).write_text("tampered\n")
+    with pytest.raises(LegacyReplacementOverlayError, match="signed manifest changed"):
+        stage_legacy_replacement_overlay(contract, checkout)
+    assert (checkout / main).exists()
+    assert (checkout / old).exists()
+    assert (checkout / metadata).read_bytes() == b"old metadata\n"
+
+    (checkout / successor_manifest).write_bytes(successor_manifest_evidence.raw)
+    stage_legacy_replacement_overlay(contract, checkout)
+    assert not (checkout / main).exists()
+    assert not (checkout / main_manifest).exists()
+    assert not (checkout / old).exists()
+    assert not (checkout / old_manifest).exists()
+    assert (checkout / successor).read_bytes() == b"successor\n"
+    assert (
+        checkout / successor_manifest
+    ).read_bytes() == successor_manifest_evidence.raw
+    assert (checkout / metadata).read_bytes() == b"new metadata\n"

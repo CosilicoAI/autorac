@@ -7,7 +7,13 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from axiom_encode.cli import _legacy_replacement_manifest_issues
+from axiom_encode.legacy_replacement import (
+    receipt_identity_payload,
+    receipt_identity_sha256,
+)
 from scripts.prepare_signed_backfill import (
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
@@ -382,6 +388,86 @@ def _write_signed_change(repo: Path) -> tuple[Path, Path]:
     return rule, manifest
 
 
+def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
+    repository = receipt["repository"]
+    legacy = receipt["legacy"]
+    replacement = receipt["replacement"]
+    assert isinstance(repository, dict)
+    assert isinstance(legacy, dict)
+    assert isinstance(replacement, dict)
+    legacy_manifest = legacy["manifest"]
+    legacy_files = legacy["files"]
+    live_files = replacement["live_files"]
+    assert isinstance(legacy_manifest, dict)
+    assert isinstance(legacy_files, list)
+    assert isinstance(live_files, list)
+    live_paths = {item["path"] for item in live_files if isinstance(item, dict)}
+    deleted_files = [
+        {"path": item["path"], "deleted": True}
+        for item in legacy_files
+        if isinstance(item, dict) and item.get("path") not in live_paths
+    ]
+    schema = receipt["schema_version"]
+    retained_successors = replacement.get("retained_successors")
+    if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4":
+        assert isinstance(retained_successors, list)
+        deleted_files.extend(
+            {"path": item["path"], "deleted": True}
+            for successor in retained_successors
+            if isinstance(successor, dict)
+            for item in successor.get("legacy_files", [])
+            if isinstance(item, dict)
+        )
+    return receipt_identity_payload(
+        base_commit=str(repository["base_commit"]),
+        base_tree=str(repository["base_tree"]),
+        legacy_manifest_sha256=str(legacy_manifest["sha256"]),
+        model_manifest_sha256=str(replacement["model_manifest_sha256"]),
+        live_files=live_files,
+        deleted_files=deleted_files,
+        rewrites=replacement["rewrites"],
+        scheduled_dependents=replacement["scheduled_dependents"],
+        exact_dependents=(
+            replacement["exact_dependents"]
+            if schema
+            in {
+                "axiom-encode/legacy-fresh-reencode-receipt/v2",
+                "axiom-encode/legacy-fresh-reencode-receipt/v3",
+                "axiom-encode/legacy-fresh-reencode-receipt/v4",
+            }
+            else None
+        ),
+        destination_predecessor_class=(
+            str(replacement["destination_predecessor_class"])
+            if schema
+            in {
+                "axiom-encode/legacy-fresh-reencode-receipt/v3",
+                "axiom-encode/legacy-fresh-reencode-receipt/v4",
+            }
+            else None
+        ),
+        destination_predecessor_files=(
+            replacement["destination_predecessor_files"]
+            if schema
+            in {
+                "axiom-encode/legacy-fresh-reencode-receipt/v3",
+                "axiom-encode/legacy-fresh-reencode-receipt/v4",
+            }
+            else None
+        ),
+        retained_successors=(
+            retained_successors
+            if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4"
+            else None
+        ),
+        metadata_reconciliations=(
+            replacement["metadata_reconciliations"]
+            if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4"
+            else None
+        ),
+    )
+
+
 def _write_legacy_replacement_change(
     repo: Path,
     *,
@@ -391,6 +477,7 @@ def _write_legacy_replacement_change(
     exact_dependent: bool = False,
     generated_exact_dependent: bool = False,
     destination_predecessor: bool = False,
+    retained_successor: bool = False,
     legacy_owner_class: str = "v1-hmac-untrusted",
 ) -> tuple[Path, Path, Path, Path]:
     old_rule = repo / "us/statutes/47:32.yaml"
@@ -463,6 +550,83 @@ def _write_legacy_replacement_change(
     )
     new_rule = repo / "us/statutes/47/32.yaml"
     new_test = repo / "us/statutes/47/32.test.yaml"
+    retained_old_rule = repo / "us/statutes/47:294.yaml"
+    retained_old_test = repo / "us/statutes/47:294.test.yaml"
+    retained_old_manifest = repo / ".axiom/encoding-manifests/us/statutes/47:294.json"
+    retained_rule = repo / "us/statutes/47/294.yaml"
+    retained_test = repo / "us/statutes/47/294.test.yaml"
+    retained_manifest = repo / ".axiom/encoding-manifests/us/statutes/47/294.json"
+    retained_metadata = repo / "known-validation-gaps.yaml"
+    retained_old_files: list[dict[str, str]] = []
+    retained_files: list[dict[str, str]] = []
+    retained_old_manifest_raw = b""
+    retained_manifest_raw = b""
+    retained_manifest_payload: dict[str, object] = {}
+    retained_metadata_before = b""
+    if retained_successor:
+        retained_old_rule.parent.mkdir(parents=True, exist_ok=True)
+        retained_rule.parent.mkdir(parents=True, exist_ok=True)
+        retained_old_rule.write_text("format: rulespec/v1\nrules: []\n")
+        retained_old_test.write_text("[]\n")
+        retained_rule.write_bytes(retained_old_rule.read_bytes())
+        retained_test.write_bytes(retained_old_test.read_bytes())
+        retained_old_files = [
+            {
+                "path": path.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in (retained_old_rule, retained_old_test)
+        ]
+        retained_files = [
+            {
+                "path": path.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in (retained_rule, retained_test)
+        ]
+        retained_old_manifest.parent.mkdir(parents=True, exist_ok=True)
+        retained_old_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": "axiom-encode/applied-rulespec/v1",
+                    "tool": "axiom-encode sign-applied-files",
+                    "backend": "manual",
+                    "runner": "manual-attestation",
+                    "manual_exception": "test retained legacy evidence",
+                    "applied_files": retained_old_files,
+                    "signature": {
+                        "algorithm": "hmac-sha256",
+                        "key_id": "historical-v1",
+                        "value": "opaque-untrusted-evidence",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        retained_old_manifest_raw = retained_old_manifest.read_bytes()
+        retained_manifest_payload = {
+            "schema_version": "axiom-encode/applied-rulespec/v5",
+            "tool": "axiom-encode encode --apply",
+            "backend": "codex",
+            "citation": "us/statute/47:294",
+            "applied_files": retained_files,
+            "signature": {
+                "algorithm": "ed25519-domain-v1",
+                "key_id": f"sha256:{'d' * 64}",
+                "value": "signed-test-value",
+            },
+        }
+        retained_manifest.parent.mkdir(parents=True, exist_ok=True)
+        retained_manifest.write_text(
+            json.dumps(retained_manifest_payload, indent=2, sort_keys=True) + "\n"
+        )
+        retained_manifest_raw = retained_manifest.read_bytes()
+        retained_metadata.write_text(
+            "'us/statutes/47:294.yaml':\n  reason: legacy\n"
+            "'us/statutes/47/294.yaml':\n  reason: canonical\n"
+        )
+        retained_metadata_before = retained_metadata.read_bytes()
     destination_predecessor_files: list[dict[str, str]] = []
     if destination_predecessor:
         new_rule.parent.mkdir(parents=True, exist_ok=True)
@@ -592,6 +756,13 @@ def _write_legacy_replacement_change(
     old_rule.unlink()
     old_test.unlink()
     old_manifest.unlink()
+    if retained_successor:
+        retained_old_rule.unlink()
+        retained_old_test.unlink()
+        retained_old_manifest.unlink()
+        retained_metadata.write_text(
+            "'us/statutes/47/294.yaml':\n  reason: canonical\n"
+        )
     metadata.write_text('{"module":"us:statutes/47/32"}\n', encoding="utf-8")
     if exact_dependent:
         exact_primary.write_text(
@@ -641,7 +812,7 @@ def _write_legacy_replacement_change(
         "applied_files": live_files,
     }
     nested_raw = (json.dumps(nested_manifest, indent=2, sort_keys=True) + "\n").encode()
-    receipt_relative = Path(".axiom/legacy-replacements") / f"{'c' * 64}.json"
+    receipt_relative = Path(".axiom/legacy-replacements") / "pending.json"
     receipt = repo / receipt_relative
     receipt.parent.mkdir(parents=True)
     receipt_payload = {
@@ -786,10 +957,102 @@ def _write_legacy_replacement_change(
                 ],
             }
         ]
+    if retained_successor:
+        retained_metadata_after = retained_metadata.read_bytes()
+        receipt_payload["schema_version"] = (
+            "axiom-encode/legacy-fresh-reencode-receipt/v4"
+        )
+        receipt_payload["replacement"].setdefault("exact_dependents", [])
+        receipt_payload["replacement"].setdefault(
+            "destination_predecessor_class", "none"
+        )
+        receipt_payload["replacement"].setdefault("destination_predecessor_files", [])
+        receipt_payload["replacement"]["retained_successors"] = [
+            {
+                "source": retained_old_rule.relative_to(repo).as_posix(),
+                "destination": retained_rule.relative_to(repo).as_posix(),
+                "legacy_owner_class": "v1-manual-hmac-untrusted",
+                "legacy_manifest": {
+                    "path": retained_old_manifest.relative_to(repo).as_posix(),
+                    "sha256": hashlib.sha256(retained_old_manifest_raw).hexdigest(),
+                },
+                "legacy_files": retained_old_files,
+                "successor_manifest": {
+                    "path": retained_manifest.relative_to(repo).as_posix(),
+                    "sha256": hashlib.sha256(retained_manifest_raw).hexdigest(),
+                    "payload": retained_manifest_payload,
+                },
+                "successor_files": retained_files,
+            }
+        ]
+        receipt_payload["replacement"]["metadata_reconciliations"] = [
+            {
+                "path": retained_metadata.relative_to(repo).as_posix(),
+                "before_sha256": hashlib.sha256(retained_metadata_before).hexdigest(),
+                "after_sha256": hashlib.sha256(retained_metadata_after).hexdigest(),
+                "operations": [
+                    {
+                        "operation": "remove_legacy_validation_gaps",
+                        "count": 1,
+                    }
+                ],
+            }
+        ]
+    receipt_relative = Path(".axiom/legacy-replacements") / (
+        receipt_identity_sha256(_legacy_receipt_identity(receipt_payload)) + ".json"
+    )
+    receipt = repo / receipt_relative
+    receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(
         json.dumps(receipt_payload, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if retained_successor:
+        retained_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": "axiom-encode/applied-rulespec/v5",
+                    "generated_at": "2026-07-30T00:00:00+00:00",
+                    "tool": (
+                        "axiom-encode encode --apply "
+                        "--legacy-retained-successor-rulespec-path"
+                    ),
+                    "axiom_encode_version": "0.2.1414",
+                    "axiom_encode_git": {
+                        "commit": "a" * 40,
+                        "dirty_tracked": False,
+                    },
+                    "validation_waiver_set_sha256": "b" * 64,
+                    "applied_files": retained_files,
+                    "retained_successor_manifest": retained_manifest_payload,
+                    "legacy_migration": {
+                        "receipt_path": receipt_relative.as_posix(),
+                        "receipt_sha256": hashlib.sha256(
+                            receipt.read_bytes()
+                        ).hexdigest(),
+                        "source": retained_old_rule.relative_to(repo).as_posix(),
+                        "destination": retained_rule.relative_to(repo).as_posix(),
+                        "legacy_manifest_path": retained_old_manifest.relative_to(
+                            repo
+                        ).as_posix(),
+                        "legacy_manifest_sha256": hashlib.sha256(
+                            retained_old_manifest_raw
+                        ).hexdigest(),
+                        "successor_manifest_sha256": hashlib.sha256(
+                            retained_manifest_raw
+                        ).hexdigest(),
+                    },
+                    "signature": {
+                        "algorithm": "ed25519-domain-v1",
+                        "key_id": f"sha256:{'d' * 64}",
+                        "value": "signed-test-value",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     if exact_dependent:
         exact_manifest.write_text(
             json.dumps(
@@ -852,7 +1115,27 @@ def _write_legacy_replacement_change(
                         "path": metadata.relative_to(repo).as_posix(),
                         "sha256": metadata_after_sha256,
                     },
+                    *(
+                        [
+                            {
+                                "path": retained_metadata.relative_to(repo).as_posix(),
+                                "sha256": hashlib.sha256(
+                                    retained_metadata.read_bytes()
+                                ).hexdigest(),
+                            }
+                        ]
+                        if retained_successor
+                        else []
+                    ),
                     *[{"path": item["path"], "deleted": True} for item in legacy_files],
+                    *(
+                        [
+                            {"path": item["path"], "deleted": True}
+                            for item in retained_old_files
+                        ]
+                        if retained_successor
+                        else []
+                    ),
                 ],
             },
             sort_keys=True,
@@ -1026,8 +1309,16 @@ def _refresh_legacy_receipt_bindings(
     manifest: Path,
     receipt: Path,
 ) -> None:
-    receipt_sha256 = hashlib.sha256(receipt.read_bytes()).hexdigest()
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt_relative = Path(".axiom/legacy-replacements") / (
+        receipt_identity_sha256(_legacy_receipt_identity(receipt_payload)) + ".json"
+    )
+    refreshed_receipt = repo / receipt_relative
+    if refreshed_receipt != receipt:
+        receipt.replace(refreshed_receipt)
+    receipt_sha256 = hashlib.sha256(refreshed_receipt.read_bytes()).hexdigest()
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["replacement"]["receipt_path"] = receipt_relative.as_posix()
     manifest_payload["replacement"]["receipt_sha256"] = receipt_sha256
     manifest.write_text(
         json.dumps(manifest_payload, sort_keys=True) + "\n",
@@ -1038,9 +1329,34 @@ def _refresh_legacy_receipt_bindings(
     )
     if exact_manifest.is_file():
         exact_payload = json.loads(exact_manifest.read_text(encoding="utf-8"))
+        exact_payload["legacy_migration"]["receipt_path"] = receipt_relative.as_posix()
         exact_payload["legacy_migration"]["receipt_sha256"] = receipt_sha256
         exact_manifest.write_text(
             json.dumps(exact_payload, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    replacement = receipt_payload.get("replacement")
+    retained = (
+        replacement.get("retained_successors", [])
+        if isinstance(replacement, dict)
+        else []
+    )
+    for successor in retained if isinstance(retained, list) else []:
+        if not isinstance(successor, dict):
+            continue
+        evidence = successor.get("successor_manifest")
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("path"), str):
+            continue
+        retained_manifest = repo / evidence["path"]
+        if not retained_manifest.is_file():
+            continue
+        retained_payload = json.loads(retained_manifest.read_text(encoding="utf-8"))
+        retained_payload["legacy_migration"]["receipt_path"] = (
+            receipt_relative.as_posix()
+        )
+        retained_payload["legacy_migration"]["receipt_sha256"] = receipt_sha256
+        retained_manifest.write_text(
+            json.dumps(retained_payload, sort_keys=True) + "\n",
             encoding="utf-8",
         )
 
@@ -1121,6 +1437,128 @@ def test_stage_accepts_v3_unowned_canonical_destination_predecessor(
     stage_authorized_changes(repo)
 
     assert PurePosixPath("us/statutes/47/32.yaml") in expected
+
+
+def test_stage_accepts_v4_additive_reconciliation_contract(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        destination_predecessor=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["schema_version"] = "axiom-encode/legacy-fresh-reencode-receipt/v4"
+    payload["replacement"]["retained_successors"] = []
+    payload["replacement"]["metadata_reconciliations"] = []
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    expected = authorized_changed_paths(repo)
+    stage_authorized_changes(repo)
+
+    assert PurePosixPath("us/statutes/47/32.yaml") in expected
+
+
+def test_stage_accepts_v4_nonempty_retained_successor_identity(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo, destination_predecessor=True, retained_successor=True
+    )
+
+    expected = authorized_changed_paths(repo)
+    stage_authorized_changes(repo)
+
+    assert (
+        PurePosixPath(".axiom/encoding-manifests/us/statutes/47:294.json") in expected
+    )
+    assert PurePosixPath("us/statutes/47:294.yaml") in expected
+    assert (
+        ".axiom/encoding-manifests/us/statutes/47:294.json"
+        in _git(repo, "diff", "--cached", "--name-only", "--no-renames").splitlines()
+    )
+    assert json.loads(receipt.read_text())["replacement"]["retained_successors"]
+
+
+def test_persisted_verifier_reconstructs_nonempty_v4_retained_identity(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo, destination_predecessor=True, retained_successor=True
+    )
+    manifest_label = manifest.relative_to(repo).as_posix()
+    signing_key = Ed25519PrivateKey.generate().public_key()
+
+    issues = _legacy_replacement_manifest_issues(
+        json.loads(manifest.read_text()),
+        repo_path=repo,
+        manifest_label=manifest_label,
+        signing_broker=signing_key,
+        expected_waiver_set_sha256="b" * 64,
+        local_corpus_release=None,
+    )
+    assert not any("replacement receipt identity is stale" in issue for issue in issues)
+
+    receipt_payload = json.loads(receipt.read_text())
+    receipt_payload["replacement"]["retained_successors"][0]["legacy_files"][0][
+        "sha256"
+    ] = "0" * 64
+    receipt.write_text(json.dumps(receipt_payload, sort_keys=True) + "\n")
+    manifest_payload = json.loads(manifest.read_text())
+    manifest_payload["replacement"]["receipt_sha256"] = hashlib.sha256(
+        receipt.read_bytes()
+    ).hexdigest()
+    manifest.write_text(json.dumps(manifest_payload, sort_keys=True) + "\n")
+
+    tampered_issues = _legacy_replacement_manifest_issues(
+        manifest_payload,
+        repo_path=repo,
+        manifest_label=manifest_label,
+        signing_broker=signing_key,
+        expected_waiver_set_sha256="b" * 64,
+        local_corpus_release=None,
+    )
+    assert any(
+        "replacement receipt identity is stale" in issue for issue in tampered_issues
+    )
+
+
+def test_stage_rejects_v4_retained_deleted_file_evidence_tamper(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo, destination_predecessor=True, retained_successor=True
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["replacement"]["retained_successors"][0]["legacy_files"][0]["sha256"] = (
+        "0" * 64
+    )
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    with pytest.raises(ValueError, match="retained successor.*base group"):
+        authorized_changed_paths(repo)
+
+
+def test_stage_rejects_v4_missing_retained_deleted_file_from_outer_manifest(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, _receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo, destination_predecessor=True, retained_successor=True
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["applied_files"] = [
+        item
+        for item in payload["applied_files"]
+        if item.get("path") != "us/statutes/47:294.yaml"
+    ]
+    manifest.write_text(json.dumps(payload, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="outer applied_files differ"):
+        authorized_changed_paths(repo)
 
 
 def test_stage_rejects_v3_destination_predecessor_hash_tamper(
@@ -1282,14 +1720,7 @@ def test_stage_rejects_inexact_legacy_dependent_replacement_count(
         json.dumps(receipt_payload, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
-    manifest_payload["replacement"]["receipt_sha256"] = hashlib.sha256(
-        receipt.read_bytes()
-    ).hexdigest()
-    manifest.write_text(
-        json.dumps(manifest_payload, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
 
     with pytest.raises(ValueError, match="exact base proof differs"):
         stage_authorized_changes(repo)
@@ -1322,14 +1753,7 @@ def test_stage_rejects_unrelated_legacy_dependent_replacement_pair(
         json.dumps(receipt_payload, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
-    manifest_payload["replacement"]["receipt_sha256"] = hashlib.sha256(
-        receipt.read_bytes()
-    ).hexdigest()
-    manifest.write_text(
-        json.dumps(manifest_payload, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
     dependent_manifest = (
         repo / ".axiom/encoding-manifests/us/policies/income_tax/dependent.json"
     )
@@ -1409,14 +1833,7 @@ def test_stage_rejects_unauthorized_legacy_metadata_rewrite(tmp_path: Path) -> N
         json.dumps(receipt_payload, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
-    manifest_payload["replacement"]["receipt_sha256"] = hashlib.sha256(
-        receipt.read_bytes()
-    ).hexdigest()
-    manifest.write_text(
-        json.dumps(manifest_payload, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
     metadata.write_text('{"module":"us:statutes/47/32"}\n', encoding="utf-8")
 
     with pytest.raises(ValueError, match="rewrite\\[0\\] path is unauthorized"):

@@ -20,15 +20,23 @@ LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4 = "axiom-encode/legacy-fresh-reencode-receipt/v4"
 LEGACY_EXACT_DEPENDENT_TOOL = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
+)
+LEGACY_RETAINED_SUCCESSOR_TOOL = (
+    "axiom-encode encode --apply --legacy-retained-successor-rulespec-path"
 )
 MODEL_APPLY_TOOL = "axiom-encode encode --apply"
 MODEL_APPLY_BACKENDS = frozenset({"claude", "codex", "openai"})
 LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
     {
         PurePosixPath(".axiom/index/provisions_to_rules.json"),
+        PurePosixPath(".axiom/pending-validation-fingerprints.json"),
+        PurePosixPath(".axiom/toolchain.toml"),
+        PurePosixPath("known-validation-gaps.yaml"),
         PurePosixPath("oracle-coverage-pending.yaml"),
+        PurePosixPath("tests/test_encoding_manifests.py"),
     }
 )
 RULESPEC_ATOMIC_ROOTS = frozenset(
@@ -1070,6 +1078,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
@@ -1127,7 +1136,122 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 raise ValueError(
                     f"legacy replacement exact_dependents are malformed: {relative}"
                 )
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 and (
+            retained_successors = receipt_replacement.get("retained_successors")
+            metadata_reconciliations = receipt_replacement.get(
+                "metadata_reconciliations"
+            )
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4:
+                if not isinstance(retained_successors, list) or not isinstance(
+                    metadata_reconciliations, list
+                ):
+                    raise ValueError(
+                        f"legacy replacement v4 reconciliation fields are malformed: "
+                        f"{relative}"
+                    )
+            elif (
+                "retained_successors" in receipt_replacement
+                or "metadata_reconciliations" in receipt_replacement
+            ):
+                raise ValueError(
+                    f"legacy replacement pre-v4 receipt has v4 fields: {relative}"
+                )
+            else:
+                retained_successors = []
+                metadata_reconciliations = []
+            repository = receipt.get("repository")
+            live_paths = {
+                item.get("path") for item in live_files if isinstance(item, dict)
+            }
+            identity_deleted_files = [
+                {"path": item.get("path"), "deleted": True}
+                for item in legacy_files
+                if isinstance(item, dict) and item.get("path") not in live_paths
+            ]
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4:
+                identity_deleted_files.extend(
+                    {"path": item.get("path"), "deleted": True}
+                    for successor in retained_successors
+                    if isinstance(successor, dict)
+                    for item in (
+                        successor.get("legacy_files", [])
+                        if isinstance(successor.get("legacy_files"), list)
+                        else []
+                    )
+                    if isinstance(item, dict)
+                )
+            from axiom_encode.legacy_replacement import (
+                receipt_identity_payload,
+                receipt_identity_sha256,
+            )
+
+            identity_payload = receipt_identity_payload(
+                base_commit=(
+                    str(repository.get("base_commit"))
+                    if isinstance(repository, dict)
+                    else ""
+                ),
+                base_tree=(
+                    str(repository.get("base_tree"))
+                    if isinstance(repository, dict)
+                    else ""
+                ),
+                legacy_manifest_sha256=str(
+                    replacement.get("legacy_manifest_sha256") or ""
+                ),
+                model_manifest_sha256=str(
+                    receipt_replacement.get("model_manifest_sha256") or ""
+                ),
+                live_files=live_files,
+                deleted_files=identity_deleted_files,
+                rewrites=raw_rewrites,
+                scheduled_dependents=scheduled_dependents,
+                exact_dependents=(
+                    exact_dependents
+                    if receipt_schema
+                    in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    }
+                    else None
+                ),
+                destination_predecessor_class=(
+                    receipt_replacement.get("destination_predecessor_class")
+                    if receipt_schema
+                    in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    }
+                    else None
+                ),
+                destination_predecessor_files=(
+                    receipt_replacement.get("destination_predecessor_files")
+                    if receipt_schema
+                    in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    }
+                    else None
+                ),
+                retained_successors=(
+                    retained_successors
+                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4
+                    else None
+                ),
+                metadata_reconciliations=(
+                    metadata_reconciliations
+                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4
+                    else None
+                ),
+            )
+            if receipt_relative.stem != receipt_identity_sha256(identity_payload):
+                raise ValueError(
+                    f"legacy replacement receipt identity differs: {relative}"
+                )
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            } and (
                 not isinstance(
                     receipt_replacement.get("destination_predecessor_class"), str
                 )
@@ -1155,6 +1279,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             )
             from axiom_encode.cli import (
                 _legacy_destination_predecessor_issues,
+                _legacy_metadata_reconciliation_bytes,
                 _legacy_replacement_authoritative_map,
                 _legacy_replacement_reference_inventory_issues,
                 _strict_legacy_replacement_map,
@@ -1174,7 +1299,10 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     f"legacy replacement authority differs: {relative}: "
                     + "; ".join(authority_issues)
                 )
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3:
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            }:
                 predecessor_issues = _legacy_destination_predecessor_issues(
                     repo,
                     base_commit=str(base_commit or ""),
@@ -1196,6 +1324,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 )
             from axiom_encode.rulespec_path_migration import (
                 PathMigrationPlanError,
+                PlannedMove,
                 rewrite_exact_references,
             )
 
@@ -1261,6 +1390,230 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         f"legacy replacement rewrite[{index}] state differs"
                     )
                 receipt_rewrites.add(rewrite_path)
+            primary_moves = [
+                PlannedMove(source=Path(old), destination=Path(new))
+                for old, new in authoritative_replacements.items()
+                if old.endswith(".yaml") and not old.endswith(".test.yaml")
+            ]
+            post_migration_waiver_sha256: str | None = None
+            try:
+                base_waiver_raw = _git(
+                    repo,
+                    "show",
+                    "HEAD:known-validation-gaps.yaml",
+                )
+                rewritten_waiver_raw, _waiver_operations = (
+                    _legacy_metadata_reconciliation_bytes(
+                        Path("known-validation-gaps.yaml"),
+                        base_waiver_raw,
+                        moves=primary_moves,
+                    )
+                )
+                post_migration_waiver_sha256 = hashlib.sha256(
+                    rewritten_waiver_raw
+                ).hexdigest()
+            except (subprocess.CalledProcessError, ValueError):
+                pass
+            metadata_paths: set[PurePosixPath] = set()
+            for index, reconciliation in enumerate(metadata_reconciliations):
+                if not isinstance(reconciliation, dict) or set(reconciliation) != {
+                    "path",
+                    "before_sha256",
+                    "after_sha256",
+                    "operations",
+                }:
+                    raise ValueError(
+                        f"legacy metadata reconciliation[{index}] is malformed"
+                    )
+                metadata_path = _safe_relative_path(
+                    reconciliation.get("path"),
+                    label=f"{relative} metadata_reconciliations[{index}].path",
+                )
+                if (
+                    metadata_path not in LEGACY_REPLACEMENT_METADATA_PATHS
+                    or metadata_path in metadata_paths
+                ):
+                    raise ValueError(
+                        f"legacy metadata reconciliation[{index}] path is unauthorized"
+                    )
+                base_raw = _git(repo, "show", f"HEAD:{metadata_path.as_posix()}")
+                live_raw = _read_bounded_regular(
+                    repo,
+                    metadata_path,
+                    label="legacy metadata reconciliation",
+                    max_bytes=16 * 1024 * 1024,
+                )
+                try:
+                    expected_live, expected_operations = (
+                        _legacy_metadata_reconciliation_bytes(
+                            Path(metadata_path),
+                            base_raw,
+                            moves=primary_moves,
+                            validation_waiver_set_sha256=(
+                                post_migration_waiver_sha256
+                            ),
+                        )
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"legacy metadata reconciliation[{index}] is unverifiable"
+                    ) from exc
+                if (
+                    reconciliation.get("before_sha256")
+                    != hashlib.sha256(base_raw).hexdigest()
+                    or reconciliation.get("after_sha256")
+                    != hashlib.sha256(live_raw).hexdigest()
+                    or live_raw != expected_live
+                    or reconciliation.get("operations")
+                    != list(expected_operations)
+                ):
+                    raise ValueError(
+                        f"legacy metadata reconciliation[{index}] state differs"
+                )
+                metadata_paths.add(metadata_path)
+            expected_metadata_paths: set[PurePosixPath] = set()
+            for metadata_path in LEGACY_REPLACEMENT_METADATA_PATHS:
+                try:
+                    base_raw = _git(
+                        repo, "show", f"HEAD:{metadata_path.as_posix()}"
+                    )
+                except subprocess.CalledProcessError:
+                    continue
+                try:
+                    expected_live, _expected_operations = (
+                        _legacy_metadata_reconciliation_bytes(
+                            Path(metadata_path),
+                            base_raw,
+                            moves=primary_moves,
+                            validation_waiver_set_sha256=(
+                                post_migration_waiver_sha256
+                            ),
+                        )
+                    )
+                except ValueError:
+                    continue
+                if expected_live != base_raw:
+                    expected_metadata_paths.add(metadata_path)
+            if metadata_paths != expected_metadata_paths:
+                raise ValueError(
+                    "legacy metadata reconciliation inventory is not exact"
+                )
+            receipt_rewrites.update(metadata_paths)
+            retained_deleted_files: list[dict[str, object]] = []
+            for index, successor in enumerate(retained_successors):
+                if not isinstance(successor, dict) or set(successor) != {
+                    "source",
+                    "destination",
+                    "legacy_owner_class",
+                    "legacy_manifest",
+                    "legacy_files",
+                    "successor_manifest",
+                    "successor_files",
+                }:
+                    raise ValueError(f"legacy retained successor[{index}] is malformed")
+                old_manifest_evidence = successor.get("legacy_manifest")
+                successor_manifest_evidence = successor.get("successor_manifest")
+                successor_files = successor.get("successor_files")
+                old_files = successor.get("legacy_files")
+                if (
+                    not isinstance(old_manifest_evidence, dict)
+                    or not isinstance(successor_manifest_evidence, dict)
+                    or not isinstance(successor_files, list)
+                    or not isinstance(old_files, list)
+                ):
+                    raise ValueError(
+                        f"legacy retained successor[{index}] evidence is malformed"
+                    )
+                retained_old_manifest = _safe_relative_path(
+                    old_manifest_evidence.get("path"),
+                    label=f"{relative} retained_successors[{index}].legacy_manifest",
+                )
+                retained_manifest = _safe_relative_path(
+                    successor_manifest_evidence.get("path"),
+                    label=f"{relative} retained_successors[{index}].successor_manifest",
+                )
+                retained_payload = manifest_payloads.get(retained_manifest)
+                if (
+                    retained_old_manifest not in deleted_manifests
+                    or retained_manifest not in live_manifests
+                    or not isinstance(retained_payload, dict)
+                    or retained_payload.get("tool") != LEGACY_RETAINED_SUCCESSOR_TOOL
+                    or retained_payload.get("applied_files") != successor_files
+                    or retained_payload.get("retained_successor_manifest")
+                    != successor_manifest_evidence.get("payload")
+                ):
+                    raise ValueError(
+                        f"legacy retained successor[{index}] manifest transition differs"
+                    )
+                migration = retained_payload.get("legacy_migration")
+                if (
+                    not isinstance(migration, dict)
+                    or migration.get("receipt_path") != receipt_relative.as_posix()
+                    or migration.get("receipt_sha256")
+                    != hashlib.sha256(receipt_raw).hexdigest()
+                    or migration.get("source") != successor.get("source")
+                    or migration.get("destination") != successor.get("destination")
+                    or migration.get("legacy_manifest_path")
+                    != retained_old_manifest.as_posix()
+                    or migration.get("legacy_manifest_sha256")
+                    != old_manifest_evidence.get("sha256")
+                    or migration.get("successor_manifest_sha256")
+                    != successor_manifest_evidence.get("sha256")
+                ):
+                    raise ValueError(
+                        f"legacy retained successor[{index}] receipt binding differs"
+                    )
+                for file_index, item in enumerate(old_files):
+                    if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+                        raise ValueError(
+                            f"legacy retained successor[{index}] old file is malformed"
+                        )
+                    old_path = _safe_relative_path(
+                        item.get("path"),
+                        label=(
+                            f"{relative} retained_successors[{index}]."
+                            f"legacy_files[{file_index}]"
+                        ),
+                    )
+                    if (repo / old_path).exists() or (repo / old_path).is_symlink():
+                        raise ValueError(
+                            f"legacy retained successor source still exists: {old_path}"
+                        )
+                    if hashlib.sha256(
+                        _git(repo, "show", f"HEAD:{old_path.as_posix()}")
+                    ).hexdigest() != item.get("sha256"):
+                        raise ValueError(
+                            f"legacy retained successor base differs: {old_path}"
+                        )
+                    retained_deleted_files.append(
+                        {"path": old_path.as_posix(), "deleted": True}
+                    )
+                for file_index, item in enumerate(successor_files):
+                    if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+                        raise ValueError(
+                            f"legacy retained successor[{index}] live file is malformed"
+                        )
+                    live_path = _safe_relative_path(
+                        item.get("path"),
+                        label=(
+                            f"{relative} retained_successors[{index}]."
+                            f"successor_files[{file_index}]"
+                        ),
+                    )
+                    if hashlib.sha256(
+                        _read_bounded_regular(
+                            repo,
+                            live_path,
+                            label="legacy retained successor file",
+                            max_bytes=16 * 1024 * 1024,
+                        )
+                    ).hexdigest() != item.get("sha256"):
+                        raise ValueError(
+                            f"legacy retained successor live file differs: {live_path}"
+                        )
+                    if live_path not in changed:
+                        authorized_unchanged.add(live_path)
+                authorized.add(retained_old_manifest)
             expected_applied_files = [
                 *live_files,
                 *[
@@ -1272,10 +1625,19 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     if isinstance(rewrite, dict)
                 ],
                 *[
+                    {
+                        "path": item.get("path"),
+                        "sha256": item.get("after_sha256"),
+                    }
+                    for item in metadata_reconciliations
+                    if isinstance(item, dict)
+                ],
+                *[
                     {"path": item.get("path"), "deleted": True}
                     for item in legacy_files
                     if isinstance(item, dict)
                 ],
+                *retained_deleted_files,
             ]
             if payload.get("applied_files") != expected_applied_files:
                 raise ValueError(
@@ -1467,6 +1829,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             }:
                 authorized_unchanged.update(
                     _validate_legacy_exact_dependents(
