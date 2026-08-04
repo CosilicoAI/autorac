@@ -765,6 +765,7 @@ jobs:
           fi
 
       - name: Encode, review, validate, and apply
+        id: encode_apply
         env:
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -1140,128 +1141,8 @@ jobs:
               "Compose signed source bundle for ${CITATION}"
           fi
 
-      - name: Package failed re-encode diagnostics
-        id: package_failed_reencode_diagnostics
-        if: ${{ failure() && !cancelled() }}
-        env:
-          CITATION: ${{ inputs.citation }}
-          CORPUS_REF: ${{ inputs.corpus_ref }}
-          RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
-          RULESPEC_REF: ${{ inputs.rulespec_ref }}
-        run: |
-          set -euo pipefail
-          generated="$RUNNER_TEMP/generated"
-          artifact="$RUNNER_TEMP/targeted-reencode-failure"
-          mkdir -p "$artifact"
-          /opt/axiom-verification/python/bin/python -I - \
-            "$generated" "$artifact" <<'PY'
-          import hashlib
-          import json
-          import os
-          import stat
-          import sys
-          from pathlib import Path
-
-          from axiom_encode.corpus_resolver import (
-              UnsafeCorpusPathError,
-              read_bounded_regular_file,
-          )
-
-          generated = Path(os.path.abspath(sys.argv[1]))
-          artifact = Path(os.path.abspath(sys.argv[2]))
-          allowed_suffixes = {".json", ".log", ".txt", ".yaml", ".yml"}
-          max_entries = 4096
-          max_files = 1024
-          max_file_bytes = 16 * 1024 * 1024
-          max_total_bytes = 64 * 1024 * 1024
-          entry_count = 0
-          total_bytes = 0
-          inventory = []
-
-          if generated.exists():
-              root_stat = os.lstat(generated)
-              if not stat.S_ISDIR(root_stat.st_mode):
-                  raise SystemExit("generated diagnostic root is not a directory")
-              for directory, dirnames, filenames in os.walk(
-                  generated,
-                  topdown=True,
-                  followlinks=False,
-              ):
-                  entry_count += len(dirnames) + len(filenames)
-                  if entry_count > max_entries:
-                      raise SystemExit("generated diagnostics exceed entry limit")
-                  current = Path(directory)
-                  for name in dirnames:
-                      mode = os.lstat(current / name).st_mode
-                      if not stat.S_ISDIR(mode):
-                          raise SystemExit(
-                              "generated diagnostics contain a non-directory entry"
-                          )
-                  for name in sorted(filenames):
-                      source = current / name
-                      mode = os.lstat(source).st_mode
-                      if not stat.S_ISREG(mode):
-                          raise SystemExit(
-                              "generated diagnostics contain a non-regular file"
-                          )
-                      relative = source.relative_to(generated)
-                      if source.suffix.lower() not in allowed_suffixes:
-                          continue
-                      if len(inventory) >= max_files:
-                          raise SystemExit("generated diagnostics exceed file limit")
-                      try:
-                          payload = read_bounded_regular_file(
-                              generated,
-                              source,
-                              label="failed re-encode diagnostic",
-                              max_bytes=max_file_bytes,
-                          )
-                      except UnsafeCorpusPathError as exc:
-                          raise SystemExit(str(exc)) from exc
-                      total_bytes += len(payload)
-                      if total_bytes > max_total_bytes:
-                          raise SystemExit("generated diagnostics exceed size limit")
-                      destination = artifact / "generated" / relative
-                      destination.parent.mkdir(parents=True, exist_ok=True)
-                      destination.write_bytes(payload)
-                      inventory.append(
-                          {
-                              "path": relative.as_posix(),
-                              "sha256": hashlib.sha256(payload).hexdigest(),
-                              "size": len(payload),
-                          }
-                      )
-
-          inventory.sort(key=lambda item: item["path"])
-          metadata = {
-              "schema": "axiom-encode/failed-reencode-diagnostics/v1",
-              "citation": os.environ["CITATION"],
-              "corpus_ref": os.environ["CORPUS_REF"],
-              "encoder_commit": os.environ["GITHUB_SHA"],
-              "files": inventory,
-              "rules_engine_ref": os.environ["RULES_ENGINE_REF"],
-              "rulespec_ref": os.environ["RULESPEC_REF"],
-              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
-          }
-          (artifact / "metadata.json").write_text(
-              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          PY
-
-      - name: Upload failed re-encode diagnostics
-        if: >-
-          ${{ failure() && !cancelled()
-              && steps.package_failed_reencode_diagnostics.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: targeted-reencode-failure-${{ github.run_id }}
-          path: ${{ runner.temp }}/targeted-reencode-failure
-          if-no-files-found: error
-          retention-days: 90
-
       - name: Verify generated provenance
+        id: verify_generated_provenance
         env:
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
@@ -1284,6 +1165,7 @@ jobs:
           git -C "$RULESPEC_CHECKOUT" diff --check
 
       - name: Verify existing signed import integrity
+        id: verify_existing_signed_import_integrity
         env:
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
@@ -1318,6 +1200,7 @@ jobs:
             "$RUNNER_TEMP/existing-signed-import-inventory-final.json"
 
       - name: Package exact generated changes
+        id: package_exact_generated_changes
         env:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
@@ -2321,6 +2204,7 @@ jobs:
           test -s "$artifact/status.txt"
 
       - name: Commit reviewed lane changes locally
+        id: commit_reviewed_lane_changes
         if: ${{ inputs.open_pr }}
         env:
           COUNTRY: ${{ inputs.country }}
@@ -2351,6 +2235,7 @@ jobs:
           fi
 
       - name: Push lane branch and open draft pull request
+        id: publish_lane_pull_request
         if: ${{ inputs.open_pr }}
         env:
           GH_TOKEN: ${{ secrets.AXIOM_REPO_TOKEN }}
@@ -2436,6 +2321,7 @@ jobs:
             "$RUNNER_TEMP/targeted-reencode/lane-pull-request.json"
 
       - name: Finalize signed re-encode artifact checksums
+        id: finalize_signed_reencode_artifact
         run: |
           set -euo pipefail
           artifact="$RUNNER_TEMP/targeted-reencode"
@@ -2445,9 +2331,218 @@ jobs:
           )
 
       - name: Upload signed re-encode artifact
+        id: upload_signed_reencode_artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: targeted-reencode-${{ github.run_id }}
+          name: targeted-reencode-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/targeted-reencode
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Package failed re-encode diagnostics
+        id: package_failed_reencode_diagnostics
+        if: ${{ failure() && !cancelled() }}
+        env:
+          CITATION: ${{ inputs.citation }}
+          CORPUS_REF: ${{ inputs.corpus_ref }}
+          COUNTRY: ${{ inputs.country }}
+          DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
+          LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
+          OPEN_PR: ${{ inputs.open_pr }}
+          PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
+          QUEUE_DISPATCHER_RUN_ID: ${{ inputs.queue_dispatcher_run_id }}
+          QUEUE_ID: ${{ inputs.queue_id }}
+          QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
+          QUEUE_ITEM_ID: ${{ inputs.queue_item_id }}
+          QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
+          REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
+          REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          RULES_ENGINE_REF: ${{ inputs.rules_engine_ref }}
+          RULESPEC_REF: ${{ inputs.rulespec_ref }}
+          SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
+          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
+          STEP_CONTEXT_JSON: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          generated="$RUNNER_TEMP/generated"
+          artifact="$RUNNER_TEMP/targeted-reencode-failure"
+          mkdir -p "$artifact"
+          /opt/axiom-verification/python/bin/python -I - \
+            "$generated" "$artifact" <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          from axiom_encode.corpus_resolver import (
+              UnsafeCorpusPathError,
+              read_bounded_regular_file,
+          )
+
+          generated = Path(os.path.abspath(sys.argv[1]))
+          artifact = Path(os.path.abspath(sys.argv[2]))
+          allowed_suffixes = {".json", ".log", ".txt", ".yaml", ".yml"}
+          max_entries = 4096
+          max_files = 1024
+          max_file_bytes = 16 * 1024 * 1024
+          max_total_bytes = 64 * 1024 * 1024
+          entry_count = 0
+          total_bytes = 0
+          inventory = []
+
+          if generated.exists():
+              root_stat = os.lstat(generated)
+              if not stat.S_ISDIR(root_stat.st_mode):
+                  raise SystemExit("generated diagnostic root is not a directory")
+              for directory, dirnames, filenames in os.walk(
+                  generated,
+                  topdown=True,
+                  followlinks=False,
+              ):
+                  entry_count += len(dirnames) + len(filenames)
+                  if entry_count > max_entries:
+                      raise SystemExit("generated diagnostics exceed entry limit")
+                  current = Path(directory)
+                  for name in dirnames:
+                      mode = os.lstat(current / name).st_mode
+                      if not stat.S_ISDIR(mode):
+                          raise SystemExit(
+                              "generated diagnostics contain a non-directory entry"
+                          )
+                  for name in sorted(filenames):
+                      source = current / name
+                      mode = os.lstat(source).st_mode
+                      if not stat.S_ISREG(mode):
+                          raise SystemExit(
+                              "generated diagnostics contain a non-regular file"
+                          )
+                      relative = source.relative_to(generated)
+                      if source.suffix.lower() not in allowed_suffixes:
+                          continue
+                      if len(inventory) >= max_files:
+                          raise SystemExit("generated diagnostics exceed file limit")
+                      try:
+                          payload = read_bounded_regular_file(
+                              generated,
+                              source,
+                              label="failed re-encode diagnostic",
+                              max_bytes=max_file_bytes,
+                          )
+                      except UnsafeCorpusPathError as exc:
+                          raise SystemExit(str(exc)) from exc
+                      total_bytes += len(payload)
+                      if total_bytes > max_total_bytes:
+                          raise SystemExit("generated diagnostics exceed size limit")
+                      destination = artifact / "generated" / relative
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      destination.write_bytes(payload)
+                      inventory.append(
+                          {
+                              "path": relative.as_posix(),
+                              "sha256": hashlib.sha256(payload).hexdigest(),
+                              "size": len(payload),
+                          }
+                      )
+
+          inventory.sort(key=lambda item: item["path"])
+          raw_step_context = json.loads(os.environ["STEP_CONTEXT_JSON"])
+          if not isinstance(raw_step_context, dict):
+              raise SystemExit("workflow step context is malformed")
+          step_outcomes = {}
+          for step_id, payload in sorted(raw_step_context.items()):
+              if not isinstance(step_id, str) or not isinstance(payload, dict):
+                  raise SystemExit("workflow step context entry is malformed")
+              outcome = payload.get("outcome")
+              conclusion = payload.get("conclusion")
+              if outcome is not None and not isinstance(outcome, str):
+                  raise SystemExit("workflow step outcome is malformed")
+              if conclusion is not None and not isinstance(conclusion, str):
+                  raise SystemExit("workflow step conclusion is malformed")
+              step_outcomes[step_id] = {
+                  "conclusion": conclusion,
+                  "outcome": outcome,
+              }
+          failed_steps = sorted(
+              step_id
+              for step_id, payload in step_outcomes.items()
+              if "failure" in {payload["outcome"], payload["conclusion"]}
+          )
+          generated_lanes = sorted(
+              {
+                  Path(item["path"]).parts[0]
+                  for item in inventory
+                  if len(Path(item["path"]).parts) > 1
+              }
+          )
+          metadata = {
+              "schema": "axiom-encode/failed-reencode-diagnostics/v1",
+              "citation": os.environ["CITATION"],
+              "corpus_ref": os.environ["CORPUS_REF"],
+              "country": os.environ["COUNTRY"],
+              "dependent_citation": os.environ.get("DEPENDENT_CITATION") or None,
+              "encoder_commit": os.environ["GITHUB_SHA"],
+              "existing_signed_imports_input": os.environ.get(
+                  "EXISTING_SIGNED_IMPORTS_JSON", "[]"
+              ),
+              "failed_steps": failed_steps,
+              "files": inventory,
+              "generated_lanes": generated_lanes,
+              "legacy_exact_dependent_rulespec_path": os.environ.get(
+                  "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+              )
+              or None,
+              "open_pr": os.environ.get("OPEN_PR") == "true",
+              "pr_base_branch": os.environ.get("PR_BASE_BRANCH") or None,
+              "queue_dispatcher_run_id": os.environ.get(
+                  "QUEUE_DISPATCHER_RUN_ID"
+              )
+              or None,
+              "queue_id": os.environ.get("QUEUE_ID") or None,
+              "queue_item_generation_sha256": os.environ.get(
+                  "QUEUE_ITEM_GENERATION_SHA256"
+              )
+              or None,
+              "queue_item_id": os.environ.get("QUEUE_ITEM_ID") or None,
+              "queue_manifest_sha256": os.environ.get("QUEUE_MANIFEST_SHA256")
+              or None,
+              "replace_legacy_rulespec_path": os.environ.get(
+                  "REPLACE_LEGACY_RULESPEC_PATH"
+              )
+              or None,
+              "replace_rulespec_path": os.environ.get("REPLACE_RULESPEC_PATH")
+              or None,
+              "rules_engine_ref": os.environ["RULES_ENGINE_REF"],
+              "rulespec_ref": os.environ["RULESPEC_REF"],
+              "second_dependent_citation": os.environ.get(
+                  "SECOND_DEPENDENT_CITATION"
+              )
+              or None,
+              "second_legacy_exact_dependent_rulespec_path": os.environ.get(
+                  "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
+              )
+              or None,
+              "source_bundle_input": os.environ.get("SOURCE_BUNDLE_JSON", "[]"),
+              "step_outcomes": step_outcomes,
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+          }
+          (artifact / "metadata.json").write_text(
+              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload failed re-encode diagnostics
+        if: >-
+          ${{ failure() && !cancelled()
+              && steps.package_failed_reencode_diagnostics.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: targeted-reencode-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/targeted-reencode-failure
           if-no-files-found: error
           retention-days: 90

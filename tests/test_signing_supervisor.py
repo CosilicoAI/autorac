@@ -2119,6 +2119,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Encode, review, validate, and apply"
     )
+    assert apply_step["id"] == "encode_apply"
     assert apply_step["env"]["AXIOM_ENCODE_APPLY_SIGNING_KEY"] == (
         "${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}"
     )
@@ -2189,14 +2190,38 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Package failed re-encode diagnostics"
     )
-    assert steps.index(apply_step) + 1 == steps.index(failure_package_step)
+    assert steps.index(
+        upload_step := next(
+            step
+            for step in steps
+            if step.get("name") == "Upload signed re-encode artifact"
+        )
+    ) + 1 == steps.index(failure_package_step)
     assert failure_package_step["if"] == "${{ failure() && !cancelled() }}"
     assert set(failure_package_step["env"]) == {
         "CITATION",
         "CORPUS_REF",
+        "COUNTRY",
+        "DEPENDENT_CITATION",
+        "EXISTING_SIGNED_IMPORTS_JSON",
+        "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH",
+        "OPEN_PR",
+        "PR_BASE_BRANCH",
+        "QUEUE_DISPATCHER_RUN_ID",
+        "QUEUE_ID",
+        "QUEUE_ITEM_GENERATION_SHA256",
+        "QUEUE_ITEM_ID",
+        "QUEUE_MANIFEST_SHA256",
+        "REPLACE_LEGACY_RULESPEC_PATH",
+        "REPLACE_RULESPEC_PATH",
         "RULES_ENGINE_REF",
         "RULESPEC_REF",
+        "SECOND_DEPENDENT_CITATION",
+        "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH",
+        "SOURCE_BUNDLE_JSON",
+        "STEP_CONTEXT_JSON",
     }
+    assert failure_package_step["env"]["STEP_CONTEXT_JSON"] == "${{ toJSON(steps) }}"
     failure_package_command = failure_package_step["run"]
     assert "/opt/axiom-verification/python/bin/python -I -" in (failure_package_command)
     assert "read_bounded_regular_file" in failure_package_command
@@ -2204,6 +2229,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "generated diagnostics exceed entry limit" in failure_package_command
     assert "generated diagnostics exceed file limit" in failure_package_command
     assert "generated diagnostics exceed size limit" in failure_package_command
+    assert '"failed_steps": failed_steps' in failure_package_command
+    assert '"generated_lanes": generated_lanes' in failure_package_command
+    assert '"queue_item_generation_sha256"' in failure_package_command
+    assert '"step_outcomes": step_outcomes' in failure_package_command
     assert '"schema": "axiom-encode/failed-reencode-diagnostics/v1"' in (
         failure_package_command
     )
@@ -2220,7 +2249,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         in (failure_upload_step["if"])
     )
     assert failure_upload_step["with"] == {
-        "name": "targeted-reencode-failure-${{ github.run_id }}",
+        "name": (
+            "targeted-reencode-failure-${{ github.run_id }}-${{ github.run_attempt }}"
+        ),
         "path": "${{ runner.temp }}/targeted-reencode-failure",
         "if-no-files-found": "error",
         "retention-days": 90,
@@ -2231,6 +2262,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Verify existing signed import integrity"
     )
+    assert integrity_step["id"] == "verify_existing_signed_import_integrity"
     integrity_command = integrity_step["run"]
     assert steps.index(apply_step) < steps.index(integrity_step)
     assert "signed-import-inventory" in integrity_command
@@ -2240,6 +2272,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     package_step = next(
         step for step in steps if step.get("name") == "Package exact generated changes"
     )
+    assert package_step["id"] == "package_exact_generated_changes"
     package_command = package_step["run"]
     assert package_step["env"]["REVIEW_FINDING_PRESENT"] == (
         "${{ inputs.review_finding != '' }}"
@@ -2297,6 +2330,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Commit reviewed lane changes locally"
     )
+    assert commit_step["id"] == "commit_reviewed_lane_changes"
     assert f"workflow_python=({trusted_python} -I)" in commit_step["run"]
     assert '"${workflow_python[@]}" \\\n' in commit_step["run"]
     assert (
@@ -2307,6 +2341,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     guard_step = next(
         step for step in steps if step.get("name") == "Verify generated provenance"
     )
+    assert guard_step["id"] == "verify_generated_provenance"
     assert "guard-generated" in guard_step["run"]
     assert 'guard_ref_args+=(--base-ref "$RULESPEC_REF")' in guard_step["run"]
     assert (
@@ -2325,6 +2360,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Push lane branch and open draft pull request"
     )
+    assert publish_step["id"] == "publish_lane_pull_request"
     assert publish_step["if"] == "${{ inputs.open_pr }}"
     assert publish_step["env"]["GH_TOKEN"] == "${{ secrets.AXIOM_REPO_TOKEN }}"
     assert publish_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
@@ -2363,16 +2399,19 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         for step in steps
         if step.get("name") == "Finalize signed re-encode artifact checksums"
     )
+    assert checksum_step["id"] == "finalize_signed_reencode_artifact"
     assert "if" not in checksum_step
     checksum_command = checksum_step["run"]
     assert 'artifact="$RUNNER_TEMP/targeted-reencode"' in checksum_command
     assert 'cd "$artifact"' in checksum_command
     assert "sha256sum * > SHA256SUMS" in checksum_command
     assert 'sha256sum "$RUNNER_TEMP/targeted-reencode"/*' not in checksum_command
-    upload_step = next(
-        step for step in steps if step.get("name") == "Upload signed re-encode artifact"
+    assert upload_step["id"] == "upload_signed_reencode_artifact"
+    assert upload_step["with"]["name"] == (
+        "targeted-reencode-${{ github.run_id }}-${{ github.run_attempt }}"
     )
     assert steps.index(checksum_step) + 1 == steps.index(upload_step)
+    assert steps.index(failure_upload_step) == len(steps) - 1
 
 
 def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
@@ -2400,12 +2439,30 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
         "CORPUS_REF": "corpus-ref",
+        "COUNTRY": "us",
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_RUN_ID": "1234",
         "GITHUB_SHA": "encoder-ref",
         "RULES_ENGINE_REF": "rules-engine-ref",
         "RULESPEC_REF": "rulespec-ref",
         "RUNNER_TEMP": str(tmp_path),
+        "STEP_CONTEXT_JSON": json.dumps(
+            {
+                "encode_apply": {
+                    "conclusion": "failure",
+                    "outcome": "failure",
+                    "outputs": {"sensitive": "must-not-be-copied"},
+                },
+                "verify_generated_provenance": {
+                    "conclusion": "skipped",
+                    "outcome": "skipped",
+                },
+            }
+        ),
+        "QUEUE_ID": "us-snap-all-states-2026-07",
+        "QUEUE_ITEM_GENERATION_SHA256": "generation-sha",
+        "QUEUE_ITEM_ID": "us/statute/42/1437c-1",
+        "QUEUE_MANIFEST_SHA256": "manifest-sha",
     }
 
     subprocess.run(["bash", "-c", command], env=env, check=True)
@@ -2421,6 +2478,19 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     metadata = json.loads((artifact / "metadata.json").read_text())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
     assert metadata["workflow_run_id"] == "1234"
+    assert metadata["failed_steps"] == ["encode_apply"]
+    assert metadata["generated_lanes"] == ["target"]
+    assert metadata["queue_id"] == "us-snap-all-states-2026-07"
+    assert metadata["queue_item_generation_sha256"] == "generation-sha"
+    assert metadata["queue_item_id"] == "us/statute/42/1437c-1"
+    assert metadata["queue_manifest_sha256"] == "manifest-sha"
+    assert metadata["step_outcomes"] == {
+        "encode_apply": {"conclusion": "failure", "outcome": "failure"},
+        "verify_generated_provenance": {
+            "conclusion": "skipped",
+            "outcome": "skipped",
+        },
+    }
     assert [item["path"] for item in metadata["files"]] == [
         "target/model/statutes/target.yaml",
         "target/model/target.repair.json",
@@ -2451,12 +2521,21 @@ def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
         "CORPUS_REF": "corpus-ref",
+        "COUNTRY": "us",
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_RUN_ID": "1234",
         "GITHUB_SHA": "encoder-ref",
         "RULES_ENGINE_REF": "rules-engine-ref",
         "RULESPEC_REF": "rulespec-ref",
         "RUNNER_TEMP": str(tmp_path),
+        "STEP_CONTEXT_JSON": json.dumps(
+            {
+                "encode_apply": {
+                    "conclusion": "failure",
+                    "outcome": "failure",
+                }
+            }
+        ),
     }
 
     completed = subprocess.run(
