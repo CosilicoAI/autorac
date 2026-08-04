@@ -2081,6 +2081,47 @@ def test_en_us_state_code_citation_filter_preserves_real_unit_and_ratio_values()
     ]
 
 
+def test_en_us_inline_legal_ordinal_is_structural_after_collapsed_heading():
+    source = (
+        "54A:4-7 New Jersey Earned Income Tax Credit program. "
+        "54A:4-7 New Jersey Earned Income Tax Credit program . "
+        "2. There is established the New Jersey Earned Income Tax Credit program. "
+        "The filing fee is 2 dollars."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(2.0, "2")]
+
+
+@pytest.mark.parametrize(
+    ("heading", "scalar", "unit"),
+    [
+        ("Filing fee notice", 2, "Dollars are due"),
+        ("Applicable rate notice", 25, "Percent applies"),
+        ("Deadline notice", 30, "Days are allowed"),
+    ],
+)
+def test_en_us_inline_scalar_after_single_nj_heading_is_not_a_legal_ordinal(
+    heading: str,
+    scalar: int,
+    unit: str,
+):
+    source = f"54A:4-7 {heading}. {scalar}. {unit}."
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [
+        (float(scalar), str(scalar))
+    ]
+
+
 def test_imported_numeric_recall_only_credits_explicit_imported_scalar():
     content = """\
 format: rulespec/v1

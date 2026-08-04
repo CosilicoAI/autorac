@@ -984,14 +984,29 @@ def _proof_excerpt_subsection_scope_issues(
 def _rule_source_subsection_scope(
     rule_source: str,
 ) -> dict[str, frozenset[str] | None]:
-    """Parse top-level CFR markers and any explicit numeric child ranges."""
+    """Parse top-level subsection markers and explicit numeric child ranges."""
     scope: dict[str, set[str] | None] = {}
+    current_top: str | None = None
     for segment in str(rule_source).split(","):
         top_match = re.search(r"\((?P<top>[a-z])\)", segment)
-        if top_match is None:
+        if top_match is not None:
+            current_top = top_match.group("top")
+            suffix = segment[top_match.end() :]
+        elif current_top is not None:
+            if (
+                re.fullmatch(
+                    r"\s*\(\d+\)(?:\s*-\s*\(\d+\))?\s*",
+                    segment,
+                )
+                is None
+            ):
+                current_top = None
+                continue
+            suffix = segment
+        else:
             continue
-        top = top_match.group("top")
-        suffix = segment[top_match.end() :]
+        top = current_top
+        assert top is not None
         numeric = {
             match.group("value") for match in re.finditer(r"\((?P<value>\d+)\)", suffix)
         }
