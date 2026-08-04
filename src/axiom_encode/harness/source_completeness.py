@@ -3008,9 +3008,7 @@ def _actor_acronym_sequence_starts_finite_clause(tokens: list[str]) -> bool:
     predicate = tokens[predicate_index].lower()
     return not (
         _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS
-    ) and _dependency_subject_phrase_is_bounded(
-        " ".join(tokens[predicate_index + 1 :])
-    )
+    ) and _dependency_subject_phrase_is_bounded(" ".join(tokens[predicate_index + 1 :]))
 
 
 def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
@@ -3060,10 +3058,7 @@ def _actor_nominal_object_is_bounded(
     if (
         len(object_tokens) < 2
         or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
-        or not (
-            _dependency_token_forms(object_tokens[0])
-            & _DEPENDENCY_MODIFIER_TERMS
-        )
+        or not (_dependency_token_forms(object_tokens[0]) & _DEPENDENCY_MODIFIER_TERMS)
         or not _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
     ):
         return False
