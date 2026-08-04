@@ -1,0 +1,1 @@
+Allow authenticated legacy-replacement deletions to retire matching pending validation-waiver state with distinct pre- and post-migration bindings, while continuing to reject live, unrelated, and symlink-aliased retirement paths.

@@ -20063,6 +20063,7 @@ def guard_generated_change_issues(
         local_corpus_release=local_corpus_release,
         expected_encoder_identity=expected_encoder_identity,
         expected_waiver_set_sha256=expected_manifest_waiver_set_sha256,
+        expected_legacy_replacement_waiver_set_sha256=(current_waiver_set_sha256),
         path_migration_receipt_proof_cache=path_migration_receipt_proof_cache,
     )
     if manifest_issues:
@@ -20083,7 +20084,7 @@ def guard_generated_change_issues(
             continue
         current_path = repo_path / path
         if APPLIED_ENCODING_DELETED_MARKER in expected_hashes:
-            if current_path.exists():
+            if not _is_unambiguously_absent_repo_path(repo_path, Path(path)):
                 issues.append(
                     f"{path} is listed as deleted in an encoder apply manifest "
                     "but still exists in the working tree"
@@ -20107,6 +20108,7 @@ def guard_generated_change_issues(
             local_corpus_release=local_corpus_release,
             expected_encoder_identity=expected_encoder_identity,
             expected_waiver_set_sha256=expected_manifest_waiver_set_sha256,
+            expected_legacy_replacement_waiver_set_sha256=(current_waiver_set_sha256),
             path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
     )
@@ -20117,6 +20119,25 @@ def guard_generated_change_issues(
             for path in missing_manifest_paths
         )
     return issues
+
+
+def _is_unambiguously_absent_repo_path(repo_path: Path, relative: Path) -> bool:
+    """Return true only when a canonical repo path is absent without symlinks."""
+
+    cursor = repo_path
+    for index, part in enumerate(relative.parts):
+        cursor /= part
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if stat.S_ISLNK(metadata.st_mode):
+            return False
+        if index < len(relative.parts) - 1 and not stat.S_ISDIR(metadata.st_mode):
+            return False
+    return False
 
 
 def _guard_manifest_waiver_set_identity(
@@ -20131,7 +20152,10 @@ def _guard_manifest_waiver_set_identity(
 
     Model manifests bind the policy state immediately before apply. A pull
     request may then retire active waivers made obsolete by those generated
-    files, but only as an exact decrement from the protected base.
+    files, but only as an exact decrement from the protected base. Pending
+    state may also be retired when its exact protected module was deleted;
+    retaining it would leave a waiver for a nonexistent path, while removing it
+    cannot authorize a validation failure.
     """
 
     waiver_path = _validation_waivers.DEFAULT_WAIVER_PATH
@@ -20212,23 +20236,23 @@ def _guard_manifest_waiver_set_identity(
         return current_waiver_set_sha256, [
             prefix + "the waiver set did not remove any protected-base entry"
         ]
-    invalid_states = [
-        path
-        for path in removed
-        if base_entries[path].active is None or base_entries[path].pending is not None
-    ]
-    if invalid_states:
-        return current_waiver_set_sha256, [
-            prefix
-            + "only active entries without pending state may be removed: "
-            + ", ".join(invalid_states)
-        ]
     unrelated = sorted(set(removed) - set(protected))
     if unrelated:
         return current_waiver_set_sha256, [
             prefix
             + "removed entries must name changed protected RuleSpec modules: "
             + ", ".join(unrelated)
+        ]
+    invalid_states = [
+        path
+        for path in removed
+        if (base_entries[path].active is None or base_entries[path].pending is not None)
+        and not _is_unambiguously_absent_repo_path(repo_path, Path(path))
+    ]
+    if invalid_states:
+        return current_waiver_set_sha256, [
+            prefix + "pending state may be removed only with its deleted protected "
+            "RuleSpec module: " + ", ".join(invalid_states)
         ]
     return base_sha256, []
 
@@ -20242,6 +20266,7 @@ def _generated_provenance_gate_issues(
     local_corpus_release: LocalCorpusRelease,
     expected_encoder_identity: Mapping[str, str],
     expected_waiver_set_sha256: str,
+    expected_legacy_replacement_waiver_set_sha256: str,
     path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]],
 ) -> list[str]:
     """Reject protected files authorized only by manual attestations."""
@@ -20253,6 +20278,9 @@ def _generated_provenance_gate_issues(
         local_corpus_release=local_corpus_release,
         expected_encoder_identity=expected_encoder_identity,
         expected_waiver_set_sha256=expected_waiver_set_sha256,
+        expected_legacy_replacement_waiver_set_sha256=(
+            expected_legacy_replacement_waiver_set_sha256
+        ),
         path_migration_receipt_proof_cache=path_migration_receipt_proof_cache,
     )
     issues: list[str] = []
@@ -20465,6 +20493,7 @@ def _manifest_coverage_by_file(
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
     expected_waiver_set_sha256: str | None = None,
+    expected_legacy_replacement_waiver_set_sha256: str | None = None,
     path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
     | None = None,
 ) -> dict[str, list[dict[str, object]]]:
@@ -20492,6 +20521,9 @@ def _manifest_coverage_by_file(
                 local_corpus_release=local_corpus_release,
                 expected_encoder_identity=expected_encoder_identity,
                 expected_waiver_set_sha256=expected_waiver_set_sha256,
+                expected_legacy_replacement_waiver_set_sha256=(
+                    expected_legacy_replacement_waiver_set_sha256
+                ),
                 path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
             )
         )
@@ -24038,6 +24070,7 @@ def _load_verified_applied_encoding_manifest_payload(
     roots: tuple[str, ...] = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS)),
     signing_broker: SigningBroker | Ed25519PublicKey | None = None,
     expected_waiver_set_sha256: str | None = None,
+    expected_legacy_replacement_waiver_set_sha256: str | None = None,
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
     path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
@@ -24134,6 +24167,15 @@ def _load_verified_applied_encoding_manifest_payload(
             [f"{manifest_label} {signature_issue}"],
         )
 
+    if expected_legacy_replacement_waiver_set_sha256 is not None and payload.get(
+        "tool"
+    ) in {
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL,
+        APPLIED_ENCODING_LEGACY_EXACT_DEPENDENT_TOOL,
+        APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
+    }:
+        expected_waiver_set_sha256 = expected_legacy_replacement_waiver_set_sha256
+
     issues: list[str] = []
     applied_file_snapshots: dict[str, bytes] = {}
     backend = payload.get("backend")
@@ -24225,7 +24267,9 @@ def _load_verified_applied_encoding_manifest_payload(
             current_file = repo_root / prefixed_path
             deleted = item.get("deleted") is True
             if deleted:
-                if current_file.exists() or current_file.is_symlink():
+                if not _is_unambiguously_absent_repo_path(
+                    repo_root, Path(prefixed_path)
+                ):
                     issues.append(
                         f"{manifest_label} lists {prefixed_path} as deleted but it exists"
                     )
@@ -24352,6 +24396,7 @@ def _load_applied_encoding_manifest_entries(
     local_corpus_release: LocalCorpusRelease | None = None,
     expected_encoder_identity: Mapping[str, str] | None = None,
     expected_waiver_set_sha256: str | None = None,
+    expected_legacy_replacement_waiver_set_sha256: str | None = None,
     path_migration_receipt_proof_cache: dict[tuple[str, str], tuple[str, ...]]
     | None = None,
 ) -> tuple[dict[str, set[str]], list[str]]:
@@ -24394,6 +24439,9 @@ def _load_applied_encoding_manifest_entries(
                 roots=roots,
                 signing_broker=signing_broker,
                 expected_waiver_set_sha256=expected_waiver_set_sha256,
+                expected_legacy_replacement_waiver_set_sha256=(
+                    expected_legacy_replacement_waiver_set_sha256
+                ),
                 local_corpus_release=local_corpus_release,
                 expected_encoder_identity=expected_encoder_identity,
                 path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
