@@ -3473,6 +3473,12 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and omb approves benefits "
         "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSA determines benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and USDA administers benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CMS determines eligibility "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3535,6 +3541,7 @@ rules: []
         "requirements implemented",
         "benefits verified",
         "information obtained",
+        "program input requirements",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
