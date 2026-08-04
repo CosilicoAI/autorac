@@ -3541,6 +3541,18 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and tsa administers programs "
         "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA ran programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA made eligibility "
+        "determinations under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS wrote rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and USGS gave information "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EIA kept records under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and nhtsa administers programs "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3612,6 +3624,11 @@ rules: []
         "VA benefits",
         "IRS rules",
         "SNAP benefits program",
+        "TSA records retention policies",
+        "EBSA benefits eligibility criteria",
+        "FHA programs administration records",
+        "SSA and VA benefit programs",
+        "SSA and VA records retention policies",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):

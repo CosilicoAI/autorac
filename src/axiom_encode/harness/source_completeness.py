@@ -2960,6 +2960,11 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
         trailing_object = tokens[subject_end + 1 :]
         if predicate.lower() in _DEPENDENCY_COMPOUND_NOMINAL_TERMS:
             continue
+        if subject_is_actor and _actor_nominal_object_is_bounded(
+            tokens,
+            actor_end=subject_end,
+        ):
+            continue
         if trailing_object:
             if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
                 continue
@@ -2995,59 +3000,84 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
 
 
 def _actor_acronym_sequence_starts_finite_clause(tokens: list[str]) -> bool:
-    for predicate_index in range(1, len(tokens) - 1):
-        actor_tokens = [
-            token.lower()
-            for token in tokens[:predicate_index]
-            if token.lower() not in {"and", "or"}
-        ]
-        if not actor_tokens or any(
-            token not in _LEGAL_ACTOR_ACRONYMS for token in actor_tokens
-        ):
-            continue
-        predicate = tokens[predicate_index].lower()
-        if _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS:
-            continue
-        if _dependency_subject_phrase_is_bounded(
-            " ".join(tokens[predicate_index + 1 :])
-        ):
-            return True
-    return False
+    predicate_index = _legal_actor_acronym_sequence_end(tokens)
+    if predicate_index is None or predicate_index >= len(tokens) - 1:
+        return False
+    if _actor_nominal_object_is_bounded(tokens, actor_end=predicate_index):
+        return False
+    predicate = tokens[predicate_index].lower()
+    return not (
+        _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS
+    ) and _dependency_subject_phrase_is_bounded(
+        " ".join(tokens[predicate_index + 1 :])
+    )
 
 
 def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
-    if len(tokens) < 3 or not re.fullmatch(r"[A-Z]{2,8}", tokens[0]):
+    if (
+        len(tokens) < 3
+        or not re.fullmatch(r"[A-Za-z]{2,8}", tokens[0])
+        or _dependency_token_forms(tokens[0]) & _DEPENDENCY_MODIFIER_TERMS
+    ):
+        return False
+    if _actor_nominal_object_is_bounded(tokens, actor_end=1):
         return False
     predicate = tokens[1].lower()
     if _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS:
         return False
     if not _dependency_subject_phrase_is_bounded(" ".join(tokens[2:])):
         return False
-    return (
-        predicate
-        in {
-            "can",
-            "could",
-            "did",
-            "does",
-            "had",
-            "has",
-            "is",
-            "may",
-            "might",
-            "must",
-            "shall",
-            "should",
-            "was",
-            "will",
-            "would",
-        }
-        or predicate in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
-        or predicate.endswith("ed")
-        or (
-            predicate.endswith(("s", "es", "ies"))
-            and not predicate.endswith(("ss", "us", "is"))
+    return True
+
+
+def _legal_actor_acronym_sequence_end(tokens: list[str]) -> int | None:
+    actor_count = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index].lower()
+        if token in _LEGAL_ACTOR_ACRONYMS:
+            actor_count += 1
+            index += 1
+            continue
+        if (
+            token in {"and", "or"}
+            and actor_count
+            and index + 1 < len(tokens)
+            and tokens[index + 1].lower() in _LEGAL_ACTOR_ACRONYMS
+        ):
+            index += 1
+            continue
+        break
+    return index if actor_count else None
+
+
+def _actor_nominal_object_is_bounded(
+    tokens: list[str],
+    *,
+    actor_end: int,
+) -> bool:
+    object_tokens = tokens[actor_end:]
+    if (
+        len(object_tokens) < 2
+        or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
+        or not (
+            _dependency_token_forms(object_tokens[0])
+            & _DEPENDENCY_MODIFIER_TERMS
         )
+        or not _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
+    ):
+        return False
+    if len(object_tokens) >= 3 and _dependency_subject_phrase_is_bounded(
+        " ".join(object_tokens[1:])
+    ):
+        return True
+    actor_tokens = [
+        token.lower()
+        for token in tokens[:actor_end]
+        if token.lower() not in {"and", "or"}
+    ]
+    return len(actor_tokens) > 1 and all(
+        token in _LEGAL_ACTOR_ACRONYMS for token in actor_tokens
     )
 
 
@@ -3119,7 +3149,9 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
 
 def _legal_actor_acronym_phrase_is_bounded(phrase: str) -> bool:
     normalized = re.sub(r"^(?:the\s+)", "", phrase.strip(), flags=re.IGNORECASE)
-    return normalized.lower() in _LEGAL_ACTOR_ACRONYMS
+    tokens = re.findall(r"[A-Za-z]+", normalized)
+    sequence_end = _legal_actor_acronym_sequence_end(tokens)
+    return sequence_end == len(tokens)
 
 
 def _dependency_token_is_object_modifier_adverb(token: str) -> bool:
