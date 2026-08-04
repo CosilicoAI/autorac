@@ -9657,6 +9657,13 @@ Complete-source-unit mode is enabled for this request:
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
   metadata is not coverage evidence.
+- When an implementing principal rule is not unambiguously bound by a canonical
+  structural source path, add a `versions[N].formula` source proof atom using
+  the exact canonical `source.corpus_citation_path` and a short verbatim
+  `source.excerpt` identifying its computation. This is mandatory when multiple
+  computations share one structural path. A citation-only proof atom,
+  human-readable rule-level `source:`, or self-import is not an unambiguous
+  formula-clause binding.
 - A historical branch's runtime evidence must use that branch's legally
   applicable period. If an external oracle cannot evaluate that period, keep
   the source-faithful companion case and omit oracle inputs or expectations

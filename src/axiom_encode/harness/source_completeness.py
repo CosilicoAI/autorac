@@ -23,6 +23,9 @@ import yaml
 
 from axiom_encode.statute import normalize_rulespec_path_segment
 
+_UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT = 32
+_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT = 8
+
 
 class NumericOccurrenceLike(Protocol):
     """Typed numeric source evidence consumed from the shared extractor."""
@@ -116,6 +119,14 @@ class _FormulaExecution:
     evaluated_value: tuple[str, str] | None
     evaluates_to_zero: bool
     constant_environment: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _UnboundFormulaDiagnostic:
+    """Best-effort unbound formula matches and scan completeness."""
+
+    rule_names: tuple[str, ...]
+    scan_capped: bool
 
 
 @dataclass(frozen=True)
@@ -2066,6 +2077,8 @@ def _companion_test_issues(
                 f"`{name}` is never asserted by a companion test."
             )
 
+    formula_dependency_cache: dict[int, dict[str, Any]] = {}
+    formula_execution_cache: dict[tuple[str, int], _FormulaExecution | None] = {}
     active_branches = [
         branch
         for branch in branches
@@ -2079,10 +2092,27 @@ def _companion_test_issues(
         extract_numeric_occurrences=extract_numeric_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
         formula_environment=formula_environment,
+        dependency_cache=formula_dependency_cache,
+        execution_cache=formula_execution_cache,
     )
     for branch in missing_formula_branches:
         source_excerpt = _bounded_source_feedback_excerpt(branch.text)
         source_location = f"characters {branch.start}:{branch.end}"
+        unbound_diagnostic = _unbound_matching_formula_rules(
+            branch,
+            principal_rules=principal_rules,
+            bound_rule_names=principal_formula_clause_rules[branch],
+            asserted_by_rule=asserted_by_rule,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+            formula_environment=formula_environment,
+            dependency_cache=formula_dependency_cache,
+            execution_cache=formula_execution_cache,
+        )
+        source_binding_detail = _unbound_formula_binding_feedback(
+            unbound_diagnostic,
+            corpus_citation_path=corpus_citation_path,
+        )
         interval = _formula_branch_interval(
             branch,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -2119,7 +2149,8 @@ def _companion_test_issues(
             f"formula branch {branch.label} at "
             f"{_branch_citation(corpus_citation_path, branch)}. Exact source "
             f"computation ({source_location}): `{source_excerpt}`. "
-            f"{witness_requirement}{observed_period_detail} Each formula branch "
+            f"{witness_requirement}{observed_period_detail}"
+            f"{source_binding_detail} Each formula branch "
             "needs distinct executed "
             "test evidence; an internal formula-clause ordinal is not a legal "
             "paragraph number."
@@ -2527,6 +2558,8 @@ def _unwitnessed_formula_branches(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
+    dependency_cache: dict[int, dict[str, Any]],
+    execution_cache: dict[tuple[str, int], _FormulaExecution | None],
 ) -> tuple[SourceStructureBranch, ...]:
     """Consume each executed rule/case witness for at most one source formula."""
 
@@ -2539,6 +2572,8 @@ def _unwitnessed_formula_branches(
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
             formula_environment=formula_environment,
+            dependency_cache=dependency_cache,
+            execution_cache=execution_cache,
         )
         for branch in branches
     }
@@ -2582,6 +2617,9 @@ def _formula_branch_test_witnesses(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
+    dependency_cache: dict[int, dict[str, Any]],
+    execution_cache: dict[tuple[str, int], _FormulaExecution | None],
+    max_cases_per_rule: int | None = None,
 ) -> set[tuple[str, str]]:
     interval = _formula_branch_interval(
         branch,
@@ -2592,18 +2630,27 @@ def _formula_branch_test_witnesses(
         rule = principal_rules[rule_name]
         selector_names = _rule_numeric_selector_names(rule)
         has_branching_formula = _rule_has_branching_formula(rule)
-        for case in asserted_by_rule.get(rule_name, ()):
-            dependency_environment = _case_asserted_dependency_environment(
-                principal_rules,
-                case,
-                formula_environment=formula_environment,
-            )
-            execution = _case_formula_execution(
-                rule,
-                case,
-                formula_environment=formula_environment,
-                dependency_environment=dependency_environment,
-            )
+        asserted_cases = asserted_by_rule.get(rule_name, ())
+        if max_cases_per_rule is not None:
+            asserted_cases = asserted_cases[:max_cases_per_rule]
+        for case in asserted_cases:
+            case_key = id(case)
+            if case_key not in dependency_cache:
+                dependency_cache[case_key] = _case_asserted_dependency_environment(
+                    principal_rules,
+                    case,
+                    formula_environment=formula_environment,
+                )
+            dependency_environment = dependency_cache[case_key]
+            execution_key = (rule_name, case_key)
+            if execution_key not in execution_cache:
+                execution_cache[execution_key] = _case_formula_execution(
+                    rule,
+                    case,
+                    formula_environment=formula_environment,
+                    dependency_environment=dependency_environment,
+                )
+            execution = execution_cache[execution_key]
             if (
                 execution is None
                 or not _formula_execution_leaf_is_computational(execution)
@@ -2646,6 +2693,80 @@ def _formula_branch_test_witnesses(
             ):
                 witnesses.add((rule_name, f"case:{id(case)}"))
     return witnesses
+
+
+def _unbound_matching_formula_rules(
+    branch: SourceStructureBranch,
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    bound_rule_names: set[str],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+    formula_environment: dict[str, Any],
+    dependency_cache: dict[int, dict[str, Any]],
+    execution_cache: dict[tuple[str, int], _FormulaExecution | None],
+) -> _UnboundFormulaDiagnostic:
+    """Find asserted formulas that match a clause but lack its source binding."""
+
+    eligible_rule_names = [
+        rule_name
+        for rule_name in sorted(principal_rules)
+        if rule_name not in bound_rule_names and asserted_by_rule.get(rule_name)
+    ]
+    scanned_rule_names = eligible_rule_names[:_UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT]
+    scan_capped = len(scanned_rule_names) < len(eligible_rule_names) or any(
+        len(asserted_by_rule[rule_name]) > _UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT
+        for rule_name in scanned_rule_names
+    )
+    witnesses = _formula_branch_test_witnesses(
+        branch,
+        principal_rules=principal_rules,
+        rule_names=set(scanned_rule_names),
+        asserted_by_rule=asserted_by_rule,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+        formula_environment=formula_environment,
+        dependency_cache=dependency_cache,
+        execution_cache=execution_cache,
+        max_cases_per_rule=_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT,
+    )
+    return _UnboundFormulaDiagnostic(
+        rule_names=tuple(sorted({rule_name for rule_name, _witness in witnesses})),
+        scan_capped=scan_capped,
+    )
+
+
+def _unbound_formula_binding_feedback(
+    diagnostic: _UnboundFormulaDiagnostic,
+    *,
+    corpus_citation_path: str,
+) -> str:
+    """Render source-binding repair guidance without overstating scan coverage."""
+
+    detail = ""
+    if diagnostic.rule_names:
+        detail = (
+            " Asserted principal formula(s) already execute this computation "
+            "but are excluded from source-bound evidence: "
+            + _bounded_identifier_feedback(diagnostic.rule_names)
+            + ". To bind each named rule unambiguously, add a "
+            "`versions[N].formula` proof atom whose "
+            "`source.corpus_citation_path` is exactly "
+            f"`{corpus_citation_path}` and whose short `source.excerpt` quotes "
+            "this computation. A citation-only proof atom, human-readable "
+            "rule-level `source:`, or self-import does not distinguish one "
+            "internal formula clause from another."
+        )
+    if diagnostic.scan_capped:
+        detail += (
+            " The best-effort unbound-formula diagnostic scan was capped at "
+            f"{_UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT} rules and "
+            f"{_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT} cases per rule; "
+            "additional matching principal formulas may exist beyond the "
+            "reported names."
+        )
+    return detail
 
 
 def _formula_execution_matches_source_branch(
@@ -4271,13 +4392,9 @@ def _evaluate_formula_selector(
     selector: str,
     environment: dict[str, Any],
 ) -> Any:
-    try:
-        expression = ast.parse(selector.strip(), mode="eval").body
-    except SyntaxError:
-        try:
-            expression = ast.parse(f"(\n{selector.strip()}\n)", mode="eval").body
-        except SyntaxError:
-            return _UNRESOLVED_CONDITION_VALUE
+    expression = _parse_formula_expression(selector)
+    if expression is None:
+        return _UNRESOLVED_CONDITION_VALUE
     return _evaluate_condition_expression(expression, environment)
 
 
@@ -4688,8 +4805,8 @@ def _formula_text_has_boundary_comparison(
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
-    with contextlib.suppress(SyntaxError):
-        expression = ast.parse(text.strip(), mode="eval").body
+    expression = _parse_formula_expression(text)
+    if expression is not None:
         for comparison, negated in _formula_comparisons_with_polarity(expression):
             operands = (comparison.left, *comparison.comparators)
             for operator, left, right in zip(
@@ -4735,6 +4852,19 @@ def _formula_text_has_boundary_comparison(
                 ):
                     return True
     return False
+
+
+def _parse_formula_expression(text: str) -> ast.expr | None:
+    """Parse one expression, including Axiom's multiline continuations."""
+
+    stripped = text.strip()
+    try:
+        return ast.parse(stripped, mode="eval").body
+    except SyntaxError:
+        try:
+            return ast.parse(f"(\n{stripped}\n)", mode="eval").body
+        except SyntaxError:
+            return None
 
 
 def _formula_comparisons_with_polarity(
@@ -7390,18 +7520,26 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
                     )
         if len(entries) != formula_version_count:
             continue
+        has_temporal_metadata = any(start or end for start, end, _value in entries)
+        if (
+            has_temporal_metadata
+            and entries
+            and all(
+                re.fullmatch(r"\d{4}-\d{2}-\d{2}", start)
+                and (not end or re.fullmatch(r"\d{4}-\d{2}-\d{2}", end))
+                for start, end, _value in entries
+            )
+        ):
+            environment[name] = _TemporalFormulaValue(tuple(entries))
+            continue
+        if has_temporal_metadata:
+            continue
         values = [value for _start, _end, value in entries]
         if values and all(
             type(value) is type(values[0]) and value == values[0]
             for value in values[1:]
         ):
             environment[name] = values[0]
-        elif entries and all(
-            re.fullmatch(r"\d{4}-\d{2}-\d{2}", start)
-            and (not end or re.fullmatch(r"\d{4}-\d{2}-\d{2}", end))
-            for start, end, _value in entries
-        ):
-            environment[name] = _TemporalFormulaValue(tuple(entries))
     return environment
 
 
@@ -7416,6 +7554,14 @@ def _formula_environment_for_case(
             resolved[name] = value
             continue
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+            if "period" not in case:
+                candidates = [candidate for _start, _end, candidate in value.versions]
+                if candidates and all(
+                    type(candidate) is type(candidates[0])
+                    and candidate == candidates[0]
+                    for candidate in candidates[1:]
+                ):
+                    resolved[name] = candidates[0]
             continue
         candidates = [
             (start, candidate)
@@ -7480,3 +7626,15 @@ def _bounded_period_feedback(periods: Sequence[str], *, limit: int = 8) -> str:
         + f", ... ({omitted} omitted) ..., "
         + ", ".join(periods[-tail_count:])
     )
+
+
+def _bounded_identifier_feedback(values: Sequence[str], *, limit: int = 6) -> str:
+    """Render a bounded, deterministic list of diagnostic identifiers."""
+
+    identifiers = sorted(
+        {_collapse_text(value).replace("`", "\\`") for value in values}
+    )
+    rendered = [f"`{value}`" for value in identifiers[:limit]]
+    if len(identifiers) > limit:
+        rendered.append(f"... ({len(identifiers) - limit} omitted)")
+    return ", ".join(rendered)
