@@ -2090,7 +2090,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "--workflow-run-id",
     ):
         assert immutable_argument in repair_command
+    assert "--allow-rulespec-base-advance" in repair_command
+    assert "verify_repair_base_advance.py" in repair_command
+    assert '--source-ref "$repair_source_rulespec_ref"' in repair_command
+    assert '--current-ref "$RULESPEC_REF"' in repair_command
+    assert '--candidate-path "$repair_candidate_path"' in repair_command
     assert 'echo "runner=$(jq -r' in repair_command
+    assert 'echo "source_rulespec_ref=$repair_source_rulespec_ref"' in repair_command
 
     provision_step = next(
         step
@@ -2297,6 +2303,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "REPAIR_CANDIDATE_OUTCOME",
         "REPAIR_CANDIDATE_PATH",
         "REPAIR_CANDIDATE_RUNNER",
+        "REPAIR_CANDIDATE_SOURCE_RULESPEC_REF",
         "REPAIR_CANDIDATE_RULESPEC_SHA256",
         "REPAIR_CANDIDATE_TESTS_SHA256",
         "REPAIR_RUN_ID",
@@ -2332,6 +2339,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert failure_package_step["env"]["REPAIR_CANDIDATE_RUNNER"] == (
         "${{ steps.repair_candidate.outputs.runner }}"
+    )
+    assert failure_package_step["env"]["REPAIR_CANDIDATE_SOURCE_RULESPEC_REF"] == (
+        "${{ steps.repair_candidate.outputs.source_rulespec_ref }}"
     )
     assert failure_package_step["env"]["REPAIR_CANDIDATE_RULESPEC_SHA256"] == (
         "${{ steps.repair_candidate.outputs.rulespec_sha256 }}"
@@ -2419,6 +2429,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert package_step["env"]["REPAIR_CANDIDATE_RUNNER"] == (
         "${{ steps.repair_candidate.outputs.runner }}"
+    )
+    assert package_step["env"]["REPAIR_CANDIDATE_SOURCE_RULESPEC_REF"] == (
+        "${{ steps.repair_candidate.outputs.source_rulespec_ref }}"
     )
     assert package_step["env"]["REPAIR_CANDIDATE_RULESPEC_SHA256"] == (
         "${{ steps.repair_candidate.outputs.rulespec_sha256 }}"
@@ -2781,6 +2794,7 @@ def test_failed_reencode_metadata_uses_consumed_identity_after_evidence_mutation
             "REPAIR_CANDIDATE_OUTCOME": "success",
             "REPAIR_CANDIDATE_PATH": "statutes/42/1437c-1.yaml",
             "REPAIR_CANDIDATE_RUNNER": "openai-gpt-5.6-sol",
+            "REPAIR_CANDIDATE_SOURCE_RULESPEC_REF": "f" * 40,
             "REPAIR_CANDIDATE_RULESPEC_SHA256": "d" * 64,
             "REPAIR_CANDIDATE_TESTS_SHA256": "e" * 64,
             "REPAIR_RUN_ID": "1234",
@@ -2801,6 +2815,7 @@ def test_failed_reencode_metadata_uses_consumed_identity_after_evidence_mutation
         "rulespec_sha256": "d" * 64,
         "run_id": "1234",
         "runner": "openai-gpt-5.6-sol",
+        "source_rulespec_ref": "f" * 40,
         "tests_sha256": "e" * 64,
     }
 
@@ -4190,6 +4205,7 @@ def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation
             "PR_BASE_BRANCH": "hard-cut/canonical-layout-us",
             "REPAIR_CANDIDATE_PATH": "statutes/42/1437c-1.yaml",
             "REPAIR_CANDIDATE_RUNNER": "openai-gpt-5.6-sol",
+            "REPAIR_CANDIDATE_SOURCE_RULESPEC_REF": "f" * 40,
             "REPAIR_CANDIDATE_RULESPEC_SHA256": "d" * 64,
             "REPAIR_CANDIDATE_TESTS_SHA256": "e" * 64,
             "REPAIR_RUN_ID": "1234",
@@ -4206,6 +4222,7 @@ def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation
         "rulespec_sha256": "d" * 64,
         "run_id": "1234",
         "runner": "openai-gpt-5.6-sol",
+        "source_rulespec_ref": "f" * 40,
         "tests_sha256": "e" * 64,
     }
 

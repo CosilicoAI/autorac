@@ -19,6 +19,7 @@ ATOMIC_ROOTS = frozenset(
 MAX_METADATA_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 8192
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 RUNNER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 CONTRACT = runpy.run_path(
     Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
@@ -164,7 +165,6 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         "encoder_commit": args.encoder_commit,
         "corpus_ref": args.corpus_ref,
         "rules_engine_ref": args.rules_engine_ref,
-        "rulespec_ref": args.rulespec_ref,
         "replace_rulespec_path": args.replace_rulespec_path,
         "workflow_run_id": args.workflow_run_id,
     }
@@ -188,6 +188,17 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         for field, expected in expected_fields.items():
             if field not in metadata or metadata[field] != expected:
                 raise ValueError(f"repair artifact metadata mismatch: {field}")
+        source_rulespec_ref = metadata.get("rulespec_ref")
+        if (
+            not isinstance(source_rulespec_ref, str)
+            or COMMIT_PATTERN.fullmatch(source_rulespec_ref) is None
+        ):
+            raise ValueError("repair artifact metadata mismatch: rulespec_ref")
+        if (
+            source_rulespec_ref != args.rulespec_ref
+            and not args.allow_rulespec_base_advance
+        ):
+            raise ValueError("repair artifact metadata mismatch: rulespec_ref")
         for field, expected in SINGLE_TARGET_MODE_FIELDS.items():
             if field not in metadata or metadata[field] != expected:
                 raise ValueError(
@@ -256,6 +267,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         "rulespec_sha256": hashlib.sha256(candidate).hexdigest(),
         "tests_sha256": hashlib.sha256(tests).hexdigest(),
         "runner": runner,
+        "source_rulespec_ref": source_rulespec_ref,
     }
 
 
@@ -269,6 +281,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus-ref", required=True)
     parser.add_argument("--rules-engine-ref", required=True)
     parser.add_argument("--rulespec-ref", required=True)
+    parser.add_argument("--allow-rulespec-base-advance", action="store_true")
     parser.add_argument("--replace-rulespec-path", required=True)
     parser.add_argument("--workflow-run-id", required=True)
     return parser
