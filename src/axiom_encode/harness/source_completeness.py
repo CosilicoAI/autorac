@@ -402,7 +402,7 @@ _RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
 _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r"\b(?:"
     r"requires?|depends?\s+on|missing|not\s+yet\s+encoded|unavailable|"
-    r"cannot\s+be\s+(?:computed|encoded|resolved)|until|"
+    r"cannot\s+be\s+(?:computed|encoded|resolved)|until|without|"
     r"benötigt|abhängig|fehlt|nicht\s+codiert"
     r")\b",
     flags=re.IGNORECASE,
@@ -1635,11 +1635,20 @@ def _source_scope_cites_usc_dependency(
     """Return whether an operative source clause cites the same USC provision."""
 
     normalized_section = normalize_rulespec_path_segment(section.lower())
-    references: list[re.Match[str]] = list(
-        _qualified_usc_dependencies(source_scope_text)
-    )
+    qualified_references = _qualified_usc_dependencies(source_scope_text)
+    references: list[re.Match[str]] = list(qualified_references)
     if allow_relative_reference:
-        references.extend(_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text))
+        references.extend(
+            reference
+            for reference in _RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(
+                source_scope_text
+            )
+            if not any(
+                qualified.start() <= reference.start()
+                and reference.end() <= qualified.end()
+                for qualified in qualified_references
+            )
+        )
     for reference in references:
         reference_title = reference.groupdict().get("title")
         if (
@@ -1843,30 +1852,42 @@ def _reason_match_names_missing_dependency(
     ]
     clause_end = min(following_stops, default=len(reason))
     clause = reason[clause_start:clause_end]
-    if not _MISSING_DEPENDENCY_LANGUAGE.search(clause):
-        return False
     reference_start = match.start() - clause_start
     reference_end = match.end() - clause_start
-    if _source_clause_links_dependency(
-        clause,
-        reference_start=reference_start,
-        reference_end=reference_end,
+    after = clause[reference_end:]
+    if re.match(
+        r"\s*(?:"
+        r"(?:is|are)\s+(?:missing|unavailable|not\s+(?:yet\s+)?(?:encoded|implemented|available))|"
+        r"(?:has|have)\s+not\s+been\s+(?:encoded|implemented|made\s+available)|"
+        r"(?:is|are)\s+(?:required|needed)|"
+        r"fehlt|fehlen|ist\s+nicht\s+codiert|sind\s+nicht\s+codiert"
+        r")\b",
+        after,
+        flags=re.IGNORECASE,
     ):
         return True
+
     before = clause[:reference_start]
-    after = clause[reference_end:]
-    return bool(
-        re.search(
-            r"\b(?:cited|defined|described|provided|required|set|specified)\s+(?:by|in)\s*$",
-            before,
-            flags=re.IGNORECASE,
-        )
-        or re.match(
-            r"\s*(?:is|are|must\s+be|has\s+not\s+been|have\s+not\s+been)?\s*"
-            r"(?:encoded|implemented|available|missing|unavailable)\b",
-            after,
-            flags=re.IGNORECASE,
-        )
+    signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
+    if not signals:
+        return False
+    signal = signals[-1]
+    if re.fullmatch(
+        r"cannot\s+be\s+(?:computed|encoded|resolved)",
+        signal.group(0),
+        flags=re.IGNORECASE,
+    ):
+        return False
+    bridge = before[signal.end() :]
+    if len(bridge) > 240 or re.search(
+        r"\b(?:but|however|although|whereas|aber|jedoch)\b",
+        bridge,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return not any(
+        dependency.end() <= len(bridge)
+        for dependency in _qualified_usc_dependencies(bridge)
     )
 
 

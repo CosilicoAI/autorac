@@ -1546,6 +1546,33 @@ rules: []
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
+def test_relative_usc_dependency_cannot_fall_through_qualified_wrong_title():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "section 1437f(o) of title 7."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
 def test_same_external_citation_must_be_missing_and_source_bound():
     content = """\
 format: rulespec/v1
@@ -1572,6 +1599,61 @@ rules: []
     )
 
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_same_clause_cannot_launder_missingness_between_usc_citations():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until 7 USC 9999 is encoded, but 42 USC 1437f(o)
+        is available.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_source_bound_usc_dependency_accepts_without_wording():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed without the eligibility standard in 42 USC 1437f(o).
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
 
 
 @pytest.mark.parametrize(
