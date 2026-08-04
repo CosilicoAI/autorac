@@ -25414,31 +25414,63 @@ def _line_preserving_yaml_mapping_removal(
 def _line_preserving_oracle_pending_removal(
     raw: bytes,
     *,
-    old_identities: set[str],
-    canonical_identities: set[str],
+    moves: Sequence[PlannedMove],
 ) -> tuple[bytes, int]:
     """Remove legacy pending records only when a canonical successor is present."""
+
+    old_identities = {rulespec_identity(move.source) for move in moves}
 
     try:
         text = raw.decode("utf-8")
         before = yaml.safe_load(text)
     except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
         raise ValueError("legacy oracle metadata is not valid UTF-8 YAML") from exc
-    if not isinstance(before, list):
-        raise ValueError("legacy oracle metadata is not a YAML list")
-    canonical_present = {
+    if isinstance(before, list):
+        entries = before
+        mapping_schema = False
+        ceiling = None
+    elif isinstance(before, dict) and isinstance(before.get("entries"), list):
+        entries = before["entries"]
+        mapping_schema = True
+        ceiling = before.get("ceiling")
+        if ceiling is not None and (
+            not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 0
+        ):
+            raise ValueError("legacy oracle metadata ceiling is invalid")
+    else:
+        raise ValueError(
+            "legacy oracle metadata is not a YAML list or canonical entries mapping"
+        )
+    source_to_canonical = {
+        rulespec_identity(move.source): rulespec_identity(move.destination)
+        for move in moves
+    }
+    removed_source_identities = {
         identity
-        for identity in canonical_identities
+        for identity in old_identities
         if any(
             isinstance(item, dict)
             and isinstance(item.get("legal_id"), str)
             and str(item["legal_id"]).startswith(f"{identity}#")
-            for item in before
+            for item in entries
         )
     }
-    expected = [
+    required_canonical_identities = {
+        source_to_canonical[identity] for identity in removed_source_identities
+    }
+    canonical_present = {
+        identity
+        for identity in required_canonical_identities
+        if any(
+            isinstance(item, dict)
+            and isinstance(item.get("legal_id"), str)
+            and str(item["legal_id"]).startswith(f"{identity}#")
+            for item in entries
+        )
+    }
+    expected_entries = [
         item
-        for item in before
+        for item in entries
         if not (
             isinstance(item, dict)
             and isinstance(item.get("legal_id"), str)
@@ -25448,11 +25480,22 @@ def _line_preserving_oracle_pending_removal(
             )
         )
     ]
-    removed = len(before) - len(expected)
-    if removed and canonical_present != canonical_identities:
+    removed = len(entries) - len(expected_entries)
+    if not removed:
+        return raw, 0
+    if removed and canonical_present != required_canonical_identities:
         raise ValueError(
             "legacy oracle metadata lacks an exact canonical successor record"
         )
+    if mapping_schema:
+        if ceiling is not None and ceiling < removed:
+            raise ValueError("legacy oracle metadata ceiling cannot be decremented")
+        expected = copy.deepcopy(before)
+        expected["entries"] = expected_entries
+        if ceiling is not None:
+            expected["ceiling"] = ceiling - removed
+    else:
+        expected = expected_entries
     lines = text.splitlines(keepends=True)
     starts = [
         index for index, line in enumerate(lines) if line.startswith("- legal_id:")
@@ -25467,16 +25510,27 @@ def _line_preserving_oracle_pending_removal(
             remove_indexes.update(range(start, end))
     rewritten = "".join(
         line for index, line in enumerate(lines) if index not in remove_indexes
-    ).encode("utf-8")
+    )
+    if mapping_schema and ceiling is not None:
+        ceiling_pattern = re.compile(r"(?m)^ceiling: [0-9]+$")
+        rewritten, ceiling_count = ceiling_pattern.subn(
+            f"ceiling: {ceiling - removed}",
+            rewritten,
+        )
+        if ceiling_count != 1:
+            raise ValueError(
+                "legacy oracle metadata ceiling is not one canonical entry"
+            )
+    rewritten_bytes = rewritten.encode("utf-8")
     try:
-        actual = yaml.safe_load(rewritten.decode("utf-8"))
+        actual = yaml.safe_load(rewritten_bytes.decode("utf-8"))
     except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
         raise ValueError(
             "legacy oracle metadata removal produced invalid YAML"
         ) from exc
     if actual != expected or observed != removed:
         raise ValueError("legacy oracle metadata removal is not exact")
-    return rewritten, observed
+    return rewritten_bytes, observed
 
 
 def _legacy_metadata_reconciliation_bytes(
@@ -25490,7 +25544,6 @@ def _legacy_metadata_reconciliation_bytes(
 
     old_modules = {move.source.as_posix() for move in moves}
     old_identities = {rulespec_identity(move.source) for move in moves}
-    canonical_identities = {rulespec_identity(move.destination) for move in moves}
     old_manifests = {
         _applied_encoding_manifest_path(move.source).as_posix() for move in moves
     }
@@ -25553,8 +25606,7 @@ def _legacy_metadata_reconciliation_bytes(
     elif path == Path("oracle-coverage-pending.yaml"):
         rewritten, count = _line_preserving_oracle_pending_removal(
             raw,
-            old_identities=old_identities,
-            canonical_identities=canonical_identities,
+            moves=moves,
         )
         operations = ({"operation": "remove_legacy_oracle_pending", "count": count},)
     elif path == Path("tests/test_encoding_manifests.py"):
@@ -25593,17 +25645,29 @@ def _legacy_metadata_reconciliation_bytes(
     return rewritten, operations
 
 
-def _legacy_retained_metadata_reconciliations(
+def _legacy_metadata_reconciliations(
     *,
     checkout_root: Path,
     base_commit: str,
     tracked: Mapping[Path, str],
     moves: Sequence[PlannedMove],
 ) -> tuple[_LegacyReplacementRewrite, ...]:
-    """Build audited inventory removals and their derived toolchain binding."""
+    """Build audited path-move metadata and its derived toolchain binding."""
 
     if not moves:
         return ()
+    old_modules = {move.source.as_posix() for move in moves}
+    old_identities = {rulespec_identity(move.source) for move in moves}
+    old_manifests = {
+        _applied_encoding_manifest_path(move.source).as_posix() for move in moves
+    }
+    relevant_values = {
+        Path(".axiom/index/provisions_to_rules.json"): old_modules,
+        Path(".axiom/pending-validation-fingerprints.json"): old_modules,
+        Path("known-validation-gaps.yaml"): old_modules,
+        Path("oracle-coverage-pending.yaml"): old_identities,
+        Path("tests/test_encoding_manifests.py"): old_manifests,
+    }
     post_migration_waiver_sha256: str | None = None
     waiver_path = Path("known-validation-gaps.yaml")
     if waiver_path in tracked:
@@ -25638,6 +25702,10 @@ def _legacy_retained_metadata_reconciliations(
             max_bytes=16 * 1024 * 1024,
             required_mode=0o644,
         )
+        if path != Path(".axiom/toolchain.toml") and not any(
+            value.encode() in raw for value in relevant_values[path]
+        ):
+            continue
         if raw != _rulespec_migration_base_blob(checkout_root, base_commit, path):
             raise ValueError(
                 f"legacy metadata reconciliation differs from clean HEAD: {path}"
@@ -26430,11 +26498,11 @@ def _resolve_legacy_replacement_contract(
         ],
         *[item.successor_manifest.path for item in retained_successors],
     }
-    metadata_reconciliations = _legacy_retained_metadata_reconciliations(
+    metadata_reconciliations = _legacy_metadata_reconciliations(
         checkout_root=policy_checkout_path,
         base_commit=base_commit,
         tracked=tracked,
-        moves=all_moves if retained_successors else (),
+        moves=all_moves,
     )
     metadata_reconciliation_paths = {item.path for item in metadata_reconciliations}
     excluded.update(metadata_reconciliation_paths)
