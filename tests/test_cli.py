@@ -12410,8 +12410,12 @@ class TestCmdEncode:
 
         def validate(result, **_kwargs):
             validated_models.append(result.model)
-            passed = remaining_outcomes.pop(0)
-            issues = [] if passed else ["validator rejected generated section"]
+            outcome = remaining_outcomes.pop(0)
+            if isinstance(outcome, tuple):
+                passed, issues = outcome
+            else:
+                passed = outcome
+                issues = [] if passed else ["validator rejected generated section"]
             return passed, issues, {}
 
         applied_file = args.policy_repo_path / "us/statutes/26/1/j/2.yaml"
@@ -12775,6 +12779,45 @@ class TestCmdEncode:
                 f"invalid:{dependent_relative.as_posix()}"
             ]
 
+    @pytest.mark.parametrize(
+        ("enabled", "initial", "escalation", "current", "prior", "expected"),
+        (
+            (True, "terra", "sol", "terra", 0, "terra"),
+            (True, "terra", "sol", "terra", 1, "sol"),
+            (True, "terra", "sol", "sol", 2, "sol"),
+            (True, "terra", "sol", "sol", 3, None),
+            (True, "same", "same", "same", 0, "same"),
+            (True, "same", "same", "same", 1, None),
+            (False, "terra", "sol", "terra", 0, None),
+        ),
+    )
+    def test_encode_retry_model_schedule(
+        self,
+        enabled,
+        initial,
+        escalation,
+        current,
+        prior,
+        expected,
+    ):
+        import axiom_encode.cli as cli_module
+
+        config = cli_module._EncodeEscalationConfig(
+            enabled=enabled,
+            initial_model=initial,
+            escalation_model=escalation,
+            escalate_after=2,
+        )
+
+        assert (
+            cli_module._next_encode_attempt_model(
+                config,
+                current_model=current,
+                failed_attempt_count=prior,
+            )
+            == expected
+        )
+
     def test_encode_escalates_after_n_validator_failures(self, tmp_path):
         args = self._make_args(
             tmp_path,
@@ -12785,7 +12828,15 @@ class TestCmdEncode:
         )
 
         exit_code, generated, validated, mock_run, mock_validate, mock_apply = (
-            self._run_validator_escalation_case(args, [False, False, True])
+            self._run_validator_escalation_case(
+                args,
+                [
+                    (False, ["terra-1"]),
+                    (False, ["terra-2"]),
+                    (False, ["sol-1"]),
+                    (True, []),
+                ],
+            )
         )
 
         assert exit_code == 0
@@ -12793,22 +12844,25 @@ class TestCmdEncode:
             DEFAULT_OPENAI_MODEL,
             DEFAULT_OPENAI_MODEL,
             DEFAULT_OPENAI_ESCALATION_MODEL,
+            DEFAULT_OPENAI_ESCALATION_MODEL,
         ]
         assert validated == generated
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
         assert [
             call.kwargs["validation_retry_feedback"] for call in mock_run.call_args_list
         ] == [
             (),
-            ("validator rejected generated section",),
-            ("validator rejected generated section",),
+            ("terra-1",),
+            ("terra-2", "terra-1"),
+            ("sol-1", "terra-2", "terra-1"),
         ]
-        assert mock_validate.call_count == 3
+        assert mock_validate.call_count == 4
         mock_apply.assert_called_once()
         assert mock_apply.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
-        assert len(run.iterations) == 3
+        assert len(run.iterations) == 4
         assert [iteration.success for iteration in run.iterations] == [
+            False,
             False,
             False,
             True,
@@ -12816,7 +12870,7 @@ class TestCmdEncode:
         assert run.agent_model == DEFAULT_OPENAI_ESCALATION_MODEL
         assert run.outcome["generation_escalation"] == {
             "escalated": True,
-            "failed_attempt_count": 2,
+            "failed_attempt_count": 3,
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
@@ -12907,6 +12961,29 @@ class TestCmdEncode:
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
         assert "generation_escalation" not in run.outcome
 
+    def test_encode_equal_models_stop_after_bounded_retry(self, tmp_path):
+        args = self._make_args(
+            tmp_path,
+            model="same-model",
+            escalation_model="same-model",
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+
+        exit_code, generated, validated, _run, mock_validate, mock_apply = (
+            self._run_validator_escalation_case(args, [False, False])
+        )
+
+        assert exit_code == 1
+        assert generated == ["same-model", "same-model"]
+        assert validated == generated
+        assert mock_validate.call_count == 2
+        mock_apply.assert_not_called()
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert [iteration.success for iteration in run.iterations] == [False, False]
+        assert "generation_escalation" not in run.outcome
+
     def test_encode_no_escalation_preserves_single_attempt(self, tmp_path):
         args = self._make_args(
             tmp_path,
@@ -12972,7 +13049,7 @@ class TestCmdEncode:
         )
 
         exit_code, generated, validated, _run, mock_validate, mock_apply = (
-            self._run_validator_escalation_case(args, [False, False, False])
+            self._run_validator_escalation_case(args, [False, False, False, False])
         )
 
         assert exit_code == 1
@@ -12980,14 +13057,16 @@ class TestCmdEncode:
             DEFAULT_OPENAI_MODEL,
             DEFAULT_OPENAI_MODEL,
             DEFAULT_OPENAI_ESCALATION_MODEL,
+            DEFAULT_OPENAI_ESCALATION_MODEL,
         ]
         assert validated == generated
-        assert mock_validate.call_count == 3
+        assert mock_validate.call_count == 4
         assert mock_validate.call_args.args[0].model == DEFAULT_OPENAI_ESCALATION_MODEL
         mock_apply.assert_not_called()
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
-        assert run.outcome["generation_escalation"]["failed_attempt_count"] == 2
+        assert run.outcome["generation_escalation"]["failed_attempt_count"] == 3
         assert [iteration.success for iteration in run.iterations] == [
+            False,
             False,
             False,
             False,

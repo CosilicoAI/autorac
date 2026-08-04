@@ -20697,6 +20697,7 @@ rules:
             include_tests=True,
             runner_backend="openai",
             policyengine_rule_hint="uc_standard_allowance_single_claimant_aged_under_25",
+            require_complete_source_unit=True,
         )
 
         assert "uc_standard_allowance_single_claimant_aged_under_25" in prompt
@@ -20710,10 +20711,8 @@ rules:
         assert "concrete output instead of leaving the broad phrase" in prompt
         assert "person_is_in_*_category" in prompt
         assert "Keep `.test.yaml` inputs oracle-comparable" in prompt
-        assert (
-            "Prefer a contemporary monthly `.test.yaml` period like `2022-01` or `2024-01`"
-            in prompt
-        )
+        assert "prefer a contemporary monthly `.test.yaml`" in prompt
+        assert "period like `2022-01` or `2024-01`" in prompt
         assert (
             "canonical RuleSpec output whose local name is `uc_standard_allowance_single_claimant_aged_under_25`"
             in prompt
@@ -20734,10 +20733,15 @@ rules:
         assert "us:regulations/42-cfr/435/119#adult_group_eligible" in prompt
         assert "person_covered_by_*category" in prompt
         assert "Do not let the oracle-facing hinted" in prompt
+        assert "Avoid pre-2015 periods only for cases" in prompt
+        assert "intended to supply PolicyEngine oracle evidence" in prompt
+        assert "Never replace or omit a" in prompt
+        assert "source-required historical branch" in prompt
         assert (
-            "avoid pre-2015 historical periods that PolicyEngine US cannot evaluate"
+            "historical branch's runtime evidence must use that branch's legally"
             in prompt
         )
+        assert "omit oracle inputs or expectations" in prompt
 
     def test_policyengine_hint_upstream_composition_flags_broad_placeholders(self):
         content = """

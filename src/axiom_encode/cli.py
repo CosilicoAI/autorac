@@ -26752,7 +26752,11 @@ def _next_encode_attempt_model(
         and config.escalation_model != config.initial_model
     )
     if already_escalated:
-        return None
+        return (
+            config.escalation_model
+            if failures_after_current == config.escalate_after + 1
+            else None
+        )
     if failures_after_current < config.escalate_after:
         return config.initial_model
     if config.escalation_model == config.initial_model:
@@ -26839,9 +26843,7 @@ def _cmd_encode_with_authoritative_rulespec_roots(
                 error=_encode_outcome_issue(execution.result, execution.outcome),
             )
             failed_attempts = (*failed_attempts, failure)
-            action = (
-                "escalating" if next_model == config.escalation_model else "retrying"
-            )
+            action = "retrying" if next_model == current_model else "escalating"
             print(
                 f"  generation={action} failed_attempts={len(failed_attempts)} "
                 f"from_model={current_model} to_model={next_model}"
