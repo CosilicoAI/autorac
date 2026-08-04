@@ -418,7 +418,7 @@ _MISSING_DEPENDENCY_LANGUAGE = re.compile(
 _ADVERSATIVE_LANGUAGE = re.compile(
     r"\b(?:"
     r"although|but|despite|even\s+though|except|however|nevertheless|nonetheless|"
-    r"notwithstanding|though|unless|whereas|while|yet|aber|jedoch|obwohl"
+    r"notwithstanding|though|unless|whereas|while|(?<!not\s)yet|aber|jedoch|obwohl"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -2043,7 +2043,11 @@ def _reason_match_names_missing_dependency(
     reference_end = match.end() - clause_start
     before = clause[:reference_start]
     after = clause[reference_end:]
-    if not _reason_named_instruments_are_source_bound(before, source_scope_text):
+    if not _reason_named_instruments_are_source_bound(
+        before,
+        source_scope_text,
+        dependency_match=match,
+    ):
         return False
     direct_missing_state = re.match(
         r"\s*(?:"
@@ -2181,7 +2185,9 @@ def _reason_suffix_has_dependency_state(
 ) -> bool:
     """Require a state predicate for this citation or its coordinated list."""
 
-    bounded = _ADVERSATIVE_LANGUAGE.split(after, maxsplit=1)[0]
+    if _ADVERSATIVE_LANGUAGE.search(after):
+        return False
+    bounded = after
     state_pattern = re.compile(
         r"\b(?:"
         r"(?:is|are|was|were|must\s+be)\s+(?:not\s+(?:yet\s+)?)?"
@@ -2432,6 +2438,8 @@ def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
 def _reason_named_instruments_are_source_bound(
     before: str,
     source_scope_text: str,
+    *,
+    dependency_match: re.Match[str],
 ) -> bool:
     named_instrument = re.compile(
         r"\bunder\s+(?:the\s+)?"
@@ -2444,8 +2452,39 @@ def _reason_named_instruments_are_source_bound(
     if match is None:
         return True
     instrument = re.sub(r"[^a-z0-9]+", " ", match.group("instrument").lower()).strip()
-    source = re.sub(r"[^a-z0-9]+", " ", source_scope_text.lower()).strip()
-    return bool(instrument and instrument in source)
+    if not instrument:
+        return False
+
+    source_clauses: list[str] = []
+    match_groups = dependency_match.groupdict()
+    dependency_title = match_groups.get("title")
+    dependency_section = match_groups.get("section")
+    if dependency_title and dependency_section:
+        dependency_fragments = _usc_dependency_fragments(dependency_match)
+        for source_match in _qualified_usc_dependencies(source_scope_text):
+            if (
+                source_match.group("title").lower() != dependency_title.lower()
+                or normalize_rulespec_path_segment(source_match.group("section"))
+                != normalize_rulespec_path_segment(dependency_section)
+                or _usc_dependency_fragments(source_match) != dependency_fragments
+            ):
+                continue
+            clause_start, clause_end = _reason_clause_bounds(
+                source_scope_text,
+                source_match,
+            )
+            source_clauses.append(source_scope_text[clause_start:clause_end])
+    else:
+        source_clauses.append(source_scope_text)
+
+    instrument_pattern = re.compile(
+        rf"(?:^|\s){re.escape(instrument)}(?:$|\s)",
+        flags=re.IGNORECASE,
+    )
+    return any(
+        instrument_pattern.search(re.sub(r"[^a-z0-9]+", " ", clause.lower()).strip())
+        for clause in source_clauses
+    )
 
 
 def _reason_direct_missing_introduction_is_bounded(

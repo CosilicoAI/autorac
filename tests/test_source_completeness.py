@@ -2778,6 +2778,43 @@ rules: []
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        "(b) The Social Security Act appears only in historical context. "
+        "Assistance is received under 42 USC 1437f(o).",
+        "(b) An unfair labor standards action is discussed under 42 USC 1437f(o).",
+    ],
+)
+def test_named_legal_instrument_requires_exact_title_in_citation_clause(source: str):
+    instrument = (
+        "Social Security Act"
+        if "Social Security Act" in source
+        else "Fair Labor Standards Act"
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
     "subject",
     [
         "historical eligibility data",
@@ -2873,6 +2910,72 @@ module:
     - output: us:statutes/42/1437c-1/b#annual_plan_requirement
       reason: >-
         {reason}
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize("linker", ["depends on", "requires"])
+@pytest.mark.parametrize("state", ["not yet encoded", "not yet available"])
+def test_strong_linker_accepts_not_yet_state(linker: str, state: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount {linker} 42 USC 1437f(o) is
+        {state}.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "is encoded, but the citation is only nonbinding authority",
+        "is unavailable even though it is included only for historical comparison",
+    ],
+)
+@pytest.mark.parametrize("linker", ["under", "depends on", "requires"])
+def test_dependency_state_rejects_adversative_tail(linker: str, tail: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount {linker} 42 USC 1437f(o)
+        {tail}.
 rules: []
 """
     source = (
