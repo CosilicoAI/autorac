@@ -112,6 +112,8 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
         "formula branch, boundary,\n  exception, and rounding rule" in complete_prompt
     )
     assert "historical branch's runtime evidence must use" in complete_prompt
+    assert "keep that output executable from the earliest" in complete_prompt
+    assert "parameter/helper guards in the\n  single derived formula" in complete_prompt
     assert "omit oracle inputs or expectations" in complete_prompt
     assert "scalar-only source unit may remain parameter-only" in complete_prompt
 

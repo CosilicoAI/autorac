@@ -1273,6 +1273,96 @@ rules:
         test_cases=test_cases[1:],
     )
     assert _has_issue(current_only, "formula branch", "test")
+    assert _has_issue(
+        current_only,
+        "exact source computation",
+        "taxable year 2000",
+        "10%",
+        "legally applicable companion-case period",
+        "observed asserted candidate-case periods: 2024-01-01",
+    )
+    long_excerpt = completeness_module._bounded_source_feedback_excerpt(
+        "head " + "x" * 500 + " operative tail"
+    )
+    assert len(long_excerpt) == 360
+    assert long_excerpt.startswith("head ")
+    assert long_excerpt.endswith(" operative tail")
+    assert completeness_module._bounded_period_feedback(
+        [f"{year}-01-01" for year in range(2000, 2020)]
+    ) == (
+        "2000-01-01, 2001-01-01, 2002-01-01, 2003-01-01, "
+        "... (12 omitted) ..., 2016-01-01, 2017-01-01, 2018-01-01, 2019-01-01"
+    )
+
+    premature_payload = yaml.safe_load(content)
+    premature_principal = next(
+        rule
+        for rule in premature_payload["rules"]
+        if rule["name"] == "nj_earned_income_tax_credit_before_proration"
+    )
+    premature_principal["versions"][0]["effective_from"] = "2020-01-01"
+    premature_principal_formula = premature_principal["versions"][0]["formula"]
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            premature_principal,
+            test_cases[0],
+        )
+        is None
+    )
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            premature_principal,
+            test_cases[1],
+        )
+        == premature_principal_formula
+    )
+    expired_principal = yaml.safe_load(yaml.safe_dump(premature_principal))
+    expired_principal["versions"][0]["effective_from"] = "2000-01-01"
+    expired_principal["versions"][0]["effective_to"] = "2000-12-31"
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            expired_principal,
+            test_cases[1],
+        )
+        is None
+    )
+    undated_principal = {"versions": [{"formula": premature_principal_formula}]}
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            undated_principal,
+            test_cases[0],
+        )
+        == premature_principal_formula
+    )
+    malformed_principal = {
+        "versions": [
+            {
+                "effective_from": "2020",
+                "formula": premature_principal_formula,
+            }
+        ]
+    }
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            malformed_principal,
+            test_cases[1],
+        )
+        is None
+    )
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            premature_principal,
+            {"period": "not-a-year"},
+        )
+        is None
+    )
+    premature = _analyze(
+        yaml.safe_dump(premature_payload, sort_keys=False),
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=test_cases,
+    )
+    assert _has_issue(premature, "formula branch", "test")
 
 
 def test_colon_satz_markers_are_recognized_and_independently_required():

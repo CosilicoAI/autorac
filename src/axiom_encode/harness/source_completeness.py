@@ -2869,13 +2869,48 @@ def _companion_test_issues(
         formula_environment=formula_environment,
     )
     for branch in missing_formula_branches:
+        source_excerpt = _bounded_source_feedback_excerpt(branch.text)
+        source_location = f"characters {branch.start}:{branch.end}"
+        interval = _formula_branch_interval(
+            branch,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        witness_requirement = (
+            "The asserted principal formula must execute this source computation "
+            "in its legally applicable companion-case period."
+            if interval is None
+            else "The asserted principal formula must execute this source "
+            "computation in its legally applicable companion-case period, and "
+            "the case must supply a numeric selector inside the source-stated "
+            "range."
+        )
+        observed_periods = sorted(
+            {
+                period
+                for rule_name in principal_formula_clause_rules[branch]
+                for case in asserted_by_rule.get(rule_name, ())
+                if re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}",
+                    period := _normalized_case_period(case),
+                )
+            }
+        )
+        observed_period_detail = (
+            " Observed asserted candidate-case periods: "
+            + _bounded_period_feedback(observed_periods)
+            + "."
+            if observed_periods
+            else " No asserted candidate principal-output case has a usable period."
+        )
         issues.append(
             "[complete-source-unit:tests] Companion tests do not demonstrate "
             f"formula branch {branch.label} at "
-            f"{_branch_citation(corpus_citation_path, branch)} with a principal "
-            "output assertion and, when the branch states a range, a selector "
-            "input in that branch. Each formula branch needs distinct executed "
-            "test evidence."
+            f"{_branch_citation(corpus_citation_path, branch)}. Exact source "
+            f"computation ({source_location}): `{source_excerpt}`. "
+            f"{witness_requirement}{observed_period_detail} Each formula branch "
+            "needs distinct executed "
+            "test evidence; an internal formula-clause ordinal is not a legal "
+            "paragraph number."
         )
 
     boundary_branches = _active_or_root_source_branches(
@@ -8050,23 +8085,48 @@ def _rule_formula_text_for_case(
 ) -> str | None:
     """Resolve one temporal formula when the companion case identifies a period."""
 
-    unambiguous = _unambiguous_rule_formula_text(rule)
-    if unambiguous is not None:
-        return unambiguous
-    period = _normalized_case_period(case)
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
-        return None
     versions = rule.get("versions")
     if not isinstance(versions, list):
         return None
+    unambiguous = _unambiguous_rule_formula_text(rule)
+    formula_versions = [
+        version
+        for version in versions
+        if isinstance(version, dict) and version.get("formula") is not None
+    ]
+    dated_versions = [
+        version
+        for version in formula_versions
+        if re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}",
+            str(version.get("effective_from") or "").strip(),
+        )
+    ]
+    has_temporal_metadata = any(
+        str(version.get("effective_from") or "").strip()
+        or str(version.get("effective_to") or "").strip()
+        for version in formula_versions
+    )
+    if has_temporal_metadata and (
+        len(dated_versions) != len(formula_versions)
+        or any(
+            effective_to and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", effective_to)
+            for version in formula_versions
+            if (effective_to := str(version.get("effective_to") or "").strip())
+        )
+    ):
+        return None
+    period = _normalized_case_period(case)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+        if "period" not in case:
+            return unambiguous
+        return None if has_temporal_metadata else unambiguous
+    if not dated_versions:
+        return unambiguous
     candidates: list[tuple[str, str]] = []
-    for version in versions:
-        if not isinstance(version, dict) or version.get("formula") is None:
-            continue
+    for version in dated_versions:
         effective_from = str(version.get("effective_from") or "").strip()
         effective_to = str(version.get("effective_to") or "").strip()
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", effective_from):
-            continue
         if effective_from > period or (effective_to and effective_to < period):
             continue
         candidates.append((effective_from, str(version["formula"])))
@@ -8180,3 +8240,31 @@ def _normalized_case_period(case: dict[str, Any]) -> str:
 
 def _collapse_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _bounded_source_feedback_excerpt(value: str, *, limit: int = 360) -> str:
+    """Render bounded source-identifying feedback without changing its words."""
+
+    collapsed = _collapse_text(value).replace("`", "\\`")
+    if len(collapsed) <= limit:
+        return collapsed
+    marker = " ... "
+    available = limit - len(marker)
+    head_length = (available * 2) // 3
+    tail_length = available - head_length
+    return collapsed[:head_length].rstrip() + marker + collapsed[-tail_length:].lstrip()
+
+
+def _bounded_period_feedback(periods: Sequence[str], *, limit: int = 8) -> str:
+    """Render bounded candidate periods while retaining both temporal extremes."""
+
+    if len(periods) <= limit:
+        return ", ".join(periods)
+    head_count = limit // 2
+    tail_count = limit - head_count
+    omitted = len(periods) - limit
+    return (
+        ", ".join(periods[:head_count])
+        + f", ... ({omitted} omitted) ..., "
+        + ", ".join(periods[-tail_count:])
+    )

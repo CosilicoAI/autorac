@@ -9661,6 +9661,12 @@ Complete-source-unit mode is enabled for this request:
   applicable period. If an external oracle cannot evaluate that period, keep
   the source-faithful companion case and omit oracle inputs or expectations
   from that case; never move or omit the branch to gain oracle compatibility.
+- When a principal derived output combines an earlier operative path with a
+  later-added alternative, keep that output executable from the earliest
+  source-stated path date. Do not move the whole output's `effective_from` to
+  the later alternative; use effective-dated parameter/helper guards in the
+  single derived formula so every historical companion case executes an
+  applicable path.
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 
