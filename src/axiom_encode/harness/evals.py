@@ -9734,7 +9734,10 @@ Complete-source-unit mode is enabled for this request:
   contributes nothing to completeness accounting.
 - Every explicit computation stated in the source unit must have a principal
   `kind: derived` or `kind: derived_relation` output. Naming its constants as
-  parameters without encoding the stated formula is invalid.
+  parameters without encoding the stated formula is invalid. Do not defer an
+  explicit computation merely because its source-stated facts are not already
+  represented in the module; declare those facts as explicit local RuleSpec
+  inputs and encode the principal output.
 - When the source states both a base value and its converted result, encode both
   values as separate grounded `kind: parameter` rules. Result wording such as
   "converted to the month, this gives ..." states a scalar result; it does not
@@ -9752,7 +9755,12 @@ Complete-source-unit mode is enabled for this request:
   path (for example, `de:statutes/estg/32a/6#surviving_spouse_tariff`). Include
   `blocked_by` only for known exact RuleSpec targets with a `#rule_fragment`;
   otherwise omit `blocked_by` and name the exact missing legal dependency or
-  citation in `reason`. Never guess a blocker target.
+  citation in `reason`. For a runtime-gap deferral of a current-source branch,
+  the `reason` itself must literally cite the complete legal branch, including
+  every subsection marker represented by the output branch, and name a
+  concrete source-stated missing input or runtime capability. The output path
+  is not a source citation.
+  Never guess a blocker target.
 - Companion tests must execute every source-stated formula branch, boundary,
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test

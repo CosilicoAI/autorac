@@ -1949,6 +1949,7 @@ rules: []
     )
     assert "Required shape" in issue
     assert "module:\n  deferred_outputs:" in issue
+    assert "the output path is not a source citation" in issue.lower()
     assert "output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax" in issue
     assert "reason: Cannot be computed until" in issue
     assert "EStG § 26" in issue
@@ -2039,6 +2040,56 @@ rules: []
     )
 
     assert _has_issue(result, "(a)", "deferral", "runtime capability")
+    issue = next(
+        issue
+        for issue in result.issues
+        if issue.startswith("[complete-source-unit:deferral]")
+    )
+    assert "`42 U.S.C. 1437c-1(a)`" in issue
+
+
+@pytest.mark.parametrize(
+    ("terminal_fragment", "accepted"),
+    [("A", True), ("B", False)],
+)
+def test_subsection_scoped_runtime_gap_requires_exact_terminal_branch(
+    terminal_fragment: str,
+    accepted: bool,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1396a/a/10
+  deferred_outputs:
+    - output: us:statutes/42/1396a/a/10/A#hearing_process
+      reason: >-
+        Cannot be computed until the hearing event and notice record required by
+        42 U.S.C. 1396a(a)(10)({terminal_fragment}) are available at runtime.
+rules: []
+"""
+    source = (
+        "(A) The State agency shall conduct a hearing and provide notice of "
+        "the hearing."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1396a/a/10",
+        test_cases=[],
+    )
+
+    if accepted:
+        assert not result.issues
+    else:
+        assert _has_issue(result, "(a)", "deferral", "runtime capability")
+        issue = next(
+            issue
+            for issue in result.issues
+            if issue.startswith("[complete-source-unit:deferral]")
+        )
+        assert "`42 U.S.C. 1396a(a)(10)(A)`" in issue
 
 
 def test_current_usc_branch_cannot_defer_directly_computable_source():

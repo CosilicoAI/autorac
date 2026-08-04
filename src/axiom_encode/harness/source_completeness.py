@@ -1028,7 +1028,34 @@ module:
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
 must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
 exists, cite the exact current source branch and name its concrete source-stated missing \
-input or runtime capability; a generic claim that the branch is unavailable is invalid."""
+input or runtime capability in the `reason` itself; the output path is not a source \
+citation, and a generic claim that the branch is unavailable is invalid."""
+
+
+def _imprecise_deferral_retry_shape(
+    *,
+    corpus_citation_path: str,
+    path: tuple[str, ...],
+) -> str:
+    """Render branch-specific retry guidance without inventing source facts."""
+
+    branch_hint = ""
+    if path and corpus_citation_path.startswith("us/statute/"):
+        with contextlib.suppress(ValueError):
+            citation = parse_usc_citation(corpus_citation_path)
+            section = normalize_rulespec_path_segment(citation.section)
+            fragments = "".join(
+                f"({normalize_rulespec_path_segment(part)})"
+                for part in (*citation.fragments, *path)
+            )
+            branch_hint = (
+                "\nFor this rejected current-source branch, the literal citation "
+                f"required in `reason` is `{citation.title} U.S.C. "
+                f"{section}{fragments}`."
+            )
+    return f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}{branch_hint}"
+
+
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -1979,14 +2006,15 @@ def _deferred_coverage(
         output = str(record.get("output") or "").strip()
         output_path = output.split("#", 1)[0]
         path: tuple[str, ...] | None = None
+        display_path: tuple[str, ...] | None = None
         if output_path == base_target:
             path = ()
+            display_path = ()
         elif output_path.startswith(f"{base_target}/"):
-            path = tuple(
-                part.lower()
-                for part in output_path[len(base_target) + 1 :].split("/")
-                if part
+            display_path = tuple(
+                part for part in output_path[len(base_target) + 1 :].split("/") if part
             )
+            path = tuple(part.lower() for part in display_path)
         if path is None:
             continue
         reason = str(record.get("reason") or "").strip()
@@ -2059,12 +2087,16 @@ def _deferred_coverage(
         else:
             branch_label = path[0] if path else "source unit"
             rendered_path = "/".join(path) or "<source-unit>"
+            retry_shape = _imprecise_deferral_retry_shape(
+                corpus_citation_path=corpus_citation_path,
+                path=display_path or path,
+            )
             issues.append(
                 "[complete-source-unit:deferral] "
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
                 "name an exact missing dependency, input, or runtime capability.\n"
-                f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
+                f"{retry_shape}"
             )
     return covered, issues
 
@@ -3613,11 +3645,12 @@ def _reason_names_source_bound_runtime_gap(
     section_pattern = re.escape(
         normalize_rulespec_path_segment(citation.section)
     ).replace(r"\-", dash_pattern)
+    complete_branch = (*citation.fragments, *path)
     branch_pattern = r"\s*".join(
         rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
-        for part in path
+        for part in complete_branch
     )
-    descendant_guard = r"(?!\s*\()" if len(path) > 1 else ""
+    descendant_guard = r"(?!\s*\()" if len(complete_branch) > 1 else ""
     exact_branch_citation = re.compile(
         rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
         rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}{descendant_guard}",

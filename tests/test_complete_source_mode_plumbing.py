@@ -96,6 +96,7 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert "declare those facts as explicit local RuleSpec\n  inputs" in complete_prompt
     assert (
         "encode both\n  values as separate grounded `kind: parameter` rules"
         in complete_prompt
@@ -104,6 +105,10 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
     assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "missing dependency or citation" in complete_prompt
+    assert "the `reason` itself must literally cite the complete legal branch" in (
+        complete_prompt
+    )
+    assert "The output path\n  is not a source citation" in complete_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
@@ -234,6 +239,7 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert (
         "parameters without encoding the stated formula is invalid" in complete_prompt
     )
+    assert "declare those facts as explicit local RuleSpec\n  inputs" in complete_prompt
     assert (
         "encode both\n  values as separate grounded `kind: parameter` rules"
         in complete_prompt
@@ -242,6 +248,10 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert "companion-test assertions on both\n  parameter outputs" in complete_prompt
     assert "separate grounded `kind: parameter` rules" not in default_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
+    assert "the `reason` itself must literally cite the complete legal branch" in (
+        complete_prompt
+    )
+    assert "The output path\n  is not a source citation" in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
     )
