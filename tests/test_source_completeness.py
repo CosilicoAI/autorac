@@ -8303,6 +8303,29 @@ def test_formula_clause_with_explicit_carveout_keeps_exception_obligation():
     assert len(exception_branches) == 1
 
 
+def test_formula_clause_keeps_nonarithmetic_applicability_obligation():
+    source = """\
+(1) If the claimant is eligible, the credit is computed as income * 10 percent.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert len(exception_branches) == 1
+
+
 def test_positive_eligibility_condition_requires_enabling_effect():
     source = """\
 (1) The claimant shall be eligible if the claimant is ineligible due to age.

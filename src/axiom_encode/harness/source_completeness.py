@@ -6356,6 +6356,7 @@ def _source_exception_branches(
                 branch_text = source_text[branch_start:branch_end]
             if (
                 _EXCEPTION_LANGUAGE.search(branch_text) is None
+                and _source_has_arithmetic_comparison_condition(branch_text)
                 and any(
                     formula_branch.start == branch_start
                     and formula_branch.end == branch_end
@@ -6377,6 +6378,29 @@ def _source_exception_branches(
         {
             (branch.path, branch.start, branch.end): branch for branch in obligations
         }.values()
+    )
+
+
+def _source_has_arithmetic_comparison_condition(text: str) -> bool:
+    """Identify an arithmetic ``if/when`` already owned by formula coverage."""
+
+    collapsed = _collapse_text(text)
+    condition = re.search(
+        r"\b(?:if|when|wenn|falls)\b(?P<body>[^,;.]*)",
+        collapsed,
+        flags=re.IGNORECASE,
+    )
+    if condition is None:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:exceeds?|exceeded|greater\s+than|less\s+than|more\s+than|"
+            r"at\s+least|at\s+most|above|below|over|under|"
+            r"übersteigt|überschreitet|mehr\s+als|weniger\s+als|"
+            r"mindestens|höchstens|über|unter)\b|[<>]=?",
+            condition.group("body"),
+            flags=re.IGNORECASE,
+        )
     )
 
 
