@@ -461,20 +461,34 @@ jobs:
             --corpus-ref "$CORPUS_REF" \
             --rules-engine-ref "$RULES_ENGINE_REF" \
             --rulespec-ref "$RULESPEC_REF" \
+            --allow-rulespec-base-advance \
             --replace-rulespec-path "$REPLACE_RULESPEC_PATH" \
             --workflow-run-id "$REPAIR_RUN_ID" \
             > "$RUNNER_TEMP/repair-candidate.json"
           jq -e '
             (.root | type == "string" and length > 0)
             and (.path | type == "string" and length > 0)
+            and (.source_rulespec_ref | test("^[0-9a-f]{40}$"))
             and (.rulespec_sha256 | test("^[0-9a-f]{64}$"))
             and (.tests_sha256 | test("^[0-9a-f]{64}$"))
           ' "$RUNNER_TEMP/repair-candidate.json" > /dev/null
+          repair_source_rulespec_ref="$(jq -er '.source_rulespec_ref' \
+            "$RUNNER_TEMP/repair-candidate.json")"
+          repair_candidate_path="$(jq -er '.path' \
+            "$RUNNER_TEMP/repair-candidate.json")"
+          python3 axiom-encode/scripts/verify_repair_base_advance.py \
+            "$RULESPEC_CHECKOUT" \
+            --country "$COUNTRY" \
+            --source-ref "$repair_source_rulespec_ref" \
+            --current-ref "$RULESPEC_REF" \
+            --candidate-path "$repair_candidate_path"
           echo "root=$(jq -r '.root' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
           echo "path=$(jq -r '.path' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
           echo "runner=$(jq -r '.runner' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
+          echo "source_rulespec_ref=$repair_source_rulespec_ref" \
             >> "$GITHUB_OUTPUT"
           echo "rulespec_sha256=$(jq -r '.rulespec_sha256' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
@@ -1426,6 +1440,7 @@ jobs:
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
           REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_SOURCE_RULESPEC_REF: ${{ steps.repair_candidate.outputs.source_rulespec_ref }}
           REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
           REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
@@ -2361,6 +2376,9 @@ jobs:
           if repair_run_id:
               consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
               consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_source_rulespec_ref = os.environ.get(
+                  "REPAIR_CANDIDATE_SOURCE_RULESPEC_REF", ""
+              )
               consumed_rulespec_sha256 = os.environ.get(
                   "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
               )
@@ -2373,6 +2391,10 @@ jobs:
                   raise SystemExit("repair candidate evidence path is malformed")
               if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
                   raise SystemExit("repair candidate evidence runner is malformed")
+              if not re.fullmatch(r"[0-9a-f]{40}", consumed_source_rulespec_ref):
+                  raise SystemExit(
+                      "repair candidate source RuleSpec ref is malformed"
+                  )
               if any(
                   re.fullmatch(r"[0-9a-f]{64}", digest) is None
                   for digest in (
@@ -2385,6 +2407,7 @@ jobs:
                   "run_id": repair_run_id,
                   "path": consumed_path,
                   "runner": consumed_runner,
+                  "source_rulespec_ref": consumed_source_rulespec_ref,
                   "rulespec_sha256": consumed_rulespec_sha256,
                   "tests_sha256": consumed_tests_sha256,
               }
@@ -2620,6 +2643,7 @@ jobs:
           REPAIR_CANDIDATE_OUTCOME: ${{ steps.repair_candidate.outcome }}
           REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
           REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_SOURCE_RULESPEC_REF: ${{ steps.repair_candidate.outputs.source_rulespec_ref }}
           REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
           REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           PROVISION_SIGNING_SUPERVISOR_CONCLUSION: ${{ steps.provision_signing_supervisor.conclusion }}
@@ -2909,6 +2933,9 @@ jobs:
           if os.environ.get("REPAIR_CANDIDATE_CONCLUSION") == "success":
               consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
               consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_source_rulespec_ref = os.environ.get(
+                  "REPAIR_CANDIDATE_SOURCE_RULESPEC_REF", ""
+              )
               consumed_rulespec_sha256 = os.environ.get(
                   "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
               )
@@ -2921,6 +2948,10 @@ jobs:
                   raise SystemExit("repair candidate evidence path is malformed")
               if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
                   raise SystemExit("repair candidate evidence runner is malformed")
+              if not re.fullmatch(r"[0-9a-f]{40}", consumed_source_rulespec_ref):
+                  raise SystemExit(
+                      "repair candidate source RuleSpec ref is malformed"
+                  )
               if any(
                   re.fullmatch(r"[0-9a-f]{64}", digest) is None
                   for digest in (
@@ -2933,6 +2964,7 @@ jobs:
                   "run_id": os.environ.get("REPAIR_RUN_ID") or None,
                   "path": consumed_path,
                   "runner": consumed_runner,
+                  "source_rulespec_ref": consumed_source_rulespec_ref,
                   "rulespec_sha256": consumed_rulespec_sha256,
                   "tests_sha256": consumed_tests_sha256,
               }

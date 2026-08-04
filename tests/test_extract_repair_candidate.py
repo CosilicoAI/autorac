@@ -96,6 +96,7 @@ def _args(tmp_path: Path, archive: Path, **overrides) -> Namespace:
         "corpus_ref": "b" * 40,
         "rules_engine_ref": "c" * 40,
         "rulespec_ref": "d" * 40,
+        "allow_rulespec_base_advance": False,
         "replace_rulespec_path": "us/statutes/42/1437c-1.yaml",
         "workflow_run_id": "1234",
     }
@@ -110,6 +111,7 @@ def test_extracts_checksum_bound_final_candidate(tmp_path):
 
     root = Path(result["root"])
     assert result["path"] == "statutes/42/1437c-1.yaml"
+    assert result["source_rulespec_ref"] == "d" * 40
     assert (root / result["path"]).read_text() == "format: rulespec/v1\nrules: []\n"
     assert (root / "statutes/42/1437c-1.test.yaml").read_text() == "[]\n"
 
@@ -119,6 +121,41 @@ def test_rejects_metadata_identity_mismatch(tmp_path):
 
     with pytest.raises(ValueError, match="metadata mismatch: rulespec_ref"):
         extract_candidate(_args(tmp_path, archive, rulespec_ref="e" * 40))
+
+
+def test_allows_explicit_rulespec_base_advance_for_later_workflow_proof(tmp_path):
+    archive, _ = _archive(tmp_path)
+
+    result = extract_candidate(
+        _args(
+            tmp_path,
+            archive,
+            rulespec_ref="e" * 40,
+            allow_rulespec_base_advance=True,
+        )
+    )
+
+    assert result["source_rulespec_ref"] == "d" * 40
+
+
+def test_rejects_malformed_source_rulespec_ref_during_base_advance(tmp_path):
+    archive, metadata = _archive(tmp_path)
+    metadata["rulespec_ref"] = "not-a-commit"
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "malformed-rulespec-ref.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match="metadata mismatch: rulespec_ref"):
+        extract_candidate(
+            _args(
+                tmp_path,
+                replacement,
+                rulespec_ref="e" * 40,
+                allow_rulespec_base_advance=True,
+            )
+        )
 
 
 def test_rejects_candidate_digest_mismatch(tmp_path):
