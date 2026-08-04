@@ -1989,6 +1989,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "queue-authorized re-encodes cannot add source inputs until queue "
         "generation identity binds them"
     ) in source_bundle_command
+    assert (
+        "source-bundle replacements cannot include dependent migrations"
+        in source_bundle_command
+    )
     assert steps.index(source_bundle_step) > next(
         index
         for index, step in enumerate(steps)
@@ -2160,7 +2164,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"$SECOND_DEPENDENT_REVIEW_FINDING" false dependent-2 "" "" false' in command
     assert '"$CITATION" "$REVIEW_FINDING" true target \\\n' in command
     assert '"$DEPENDENT_CITATION" "$DEPENDENT_REVIEW_FINDING" \\\n' in command
-    assert '"$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH"' in command
+    assert '"$REPLACE_RULESPEC_PATH" "$final_legacy_source_path"' in command
     assert '"$CITATION" "$REVIEW_FINDING" false \\\n' in command
     assert "dependent review finding is required with dependent citation" in command
     assert "parse-source-bundle" in command
@@ -2171,7 +2175,12 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
     assert '"$source_citation" "" true "$source_lane" "" "" false' in command
-    assert '"$CITATION" "" true target-preflight \\' in command
+    assert '"$CITATION" "" false target-preflight \\' in command
+    assert '"$REPLACE_LEGACY_RULESPEC_PATH" false' in command
+    assert 'final_legacy_source_path=""' in command
+    assert (
+        "source-bundle replacements cannot include dependent migrations" in command
+    )
     assert "Canonicalize signed replacement target before source bundle" in command
     assert "checkpoint_signed_changes()" in command
     assert 'local guard_status="$?"' in command
@@ -2641,7 +2650,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         if step.get("name") == "Encode, review, validate, and apply"
     )
     checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
-        '\n}\n\nif [ "$source_bundle_enabled"',
+        '\n}\n\nfinal_legacy_source_path=',
         1,
     )[0]
     guard_stub = tmp_path / "guard-stub"
@@ -3162,7 +3171,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         1,
     )
     _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
-        '\n}\n\nif [ "$source_bundle_enabled"',
+        '\n}\n\nfinal_legacy_source_path=',
         1,
     )
     command = (
@@ -3170,7 +3179,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         + "checkpoint_signed_changes() {\n"
         + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
         + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
-        + '}\n\nif [ "$source_bundle_enabled"'
+        + '}\n\nfinal_legacy_source_path='
         + after_checkpoint
     )
 
@@ -3184,6 +3193,20 @@ import os
 import sys
 from pathlib import Path
 
+args = sys.argv[sys.argv.index("--") + 1:]
+checkout = Path(os.environ["RULESPEC_CHECKOUT"])
+legacy = checkout / os.environ["LEGACY_REPLACEMENT_FILE"]
+legacy_test = legacy.with_name(f"{legacy.stem}.test.yaml")
+if "--replace-legacy-rulespec-path" in args:
+    if "--apply-target-only" in args:
+        raise SystemExit("legacy preflight must validate the complete checkout")
+    if not legacy.is_file() or not legacy_test.is_file():
+        raise SystemExit("legacy predecessor was not present for preflight")
+    legacy.unlink()
+    legacy_test.unlink()
+elif legacy.exists() or legacy_test.exists():
+    raise SystemExit("source encoding started before legacy predecessor retirement")
+
 with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
 """,
@@ -3195,6 +3218,15 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     _prepare_empty_signed_import_inputs(runner_temp)
     primary = "us-ri/statute/44-30-2.6"
     replacement_path = "us-ri/statutes/44-30-2.6.yaml"
+    legacy_replacement_path = "us-ri/statutes/44:30-2.6.yaml"
+    checkout = tmp_path / "rulespec-us"
+    canonical = checkout / replacement_path
+    legacy = checkout / legacy_replacement_path
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("format: rulespec/v1\nrules: []\n")
+    canonical.with_name(f"{canonical.stem}.test.yaml").write_text("[]\n")
+    legacy.write_text("format: rulespec/v1\nrules: []\n")
+    legacy.with_name(f"{legacy.stem}.test.yaml").write_text("[]\n")
     sources = [
         "us-ri/statute/44-30-1",
         "us-ri/guidance/revenue/2026/rate-schedule",
@@ -3213,7 +3245,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "DEPENDENT_CITATION": "",
             "DEPENDENT_REVIEW_FINDING": "",
             "GITHUB_WORKSPACE": str(tmp_path),
-            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "LEGACY_REPLACEMENT_FILE": legacy_replacement_path,
+            "REPLACE_LEGACY_RULESPEC_PATH": legacy_replacement_path,
             "REPLACE_RULESPEC_PATH": replacement_path,
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
@@ -3233,10 +3266,12 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     encode_args = [call[call.index("--") + 1 :] for call in calls]
     preflight_args = encode_args[0]
     assert preflight_args[-1] == primary
-    assert "--apply-target-only" in preflight_args
+    assert "--apply-target-only" not in preflight_args
     assert "--review-findings" not in preflight_args
     replacement_index = preflight_args.index("--replace-rulespec-path")
     assert preflight_args[replacement_index + 1] == replacement_path
+    legacy_index = preflight_args.index("--replace-legacy-rulespec-path")
+    assert preflight_args[legacy_index + 1] == legacy_replacement_path
     assert "--required-import-rulespec-path" not in preflight_args
 
     for index, source in enumerate(sources, start=1):
@@ -3247,6 +3282,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     primary_args = encode_args[-1]
     assert primary_args[-1] == primary
     assert "--apply-target-only" not in primary_args
+    assert "--replace-legacy-rulespec-path" not in primary_args
     required_indexes = [
         index
         for index, value in enumerate(primary_args)
@@ -3262,6 +3298,53 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         f"Add signed source module for {sources[1]}",
         f"Compose signed source bundle for {primary}",
     ]
+    assert canonical.is_file()
+    assert not legacy.exists()
+    assert not legacy.with_name(f"{legacy.stem}.test.yaml").exists()
+
+
+def test_targeted_signed_reencode_rejects_source_bundle_replacement_dependents_early(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Validate atomic source inputs"
+    )
+    checkout = tmp_path / "rulespec-us"
+    checkout.mkdir()
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": "us-ri/statute/44-30-2.6",
+            "DEPENDENT_CITATION": "us-ri/statute/44-30-2.7",
+            "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": "[]",
+            "QUEUE_ID": "",
+            "REPLACE_LEGACY_RULESPEC_PATH": "us-ri/statutes/44:30-2.6.yaml",
+            "REPLACE_RULESPEC_PATH": "us-ri/statutes/44-30-2.6.yaml",
+            "RULESPEC_CHECKOUT": str(checkout),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "SOURCE_BUNDLE_JSON": '["us-ri/statute/44-30-1"]',
+        },
+    )
+
+    assert completed.returncode != 0
+    assert (
+        "source-bundle replacements cannot include dependent migrations"
+        in completed.stderr
+    )
 
 
 def test_targeted_signed_reencode_reuses_verified_existing_import(

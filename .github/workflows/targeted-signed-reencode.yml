@@ -445,6 +445,16 @@ jobs:
             fi
           done
           normalized_existing_imports="$("${existing_import_args[@]}")"
+          if [ "$normalized_source_bundle" != "[]" ] && \
+             [ -n "$REPLACE_RULESPEC_PATH" ] && \
+             { [ -n "$DEPENDENT_CITATION" ] || \
+               [ -n "$SECOND_DEPENDENT_CITATION" ] || \
+               [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ "${#retained_successor_paths[@]}" -gt 0 ]; }; then
+            echo "source-bundle replacements cannot include dependent migrations" >&2
+            exit 1
+          fi
           if [ -n "$QUEUE_ID" ] && \
             { [ "$normalized_source_bundle" != "[]" ] || \
               [ "$normalized_existing_imports" != "[]" ]; }; then
@@ -1077,6 +1087,16 @@ jobs:
           if [ $((source_bundle_count + existing_import_count)) -gt 0 ]; then
             required_imports_enabled=true
           fi
+          if [ "$source_bundle_enabled" = "true" ] && \
+             [ -n "$REPLACE_RULESPEC_PATH" ] && \
+             { [ -n "$DEPENDENT_CITATION" ] || \
+               [ -n "$SECOND_DEPENDENT_CITATION" ] || \
+               [ -n "$LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ -n "$SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH" ] || \
+               [ "$retained_successor_count" -gt 0 ]; }; then
+            echo "source-bundle replacements cannot include dependent migrations" >&2
+            exit 1
+          fi
 
           checkpoint_signed_changes() {
             local message="$1"
@@ -1108,16 +1128,18 @@ jobs:
               commit -m "$message"
           }
 
+          final_legacy_source_path="$REPLACE_LEGACY_RULESPEC_PATH"
           if [ "$source_bundle_enabled" = "true" ] && \
-             [ -n "$REPLACE_RULESPEC_PATH" ] && \
-             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+             [ -n "$REPLACE_RULESPEC_PATH" ]; then
             run_signed_encode \
-              "$CITATION" "" true target-preflight \
-              "$REPLACE_RULESPEC_PATH" "" false
+              "$CITATION" "" false target-preflight \
+              "$REPLACE_RULESPEC_PATH" \
+              "$REPLACE_LEGACY_RULESPEC_PATH" false
             checkpoint_signed_changes \
               "Canonicalize signed replacement target before source bundle"
             cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
               "$RUNNER_TEMP/target-preflight-guard-generated.json"
+            final_legacy_source_path=""
           fi
 
           source_index=0
@@ -1135,7 +1157,7 @@ jobs:
           if [ -n "$DEPENDENT_CITATION" ]; then
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" true target \
-              "$REPLACE_RULESPEC_PATH" "$REPLACE_LEGACY_RULESPEC_PATH" \
+              "$REPLACE_RULESPEC_PATH" "$final_legacy_source_path" \
               "$required_imports_enabled"
             dependent_target_only=false
             if [ -n "$SECOND_DEPENDENT_CITATION" ]; then
@@ -1153,7 +1175,7 @@ jobs:
             run_signed_encode \
               "$CITATION" "$REVIEW_FINDING" false \
               target "$REPLACE_RULESPEC_PATH" \
-              "$REPLACE_LEGACY_RULESPEC_PATH" \
+              "$final_legacy_source_path" \
               "$required_imports_enabled"
           fi
 
