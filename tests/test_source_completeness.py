@@ -3669,6 +3669,22 @@ rules: []
         "issued rules under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and federal energy secretary "
         "determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal highway administrators "
+        "determine eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commissioners issue rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal treasury secretaries "
+        "issue rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal housing agencies "
+        "administer programs under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSI benefits pass rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and CHIP programs pass eligibility "
+        "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicare programs pace "
+        "implementation rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SNAP benefits based eligibility "
+        "rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3818,6 +3834,9 @@ rules: []
         "Medicare C-SNP eligibility",
         "SSI ISM rules",
         "Medicaid HIPP eligibility",
+        "SNAP LIHEAP rules",
+        "Medicare MA-PD rules",
+        "Medicare I-SNP eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):

@@ -725,10 +725,12 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
         "hea",
         "hipp",
         "hmo",
+        "i",
         "irmaa",
         "ism",
         "lis",
         "lieap",
+        "liheap",
         "ltss",
         "ma",
         "magi",
@@ -737,6 +739,7 @@ _DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
         "msp",
         "pace",
         "pass",
+        "pd",
         "pdp",
         "poms",
         "ppo",
@@ -774,6 +777,7 @@ _DEPENDENCY_POLICY_PROGRAM_SUBJECT_TERMS = frozenset(
 _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
     {"based", "non", "part", "waiver"}
 )
+_DEPENDENCY_POLICY_LEADING_ONLY_TERMS = frozenset({"based", "pace", "pass"})
 _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
     {
         "administration",
@@ -3231,9 +3235,10 @@ def _actor_nominal_object_is_bounded(
     ) & _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS and all(
         _dependency_token_is_actor_nominal_component(
             token,
+            component_index=component_index,
             allow_policy_terms=policy_program_subject,
         )
-        for token in object_tokens[:-1]
+        for component_index, token in enumerate(object_tokens[:-1])
     ):
         return True
     if (
@@ -3295,6 +3300,7 @@ def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
 def _dependency_token_is_actor_nominal_component(
     token: str,
     *,
+    component_index: int,
     allow_policy_terms: bool,
 ) -> bool:
     parts = token.lower().split("-")
@@ -3302,8 +3308,14 @@ def _dependency_token_is_actor_nominal_component(
         (
             allow_policy_terms
             and (
-                part in _DEPENDENCY_POLICY_ACRONYM_TERMS
-                or part in _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS
+                (
+                    part in _DEPENDENCY_POLICY_ACRONYM_TERMS
+                    or part in _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS
+                )
+                and (
+                    part not in _DEPENDENCY_POLICY_LEADING_ONLY_TERMS
+                    or component_index == 0
+                )
             )
         )
         or _dependency_token_is_actor_nominal_prefix(part)
@@ -3358,9 +3370,10 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|secretar(?:y|ies)|services?|"
             r"federal\s+(?:(?:[a-z-]+\s+){0,4}"
-            r"(?:administration|administrator|agency|authority|board|bureau|"
-            r"commission|commissioner|corporation|department|judiciary|office|"
-            r"reserve|secretary|service)|"
+            r"(?:administrations?|administrators?|agenc(?:y|ies)|authorit(?:y|ies)|"
+            r"boards?|bureaus?|commissions?|commissioners?|corporations?|"
+            r"departments?|judiciar(?:y|ies)|offices?|reserves?|"
+            r"secretar(?:y|ies)|services?)|"
             r"bureaus?\s+of\s+investigation)|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
