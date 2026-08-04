@@ -1521,6 +1521,16 @@ def _analyze_rulespec_payload(
                     "principal derived/relation output (`derived` or "
                     "`derived_relation`) and is not "
                     "precisely deferred; parameter-only representation is invalid."
+                    + _formula_output_binding_feedback(
+                        branch,
+                        corpus_citation_path=corpus_citation_path,
+                        has_path_covering_principal=bool(
+                            _rules_covering_branch(
+                                branch,
+                                principal_rule_paths,
+                            )
+                        ),
+                    )
                 )
         elif not all_formula_branches and not _path_covered(
             (), principal_paths, deferred_paths
@@ -10646,14 +10656,70 @@ def _collapse_text(value: str) -> str:
 def _bounded_source_feedback_excerpt(value: str, *, limit: int = 360) -> str:
     """Render bounded source-identifying feedback without changing its words."""
 
+    return _bounded_source_feedback_preview(value, limit=limit)[0]
+
+
+def _bounded_source_feedback_preview(
+    value: str,
+    *,
+    limit: int = 360,
+) -> tuple[str, bool]:
+    """Render a source preview and report whether it contains an ellipsis."""
+
     collapsed = _collapse_text(value).replace("`", "\\`")
     if len(collapsed) <= limit:
-        return collapsed
+        return collapsed, False
     marker = " ... "
     available = limit - len(marker)
     head_length = (available * 2) // 3
     tail_length = available - head_length
-    return collapsed[:head_length].rstrip() + marker + collapsed[-tail_length:].lstrip()
+    return (
+        collapsed[:head_length].rstrip() + marker + collapsed[-tail_length:].lstrip(),
+        True,
+    )
+
+
+def _formula_output_binding_feedback(
+    branch: SourceStructureBranch,
+    *,
+    corpus_citation_path: str,
+    has_path_covering_principal: bool,
+) -> str:
+    """Give a repair model the exact proof binding missing from a formula."""
+
+    source_excerpt, source_excerpt_was_truncated = _bounded_source_feedback_preview(
+        branch.text
+    )
+    principal_repair = (
+        "If an existing path-covering principal output's formula already "
+        "implements this computation, add the following proof atom to it. "
+        "Otherwise create a "
+        "principal `derived`/`derived_relation` output or precisely defer the "
+        "computation. The required binding is a"
+        if has_path_covering_principal
+        else "Create a principal `derived`/`derived_relation` output (or precisely "
+        "defer this computation); when adding the output, bind it with a"
+    )
+    bounded_preview_warning = (
+        " The displayed ` ... ` is only a bounded locator and is not source "
+        "text; copy one contiguous verbatim computation-bearing excerpt from "
+        "the cited character span instead."
+        if source_excerpt_was_truncated
+        else ""
+    )
+    return (
+        " The formula-clause number is an internal punctuation-span ordinal, "
+        "not a statutory paragraph number. "
+        f"{principal_repair} "
+        "`versions[N].formula` proof atom whose "
+        "`source.corpus_citation_path` is exactly "
+        f"`{corpus_citation_path}` and whose `source.excerpt` is one contiguous "
+        "verbatim excerpt that itself states the computation. Source locator at "
+        f"characters {branch.start}:{branch.end}: `{source_excerpt}`. A parameter "
+        "rule, a citation-only proof atom, a non-formula proof path, or a shorter "
+        "excerpt that does not itself state the computation cannot bind a "
+        f"principal output to this clause.{bounded_preview_warning}"
+    )
 
 
 def _bounded_period_feedback(periods: Sequence[str], *, limit: int = 8) -> str:
