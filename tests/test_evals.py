@@ -20741,6 +20741,8 @@ rules:
             "historical branch's runtime evidence must use that branch's legally"
             in prompt
         )
+        assert "keep that output executable from the earliest" in prompt
+        assert "parameter/helper guards in the\n  single derived formula" in prompt
         assert "omit oracle inputs or expectations" in prompt
 
     def test_policyengine_hint_upstream_composition_flags_broad_placeholders(self):
