@@ -130,6 +130,15 @@ class _UnboundFormulaDiagnostic:
 
 
 @dataclass(frozen=True)
+class _UncorroboratedFormulaDependencyDiagnostic:
+    """Best-effort missing derived assertions for a formula witness."""
+
+    dependency_names: tuple[str, ...]
+    case_names: tuple[str, ...]
+    scan_capped: bool
+
+
+@dataclass(frozen=True)
 class _TemporalFormulaValue:
     """Literal parameter values selectable by a companion case period."""
 
@@ -2079,6 +2088,8 @@ def _companion_test_issues(
 
     formula_dependency_cache: dict[int, dict[str, Any]] = {}
     formula_execution_cache: dict[tuple[str, int], _FormulaExecution | None] = {}
+    permissive_dependency_cache: dict[tuple[str, int], dict[str, Any]] = {}
+    permissive_execution_cache: dict[tuple[str, int], _FormulaExecution | None] = {}
     active_branches = [
         branch
         for branch in branches
@@ -2112,6 +2123,22 @@ def _companion_test_issues(
         source_binding_detail = _unbound_formula_binding_feedback(
             unbound_diagnostic,
             corpus_citation_path=corpus_citation_path,
+        )
+        dependency_diagnostic = _uncorroborated_formula_dependency_diagnostic(
+            branch,
+            principal_rules=principal_rules,
+            bound_rule_names=principal_formula_clause_rules[branch],
+            asserted_by_rule=asserted_by_rule,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+            formula_environment=formula_environment,
+            strict_dependency_cache=formula_dependency_cache,
+            strict_execution_cache=formula_execution_cache,
+            permissive_dependency_cache=permissive_dependency_cache,
+            permissive_execution_cache=permissive_execution_cache,
+        )
+        dependency_detail = _uncorroborated_formula_dependency_feedback(
+            dependency_diagnostic,
         )
         interval = _formula_branch_interval(
             branch,
@@ -2150,7 +2177,7 @@ def _companion_test_issues(
             f"{_branch_citation(corpus_citation_path, branch)}. Exact source "
             f"computation ({source_location}): `{source_excerpt}`. "
             f"{witness_requirement}{observed_period_detail}"
-            f"{source_binding_detail} Each formula branch "
+            f"{source_binding_detail}{dependency_detail} Each formula branch "
             "needs distinct executed "
             "test evidence; an internal formula-clause ordinal is not a legal "
             "paragraph number."
@@ -2628,7 +2655,6 @@ def _formula_branch_test_witnesses(
     witnesses: set[tuple[str, str]] = set()
     for rule_name in sorted(rule_names):
         rule = principal_rules[rule_name]
-        selector_names = _rule_numeric_selector_names(rule)
         has_branching_formula = _rule_has_branching_formula(rule)
         asserted_cases = asserted_by_rule.get(rule_name, ())
         if max_cases_per_rule is not None:
@@ -2651,17 +2677,18 @@ def _formula_branch_test_witnesses(
                     dependency_environment=dependency_environment,
                 )
             execution = execution_cache[execution_key]
-            if (
-                execution is None
-                or not _formula_execution_leaf_is_computational(execution)
-                or not _formula_execution_matches_source_branch(
-                    execution,
-                    branch,
-                    interval=interval,
-                    formula_environment=formula_environment,
-                    extract_numeric_occurrences=extract_numeric_occurrences,
-                    numeric_value_is_grounded=numeric_value_is_grounded,
-                )
+            if not _formula_execution_is_source_branch_witness(
+                execution,
+                branch,
+                rule=rule,
+                case=case,
+                principal_rules=principal_rules,
+                interval=interval,
+                dependency_environment=dependency_environment,
+                require_corroborated_dependencies=True,
+                formula_environment=formula_environment,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+                numeric_value_is_grounded=numeric_value_is_grounded,
             ):
                 continue
             if interval is None:
@@ -2676,23 +2703,70 @@ def _formula_branch_test_witnesses(
                 )
                 witnesses.add((rule_name, witness))
                 continue
-            if (
-                _formula_execution_references_names(
-                    execution,
-                    selector_names,
-                )
-                and selector_names
-                and any(
-                    _interval_contains(interval, value)
-                    for value in _case_numeric_selector_values(
-                        case,
-                        selector_names,
-                        dependency_environment=dependency_environment,
-                    )
-                )
-            ):
-                witnesses.add((rule_name, f"case:{id(case)}"))
+            witnesses.add((rule_name, f"case:{id(case)}"))
     return witnesses
+
+
+def _formula_execution_is_source_branch_witness(
+    execution: _FormulaExecution | None,
+    branch: SourceStructureBranch,
+    *,
+    rule: dict[str, Any],
+    case: dict[str, Any],
+    principal_rules: dict[str, dict[str, Any]],
+    interval: _NumericInterval | None,
+    dependency_environment: dict[str, Any],
+    require_corroborated_dependencies: bool,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    """Return whether one resolved execution proves the exact source branch."""
+
+    if (
+        execution is None
+        or not _formula_execution_leaf_is_computational(execution)
+        or not _formula_execution_matches_source_branch(
+            execution,
+            branch,
+            interval=interval,
+            formula_environment=formula_environment,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+    ):
+        return False
+    if require_corroborated_dependencies and any(
+        name not in dependency_environment
+        or _test_case_asserted_output_value(case, name) is _UNRESOLVED_CONDITION_VALUE
+        for name in _reached_local_formula_dependency_names(
+            execution,
+            case,
+            principal_rules=principal_rules,
+            formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
+        )
+    ):
+        return False
+    if interval is None:
+        return True
+    if execution.trace:
+        selector_values = _reached_formula_interval_selector_values(
+            execution,
+            case,
+            principal_rules=principal_rules,
+            formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
+            interval=interval,
+        )
+    else:
+        selector_names = _rule_numeric_selector_names(rule)
+        selector_values = _case_numeric_selector_values(
+            case,
+            selector_names,
+            dependency_environment=dependency_environment,
+        )
+    return any(_interval_contains(interval, value) for value in selector_values)
 
 
 def _unbound_matching_formula_rules(
@@ -2765,6 +2839,593 @@ def _unbound_formula_binding_feedback(
             f"{_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT} cases per rule; "
             "additional matching principal formulas may exist beyond the "
             "reported names."
+        )
+    return detail
+
+
+def _uncorroborated_formula_dependency_diagnostic(
+    branch: SourceStructureBranch,
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    bound_rule_names: set[str],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+    formula_environment: dict[str, Any],
+    strict_dependency_cache: dict[int, dict[str, Any]],
+    strict_execution_cache: dict[tuple[str, int], _FormulaExecution | None],
+    permissive_dependency_cache: dict[tuple[str, int], dict[str, Any]],
+    permissive_execution_cache: dict[tuple[str, int], _FormulaExecution | None],
+) -> _UncorroboratedFormulaDependencyDiagnostic:
+    """Find reached derived dependencies omitted from candidate assertions."""
+
+    eligible_rule_names = [
+        rule_name
+        for rule_name in sorted(bound_rule_names)
+        if asserted_by_rule.get(rule_name)
+    ]
+    scanned_rule_names = eligible_rule_names[:_UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT]
+    scan_capped = len(scanned_rule_names) < len(eligible_rule_names) or any(
+        len(asserted_by_rule[rule_name]) > _UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT
+        for rule_name in scanned_rule_names
+    )
+    interval = _formula_branch_interval(
+        branch,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
+    dependency_names: set[str] = set()
+    case_names: set[str] = set()
+    for rule_name in scanned_rule_names:
+        rule = principal_rules[rule_name]
+        rule_dependency_names = _local_rule_dependency_closure(
+            rule,
+            principal_rules=principal_rules,
+        )
+        for case in asserted_by_rule[rule_name][
+            :_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT
+        ]:
+            case_key = id(case)
+            if case_key not in strict_dependency_cache:
+                strict_dependency_cache[case_key] = (
+                    _case_asserted_dependency_environment(
+                        principal_rules,
+                        case,
+                        formula_environment=formula_environment,
+                    )
+                )
+            strict_dependencies = strict_dependency_cache[case_key]
+            execution_key = (rule_name, case_key)
+            if execution_key not in strict_execution_cache:
+                strict_execution_cache[execution_key] = _case_formula_execution(
+                    rule,
+                    case,
+                    formula_environment=formula_environment,
+                    dependency_environment=strict_dependencies,
+                )
+            if _formula_execution_is_source_branch_witness(
+                strict_execution_cache[execution_key],
+                branch,
+                rule=rule,
+                case=case,
+                principal_rules=principal_rules,
+                interval=interval,
+                dependency_environment=strict_dependencies,
+                require_corroborated_dependencies=True,
+                formula_environment=formula_environment,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+                numeric_value_is_grounded=numeric_value_is_grounded,
+            ):
+                continue
+            if execution_key not in permissive_dependency_cache:
+                permissive_dependency_cache[execution_key] = (
+                    _case_dependency_environment(
+                        principal_rules,
+                        case,
+                        formula_environment=formula_environment,
+                        require_asserted_value=False,
+                        allowed_names=rule_dependency_names,
+                    )
+                )
+            permissive_dependencies = permissive_dependency_cache[execution_key]
+            if execution_key not in permissive_execution_cache:
+                permissive_execution_cache[execution_key] = _case_formula_execution(
+                    rule,
+                    case,
+                    formula_environment=formula_environment,
+                    dependency_environment=permissive_dependencies,
+                )
+            permissive_execution = permissive_execution_cache[execution_key]
+            if not _formula_execution_is_source_branch_witness(
+                permissive_execution,
+                branch,
+                rule=rule,
+                case=case,
+                principal_rules=principal_rules,
+                interval=interval,
+                dependency_environment=permissive_dependencies,
+                require_corroborated_dependencies=False,
+                formula_environment=formula_environment,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+                numeric_value_is_grounded=numeric_value_is_grounded,
+            ):
+                continue
+            missing = _unasserted_reached_formula_dependency_names(
+                case,
+                execution=permissive_execution,
+                principal_rules=principal_rules,
+                formula_environment=formula_environment,
+                dependency_environment=permissive_dependencies,
+            )
+            if not missing:
+                continue
+            dependency_names.update(missing)
+            case_names.add(str(case.get("name") or "<unnamed>"))
+    return _UncorroboratedFormulaDependencyDiagnostic(
+        dependency_names=tuple(sorted(dependency_names)),
+        case_names=tuple(sorted(case_names)),
+        scan_capped=scan_capped,
+    )
+
+
+def _local_rule_dependency_closure(
+    rule: dict[str, Any],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Return the transitive local principal rules referenced by one rule."""
+
+    pending = set(_FORMULA_IDENTIFIER.findall(_rule_formula_text(rule)))
+    dependencies: set[str] = set()
+    while pending:
+        name = pending.pop()
+        dependency_rule = principal_rules.get(name)
+        if dependency_rule is None or name in dependencies:
+            continue
+        dependencies.add(name)
+        pending.update(_FORMULA_IDENTIFIER.findall(_rule_formula_text(dependency_rule)))
+    return dependencies
+
+
+def _unasserted_reached_formula_dependency_names(
+    case: dict[str, Any],
+    *,
+    execution: _FormulaExecution,
+    principal_rules: dict[str, dict[str, Any]],
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+) -> set[str]:
+    """Return unasserted local derived rules reached by one execution."""
+
+    return {
+        name
+        for name in _reached_local_formula_dependency_names(
+            execution,
+            case,
+            principal_rules=principal_rules,
+            formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
+        )
+        if _test_case_asserted_output_value(case, name) is _UNRESOLVED_CONDITION_VALUE
+    }
+
+
+def _reached_local_formula_dependency_names(
+    execution: _FormulaExecution,
+    case: dict[str, Any],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+) -> set[str]:
+    """Return every local derived rule reached by one formula execution."""
+
+    selector_environment = _case_formula_identifier_environment(
+        case,
+        formula_environment=formula_environment,
+        dependency_environment=dependency_environment,
+    )
+    pending = _reached_formula_expression_identifier_names(
+        execution.leaf,
+        environment=selector_environment,
+    )
+    if selector_environment is not None:
+        pending.update(
+            name
+            for step in execution.trace
+            for selector in step.selectors
+            for name in _reached_formula_expression_identifier_names(
+                selector,
+                environment=selector_environment,
+            )
+        )
+    visited: set[str] = set()
+    dependencies: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        dependency_rule = principal_rules.get(name)
+        if dependency_rule is None:
+            continue
+        dependencies.add(name)
+        if name not in dependency_environment:
+            continue
+        dependency_execution = _case_formula_execution(
+            dependency_rule,
+            case,
+            formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
+        )
+        if dependency_execution is None:
+            continue
+        pending.update(
+            _reached_formula_expression_identifier_names(
+                dependency_execution.leaf,
+                environment=selector_environment,
+            )
+        )
+        if selector_environment is not None:
+            pending.update(
+                dependency_name
+                for step in dependency_execution.trace
+                for selector in step.selectors
+                for dependency_name in _reached_formula_expression_identifier_names(
+                    selector,
+                    environment=selector_environment,
+                )
+            )
+    return dependencies
+
+
+def _reached_formula_interval_selector_values(
+    execution: _FormulaExecution,
+    case: dict[str, Any],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+    interval: _NumericInterval,
+) -> tuple[float, ...]:
+    """Trace values paired with the source bound through derived selectors."""
+
+    environment = _case_formula_identifier_environment(
+        case,
+        formula_environment=formula_environment,
+        dependency_environment=dependency_environment,
+    )
+    if environment is None:
+        return ()
+    evidence_names = set(dependency_environment)
+    inputs = case.get("input")
+    if isinstance(inputs, dict):
+        for key in inputs:
+            evidence_names.update(_input_key_names(key))
+    selectors = [selector for step in execution.trace for selector in step.selectors]
+    names = set().union(
+        *(
+            _reached_formula_expression_identifier_names(
+                selector,
+                environment=environment,
+            )
+            for selector in selectors
+        ),
+        set(),
+    )
+    pending = {name for name in names if name in principal_rules}
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        dependency_execution = _case_formula_execution(
+            principal_rules[name],
+            case,
+            formula_environment=formula_environment,
+            dependency_environment=dependency_environment,
+        )
+        if dependency_execution is None:
+            continue
+        dependency_selectors = [
+            selector
+            for step in dependency_execution.trace
+            for selector in step.selectors
+        ]
+        dependency_selectors.append(dependency_execution.leaf)
+        selectors.extend(dependency_selectors)
+        reached = set().union(
+            *(
+                _reached_formula_expression_identifier_names(
+                    selector,
+                    environment=environment,
+                )
+                for selector in dependency_selectors
+            ),
+            set(),
+        )
+        names.update(reached)
+        pending.update(
+            dependency_name
+            for dependency_name in reached
+            if dependency_name in principal_rules and dependency_name not in visited
+        )
+    return tuple(
+        value
+        for selector in selectors
+        for value in _formula_interval_subject_values(
+            selector,
+            environment=environment,
+            evidence_names=evidence_names,
+            interval=interval,
+        )
+    )
+
+
+def _formula_interval_subject_values(
+    selector: str,
+    *,
+    environment: dict[str, Any],
+    evidence_names: set[str],
+    interval: _NumericInterval,
+) -> tuple[float, ...]:
+    """Return evaluated operands paired with an exact source interval bound."""
+
+    expression = _parse_formula_expression(selector)
+    if expression is None:
+        return ()
+    values: list[float] = []
+
+    def numeric_value(node: ast.expr) -> float | None:
+        value = _evaluate_condition_expression(node, environment)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None
+
+    def identifier_names(node: ast.expr) -> set[str]:
+        return {
+            candidate.id
+            for candidate in ast.walk(node)
+            if isinstance(candidate, ast.Name)
+        }
+
+    def bound_matches_source(
+        bound_value: float,
+        operator: ast.cmpop,
+        *,
+        bound_is_left: bool,
+        comparison_value: bool,
+    ) -> bool:
+        boundaries = tuple(
+            float(boundary.value)
+            for boundary in (interval.lower, interval.upper)
+            if boundary is not None and boundary.value is not None
+        )
+        if any(
+            math.isclose(bound_value, boundary, rel_tol=1e-12, abs_tol=1e-12)
+            for boundary in boundaries
+        ):
+            return True
+        if comparison_value:
+            return False
+        subject_relation = type(operator)
+        if bound_is_left:
+            subject_relation = {
+                ast.Lt: ast.Gt,
+                ast.LtE: ast.GtE,
+                ast.Gt: ast.Lt,
+                ast.GtE: ast.LtE,
+            }.get(subject_relation, subject_relation)
+        if (
+            interval.lower is not None
+            and interval.lower.value is not None
+            and interval.lower_inclusive
+            and subject_relation is ast.LtE
+            and float(bound_value).is_integer()
+            and float(interval.lower.value).is_integer()
+            and math.isclose(float(interval.lower.value) - bound_value, 1.0)
+        ):
+            return True
+        return bool(
+            interval.upper is not None
+            and interval.upper.value is not None
+            and interval.upper_inclusive
+            and subject_relation is ast.GtE
+            and float(bound_value).is_integer()
+            and float(interval.upper.value).is_integer()
+            and math.isclose(bound_value - float(interval.upper.value), 1.0)
+        )
+
+    def record_source_subject(
+        bound: ast.expr,
+        subject: ast.expr,
+        operator: ast.cmpop,
+        *,
+        bound_is_left: bool,
+        comparison_value: bool,
+    ) -> None:
+        bound_value = numeric_value(bound)
+        subject_value = numeric_value(subject)
+        if (
+            bound_value is None
+            or subject_value is None
+            or identifier_names(bound) & evidence_names
+            or not identifier_names(subject) & evidence_names
+            or not bound_matches_source(
+                bound_value,
+                operator,
+                bound_is_left=bound_is_left,
+                comparison_value=comparison_value,
+            )
+        ):
+            return
+        values.append(subject_value)
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.BoolOp):
+            for item in node.values:
+                visit(item)
+                value = _evaluate_condition_expression(item, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE:
+                    return
+                if isinstance(node.op, ast.And) and not bool(value):
+                    return
+                if isinstance(node.op, ast.Or) and bool(value):
+                    return
+            return
+        if isinstance(node, ast.Compare):
+            left = node.left
+            for operator, right in zip(node.ops, node.comparators):
+                comparison = ast.Compare(
+                    left=left,
+                    ops=[operator],
+                    comparators=[right],
+                )
+                value = _evaluate_condition_expression(comparison, environment)
+                if not isinstance(value, bool):
+                    return
+                record_source_subject(
+                    left,
+                    right,
+                    operator,
+                    bound_is_left=True,
+                    comparison_value=value,
+                )
+                record_source_subject(
+                    right,
+                    left,
+                    operator,
+                    bound_is_left=False,
+                    comparison_value=value,
+                )
+                if value is False:
+                    return
+                left = right
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(expression)
+    return tuple(values)
+
+
+def _case_formula_identifier_environment(
+    case: dict[str, Any],
+    *,
+    formula_environment: dict[str, Any],
+    dependency_environment: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Rebuild the environment used to resolve a case's formula selectors."""
+
+    environment = _formula_environment_for_case(formula_environment, case)
+    inputs = _case_input_formula_environment(case)
+    if inputs is None:
+        return None
+    for name, value in (*dependency_environment.items(), *inputs.items()):
+        if name in environment and not _formula_runtime_values_equal(
+            environment[name],
+            value,
+        ):
+            return None
+        environment[name] = value
+    return environment
+
+
+def _evaluated_formula_identifier_names(
+    selector: str,
+    *,
+    environment: dict[str, Any],
+) -> set[str] | None:
+    """Trace selector identifiers while honoring boolean short-circuiting."""
+
+    expression = _parse_formula_expression(selector)
+    if expression is None:
+        return None
+    names: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+            return
+        if isinstance(node, ast.BoolOp):
+            for item in node.values:
+                visit(item)
+                value = _evaluate_condition_expression(item, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE:
+                    return
+                if isinstance(node.op, ast.And) and not bool(value):
+                    return
+                if isinstance(node.op, ast.Or) and bool(value):
+                    return
+            return
+        if isinstance(node, ast.Compare):
+            visit(node.left)
+            for index, comparator in enumerate(node.comparators):
+                visit(comparator)
+                prefix = ast.Compare(
+                    left=node.left,
+                    ops=node.ops[: index + 1],
+                    comparators=node.comparators[: index + 1],
+                )
+                value = _evaluate_condition_expression(prefix, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE or value is False:
+                    return
+            return
+        if isinstance(node, ast.Call):
+            for argument in node.args:
+                visit(argument)
+            for keyword in node.keywords:
+                visit(keyword.value)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(expression)
+    return names
+
+
+def _reached_formula_expression_identifier_names(
+    expression: str,
+    *,
+    environment: dict[str, Any] | None,
+) -> set[str]:
+    """Return reached names, conservatively falling back for opaque syntax."""
+
+    if environment is not None:
+        evaluated = _evaluated_formula_identifier_names(
+            expression,
+            environment=environment,
+        )
+        if evaluated is not None:
+            return evaluated
+    return set(_FORMULA_IDENTIFIER.findall(expression))
+
+
+def _uncorroborated_formula_dependency_feedback(
+    diagnostic: _UncorroboratedFormulaDependencyDiagnostic,
+) -> str:
+    """Render bounded repair guidance for unasserted reached dependencies."""
+
+    detail = ""
+    if diagnostic.dependency_names:
+        detail = (
+            " Best-effort dependency tracing found asserted principal-output "
+            "case(s) that can reach this computation, but those cases omit "
+            "output assertions for reached local derived dependency selector(s): "
+            f"{_bounded_identifier_feedback(diagnostic.dependency_names)}. "
+            "A formula witness treats a local derived dependency as corroborated "
+            "only when the same case asserts its expected output; raw inputs alone "
+            "do not corroborate that intermediate. Add the expected dependency "
+            "output(s) to the same candidate case(s): "
+            f"{_bounded_identifier_feedback(diagnostic.case_names)}. Never shadow "
+            "a local derived rule under `input:`."
+        )
+    if diagnostic.scan_capped:
+        detail += (
+            " The best-effort dependency-corroboration diagnostic scan was capped "
+            f"at {_UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT} rules and "
+            f"{_UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT} cases per rule; additional "
+            "missing dependency assertions may exist beyond the reported names."
         )
     return detail
 
