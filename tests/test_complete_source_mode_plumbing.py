@@ -129,6 +129,8 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "parameter/helper guards in the\n  single derived formula" in complete_prompt
     assert "omit oracle inputs or expectations" in complete_prompt
     assert "scalar-only source unit may remain parameter-only" in complete_prompt
+    assert "single-principal-output case pairs" in complete_prompt
+    assert "one large omnibus case" in complete_prompt
 
 
 def test_validator_pipeline_complete_source_mode_is_default_off(tmp_path):
@@ -255,6 +257,10 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
     )
+    assert "source-driven\n  coverage rule overrides the 1-4 case default" in (
+        complete_prompt
+    )
+    assert "one large omnibus case" in complete_prompt
 
 
 def test_eval_prompt_adds_prior_validation_feedback_only_when_supplied(tmp_path):

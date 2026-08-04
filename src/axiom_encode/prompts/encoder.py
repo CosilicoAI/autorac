@@ -1013,6 +1013,10 @@ _TESTS_PROTOCOL = """- Emit only RuleSpec YAML; use `.test.yaml` companions when
 - For every encoded `except`, `unless`, `subject to`, or `notwithstanding`
   carve-out, include companion tests for the positive path and the carve-out
   path so exclusions and override conditions cannot be silently dropped.
+- When a complete source unit has many such controls, emit as many compact,
+  single-principal-output case pairs as the source requires. Keep each pair to
+  the inputs reached by that output and vary only its controlling selector;
+  do not replace required pairs with one large omnibus case.
 - When a source says a subsection, paragraph, payment, credit, benefit,
   eligibility path, or other output "shall not apply" or "does not apply",
   the exported rule that says that target applies, is allowed, is included, or

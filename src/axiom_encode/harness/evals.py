@@ -9516,6 +9516,11 @@ Test file rules:
   including `subject to` carve-outs, include companion tests for the positive
   path and the carve-out path so exclusions and override conditions cannot be
   silently dropped.
+- When a complete source unit has many such controls, the source-driven
+  coverage rule overrides the 1-4 case default. Emit as many compact,
+  single-principal-output case pairs as required, keep each pair to the inputs
+  reached by that output, and vary only its controlling selector; do not
+  replace required pairs with one large omnibus case.
 - When a source says a subsection, paragraph, payment, credit, benefit,
   eligibility path, or other output "shall not apply" or "does not apply",
   the exported rule that says that target applies, is allowed, is included, or

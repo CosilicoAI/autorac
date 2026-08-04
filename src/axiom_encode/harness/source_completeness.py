@@ -1088,6 +1088,15 @@ _ENGLISH_LEGAL_CITATION = re.compile(
     r"\d+(?:\.\d+)*(?:\s*(?:through|to|[-–—]|and|,)\s*\d+(?:\.\d+)*)*",
     flags=re.IGNORECASE,
 )
+_TITLE_SUFFIX_LEGAL_CITATION = re.compile(
+    r"\b(?:sections?\s+)?(?:\d+)?[a-z]\s*"
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"\s*\d+[a-z]?(?:\s*(?:,\s*(?:(?:and|or)\s+)?|"
+    r"(?:and|or|through|to)\s+)(?:\d+)?[a-z]\s*"
+    r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"\s*\d+[a-z]?)*\s+of\s+this\s+title\b",
+    flags=re.IGNORECASE,
+)
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:"
     r"Artikel(?:s|n)?|Art\.|"
@@ -3840,6 +3849,7 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
 
     cleaned = _strip_terminal_session_law_history(source_text)
     cleaned = _GERMAN_LEGAL_CITATION.sub("", cleaned)
+    cleaned = _TITLE_SUFFIX_LEGAL_CITATION.sub("", cleaned)
     cleaned = _ENGLISH_LEGAL_CITATION.sub("", cleaned)
     cleaned = _STRUCTURAL_REFERENCE.sub("", cleaned)
     cleaned = re.sub(
@@ -4689,14 +4699,21 @@ def _formula_execution_is_source_branch_witness(
 ) -> bool:
     """Return whether one resolved execution proves the exact source branch."""
 
+    execution_environment = _case_formula_identifier_environment(
+        case,
+        formula_environment=formula_environment,
+        dependency_environment=dependency_environment,
+    )
     if (
         execution is None
+        or execution_environment is None
         or not _formula_execution_leaf_is_computational(execution)
         or not _formula_execution_matches_source_branch(
             execution,
             branch,
             interval=interval,
             formula_environment=formula_environment,
+            execution_environment=execution_environment,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
         )
@@ -5402,6 +5419,7 @@ def _formula_execution_matches_source_branch(
     *,
     interval: _NumericInterval | None,
     formula_environment: dict[str, Any],
+    execution_environment: dict[str, Any] | None = None,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
@@ -5424,7 +5442,10 @@ def _formula_execution_matches_source_branch(
         environment=binding_environment,
     ):
         return False
-    artifact_operations = _formula_ast_operation_kinds(operative_leaf)
+    artifact_operations = _formula_ast_operation_kinds(
+        operative_leaf,
+        environment=execution_environment,
+    )
     if not _formula_operations_are_compatible(
         source_operations,
         artifact_operations,
@@ -5766,13 +5787,17 @@ def _canonicalize_topology_variables(topology: Any) -> Any:
     return canonicalize(topology)
 
 
-def _formula_ast_operation_kinds(text: str) -> set[str]:
+def _formula_ast_operation_kinds(
+    text: str,
+    *,
+    environment: dict[str, Any] | None = None,
+) -> set[str]:
     operations: set[str] = set()
-    try:
-        expression = ast.parse(text.strip(), mode="eval").body
-    except SyntaxError:
+    expression = _parse_formula_expression(text)
+    if expression is None:
         return operations
-    for node in ast.walk(expression):
+
+    def visit(node: ast.AST) -> None:
         if isinstance(node, ast.BinOp):
             if isinstance(node.op, ast.Add):
                 operations.add("add")
@@ -5788,6 +5813,21 @@ def _formula_ast_operation_kinds(text: str) -> set[str]:
                 operations.add("add")
             elif "product" in lowered:
                 operations.add("multiply")
+        if isinstance(node, ast.BoolOp) and environment is not None:
+            for item in node.values:
+                visit(item)
+                value = _evaluate_condition_expression(item, environment)
+                if value is _UNRESOLVED_CONDITION_VALUE:
+                    return
+                if isinstance(node.op, ast.And) and not bool(value):
+                    return
+                if isinstance(node.op, ast.Or) and bool(value):
+                    return
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(expression)
     return operations
 
 
@@ -6123,14 +6163,14 @@ def _simplified_formula_text(
     *,
     environment: dict[str, Any],
 ) -> str:
-    with contextlib.suppress(SyntaxError):
-        expression = ast.parse(text.strip(), mode="eval").body
-        simplified = _simplify_formula_expression(
-            expression,
-            environment=environment,
-        )
-        return ast.unparse(ast.fix_missing_locations(simplified))
-    return text
+    expression = _parse_formula_expression(text)
+    if expression is None:
+        return text
+    simplified = _simplify_formula_expression(
+        expression,
+        environment=environment,
+    )
+    return ast.unparse(ast.fix_missing_locations(simplified))
 
 
 def _simplify_formula_expression(

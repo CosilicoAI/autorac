@@ -5513,6 +5513,30 @@ def test_terminal_session_law_history_is_not_numeric_recall(history_tail):
 
 
 @pytest.mark.parametrize(
+    "references",
+    (
+        "under z-4 of this title and pursuant to z–3 of this title",
+        "under sections 1437z-3 and 1437z-4 of this title",
+        "under section 1437z-3 or 1437z-4 of this title",
+        "under sections 1437z-3, 1437z-4, and 1437z-5 of this title",
+        "under sections 1437z-3 through 1437z-5 of this title",
+        "under sections 1437z-3 to 1437z-5 of this title",
+    ),
+)
+def test_us_title_suffix_cross_references_are_not_numeric_recall_values(
+    references: str,
+):
+    source = f"A program operates {references}. The agency must provide 45 days notice."
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(source),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(45.0, "45")]
+
+
+@pytest.mark.parametrize(
     "source_text",
     (
         "The credit is 40% for taxable year 2020 and the amount is $2,020.",
@@ -9497,6 +9521,78 @@ def test_multiline_boundary_conjunction_binds_named_threshold():
     result = _analyze(content, source, test_cases=cases)
 
     assert not result.issues
+
+
+def test_multiline_arithmetic_conjunction_witnesses_source_sum_formula():
+    source = "(1) The sum of dwelling units and vouchers is 550 or fewer."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: combined_unit_and_voucher_limit
+    kind: parameter
+    dtype: Count
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 550
+  - name: qualified_agency
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          dwelling_units + vouchers <= combined_unit_and_voucher_limit
+          and agency_is_not_troubled
+"""
+    cases = [
+        {
+            "name": "at combined limit",
+            "period": "2026",
+            "input": {
+                "dwelling_units": 250,
+                "vouchers": 300,
+                "agency_is_not_troubled": True,
+            },
+            "output": {"qualified_agency": "holds"},
+        },
+        {
+            "name": "above combined limit",
+            "period": "2026",
+            "input": {
+                "dwelling_units": 250,
+                "vouchers": 301,
+                "agency_is_not_troubled": True,
+            },
+            "output": {"qualified_agency": "not_holds"},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not _has_issue(result, "formula branch", "test")
+
+    bypassed_content = content.replace(
+        "dwelling_units + vouchers <= combined_unit_and_voucher_limit\n"
+        "          and agency_is_not_troubled",
+        "agency_override\n"
+        "          or dwelling_units + vouchers <= combined_unit_and_voucher_limit",
+    )
+    bypassed_cases = [
+        {
+            **case,
+            "input": {**case["input"], "agency_override": True},
+            "output": {"qualified_agency": "holds"},
+        }
+        for case in cases
+    ]
+
+    bypassed = _analyze(bypassed_content, source, test_cases=bypassed_cases)
+
+    assert _has_issue(bypassed, "formula branch", "test")
 
 
 def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
