@@ -2444,7 +2444,12 @@ jobs:
           generated="$RUNNER_TEMP/generated"
           artifact="$RUNNER_TEMP/targeted-reencode-failure"
           mkdir -p "$artifact"
-          /opt/axiom-verification/python/bin/python -I - \
+          workflow_python=/opt/axiom-verification/python/bin/python
+          if [ ! -x "$workflow_python" ]; then
+            workflow_python=/usr/bin/python3
+          fi
+          test -x "$workflow_python"
+          "$workflow_python" -I - \
             "$generated" "$artifact" \
             "$RUNNER_TEMP" <<'PY'
           import hashlib
@@ -2454,10 +2459,88 @@ jobs:
           import sys
           from pathlib import Path
 
-          from axiom_encode.corpus_resolver import (
-              UnsafeCorpusPathError,
-              read_bounded_regular_file,
-          )
+          class UnsafeDiagnosticPathError(Exception):
+              pass
+
+
+          def read_bounded_regular_file(root, candidate, *, label, max_bytes):
+              nofollow = getattr(os, "O_NOFOLLOW", None)
+              directory = getattr(os, "O_DIRECTORY", None)
+              if nofollow is None or directory is None:
+                  raise UnsafeDiagnosticPathError(
+                      f"{label} cannot be opened safely on this platform"
+                  )
+              raw_root = Path(os.path.abspath(root))
+              raw_candidate = Path(os.path.abspath(candidate))
+              try:
+                  relative = raw_candidate.relative_to(raw_root)
+              except ValueError as exc:
+                  raise UnsafeDiagnosticPathError(
+                      f"{label} is outside {raw_root}: {candidate}"
+                  ) from exc
+              if not relative.parts:
+                  raise UnsafeDiagnosticPathError(
+                      f"{label} is not a file: {candidate}"
+                  )
+
+              base_flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+              nonblocking = getattr(os, "O_NONBLOCK", 0)
+              descriptors = []
+              file_descriptor = None
+              try:
+                  parent_descriptor = os.open(raw_root, base_flags | directory)
+                  descriptors.append(parent_descriptor)
+                  for part in relative.parts[:-1]:
+                      parent_descriptor = os.open(
+                          part,
+                          base_flags | directory,
+                          dir_fd=parent_descriptor,
+                      )
+                      descriptors.append(parent_descriptor)
+                  file_descriptor = os.open(
+                      relative.parts[-1],
+                      base_flags | nonblocking,
+                      dir_fd=parent_descriptor,
+                  )
+                  file_stat = os.fstat(file_descriptor)
+                  if not stat.S_ISREG(file_stat.st_mode):
+                      raise UnsafeDiagnosticPathError(
+                          f"{label} is not a regular file: {candidate}"
+                      )
+                  if file_stat.st_size > max_bytes:
+                      raise UnsafeDiagnosticPathError(
+                          f"{label} exceeds the {max_bytes}-byte safety limit: "
+                          f"{candidate}"
+                      )
+                  chunks = []
+                  remaining = max_bytes + 1
+                  while remaining:
+                      chunk = os.read(
+                          file_descriptor,
+                          min(1024 * 1024, remaining),
+                      )
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      remaining -= len(chunk)
+                  raw = b"".join(chunks)
+                  if len(raw) > max_bytes:
+                      raise UnsafeDiagnosticPathError(
+                          f"{label} exceeds the {max_bytes}-byte safety limit: "
+                          f"{candidate}"
+                      )
+                  return raw
+              except UnsafeDiagnosticPathError:
+                  raise
+              except OSError as exc:
+                  raise UnsafeDiagnosticPathError(
+                      f"Could not safely open {label}: {candidate}"
+                  ) from exc
+              finally:
+                  if file_descriptor is not None:
+                      os.close(file_descriptor)
+                  for descriptor in reversed(descriptors):
+                      os.close(descriptor)
 
           generated = Path(os.path.abspath(sys.argv[1]))
           artifact = Path(os.path.abspath(sys.argv[2]))
@@ -2509,7 +2592,7 @@ jobs:
                               label="failed re-encode diagnostic",
                               max_bytes=max_file_bytes,
                           )
-                      except UnsafeCorpusPathError as exc:
+                      except UnsafeDiagnosticPathError as exc:
                           raise SystemExit(str(exc)) from exc
                       total_bytes += len(payload)
                       if total_bytes > max_total_bytes:
@@ -2545,7 +2628,7 @@ jobs:
                       label="generated provenance guard diagnostics",
                       max_bytes=1024 * 1024,
                   )
-              except UnsafeCorpusPathError as exc:
+              except UnsafeDiagnosticPathError as exc:
                   raise SystemExit(str(exc)) from exc
               try:
                   parsed_guard = json.loads(guard_payload)

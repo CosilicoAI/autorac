@@ -2256,7 +2256,12 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "toJSON(steps)" not in json.dumps(failure_package_step)
     assert ".outputs" not in json.dumps(failure_package_step["env"])
     failure_package_command = failure_package_step["run"]
-    assert "/opt/axiom-verification/python/bin/python -I -" in (failure_package_command)
+    assert "workflow_python=/opt/axiom-verification/python/bin/python" in (
+        failure_package_command
+    )
+    assert "workflow_python=/usr/bin/python3" in failure_package_command
+    assert 'test -x "$workflow_python"' in failure_package_command
+    assert '"$workflow_python" -I -' in failure_package_command
     assert "read_bounded_regular_file" in failure_package_command
     assert "followlinks=False" in failure_package_command
     assert "generated diagnostics exceed entry limit" in failure_package_command
@@ -2463,8 +2468,8 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         if item.get("name") == "Package failed re-encode diagnostics"
     )
     command = step["run"].replace(
-        "/opt/axiom-verification/python/bin/python",
-        sys.executable,
+        "workflow_python=/opt/axiom-verification/python/bin/python",
+        f"workflow_python={tmp_path / 'missing-protected-python'}",
     )
     generated = tmp_path / "generated" / "target" / "model"
     generated.mkdir(parents=True)
