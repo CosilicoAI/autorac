@@ -1182,6 +1182,10 @@ _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN = re.compile(
     r"""(?=$|[\s,.;:)\]}\'"”’–—])""",
     re.IGNORECASE,
 )
+_STRUCTURAL_SOURCE_CODE_EDITION_PATTERN = re.compile(
+    r"\b(?:federal\s+)?Internal Revenue Code\s+of\s+(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
 _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET = (
     r"\d+[A-Za-z]?:\d+[A-Za-z]?-\d+[A-Za-z]?(?:\.\d+)*"
     r"(?:\([A-Za-z0-9]+\)[A-Za-z0-9]*)*"
@@ -5028,6 +5032,7 @@ def _clean_source_text_for_numeric_extraction(text: str) -> str:
     cleaned = _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_FORM_LINE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN.sub(" ", cleaned)
+    cleaned = _STRUCTURAL_SOURCE_CODE_EDITION_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.sub(" ", cleaned)
     cleaned = _STRUCTURAL_SOURCE_SECTION_PATTERN.sub(" ", cleaned)
@@ -12280,17 +12285,28 @@ _PERSON_SCOPE_SOURCE_PATTERN = re.compile(
     r"allowed\s+(?:a\s+)?credit)",
     flags=re.IGNORECASE,
 )
+_HEAD_OF_HOUSEHOLD_FILING_STATUS_PATTERN = re.compile(
+    r"\bhead(?:\s+|\s*[-‐‑‒–—―−]\s*)of"
+    r"(?:\s+|\s*[-‐‑‒–—―−]\s*)household\b",
+    flags=re.IGNORECASE,
+)
+_HOUSEHOLD_UNIT_SOURCE_TOKEN = r"\bhousehold\b(?!\s+member\b)"
 _UNIT_SCOPE_SOURCE_PATTERN = re.compile(
-    r"\b(?:household\b(?!\s+member\b)|snap\s+unit|food\s+assistance\s+unit|"
-    r"assistance\s+unit|tax\s+unit|filing\s+unit|family\b(?!\s+member\b)|"
-    r"spm\s+unit)\b"
+    r"(?:"
+    + _HOUSEHOLD_UNIT_SOURCE_TOKEN
+    + r"|\bsnap\s+unit|\bfood\s+assistance\s+unit|"
+    r"\bassistance\s+unit|\btax\s+unit|\bfiling\s+unit|"
+    r"\bfamily\b(?!\s+member\b)|\bspm\s+unit\b)"
     r"[\s\S]{0,180}\b"
     r"(?:eligible|eligibility|test|requirement|resources?|income|standard|"
     r"benefit|allotment)\b",
     flags=re.IGNORECASE,
 )
 _UNIT_SOURCE_ENTITY_PATTERNS = (
-    ("household", re.compile(r"\bhousehold\b(?!\s+member\b)", flags=re.IGNORECASE)),
+    (
+        "household",
+        re.compile(_HOUSEHOLD_UNIT_SOURCE_TOKEN, flags=re.IGNORECASE),
+    ),
     (
         "snapunit",
         re.compile(r"\b(?:snap|food\s+assistance)\s+unit\b", flags=re.IGNORECASE),
@@ -12515,14 +12531,22 @@ def find_empty_rules_module_issues(content: str) -> list[str]:
     ]
 
 
+def _mask_household_filing_statuses(text: str) -> str:
+    """Hide filing-status phrases without changing classification distances."""
+    return _HEAD_OF_HOUSEHOLD_FILING_STATUS_PATTERN.sub(
+        lambda match: " " * len(match.group(0)), text
+    )
+
+
 def _classify_source_scope(text: str) -> str | None:
     """Return a clear source scope, or None when the text is mixed/vague."""
-    person_scoped = _PERSON_SCOPE_SOURCE_PATTERN.search(text) is not None
+    classification_text = _mask_household_filing_statuses(text)
+    person_scoped = _PERSON_SCOPE_SOURCE_PATTERN.search(classification_text) is not None
     unit_scoped = (
-        _UNIT_SCOPE_SOURCE_PATTERN.search(text) is not None
-        or _TAXPAYER_TAX_UNIT_SOURCE_PATTERN.search(text) is not None
+        _UNIT_SCOPE_SOURCE_PATTERN.search(classification_text) is not None
+        or _TAXPAYER_TAX_UNIT_SOURCE_PATTERN.search(classification_text) is not None
     )
-    if _HOUSEHOLD_MEMBER_MIXED_SCOPE_PATTERN.search(text):
+    if _HOUSEHOLD_MEMBER_MIXED_SCOPE_PATTERN.search(classification_text):
         return None
     if person_scoped == unit_scoped:
         return None
@@ -12531,12 +12555,13 @@ def _classify_source_scope(text: str) -> str | None:
 
 def _classify_source_unit_entity(text: str) -> str | None:
     """Return a clear unit entity from source text, or None when generic/mixed."""
-    if _TAXPAYER_TAX_UNIT_SOURCE_PATTERN.search(text):
+    classification_text = _mask_household_filing_statuses(text)
+    if _TAXPAYER_TAX_UNIT_SOURCE_PATTERN.search(classification_text):
         return "taxunit"
     matches = {
         entity
         for entity, pattern in _UNIT_SOURCE_ENTITY_PATTERNS
-        if pattern.search(text)
+        if pattern.search(classification_text)
     }
     if len(matches) != 1:
         return None

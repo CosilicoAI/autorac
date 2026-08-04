@@ -1121,6 +1121,40 @@ def test_explicit_satz_markers_after_absatz_are_recognized():
     }
 
 
+def test_nj_title_54a_citations_are_not_glued_german_sentence_markers():
+    branches = recognize_source_structure(
+        "54A:4-7 New Jersey credit. N.J.S.54A:1-1 applies. "
+        "C.54A:4-6 controls. 1Das ist Satz eins.2Voraussetzung zwei gilt."
+    )
+
+    assert [branch.label for branch in branches if branch.kind == "sentence"] == [
+        "Satz 1",
+        "Satz 2",
+    ]
+
+
+def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
+    source = (
+        "54A:4-7 New Jersey credit. (2) For the purposes of the calculation of "
+        "the New Jersey earned income tax credit, the percentage of the federal "
+        "earned income tax credit referred to in paragraph (1) shall be: "
+        "(a) 10% for the taxable year beginning on or after January 1, 2000, "
+        "but before January 1, 2001;"
+    )
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [(branch.label, branch.path) for branch in formula_branches] == [
+        ("source unit formula clause 2", ()),
+    ]
+
+
 def test_colon_satz_markers_are_recognized_and_independently_required():
     source = "(1) Satz 1: Die Hauptregel gilt. Satz 2: Die Sonderregel gilt."
     branches = recognize_source_structure(source)
@@ -2435,6 +2469,20 @@ def test_en_us_post_code_section_marker_citations_are_structural():
     )
 
     assert [(item.value, item.raw) for item in inventory] == [(26.0, "26")]
+
+
+def test_en_us_internal_revenue_code_edition_year_is_structural():
+    source = (
+        "Eligible under section 32 of the federal Internal Revenue Code of 1986 "
+        "(26 U.S.C. s.32), with a 1986 dollar threshold in taxable year 1986."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(1986.0, "1986")]
 
 
 def test_en_us_inline_legal_ordinal_is_structural_after_collapsed_heading():

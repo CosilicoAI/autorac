@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1447"')
+        .startswith('__version__ = "0.2.1448"')
     )
 
 
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1447"
+    assert encoder_package["version"] == "0.2.1448"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1447"
+    assert project["project"]["version"] == "0.2.1448"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1447"')
+        .startswith('__version__ = "0.2.1448"')
     )
 
 
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1447"
+    assert encoder_package["version"] == "0.2.1448"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1447"
+    assert project["project"]["version"] == "0.2.1448"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1447"')
+        .startswith('__version__ = "0.2.1448"')
     )
 
 
@@ -23903,6 +23903,61 @@ rules:
         "`Person`, but the embedded source states a `Household` unit-scoped test. "
         "Encode the rule at the source-stated unit scope or cite source text "
         "that states the person-level test."
+    ]
+
+
+@pytest.mark.parametrize(
+    "filing_status",
+    [
+        "head of household",
+        "head-of-household",
+        "head  of  household",
+        "head of\n    household",
+        "head‑of‑household",
+    ],
+)
+def test_source_scope_consistency_does_not_treat_tax_filing_status_as_household(
+    filing_status: str,
+):
+    content = f"""format: rulespec/v1
+module:
+  summary: |-
+    A claimant who files as a {filing_status} or surviving spouse for federal
+    income tax purposes may claim the credit.
+rules:
+  - name: claimant_files_under_eligible_status
+    kind: derived
+    entity: TaxUnit
+    dtype: Judgment
+    source: state statute
+    versions:
+      - effective_from: '2026-01-01'
+        formula: true
+"""
+
+    assert find_source_scope_consistency_issues(content) == []
+
+
+def test_source_scope_consistency_still_distinguishes_genuine_household_source():
+    content = """format: rulespec/v1
+module:
+  summary: The household is eligible when household income is below the standard.
+rules:
+  - name: tax_unit_eligible
+    kind: derived
+    entity: TaxUnit
+    dtype: Judgment
+    source: state statute
+    versions:
+      - effective_from: '2026-01-01'
+        formula: true
+"""
+
+    assert find_source_scope_consistency_issues(content) == [
+        "Source scope mismatch: `tax_unit_eligible` is declared on `TaxUnit`, "
+        "but the embedded source states a `Household` unit-scoped test. Encode "
+        "the rule at the source-stated unit scope or cite source text that "
+        "states the declared unit scope."
     ]
 
 
