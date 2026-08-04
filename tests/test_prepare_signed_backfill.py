@@ -15,11 +15,13 @@ from axiom_encode.legacy_replacement import (
     receipt_identity_sha256,
 )
 from scripts.prepare_signed_backfill import (
+    MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS,
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
     authorized_changed_paths,
     branch_name,
+    parse_canonical_refresh_bundle,
     parse_existing_signed_imports,
     parse_source_bundle,
     stage_authorized_changes,
@@ -27,6 +29,7 @@ from scripts.prepare_signed_backfill import (
     validate_dependent_cascade,
     validate_queue_tracking,
     validate_rulespec_base,
+    verify_canonical_refresh_target,
 )
 from scripts.prepare_signed_backfill import (
     main as prepare_signed_backfill_main,
@@ -189,6 +192,240 @@ def test_parse_source_bundle_cli_emits_normalized_json_array(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == '["us-ri/statute/44-30-1"]\n'
+
+
+def _canonical_refresh_repo(tmp_path: Path) -> Path:
+    repo = _repo(tmp_path)
+    for relative in (
+        "us-la/statutes/47/294.yaml",
+        "us-la/statutes/47/295.yaml",
+        "us-la/statutes/47/297/4.yaml",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+        if relative == "us-la/statutes/47/294.yaml":
+            target.with_name(f"{target.stem}.test.yaml").write_text(
+                "[]\n",
+                encoding="utf-8",
+            )
+        relative_path = target.relative_to(repo).as_posix()
+        manifest = (
+            repo
+            / ".axiom/encoding-manifests"
+            / target.relative_to(repo).with_suffix(".json")
+        )
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": "axiom-encode/applied-rulespec/v5",
+                    "tool": "axiom-encode encode --apply",
+                    "citation": {
+                        "us-la/statutes/47/294.yaml": "us-la/statute/47:294",
+                        "us-la/statutes/47/295.yaml": "us-la/statute/47:295",
+                        "us-la/statutes/47/297/4.yaml": ("us-la/statute/47:297.4"),
+                    }[relative_path],
+                    "applied_files": [
+                        {
+                            "path": relative_path,
+                            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    _git(repo, "add", "us-la", ".axiom")
+    _git(repo, "commit", "-m", "add canonical refresh targets")
+    return repo
+
+
+def test_parse_canonical_refresh_bundle_accepts_tracked_canonical_targets(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+
+    inventory = parse_canonical_refresh_bundle(
+        repo,
+        json.dumps(
+            [
+                {
+                    "citation": "us-la/statute/47:295",
+                    "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                },
+                {
+                    "citation": "us-la/statute/47:297.4",
+                    "replace_rulespec_path": "us-la/statutes/47/297/4.yaml",
+                },
+            ]
+        ),
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+    )
+    assert [item["citation"] for item in inventory] == [
+        "us-la/statute/47:294",
+        "us-la/statute/47:295",
+        "us-la/statute/47:297.4",
+    ]
+    assert [item["rulespec_path"] for item in inventory] == [
+        "us-la/statutes/47/294.yaml",
+        "us-la/statutes/47/295.yaml",
+        "us-la/statutes/47/297/4.yaml",
+    ]
+    assert all(
+        set(item)
+        == {
+            "citation",
+            "rulespec_path",
+            "rulespec_sha256",
+            "companion_path",
+            "companion_sha256",
+            "manifest_path",
+            "manifest_sha256",
+        }
+        for item in inventory
+    )
+    assert inventory[0]["companion_path"] == ("us-la/statutes/47/294.test.yaml")
+    assert inventory[0]["companion_sha256"] == hashlib.sha256(b"[]\n").hexdigest()
+    assert inventory[1]["companion_sha256"] is None
+
+
+def test_parse_canonical_refresh_bundle_accepts_empty_default(tmp_path: Path) -> None:
+    assert (
+        parse_canonical_refresh_bundle(
+            tmp_path / "not-created",
+            "[]",
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="",
+        )
+        == ()
+    )
+
+
+def test_parse_canonical_refresh_bundle_bounds_total_modules(tmp_path: Path) -> None:
+    raw = json.dumps(
+        [
+            {
+                "citation": f"us-la/statute/47:{index}",
+                "replace_rulespec_path": f"us-la/statutes/47/{index}.yaml",
+            }
+            for index in range(MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS + 1)
+        ]
+    )
+
+    with pytest.raises(ValueError, match="and its primary contain more than 16"):
+        parse_canonical_refresh_bundle(
+            tmp_path / "not-created",
+            raw,
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
+
+
+def test_parse_canonical_refresh_bundle_requires_exact_primary_path(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="primary path must equal"):
+        parse_canonical_refresh_bundle(
+            repo,
+            '[{"citation":"us-la/statute/47:295",'
+            '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/295.yaml",
+        )
+
+
+def test_parse_canonical_refresh_bundle_rejects_untracked_target(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    target = repo / "us-la/statutes/47/297/8.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be exactly tracked"):
+        parse_canonical_refresh_bundle(
+            repo,
+            '[{"citation":"us-la/statute/47:297.8",'
+            '"replace_rulespec_path":"us-la/statutes/47/297/8.yaml"}]',
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
+
+
+def test_parse_canonical_refresh_bundle_cli_emits_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "parse-canonical-refresh-bundle",
+            str(repo),
+            '[{"citation":"us-la/statute/47:295",'
+            '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+            "--primary-citation",
+            "us-la/statute/47:294",
+            "--primary-rulespec-path",
+            "us-la/statutes/47/294.yaml",
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert [item["citation"] for item in output] == [
+        "us-la/statute/47:294",
+        "us-la/statute/47:295",
+    ]
+
+
+def test_verify_canonical_refresh_target_rejects_drift(tmp_path: Path) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    inventory = parse_canonical_refresh_bundle(
+        repo,
+        '[{"citation":"us-la/statute/47:295",'
+        '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+    )
+    target = inventory[1]
+    verify_canonical_refresh_target(repo, json.dumps(target))
+    (repo / target["rulespec_path"]).write_text(
+        "format: rulespec/v1\nrules:\n  - name: drift\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="changed before its signed refresh lane"):
+        verify_canonical_refresh_target(repo, json.dumps(target))
+
+
+def test_verify_canonical_refresh_target_rejects_absent_companion_creation(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    inventory = parse_canonical_refresh_bundle(
+        repo,
+        '[{"citation":"us-la/statute/47:295",'
+        '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+    )
+    target = inventory[1]
+    assert target["companion_sha256"] is None
+    companion = repo / str(target["companion_path"])
+    companion.write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="companion changed before"):
+        verify_canonical_refresh_target(repo, json.dumps(target))
 
 
 def _add_existing_signed_import(repo: Path, path: str) -> None:

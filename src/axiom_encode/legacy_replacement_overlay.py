@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
+from .constants import RULESPEC_ATOMIC_MODULE_ROOTS
 from .legacy_replacement import (
     DESTINATION_PREDECESSOR_ABSENT,
     DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE,
@@ -16,6 +19,7 @@ from .legacy_replacement import (
     LegacyReplacementRewrite,
 )
 from .repo_routing import jurisdiction_subdir_names
+from .rulespec_path_migration import PathMigrationPlanError, canonical_destination
 
 
 class LegacyReplacementOverlayError(ValueError):
@@ -117,6 +121,95 @@ def scope_replacement_overlay(
                     f"Replacement overlay jurisdiction is unsafe: {candidate}"
                 )
             shutil.rmtree(candidate)
+
+
+def scope_canonical_replacement_overlay(
+    overlay_checkout: Path,
+    *,
+    active_jurisdiction: str,
+) -> tuple[Path, ...]:
+    """Scope one canonical replacement around frozen colon-path predecessors.
+
+    The hard-cut engine rejects every path with a colon-bearing component. A
+    canonical fresh replacement must therefore validate in an isolated view
+    that excludes those pre-hard-cut entries while retaining every canonical
+    path and all canonical validation debt. The caller binds the complete live
+    pre-apply tree identity separately; this function never mutates that tree.
+    """
+
+    scope_replacement_overlay(
+        overlay_checkout,
+        active_jurisdiction=active_jurisdiction,
+    )
+    active_root = overlay_checkout / active_jurisdiction
+    if active_root.is_symlink() or not active_root.is_dir():
+        raise LegacyReplacementOverlayError(
+            f"Canonical replacement jurisdiction is unsafe: {active_root}"
+        )
+
+    omitted: list[Path] = []
+
+    def visit(directory: Path) -> None:
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as exc:
+            raise LegacyReplacementOverlayError(
+                f"Cannot inspect canonical replacement overlay: {directory}"
+            ) from exc
+        for entry in entries:
+            candidate = Path(entry.path)
+            relative = candidate.relative_to(active_root)
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise LegacyReplacementOverlayError(
+                    f"Cannot inspect canonical replacement overlay entry: {candidate}"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                raise LegacyReplacementOverlayError(
+                    f"Canonical replacement overlay contains a symlink: {candidate}"
+                )
+            is_directory = stat.S_ISDIR(metadata.st_mode)
+            is_file = stat.S_ISREG(metadata.st_mode)
+            if not is_directory and not is_file:
+                raise LegacyReplacementOverlayError(
+                    "Canonical replacement overlay contains a special file: "
+                    f"{candidate}"
+                )
+
+            if any(":" in part for part in relative.parts):
+                checkout_relative = Path(active_jurisdiction) / relative
+                try:
+                    destination = canonical_destination(checkout_relative)
+                except PathMigrationPlanError as exc:
+                    raise LegacyReplacementOverlayError(
+                        "Colon-path replacement predecessor has no canonical "
+                        f"destination: {checkout_relative}"
+                    ) from exc
+                if destination == checkout_relative:
+                    raise LegacyReplacementOverlayError(
+                        "Colon-path replacement predecessor did not canonicalize: "
+                        f"{checkout_relative}"
+                    )
+                if is_directory:
+                    shutil.rmtree(candidate)
+                else:
+                    candidate.unlink()
+                omitted.append(checkout_relative)
+                continue
+            if is_directory:
+                visit(candidate)
+
+    for name in sorted(RULESPEC_ATOMIC_MODULE_ROOTS):
+        root = active_root / name
+        if not root.exists() and not root.is_symlink():
+            continue
+        if root.is_symlink() or not root.is_dir():
+            raise LegacyReplacementOverlayError(
+                f"Canonical replacement content root is unsafe: {root}"
+            )
+        visit(root)
+    return tuple(omitted)
 
 
 def scope_legacy_replacement_overlay(

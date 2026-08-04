@@ -4556,6 +4556,29 @@ def test_canonical_replacement_validation_excludes_unrelated_jurisdictions(tmp_p
         assert not (overlay_checkout / ".axiom/encoding-manifests/us-nj").exists()
 
 
+def test_canonical_replacement_validation_omits_active_colon_paths_only(tmp_path):
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-la")
+    colon_path = policy_repo / "statutes/47:32.yaml"
+    canonical_debt = policy_repo / "statutes/47/BROKEN.yaml"
+    target = policy_repo / "statutes/47/294.yaml"
+    for path in (colon_path, canonical_debt, target):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("format: rulespec/v1\nrules: []\n")
+    generated = tmp_path / "out/openai/statutes/47/294.yaml"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("format: rulespec/v1\nrules: []\n")
+
+    with _rulespec_validation_target(
+        generated,
+        policy_repo,
+        replacement_overlay_scope=True,
+    ) as validation_file:
+        overlay_policy = validation_file.parents[3] / "us-la"
+        assert not (overlay_policy / "statutes/47:32.yaml").exists()
+        assert (overlay_policy / "statutes/47/BROKEN.yaml").is_file()
+        assert validation_file.is_file()
+
+
 def test_fresh_encode_validation_preserves_unrelated_jurisdictions(tmp_path):
     policy_repo = _canonical_rulespec_content_root(tmp_path, "us")
     checkout = policy_repo.parent

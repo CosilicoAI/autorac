@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,9 +34,88 @@ from axiom_encode.legacy_replacement import (
 )
 from axiom_encode.legacy_replacement_overlay import (
     LegacyReplacementOverlayError,
+    scope_canonical_replacement_overlay,
     stage_legacy_replacement_overlay,
 )
 from axiom_encode.rulespec_path_migration import PlannedMove
+
+
+def test_canonical_replacement_overlay_omits_only_active_colon_paths(tmp_path) -> None:
+    checkout = tmp_path / "rulespec-us"
+    legacy_file = checkout / "us-la/statutes/47:32.yaml"
+    legacy_nested = checkout / "us-la/statutes/47:297/4.yaml"
+    legacy_legislation = checkout / "us-la/legislation/act:1.yaml"
+    canonical_file = checkout / "us-la/statutes/47/294.yaml"
+    canonical_debt = checkout / "us-la/statutes/47/BROKEN.yaml"
+    non_atomic_form = checkout / "us-la/forms/r-540:2026.yaml"
+    sibling = checkout / "us-nj/statutes/54a:4-7.yaml"
+    for path in (
+        legacy_file,
+        legacy_nested,
+        legacy_legislation,
+        canonical_file,
+        canonical_debt,
+        non_atomic_form,
+        sibling,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("format: rulespec/v1\nrules: []\n")
+
+    omitted = scope_canonical_replacement_overlay(
+        checkout,
+        active_jurisdiction="us-la",
+    )
+
+    assert omitted == (
+        Path("us-la/legislation/act:1.yaml"),
+        Path("us-la/statutes/47:297"),
+        Path("us-la/statutes/47:32.yaml"),
+    )
+    assert not legacy_file.exists()
+    assert not legacy_nested.exists()
+    assert not legacy_legislation.exists()
+    assert canonical_file.is_file()
+    assert canonical_debt.is_file()
+    assert non_atomic_form.is_file()
+    assert not (checkout / "us-nj").exists()
+
+
+def test_canonical_replacement_overlay_rejects_symlink(tmp_path) -> None:
+    checkout = tmp_path / "rulespec-us"
+    statutes = checkout / "us-la/statutes"
+    statutes.mkdir(parents=True)
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("format: rulespec/v1\nrules: []\n")
+    (statutes / "47:32.yaml").symlink_to(outside)
+
+    with pytest.raises(
+        LegacyReplacementOverlayError,
+        match="contains a symlink",
+    ):
+        scope_canonical_replacement_overlay(
+            checkout,
+            active_jurisdiction="us-la",
+        )
+
+
+def test_canonical_replacement_overlay_rejects_special_file(tmp_path) -> None:
+    checkout = tmp_path / "rulespec-us"
+    statutes = checkout / "us-la/statutes"
+    statutes.mkdir(parents=True)
+    fifo = statutes / "47:32.yaml"
+    fifo.parent.mkdir(parents=True, exist_ok=True)
+    fifo.touch()
+    fifo.unlink()
+    os.mkfifo(fifo)
+
+    with pytest.raises(
+        LegacyReplacementOverlayError,
+        match="contains a special file",
+    ):
+        scope_canonical_replacement_overlay(
+            checkout,
+            active_jurisdiction="us-la",
+        )
 
 
 @pytest.mark.parametrize(

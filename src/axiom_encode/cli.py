@@ -334,6 +334,9 @@ from .legacy_replacement_overlay import (
     LegacyReplacementOverlayError as _LegacyReplacementOverlayError,
 )
 from .legacy_replacement_overlay import (
+    scope_canonical_replacement_overlay as _scope_canonical_replacement_overlay,
+)
+from .legacy_replacement_overlay import (
     scope_replacement_overlay as _scope_replacement_overlay,
 )
 from .legacy_replacement_overlay import (
@@ -51343,10 +51346,16 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         )
         if legacy_replacement is not None or replacement_overlay_scope:
             try:
-                _scope_replacement_overlay(
-                    overlay_repo,
-                    active_jurisdiction=policy_content_root.name,
-                )
+                if legacy_replacement is not None:
+                    _scope_replacement_overlay(
+                        overlay_repo,
+                        active_jurisdiction=policy_content_root.name,
+                    )
+                else:
+                    _scope_canonical_replacement_overlay(
+                        overlay_repo,
+                        active_jurisdiction=policy_content_root.name,
+                    )
             except _LegacyReplacementOverlayError as exc:
                 return False, [str(exc)], {}
         overlay_content_root = overlay_repo / policy_content_root.name
