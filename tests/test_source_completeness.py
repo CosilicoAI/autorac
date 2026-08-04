@@ -2081,6 +2081,22 @@ def test_en_us_state_code_citation_filter_preserves_real_unit_and_ratio_values()
     ]
 
 
+def test_en_us_post_code_section_marker_citations_are_structural():
+    source = (
+        "Eligible under section 32 of the federal code (26 U.S.C. s.32) and "
+        "section 152 of that code (26 U.S.C. sec. 152), with "
+        "26 U.S.C. s.32—applying and 26 U.S.C. s.32–as amended, while "
+        "26 dollars is due."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(26.0, "26")]
+
+
 def test_en_us_inline_legal_ordinal_is_structural_after_collapsed_heading():
     source = (
         "54A:4-7 New Jersey Earned Income Tax Credit program. "
