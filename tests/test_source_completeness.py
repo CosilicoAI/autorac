@@ -1281,6 +1281,48 @@ rules:
         "legally applicable companion-case period",
         "observed asserted candidate-case periods: 2024-01-01",
     )
+    unbound_payload = yaml.safe_load(content)
+    unbound_principal = next(
+        rule
+        for rule in unbound_payload["rules"]
+        if rule["name"] == "nj_earned_income_tax_credit_before_proration"
+    )
+    unbound_principal["source"] = "N.J.S.54A:4-7(a)(1), (a)(2)"
+    unbound_principal["metadata"]["proof"]["atoms"] = [
+        {
+            "path": "versions[0].formula",
+            "kind": "formula",
+            "source": {
+                "corpus_citation_path": "us-nj/statute/54a:4-7",
+            },
+        },
+        {
+            "path": "versions[0].formula",
+            "kind": "parameter",
+            "import": {
+                "target": (
+                    "us-nj:statutes/54a/4-7#nj_earned_income_tax_credit_percentage"
+                ),
+                "output": "nj_earned_income_tax_credit_percentage",
+                "hash": "sha256:local",
+            },
+        },
+    ]
+    unbound = _analyze(
+        yaml.safe_dump(unbound_payload, sort_keys=False),
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=test_cases,
+    )
+    assert _has_issue(
+        unbound,
+        "already execute this computation",
+        "nj_earned_income_tax_credit_before_proration",
+        "excluded from source-bound evidence",
+        "versions[n].formula",
+        "short `source.excerpt`",
+        "self-import",
+    )
     long_excerpt = completeness_module._bounded_source_feedback_excerpt(
         "head " + "x" * 500 + " operative tail"
     )
@@ -1292,6 +1334,12 @@ rules:
     ) == (
         "2000-01-01, 2001-01-01, 2002-01-01, 2003-01-01, "
         "... (12 omitted) ..., 2016-01-01, 2017-01-01, 2018-01-01, 2019-01-01"
+    )
+    assert completeness_module._bounded_identifier_feedback(
+        [f"rule_{index}" for index in range(8)] + ["rule_0", "rule`escaped"]
+    ) == (
+        "`rule\\`escaped`, `rule_0`, `rule_1`, `rule_2`, `rule_3`, `rule_4`, "
+        "... (3 omitted)"
     )
 
     premature_payload = yaml.safe_load(content)
@@ -1363,6 +1411,108 @@ rules:
         test_cases=test_cases,
     )
     assert _has_issue(premature, "formula branch", "test")
+
+
+def test_unbound_formula_diagnostics_cache_case_execution(monkeypatch):
+    rule_count = 40
+    case_count = 12
+    branch_count = 12
+    principal_rules = {
+        f"amount_{index}": {
+            "name": f"amount_{index}",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [{"formula": "input_amount * 2"}],
+        }
+        for index in range(rule_count)
+    }
+    cases = [
+        {
+            "name": f"shared asserted case {case_index}",
+            "input": {"input_amount": 10},
+            "output": {f"amount_{index}": 20 for index in range(rule_count)},
+        }
+        for case_index in range(case_count)
+    ]
+    asserted_by_rule = {name: cases for name in principal_rules}
+    dependency_cache = {}
+    execution_cache = {}
+    dependency_calls = 0
+    execution_calls = 0
+    original_dependency = completeness_module._case_asserted_dependency_environment
+    original_execution = completeness_module._case_formula_execution
+
+    def counted_dependency(*args, **kwargs):
+        nonlocal dependency_calls
+        dependency_calls += 1
+        return original_dependency(*args, **kwargs)
+
+    def counted_execution(*args, **kwargs):
+        nonlocal execution_calls
+        execution_calls += 1
+        return original_execution(*args, **kwargs)
+
+    monkeypatch.setattr(
+        completeness_module,
+        "_case_asserted_dependency_environment",
+        counted_dependency,
+    )
+    monkeypatch.setattr(
+        completeness_module,
+        "_case_formula_execution",
+        counted_execution,
+    )
+
+    for index in range(branch_count):
+        text = "The amount is input_amount * 2."
+        branch = completeness_module.SourceStructureBranch(
+            path=(),
+            kind="root",
+            label=f"formula {index}",
+            text=text,
+            start=index * len(text),
+            end=(index + 1) * len(text),
+        )
+        diagnostic = completeness_module._unbound_matching_formula_rules(
+            branch,
+            principal_rules=principal_rules,
+            bound_rule_names=set(),
+            asserted_by_rule=asserted_by_rule,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+            formula_environment={},
+            dependency_cache=dependency_cache,
+            execution_cache=execution_cache,
+        )
+        assert len(diagnostic.rule_names) == (
+            completeness_module._UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT
+        )
+        assert diagnostic.scan_capped is True
+
+    feedback = completeness_module._unbound_formula_binding_feedback(
+        diagnostic,
+        corpus_citation_path="us/example/statute/1",
+    )
+    assert "diagnostic scan was capped at 32 rules and 8 cases per rule" in feedback
+    assert "additional matching principal formulas may exist" in feedback
+    capped_without_scanned_match = (
+        completeness_module._unbound_formula_binding_feedback(
+            completeness_module._UnboundFormulaDiagnostic((), True),
+            corpus_citation_path="us/example/statute/1",
+        )
+    )
+    assert "diagnostic scan was capped" in capped_without_scanned_match
+    assert "additional matching principal formulas may exist" in (
+        capped_without_scanned_match
+    )
+
+    assert dependency_calls == (
+        completeness_module._UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT
+    )
+    assert execution_calls == (
+        completeness_module._UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT
+        * completeness_module._UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT
+    )
 
 
 def test_colon_satz_markers_are_recognized_and_independently_required():
@@ -8048,6 +8198,46 @@ rules:
     assert _has_issue(result, "formula branch")
 
 
+def test_singleton_effective_dated_constant_is_not_timeless():
+    payload = {
+        "rules": [
+            {
+                "name": "minimum_age",
+                "versions": [
+                    {
+                        "effective_from": "2020-01-01",
+                        "effective_to": "2024-12-31",
+                        "formula": 18,
+                    }
+                ],
+            }
+        ]
+    }
+    environment = completeness_module._constant_rule_environment(payload)
+
+    assert (
+        completeness_module._formula_environment_for_case(environment, {})[
+            "minimum_age"
+        ]
+        == 18
+    )
+    assert "minimum_age" not in completeness_module._formula_environment_for_case(
+        environment,
+        {"period": "2019"},
+    )
+    assert (
+        completeness_module._formula_environment_for_case(
+            environment,
+            {"period": "2022"},
+        )["minimum_age"]
+        == 18
+    )
+    assert "minimum_age" not in completeness_module._formula_environment_for_case(
+        environment,
+        {"period": "2026"},
+    )
+
+
 def _boundary_control_content(
     *,
     formula: str,
@@ -8102,6 +8292,34 @@ def test_boundary_requires_one_operative_input_threshold_comparison():
 
     assert _has_issue(inert_result, "boundary", "100")
     assert not operative_result.issues
+
+
+def test_multiline_boundary_conjunction_binds_named_threshold():
+    source = "(1) Die Regel gilt ab einem Alter von 18 Jahren."
+    content = _boundary_control_content(
+        formula="claimant_age >= income_limit\n          and claimant_is_resident",
+        limit_versions="""\
+      - effective_from: '2026-01-01'
+        formula: 18""",
+    )
+    cases = [
+        {
+            "name": "at age threshold",
+            "period": "2026",
+            "input": {"claimant_age": 18, "claimant_is_resident": True},
+            "output": {"eligible": True},
+        },
+        {
+            "name": "below age threshold",
+            "period": "2026",
+            "input": {"claimant_age": 17, "claimant_is_resident": True},
+            "output": {"eligible": False},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
 
 
 def test_adjacent_integral_boundary_requires_the_equivalent_comparator():
