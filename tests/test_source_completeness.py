@@ -1765,6 +1765,36 @@ rules: []
     assert not _has_issue(result, "(b)", "deferral")
 
 
+def test_descriptive_dependency_list_can_share_terminal_state_predicate():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until assistance receipt under 42 USC 1437f(o) and
+        42 USC 1437g, troubled-agency designation under 42 USC 1437d(j)(2),
+        and the failing-score determination under the Section 8 Management
+        Assessment Program referenced by 42 USC 1437c-1(b)(3)(C) are encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "section 1437f(o) of this title."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
+
+
 @pytest.mark.parametrize(
     "reason",
     [

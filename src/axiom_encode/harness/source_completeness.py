@@ -1958,6 +1958,10 @@ def _reason_suffix_has_dependency_state(after: str) -> bool:
         if state_word in contextual_states:
             continue
         prefix = bounded[: state.start()]
+        if not prefix.strip():
+            return True
+        if not re.fullmatch(r"[\s,)]*", bounded[state.end() :]):
+            continue
         masked_prefix = list(prefix)
         dependencies = sorted(
             (
@@ -1971,12 +1975,22 @@ def _reason_suffix_has_dependency_state(after: str) -> bool:
                 dependency.end() - dependency.start()
             )
         remainder = "".join(masked_prefix)
-        if re.fullmatch(
-            r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
+        if re.search(
+            r"\b(?:"
+            r"is|are|was|were|has|have|applies?|holds?|exists?|"
+            r"mentions?|cites?|references?"
+            r")\b",
             remainder,
             flags=re.IGNORECASE,
         ):
-            return True
+            continue
+        if re.search(
+            r"\b(?:context|background|illustration|example)\b",
+            remainder,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        return True
     return False
 
 
