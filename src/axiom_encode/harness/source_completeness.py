@@ -708,6 +708,12 @@ _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS = frozenset(
         "threshold",
     }
 )
+_DEPENDENCY_POLICY_ACRONYM_TERMS = frozenset(
+    {"abawd", "d", "ebt", "hcbs", "irmaa", "magi", "sga"}
+)
+_DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
+    {"based", "non", "part", "waiver"}
+)
 _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
     {
         "administration",
@@ -726,9 +732,12 @@ _LEGAL_ACTOR_HEAD_TERMS = frozenset(
         "agency",
         "authority",
         "board",
+        "bureau",
         "commission",
         "commissioner",
+        "corporation",
         "department",
+        "judiciary",
         "office",
         "reserve",
         "secretary",
@@ -3218,10 +3227,12 @@ def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
 
 
 def _dependency_token_is_actor_nominal_component(token: str) -> bool:
-    return bool(
-        token.lower() == "part"
-        or re.fullmatch(r"[A-Z]{1,10}", token)
-        or _dependency_token_is_actor_nominal_prefix(token)
+    parts = token.lower().split("-")
+    return all(
+        part in _DEPENDENCY_POLICY_ACRONYM_TERMS
+        or part in _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS
+        or _dependency_token_is_actor_nominal_prefix(part)
+        for part in parts
     )
 
 
@@ -3247,7 +3258,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
         return True
     if re.fullmatch(
         r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
-        r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Reserve|Service)s?",
+        r"(?:Administration|Agency|Authority|Board|Bureau|Commission|Corporation|Department|Judiciary|Office|Reserve|Service)s?",
         phrase,
     ):
         return True
@@ -3271,7 +3282,8 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
             r"commissioners?|departments?|secretar(?:y|ies)|services?|"
-            r"federal\s+reserves?|internal\s+revenue\s+services?|"
+            r"federal\s+bureaus?\s+of\s+investigation|federal\s+reserves?|"
+            r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"
             r"(?:agriculture|commerce|defense|education|energy|"
