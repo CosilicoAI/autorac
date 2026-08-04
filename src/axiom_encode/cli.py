@@ -169,6 +169,8 @@ from .harness.eval_evidence import isolated_eval_evidence_signer
 from .harness.evals import (
     _DEFAULT_SUITE_RETRY_ATTEMPTS,
     _EVAL_RESULT_ARTIFACT_SPECS,
+    VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+    ValidationRetryCandidate,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
     _build_eval_suite_manifest_identity,
@@ -181,6 +183,7 @@ from .harness.evals import (
     _eval_suite_rulespec_roots,
     _git_checkout_execution_identity,
     _load_eval_suite_resume_state,
+    _open_secure_eval_parent,
     _render_eval_result_verdict_evidence,
     _resolve_eval_output_path,
     _rulespec_root_execution_identity,
@@ -25021,6 +25024,75 @@ class _EncodeEscalationConfig(NamedTuple):
 class _FailedEncodeAttempt(NamedTuple):
     result: Any
     error: str
+    candidate: ValidationRetryCandidate | None = None
+
+
+def _capture_validation_retry_candidate(
+    result: Any,
+    *,
+    output_root: Path,
+) -> ValidationRetryCandidate:
+    """Read one generated candidate through contained, bounded file handles."""
+
+    runner = str(getattr(result, "runner", "") or "")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", runner) is None:
+        raise RuntimeError("Validator-rejected retry candidate has an unsafe runner")
+    raw_output_root = Path(os.path.abspath(output_root))
+    generated_root = raw_output_root / runner
+    output_file = Path(
+        os.path.abspath(Path(str(getattr(result, "output_file", "") or "")))
+    )
+    try:
+        relative_output = output_file.relative_to(generated_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Validator-rejected retry candidate is outside its generated root"
+        ) from exc
+    parts = relative_output.parts
+    if parts and parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        module_parts = parts
+    elif (
+        len(parts) >= 2
+        and re.fullmatch(r"[a-z]{2}(?:-[a-z0-9_]+)*", parts[0]) is not None
+        and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS
+    ):
+        module_parts = parts[1:]
+    else:
+        module_parts = ()
+    if (
+        len(module_parts) < 2
+        or output_file.suffix != RULESPEC_FILE_SUFFIX
+        or output_file.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+    ):
+        raise RuntimeError(
+            "Validator-rejected retry candidate is not a canonical RuleSpec module"
+        )
+    rulespec = read_bounded_regular_file(
+        generated_root,
+        output_file,
+        label="validator-rejected retry RuleSpec",
+        max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+    ).decode("utf-8", errors="strict")
+    test_file = _rulespec_test_path(output_file)
+    tests = (
+        read_bounded_regular_file(
+            generated_root,
+            test_file,
+            label="validator-rejected retry companion tests",
+            max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+        ).decode("utf-8", errors="strict")
+        if test_file.exists() or test_file.is_symlink()
+        else None
+    )
+    return ValidationRetryCandidate(rulespec=rulespec, tests=tests)
+
+
+def _latest_validation_retry_candidate(
+    prior_attempts: Sequence[_FailedEncodeAttempt],
+) -> ValidationRetryCandidate | None:
+    """Return only the immediately preceding candidate, when safely captured."""
+
+    return prior_attempts[-1].candidate if prior_attempts else None
 
 
 def _encode_validation_retry_feedback(
@@ -26783,23 +26855,44 @@ def _clear_retry_destination(
     """Remove only the next attempt's generated files to prevent stale reuse."""
     relative_output = _relative_generated_output_path(result, output_root=output_root)
     next_runner = parse_runner_spec(f"{backend}:{next_model}")
-    generated_root = (Path(output_root) / next_runner.name).resolve()
-    output_file = (generated_root / relative_output).resolve()
+    generated_root = Path(os.path.abspath(Path(output_root) / next_runner.name))
+    relative = Path(relative_output)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise RuntimeError("Retry output has an unsafe relative path")
     try:
-        output_file.relative_to(generated_root)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Retry output {output_file} escapes generated root {generated_root}"
-        ) from exc
-    retry_files = (
-        output_file,
-        _rulespec_test_path(output_file),
-        output_file.with_suffix(".repair.json"),
-    )
-    for retry_file in retry_files:
-        if retry_file.is_dir() and not retry_file.is_symlink():
-            raise RuntimeError(f"Retry output path is a directory: {retry_file}")
-        retry_file.unlink(missing_ok=True)
+        with _open_secure_eval_parent(
+            generated_root,
+            relative,
+            create=False,
+        ) as (parent_fd, output_name):
+            retry_names = (
+                output_name,
+                _rulespec_test_path(Path(output_name)).name,
+                Path(output_name).with_suffix(".repair.json").name,
+            )
+            for retry_name in retry_names:
+                try:
+                    metadata = os.stat(
+                        retry_name,
+                        dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(metadata.st_mode):
+                    raise RuntimeError("Retry output path is a directory")
+            for retry_name in retry_names:
+                try:
+                    os.unlink(retry_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    continue
+            os.fsync(parent_fd)
+    except FileNotFoundError:
+        return
 
 
 def _cmd_encode_with_authoritative_rulespec_roots(
@@ -26838,24 +26931,49 @@ def _cmd_encode_with_authoritative_rulespec_roots(
                 failed_attempt_count=len(failed_attempts),
             )
         if next_model is not None:
-            failure = _FailedEncodeAttempt(
-                result=execution.result,
-                error=_encode_outcome_issue(execution.result, execution.outcome),
-            )
-            failed_attempts = (*failed_attempts, failure)
+            retry_error = _encode_outcome_issue(execution.result, execution.outcome)
+            try:
+                candidate = _capture_validation_retry_candidate(
+                    execution.result,
+                    output_root=args.output,
+                )
+            except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+                execution.outcome["generation_retry_blocked"] = {
+                    "reason": type(exc).__name__,
+                    "message": (
+                        "Retry candidate capture failed closed before output cleanup"
+                    ),
+                }
+                next_model = None
+            else:
+                failure = _FailedEncodeAttempt(
+                    result=execution.result,
+                    error=retry_error,
+                    candidate=candidate,
+                )
+        if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
-            print(
-                f"  generation={action} failed_attempts={len(failed_attempts)} "
-                f"from_model={current_model} to_model={next_model}"
-            )
-            _clear_retry_destination(
-                execution.result,
-                output_root=args.output,
-                backend=args.backend,
-                next_model=next_model,
-            )
-            current_model = next_model
-            continue
+            try:
+                _clear_retry_destination(
+                    execution.result,
+                    output_root=args.output,
+                    backend=args.backend,
+                    next_model=next_model,
+                )
+            except (OSError, ValueError, RuntimeError) as exc:
+                execution.outcome["generation_retry_blocked"] = {
+                    "reason": type(exc).__name__,
+                    "message": "Retry cleanup failed closed before another model call",
+                }
+                next_model = None
+            else:
+                failed_attempts = (*failed_attempts, failure)
+                print(
+                    f"  generation={action} failed_attempts={len(failed_attempts)} "
+                    f"from_model={current_model} to_model={next_model}"
+                )
+                current_model = next_model
+                continue
 
         outcome = execution.outcome
         escalated = (
@@ -27057,6 +27175,7 @@ def _run_encode_attempt(
             else None
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
+        validation_retry_candidate=_latest_validation_retry_candidate(prior_attempts),
         required_import_targets=required_import_targets,
         legacy_replacement=(
             replacement_target.legacy_replacement
