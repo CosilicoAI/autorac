@@ -487,6 +487,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "fact",
         "filing",
         "form",
+        "guidance",
         "income",
         "information",
         "input",
@@ -494,12 +495,14 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "notice",
         "plan",
         "policy",
+        "payment",
         "process",
         "procedure",
         "program",
         "rate",
         "receipt",
         "record",
+        "regulation",
         "requirement",
         "rule",
         "size",
@@ -555,6 +558,9 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
         "defined",
         "described",
         "eligible",
+        "furnished",
+        "applied",
+        "payable",
         "provided",
         "received",
         "referenced",
@@ -578,6 +584,21 @@ _DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
 )
 _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
     {"benefit", "limit", "process", "program", "rate", "record", "rule"}
+)
+_DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
+_LEGAL_ACTOR_HEAD_TERMS = frozenset(
+    {
+        "administrator",
+        "agency",
+        "authority",
+        "board",
+        "commission",
+        "commissioner",
+        "department",
+        "office",
+        "secretary",
+        "service",
+    }
 )
 _LEGAL_INSTRUMENT_TERMS = frozenset(
     {
@@ -2782,6 +2803,8 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
 
 
 def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
+    if _coordinated_phrase_has_finite_predicate(tokens):
+        return False
     for actor_end in range(1, len(tokens)):
         if not _legal_actor_subject_phrase_is_bounded(" ".join(tokens[:actor_end])):
             continue
@@ -2795,6 +2818,28 @@ def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
             return False
         return True
     return _dependency_subject_phrase_is_bounded(" ".join(tokens))
+
+
+def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
+    for subject_end in range(1, len(tokens)):
+        subject = " ".join(tokens[:subject_end])
+        subject_is_actor = _legal_actor_subject_phrase_is_bounded(subject)
+        if not (subject_is_actor or _dependency_subject_phrase_is_bounded(subject)):
+            continue
+        predicate = tokens[subject_end]
+        trailing_object = tokens[subject_end + 1 :]
+        if trailing_object:
+            if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
+                continue
+        elif not (
+            subject_is_actor
+            and _dependency_token_forms(predicate)
+            & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+        ):
+            continue
+        if _dependency_subject_and_predicate_agree(tokens[subject_end - 1], predicate):
+            return True
+    return False
 
 
 def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:
@@ -2817,7 +2862,13 @@ def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> boo
 def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
     if re.fullmatch(
         r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
-        r"(?:Administration|Agency|Authority|Board|Commission|Department|Service)s?",
+        r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Service)s?",
+        phrase,
+    ):
+        return True
+    if re.fullmatch(
+        r"(?:the\s+)?Office\s+of\s+(?:[A-Z][A-Za-z-]*\s*){1,6}"
+        r"(?:and\s+(?:[A-Z][A-Za-z-]*\s*){1,3})?",
         phrase,
     ):
         return True
@@ -2863,6 +2914,22 @@ def _dependency_token_forms(token: str) -> set[str]:
     if lowered.endswith("s"):
         candidates.add(lowered[:-1])
     return candidates
+
+
+def _dependency_subject_and_predicate_agree(
+    subject_token: str,
+    predicate_token: str,
+) -> bool:
+    subject = subject_token.lower()
+    subject_is_plural = subject in _DEPENDENCY_IRREGULAR_PLURAL_TERMS or any(
+        candidate in _DEPENDENCY_SUBJECT_TERMS or candidate in _LEGAL_ACTOR_HEAD_TERMS
+        for candidate in _dependency_token_forms(subject) - {subject}
+    )
+    predicate = predicate_token.lower()
+    predicate_is_singular = predicate.endswith(
+        ("s", "es", "ies")
+    ) and not predicate.endswith(("ss", "us", "is"))
+    return subject_is_plural != predicate_is_singular
 
 
 def _reason_direct_missing_introduction_is_bounded(
