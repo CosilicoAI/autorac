@@ -9757,7 +9757,7 @@ Complete-source-unit mode is enabled for this request:
   otherwise omit `blocked_by` and name the exact missing legal dependency or
   citation in `reason`. For a runtime-gap deferral of a current-source branch,
   the `reason` itself must literally cite the complete legal branch (for
-  example, `42 U.S.C. 1437c-1(c)`) and name a concrete source-stated missing
+  example, `42 U.S.C. 1437c-1(f)`) and name a concrete source-stated missing
   input or runtime capability. The output path alone is not that citation.
   Never guess a blocker target.
 - Companion tests must execute every source-stated formula branch, boundary,

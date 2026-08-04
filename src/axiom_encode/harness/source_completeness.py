@@ -1028,10 +1028,10 @@ module:
 For a current-source administrative runtime gap, use this shape instead:
 module:
   deferred_outputs:
-    - output: us:statutes/42/1437c-1/c#plan_submission_procedures
+    - output: us:statutes/42/1437c-1/f#public_hearing_process
       reason: >-
-        Cannot be computed until the plan-submission procedure, timing, and form
-        required by 42 U.S.C. 1437c-1(c) are available at runtime.
+        Cannot be computed until the public-hearing event and governing-body
+        consultation records required by 42 U.S.C. 1437c-1(f) are available at runtime.
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
 must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
 exists, cite the exact current source branch and name its concrete source-stated missing \
