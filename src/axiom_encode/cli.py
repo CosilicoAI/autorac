@@ -2210,6 +2210,22 @@ def main():
         ),
     )
     encode_parser.add_argument(
+        "--repair-candidate-root",
+        type=Path,
+        help=(
+            "Root containing one preserved validator-rejected generated candidate; "
+            "requires --repair-candidate-path"
+        ),
+    )
+    encode_parser.add_argument(
+        "--repair-candidate-path",
+        type=Path,
+        help=(
+            "Canonical RuleSpec path relative to --repair-candidate-root to use "
+            "as untrusted cross-run repair context"
+        ),
+    )
+    encode_parser.add_argument(
         "--policyengine-rule-hint",
         dest="policyengine_rule_hint",
         default=None,
@@ -25162,6 +25178,70 @@ def _capture_validation_retry_candidate(
     return ValidationRetryCandidate(rulespec=rulespec, tests=tests)
 
 
+def _load_initial_validation_retry_candidate(
+    args: Any,
+) -> ValidationRetryCandidate | None:
+    """Load one explicitly bounded rejected candidate for cross-run repair."""
+
+    raw_root = getattr(args, "repair_candidate_root", None)
+    raw_relative_output = getattr(args, "repair_candidate_path", None)
+    if (raw_root is None) != (raw_relative_output is None):
+        raise ValueError(
+            "encode --repair-candidate-root and --repair-candidate-path must be "
+            "supplied together"
+        )
+    if raw_root is None:
+        return None
+
+    generated_root = Path(os.path.abspath(Path(raw_root)))
+    relative_output = Path(raw_relative_output)
+    if (
+        relative_output.is_absolute()
+        or not relative_output.parts
+        or any(part in {"", ".", ".."} for part in relative_output.parts)
+    ):
+        raise ValueError("encode --repair-candidate-path must be a safe relative path")
+    parts = relative_output.parts
+    if parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        module_parts = parts
+    elif (
+        len(parts) >= 2
+        and re.fullmatch(r"[a-z]{2}(?:-[a-z0-9_]+)*", parts[0]) is not None
+        and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS
+    ):
+        module_parts = parts[1:]
+    else:
+        module_parts = ()
+    if (
+        len(module_parts) < 2
+        or relative_output.suffix != RULESPEC_FILE_SUFFIX
+        or relative_output.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+    ):
+        raise ValueError(
+            "encode --repair-candidate-path must name a canonical RuleSpec module"
+        )
+
+    output_file = generated_root / relative_output
+    rulespec = read_bounded_regular_file(
+        generated_root,
+        output_file,
+        label="preserved validator-rejected RuleSpec",
+        max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+    ).decode("utf-8", errors="strict")
+    test_file = generated_root / _rulespec_test_path(relative_output)
+    tests = (
+        read_bounded_regular_file(
+            generated_root,
+            test_file,
+            label="preserved validator-rejected companion tests",
+            max_bytes=VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
+        ).decode("utf-8", errors="strict")
+        if test_file.exists() or test_file.is_symlink()
+        else None
+    )
+    return ValidationRetryCandidate(rulespec=rulespec, tests=tests)
+
+
 def _latest_validation_retry_candidate(
     prior_attempts: Sequence[_FailedEncodeAttempt],
 ) -> ValidationRetryCandidate | None:
@@ -27087,6 +27167,7 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             backend=args.backend,
             model=config.escalation_model,
         )
+    initial_retry_candidate = _load_initial_validation_retry_candidate(args)
     failed_attempts: tuple[_FailedEncodeAttempt, ...] = ()
     current_model = config.initial_model
 
@@ -27095,6 +27176,7 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             args,
             model=current_model,
             prior_attempts=failed_attempts,
+            initial_retry_candidate=initial_retry_candidate,
             defer_logging=config.enabled,
             apply_signing_broker=apply_signing_broker,
             resolved_policy_checkout_path=resolved_policy_checkout_path,
@@ -27226,6 +27308,7 @@ def _run_encode_attempt(
     *,
     model: str,
     prior_attempts: Sequence[_FailedEncodeAttempt] = (),
+    initial_retry_candidate: ValidationRetryCandidate | None = None,
     defer_logging: bool = True,
     apply_signing_broker: SigningBroker | None = None,
     resolved_policy_checkout_path: Path | None = None,
@@ -27354,7 +27437,11 @@ def _run_encode_attempt(
             else None
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
-        validation_retry_candidate=_latest_validation_retry_candidate(prior_attempts),
+        validation_retry_candidate=(
+            _latest_validation_retry_candidate(prior_attempts)
+            if prior_attempts
+            else initial_retry_candidate
+        ),
         required_import_targets=required_import_targets,
         legacy_replacement=(
             replacement_target.legacy_replacement

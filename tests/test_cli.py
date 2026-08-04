@@ -12241,6 +12241,8 @@ class TestCmdEncode:
         args.mode = overrides.get("mode", "repo-augmented")
         args.allow_context = overrides.get("allow_context", [])
         args.review_findings = overrides.get("review_findings", [])
+        args.repair_candidate_root = overrides.get("repair_candidate_root", None)
+        args.repair_candidate_path = overrides.get("repair_candidate_path", None)
         args.policyengine_rule_hint = overrides.get("policyengine_rule_hint", None)
         args.db = overrides.get("db", tmp_path / "encodings.db")
         args.sync = overrides.get("sync", True)
@@ -13076,6 +13078,91 @@ class TestCmdEncode:
         )
 
         assert candidate.tests is None
+
+    def test_encode_loads_bounded_cross_run_repair_candidate(self, tmp_path):
+        import axiom_encode.cli as cli_module
+
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/42/1437c-1.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\n# preserved-rule\nrules: []\n")
+        output_file.with_suffix(".test.yaml").write_text("# preserved-companion\n[]\n")
+
+        candidate = cli_module._load_initial_validation_retry_candidate(
+            SimpleNamespace(
+                repair_candidate_root=candidate_root,
+                repair_candidate_path=candidate_path,
+            )
+        )
+
+        assert candidate is not None
+        assert "preserved-rule" in candidate.rulespec
+        assert candidate.tests is not None
+        assert "preserved-companion" in candidate.tests
+
+    def test_encode_passes_cross_run_repair_candidate_to_first_attempt(self, tmp_path):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\n# preserved-rule\nrules: []\n")
+        output_file.with_suffix(".test.yaml").write_text("# preserved-companion\n[]\n")
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+        )
+
+        mock_run, exit_code = self._run_encode(args, self._make_eval_result(True))
+
+        assert exit_code == 0
+        candidate = mock_run.call_args.kwargs["validation_retry_candidate"]
+        assert candidate is not None
+        assert "preserved-rule" in candidate.rulespec
+        assert candidate.tests is not None
+        assert "preserved-companion" in candidate.tests
+
+    @pytest.mark.parametrize(
+        ("root", "relative_path", "message"),
+        [
+            (Path("candidate"), None, "must be supplied together"),
+            (None, Path("statutes/26/1.yaml"), "must be supplied together"),
+            (Path("candidate"), Path("../1.yaml"), "safe relative path"),
+            (Path("candidate"), Path("metrics/1.yaml"), "canonical RuleSpec"),
+        ],
+    )
+    def test_encode_rejects_invalid_cross_run_repair_candidate_identity(
+        self, tmp_path, root, relative_path, message
+    ):
+        import axiom_encode.cli as cli_module
+
+        with pytest.raises(ValueError, match=message):
+            cli_module._load_initial_validation_retry_candidate(
+                SimpleNamespace(
+                    repair_candidate_root=tmp_path / root if root else None,
+                    repair_candidate_path=relative_path,
+                )
+            )
+
+    def test_encode_rejects_symlinked_cross_run_repair_candidate(self, tmp_path):
+        import axiom_encode.cli as cli_module
+
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        external = tmp_path / "external.yaml"
+        external.write_text("secret material must not be prompt context\n")
+        output_file.symlink_to(external)
+
+        with pytest.raises(UnsafeCorpusPathError, match="safely open"):
+            cli_module._load_initial_validation_retry_candidate(
+                SimpleNamespace(
+                    repair_candidate_root=candidate_root,
+                    repair_candidate_path=candidate_path,
+                )
+            )
 
     @pytest.mark.parametrize("unsafe_kind", ["symlink", "invalid-utf8", "oversize"])
     def test_encode_retry_candidate_capture_rejects_unsafe_content(

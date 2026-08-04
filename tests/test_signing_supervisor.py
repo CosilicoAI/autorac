@@ -1880,6 +1880,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     }
     assert inputs["open_pr"]["type"] == "boolean"
     assert inputs["open_pr"]["default"] is False
+    assert inputs["repair_run_id"] == {
+        "description": (
+            "Prior failed protected run whose final candidate is replayed as "
+            "untrusted repair context"
+        ),
+        "required": False,
+        "type": "string",
+    }
     assert inputs["pr_base_branch"]["type"] == "string"
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["source_bundle_json"] == {
@@ -2051,6 +2059,41 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "--corpus-root axiom-corpus" in release_command
     assert 'merge-base --is-ancestor "$release_commit" HEAD' in release_command
 
+    repair_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Resolve trusted prior-run repair candidate"
+    )
+    assert repair_step["id"] == "repair_candidate"
+    assert repair_step["if"] == "${{ inputs.repair_run_id != '' }}"
+    assert repair_step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    repair_command = repair_step["run"]
+    assert '.conclusion == "failure"' in repair_command
+    assert '.event == "workflow_dispatch"' in repair_command
+    assert '.head_branch == "main"' in repair_command
+    assert '.run_attempt == 1' in repair_command
+    assert (
+        '.path == ".github/workflows/targeted-signed-reencode.yml"'
+        in repair_command
+    )
+    assert "merge-base --is-ancestor" in repair_command
+    assert '"$repair_encoder_commit" "$GITHUB_SHA"' in repair_command
+    assert "repair replay is limited to one non-legacy target" in repair_command
+    assert 'test -n "$REPLACE_RULESPEC_PATH"' not in repair_command
+    assert 'targeted-reencode-failure-${REPAIR_RUN_ID}-1' in repair_command
+    assert "extract_repair_candidate.py" in repair_command
+    for immutable_argument in (
+        "--citation",
+        "--country",
+        "--encoder-commit",
+        "--corpus-ref",
+        "--rules-engine-ref",
+        "--rulespec-ref",
+        "--replace-rulespec-path",
+        "--workflow-run-id",
+    ):
+        assert immutable_argument in repair_command
+
     provision_step = next(
         step
         for step in steps
@@ -2152,6 +2195,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "$GITHUB_WORKSPACE/axiom-rules-engine/.axiom-targeted" not in command
     assert "printf '%s\\n' \"$review_finding\"" in command
     assert 'args+=(--review-findings "$review_finding_path")' in command
+    assert '--repair-candidate-root "$REPAIR_CANDIDATE_ROOT"' in command
+    assert '--repair-candidate-path "$REPAIR_CANDIDATE_PATH"' in command
+    assert apply_step["env"]["REPAIR_CANDIDATE_ROOT"] == (
+        "${{ steps.repair_candidate.outputs.root }}"
+    )
+    assert apply_step["env"]["REPAIR_CANDIDATE_PATH"] == (
+        "${{ steps.repair_candidate.outputs.path }}"
+    )
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
     assert 'local require_direct_imports="$7"' in command
@@ -2234,6 +2285,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION",
         "COMMIT_REVIEWED_LANE_CHANGES_OUTCOME",
         "PR_BASE_BRANCH",
+        "REPAIR_CANDIDATE_CONCLUSION",
+        "REPAIR_CANDIDATE_OUTCOME",
+        "REPAIR_RUN_ID",
         "PROVISION_SIGNING_SUPERVISOR_CONCLUSION",
         "PUBLISH_LANE_PULL_REQUEST_CONCLUSION",
         "PUBLISH_LANE_PULL_REQUEST_OUTCOME",
@@ -2370,6 +2424,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert '"queue_item_generation_sha256": (' in package_command
     assert '"queue_manifest_sha256": (' in package_command
+    assert '"repair_candidate": repair_candidate' in package_command
+    assert '"repair_run_id": os.environ.get("REPAIR_RUN_ID") or None' in (
+        package_command
+    )
     assert '"workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])' in (
         package_command
     )
@@ -2526,6 +2584,9 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     }
     preflight_guard_raw = json.dumps(preflight_guard_payload) + "\n"
     (tmp_path / "target-preflight-guard-generated.json").write_text(preflight_guard_raw)
+    # A failed resolver can leave the shell redirection target empty. Failure
+    # packaging must preserve that resolver failure without parsing partial evidence.
+    (tmp_path / "repair-candidate.json").write_text("")
     env = {
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
