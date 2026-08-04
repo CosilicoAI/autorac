@@ -1255,6 +1255,25 @@ rules:
     )
 
     assert not _has_issue(result, "formula branch", "test")
+    uncorroborated_cases = yaml.safe_load(yaml.safe_dump(test_cases))
+    del uncorroborated_cases[0]["output"][
+        "regular_nj_earned_income_tax_credit_eligible"
+    ]
+    uncorroborated = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=uncorroborated_cases,
+    )
+    assert _has_issue(
+        uncorroborated,
+        "formula branch",
+        "historical 10 percent branch",
+        "regular_nj_earned_income_tax_credit_eligible",
+        "local derived dependency selector",
+        "same case asserts its expected output",
+        "never shadow",
+    )
     environment = completeness_module._constant_rule_environment(
         yaml.safe_load(content)
     )
@@ -1411,6 +1430,309 @@ rules:
         test_cases=test_cases,
     )
     assert _has_issue(premature, "formula branch", "test")
+
+
+def test_formula_witness_requires_reached_arithmetic_dependency_assertion():
+    source = (
+        "For taxable year 2000, an eligible resident's New Jersey earned income "
+        "tax credit is 10% of the federal earned income tax credit."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/1
+rules:
+  - name: pct
+    kind: parameter
+    dtype: Rate
+    source: us-zz/statute/1
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 0.10
+  - name: adjusted_federal_credit
+    kind: derived
+    dtype: Money
+    source: us-zz/statute/1
+    versions:
+      - effective_from: '2000-01-01'
+        formula: federal_credit
+  - name: eligible
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/1
+    versions:
+      - effective_from: '2000-01-01'
+        formula: claimant_is_resident
+  - name: credit
+    kind: derived
+    dtype: Money
+    source: us-zz/statute/1
+    metadata:
+      proof:
+        atoms:
+          - path: formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/1
+              excerpt: >-
+                eligible resident's New Jersey earned income tax credit is 10%
+                of the federal earned income tax credit
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          if eligible: adjusted_federal_credit * pct else: 0
+"""
+    cases = [
+        {
+            "name": "branch",
+            "period": "2000-01-01",
+            "input": {
+                "claimant_is_resident": True,
+                "federal_credit": 1000,
+            },
+            "output": {
+                "eligible": "holds",
+                "credit": 100,
+            },
+        },
+        {
+            "name": "other assertion",
+            "period": "2000-01-01",
+            "input": {
+                "claimant_is_resident": False,
+                "federal_credit": 500,
+            },
+            "output": {"adjusted_federal_credit": 500},
+        },
+    ]
+
+    uncorroborated = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/1",
+        test_cases=cases,
+    )
+
+    assert _has_issue(
+        uncorroborated,
+        "formula branch",
+        "branch",
+        "adjusted_federal_credit",
+        "same case asserts its expected output",
+    )
+    cases[0]["output"]["adjusted_federal_credit"] = 1000
+    corroborated = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/1",
+        test_cases=cases,
+    )
+    assert not _has_issue(corroborated, "formula branch", "test")
+
+
+def test_formula_interval_witness_traces_derived_numeric_selector():
+    source = (
+        "For income up to 10000 dollars, the credit is 10% of the base amount "
+        "minus the deduction."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    source: us-zz/statute/2
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 0.10
+  - name: threshold
+    kind: parameter
+    dtype: Money
+    source: us-zz/statute/2
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 10000
+  - name: low_income
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/2
+    versions:
+      - effective_from: '2000-01-01'
+        formula: income <= threshold
+  - name: deduction_positive
+    kind: derived
+    dtype: Judgment
+    source: us-zz/statute/2
+    versions:
+      - effective_from: '2000-01-01'
+        formula: deduction > 0
+  - name: credit
+    kind: derived
+    dtype: Money
+    source: us-zz/statute/2
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: >-
+                For income up to 10000 dollars, the credit is 10% of the base
+                amount minus the deduction.
+    versions:
+      - effective_from: '2000-01-01'
+        formula: |-
+          if low_income and deduction_positive: (base_amount - deduction) * rate else: 0
+"""
+    qualifying_case = {
+        "name": "qualifying income",
+        "period": "2000-01-01",
+        "input": {"income": 5000, "base_amount": 20000, "deduction": 50},
+        "output": {
+            "low_income": "holds",
+            "deduction_positive": "holds",
+            "credit": 1995,
+        },
+    }
+
+    qualifying = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[qualifying_case],
+    )
+
+    assert not _has_issue(qualifying, "formula branch", "test")
+    wrong_threshold = content.replace("formula: 10000", "formula: 30000")
+    nonqualifying_income = {
+        "name": "deduction happens to fit source interval",
+        "period": "2000-01-01",
+        "input": {"income": 20000, "base_amount": 20000, "deduction": 50},
+        "output": {
+            "low_income": "holds",
+            "deduction_positive": "holds",
+            "credit": 1995,
+        },
+    }
+    wrong_selector = _analyze(
+        wrong_threshold,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[nonqualifying_income],
+    )
+    assert _has_issue(wrong_selector, "formula branch", "test")
+    dynamic_bound = content.replace("income <= threshold", "income <= dynamic_limit")
+    dynamic_bound_case = yaml.safe_load(yaml.safe_dump(qualifying_case))
+    dynamic_bound_case["input"]["dynamic_limit"] = 10000
+    ungrounded_bound = _analyze(
+        dynamic_bound,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[dynamic_bound_case],
+    )
+    assert _has_issue(ungrounded_bound, "formula branch", "test")
+
+
+@pytest.mark.parametrize(
+    ("selector", "eligible_value"),
+    [
+        ("eligible or special_eligibility", True),
+        ("eligible and special_eligibility", False),
+    ],
+)
+def test_reached_formula_dependencies_honor_boolean_short_circuiting(
+    selector,
+    eligible_value,
+):
+    execution = completeness_module._FormulaExecution(
+        trace=(
+            completeness_module._FormulaTraceStep(
+                kind="if",
+                selectors=(selector,),
+                choice=0,
+            ),
+        ),
+        leaf="input_amount * rate",
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={},
+    )
+    principal_rules = {
+        "eligible": {
+            "name": "eligible",
+            "kind": "derived",
+            "versions": [{"formula": "claimant_is_resident"}],
+        },
+        "special_eligibility": {
+            "name": "special_eligibility",
+            "kind": "derived",
+            "versions": [{"formula": "has_special_status"}],
+        },
+    }
+    case = {
+        "input": {
+            "claimant_is_resident": eligible_value,
+            "has_special_status": not eligible_value,
+            "input_amount": 100,
+        },
+        "output": {
+            "eligible": "holds" if eligible_value else "not_holds",
+        },
+    }
+
+    reached = completeness_module._reached_local_formula_dependency_names(
+        execution,
+        case,
+        principal_rules=principal_rules,
+        formula_environment={"rate": 0.1},
+        dependency_environment={"eligible": eligible_value},
+    )
+
+    assert reached == {"eligible"}
+
+
+def test_reached_formula_dependencies_short_circuit_boolean_leaf():
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf="eligible or special_eligibility",
+        evaluated_value=("bool", "True"),
+        evaluates_to_zero=False,
+        constant_environment={},
+    )
+    principal_rules = {
+        "eligible": {
+            "name": "eligible",
+            "kind": "derived",
+            "versions": [{"formula": "claimant_is_resident"}],
+        },
+        "special_eligibility": {
+            "name": "special_eligibility",
+            "kind": "derived",
+            "versions": [{"formula": "has_special_status"}],
+        },
+    }
+    case = {
+        "input": {
+            "claimant_is_resident": True,
+            "has_special_status": False,
+        },
+        "output": {"eligible": "holds"},
+    }
+
+    reached = completeness_module._reached_local_formula_dependency_names(
+        execution,
+        case,
+        principal_rules=principal_rules,
+        formula_environment={},
+        dependency_environment={"eligible": True},
+    )
+
+    assert reached == {"eligible"}
 
 
 def test_unbound_formula_diagnostics_cache_case_execution(monkeypatch):

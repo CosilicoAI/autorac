@@ -1660,6 +1660,11 @@ Complete-source-unit mode is enabled for this request:
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
   metadata is not coverage evidence.
+- When a principal formula reaches a branch through local derived selectors or
+  intermediates, assert every reached local derived dependency's expected
+  output in that same companion case. Raw inputs alone do not corroborate a
+  derived intermediate, and a local derived rule must never be shadowed under
+  `input:`.
 - When an implementing principal rule is not unambiguously bound by a canonical
   structural source path, add a `versions[N].formula` source proof atom using
   the exact canonical `source.corpus_citation_path` and a short verbatim

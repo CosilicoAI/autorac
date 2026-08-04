@@ -20744,6 +20744,7 @@ rules:
         assert "not unambiguously bound by a canonical\n  structural source path" in (
             prompt
         )
+        assert "assert every reached local derived dependency's expected" in prompt
         assert "mandatory when multiple\n  computations share" in prompt
         assert "citation-only proof atom" in prompt
         assert "keep that output executable from the earliest" in prompt
