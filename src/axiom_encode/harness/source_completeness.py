@@ -2881,6 +2881,16 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
             is_input_requirement = (
                 predicate.lower() == "input"
                 and "requirement" in _dependency_token_forms(trailing_object[-1])
+                and not {
+                    "a",
+                    "an",
+                    "that",
+                    "the",
+                    "these",
+                    "this",
+                    "those",
+                }
+                & {token.lower() for token in trailing_object}
             )
             if is_input_requirement:
                 continue
@@ -2915,8 +2925,6 @@ def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> boo
 
 
 def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
-    if re.fullmatch(r"(?:the\s+)?[A-Z]{2,8}", phrase):
-        return True
     if re.fullmatch(
         r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
         r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Service)s?",
@@ -2942,8 +2950,8 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:(?:administering|federal|local|public(?:-|\s+)housing|state)\s+)?"
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
-            r"cms|commissioners?|departments?|hud|irs|omb|secretar(?:y|ies)|"
-            r"services?|ssa|usda|"
+            r"cms|commissioners?|departments?|dhs|dod|doe|dol|epa|fcc|fns|hhs|"
+            r"hud|irs|omb|sec|secretar(?:y|ies)|services?|ssa|usda|va|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"

@@ -3479,6 +3479,10 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and CMS determines eligibility "
         "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency input the "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input the data "
+        "requirements under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3542,6 +3546,10 @@ rules: []
         "benefits verified",
         "information obtained",
         "program input requirements",
+        "SNAP benefits",
+        "SSI benefits",
+        "TANF program",
+        "USC rules",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
