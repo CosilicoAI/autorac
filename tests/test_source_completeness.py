@@ -3101,6 +3101,12 @@ rules: []
         "42 USC 1437f(o).",
         "(b) The Social Security Act governs records and agencies process "
         "applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Department of "
+        "Agriculture processes applications under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the Secretary of "
+        "Agriculture approves benefits under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the authority rules "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3134,6 +3140,8 @@ rules: []
         "benefits eligible",
         "assistance received directly",
         "benefits otherwise eligible",
+        "benefits generally available",
+        "assistance received recently",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
