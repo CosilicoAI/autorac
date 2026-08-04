@@ -5753,7 +5753,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1442"')
+        .startswith('__version__ = "0.2.1443"')
     )
 
 
@@ -5985,13 +5985,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1442"
+    assert encoder_package["version"] == "0.2.1443"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1442"
+    assert project["project"]["version"] == "0.2.1443"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1442"')
+        .startswith('__version__ = "0.2.1443"')
     )
 
 
@@ -6253,13 +6253,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1442"
+    assert encoder_package["version"] == "0.2.1443"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1442"
+    assert project["project"]["version"] == "0.2.1443"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1442"')
+        .startswith('__version__ = "0.2.1443"')
     )
 
 
@@ -26670,6 +26670,51 @@ rules:
 
     assert len(issues) == 1
     assert "`agricultural_labor_range_rule` source `26 USC 3306(k)-(m)`" in issues[0]
+
+
+@pytest.mark.parametrize("range_dash", ("‐", "‑", "‒", "–", "—", "−"))
+def test_out_of_scope_rule_source_allows_unicode_dash_range_under_requested_source(
+    range_dash,
+):
+    content = f"""format: rulespec/v1
+rules:
+  - name: plan_period_range_rule
+    kind: parameter
+    dtype: Number
+    source: 42 USC 1437c–1(a)(1){range_dash}(3)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+
+    assert (
+        find_out_of_scope_rule_source_issues(
+            content,
+            requested_source="us/statute/42/1437c–1",
+        )
+        == []
+    )
+
+
+def test_out_of_scope_rule_source_rejects_unicode_dash_range_sibling():
+    content = """format: rulespec/v1
+rules:
+  - name: sibling_plan_range_rule
+    kind: parameter
+    dtype: Number
+    source: 42 USC 1437c–2(a)(1)–(3)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '5'
+"""
+
+    issues = find_out_of_scope_rule_source_issues(
+        content,
+        requested_source="us/statute/42/1437c–1",
+    )
+
+    assert len(issues) == 1
+    assert "`sibling_plan_range_rule` source `42 USC 1437c–2(a)(1)–(3)`" in issues[0]
 
 
 def test_out_of_scope_rule_source_rejects_irc_alias_sibling():

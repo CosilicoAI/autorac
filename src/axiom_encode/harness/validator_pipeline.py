@@ -2405,7 +2405,7 @@ def _range_endpoint_normalized_target(
 
 
 def _clean_source_citation_fragment(fragment: str) -> str:
-    cleaned = fragment.strip()
+    cleaned = normalize_rulespec_path_segment(fragment.strip())
     cleaned = re.sub(r"^(?:and|or)\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.rstrip(".")
     cleaned = _USC_ABBREVIATION_RE.sub("USC", cleaned)
