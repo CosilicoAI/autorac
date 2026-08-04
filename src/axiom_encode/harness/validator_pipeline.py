@@ -14391,7 +14391,10 @@ _RULESPEC_DOCUMENT_CLASS_DIRS = {
 
 
 def _rulespec_base_parts_for_corpus_path(citation_path: str) -> tuple[str, ...]:
-    parts = citation_path.strip("/").split("/")
+    parts = [
+        normalize_rulespec_path_segment(part)
+        for part in citation_path.strip("/").split("/")
+    ]
     if (
         len(parts) >= 4
         and parts[1] == "statute"

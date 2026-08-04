@@ -328,6 +328,36 @@ def test_precise_typed_absatz_6_deferral_passes():
     )
 
 
+@pytest.mark.parametrize("corpus_dash", ("‐", "‑", "‒", "–", "—", "−"))
+def test_ascii_rulespec_deferral_covers_unicode_dash_corpus_section(corpus_dash):
+    citation_path = f"us/statute/42/1437c{corpus_dash}1"
+    source = (
+        "(a) The public housing agency shall submit a plan for assistance "
+        "under section 1437f."
+    )
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {citation_path}
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/a#public_housing_agency_plan
+      reason: >-
+        Subsection (a) cannot be encoded until assistance eligibility under
+        section 1437f is available.
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+    )
+
+    assert not result.issues
+
+
 def test_scalar_only_source_passes_with_parameter_snapshot():
     source = "(1) Der Freibetrag beträgt 259 Euro."
     content = """\

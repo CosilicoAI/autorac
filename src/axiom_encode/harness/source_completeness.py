@@ -20,6 +20,8 @@ from typing import Any, Protocol
 
 import yaml
 
+from axiom_encode.statute import normalize_rulespec_path_segment
+
 
 class NumericOccurrenceLike(Protocol):
     """Typed numeric source evidence consumed from the shared extractor."""
@@ -1672,7 +1674,11 @@ def _reason_names_external_dependency(
 
 
 def _rulespec_target_base(corpus_citation_path: str) -> str:
-    parts = [part for part in corpus_citation_path.strip("/").split("/") if part]
+    parts = [
+        normalize_rulespec_path_segment(part)
+        for part in corpus_citation_path.strip("/").split("/")
+        if part
+    ]
     if len(parts) < 3:
         return corpus_citation_path
     jurisdiction, document_class, *tail = parts
