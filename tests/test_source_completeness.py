@@ -2859,6 +2859,8 @@ rules: []
         "only for historical comparison.",
         "Cannot be computed until the nonbinding assertion requires "
         "benefit amount depends on 42 USC 1437f(o) to be verified.",
+        "Cannot be computed until the nonbinding assertion requires "
+        "benefit amount depends on 42 USC 1437f(o) is verified.",
     ],
 )
 def test_strong_linker_requires_bounded_introduction_and_tail(reason: str):

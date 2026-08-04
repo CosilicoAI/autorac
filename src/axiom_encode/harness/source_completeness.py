@@ -2055,12 +2055,18 @@ def _reason_match_names_missing_dependency(
         flags=re.IGNORECASE,
     )
     direct_signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
+    direct_signal_text = direct_signals[-1].group(0) if direct_signals else ""
     if (
         direct_missing_state
         and direct_signals
+        and not re.fullmatch(
+            r"depends?\s+on|requires?",
+            direct_signal_text,
+            flags=re.IGNORECASE,
+        )
         and _reason_direct_missing_introduction_is_bounded(
             before[direct_signals[-1].end() :],
-            signal=direct_signals[-1].group(0),
+            signal=direct_signal_text,
         )
         and not (
             _qualified_usc_dependencies(before)
