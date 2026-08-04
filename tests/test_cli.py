@@ -36188,6 +36188,7 @@ class TestGuardGenerated:
         *,
         base_waiver_text: str,
         head_waiver_text: str = TEST_VALIDATION_WAIVER_TEXT,
+        delete_rule: bool = False,
     ) -> tuple[Path, str]:
         repo = self._canonical_guard_repo(tmp_path)
         _git(repo, "init")
@@ -36203,24 +36204,43 @@ class TestGuardGenerated:
             repo,
             release_content_sha256=self.corpus_release.content_sha256,
         )
+        base_rule_sha256 = _sha256_file(rule)
         base_waiver_sha256 = hashlib.sha256(waiver.read_bytes()).hexdigest()
         _git(repo, "add", ".")
         _git(repo, "commit", "-m", "add protected-base waiver")
         base_ref = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
-        self._source_backed_rule(rule)
+        if delete_rule:
+            rule.unlink()
+        else:
+            self._source_backed_rule(rule)
         waiver.write_text(head_waiver_text)
         _write_test_rulespec_toolchain(
             repo,
             release_content_sha256=self.corpus_release.content_sha256,
         )
-        payload = self._model_manifest(
-            [{"path": relative, "sha256": _sha256_file(rule)}]
-        )
-        payload["validation_waiver_set_sha256"] = base_waiver_sha256
-        payload["validation_execution"]["policy_pre_apply"][
-            "validation_waiver_set_sha256"
-        ] = base_waiver_sha256
+        if delete_rule:
+            prior = self._model_manifest(
+                [{"path": relative, "sha256": base_rule_sha256}]
+            )
+            prior["validation_waiver_set_sha256"] = base_waiver_sha256
+            prior["validation_execution"]["policy_pre_apply"][
+                "validation_waiver_set_sha256"
+            ] = base_waiver_sha256
+            _sign_applied_encoding_manifest(prior, TEST_APPLY_SIGNING_BROKER)
+            payload = self._retirement_manifest(
+                [relative],
+                retired_manifest=prior,
+            )
+            payload["validation_waiver_set_sha256"] = base_waiver_sha256
+        else:
+            payload = self._model_manifest(
+                [{"path": relative, "sha256": _sha256_file(rule)}]
+            )
+            payload["validation_waiver_set_sha256"] = base_waiver_sha256
+            payload["validation_execution"]["policy_pre_apply"][
+                "validation_waiver_set_sha256"
+            ] = base_waiver_sha256
         _sign_applied_encoding_manifest(payload, TEST_APPLY_SIGNING_BROKER)
         manifest = repo / ".axiom/encoding-manifests/us/regulations/example.json"
         manifest.parent.mkdir(parents=True)
@@ -37208,6 +37228,53 @@ class TestGuardGenerated:
 
         assert issues == []
 
+    def test_accepts_pending_waiver_retirement_with_matching_deletion(self, tmp_path):
+        relative = "us/regulations/example.yaml"
+        repo, base_ref = self._waiver_retirement_repo(
+            tmp_path,
+            base_waiver_text=(
+                "validate_failures:\n"
+                + self._waiver_entry_text(relative, state="pending")
+            ),
+            delete_rule=True,
+        )
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            base_ref=base_ref,
+            head_ref="HEAD",
+        )
+
+        assert issues == []
+
+    def test_rejects_pending_waiver_retirement_with_symlinked_module(self, tmp_path):
+        relative = "us/regulations/example.yaml"
+        repo, base_ref = self._waiver_retirement_repo(
+            tmp_path,
+            base_waiver_text=(
+                "validate_failures:\n"
+                + self._waiver_entry_text(relative, state="pending")
+            ),
+            delete_rule=True,
+        )
+        (repo / relative).symlink_to("missing.yaml")
+        _git(repo, "add", relative)
+        _git(repo, "commit", "--amend", "--no-edit")
+
+        issues = guard_generated_change_issues(
+            repo,
+            corpus_path=self.corpus_path,
+            base_ref=base_ref,
+            head_ref="HEAD",
+        )
+
+        assert any(
+            "pending state may be removed only with its deleted protected "
+            "RuleSpec module" in issue
+            for issue in issues
+        )
+
     def test_preexisting_guard_accepts_post_apply_waiver_retirement(self, tmp_path):
         relative = "us/regulations/example.yaml"
         repo = self._canonical_guard_repo(tmp_path)
@@ -37253,29 +37320,24 @@ class TestGuardGenerated:
         )
 
     @pytest.mark.parametrize(
-        ("base_waiver_text", "expected_issue"),
+        ("waiver_path", "state", "expected_issue"),
         [
             (
+                "us/regulations/example.yaml",
                 "pending",
-                "only active entries without pending state may be removed",
+                "pending state may be removed only with its deleted protected "
+                "RuleSpec module",
             ),
             (
-                "unrelated",
+                "us/statutes/26/99.yaml",
+                "active",
                 "removed entries must name changed protected RuleSpec modules",
             ),
         ],
     )
     def test_rejects_unsafe_post_apply_waiver_retirement(
-        self,
-        tmp_path,
-        base_waiver_text,
-        expected_issue,
+        self, tmp_path, waiver_path, state, expected_issue
     ):
-        target = "us/regulations/example.yaml"
-        waiver_path = (
-            target if base_waiver_text == "pending" else "us/statutes/26/99.yaml"
-        )
-        state = "pending" if base_waiver_text == "pending" else "active"
         repo, base_ref = self._waiver_retirement_repo(
             tmp_path,
             base_waiver_text=(

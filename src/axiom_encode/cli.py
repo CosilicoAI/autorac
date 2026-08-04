@@ -20131,7 +20131,10 @@ def _guard_manifest_waiver_set_identity(
 
     Model manifests bind the policy state immediately before apply. A pull
     request may then retire active waivers made obsolete by those generated
-    files, but only as an exact decrement from the protected base.
+    files, but only as an exact decrement from the protected base. Pending
+    state may also be retired when its exact protected module was deleted;
+    retaining it would leave a waiver for a nonexistent path, while removing it
+    cannot authorize a validation failure.
     """
 
     waiver_path = _validation_waivers.DEFAULT_WAIVER_PATH
@@ -20212,23 +20215,23 @@ def _guard_manifest_waiver_set_identity(
         return current_waiver_set_sha256, [
             prefix + "the waiver set did not remove any protected-base entry"
         ]
-    invalid_states = [
-        path
-        for path in removed
-        if base_entries[path].active is None or base_entries[path].pending is not None
-    ]
-    if invalid_states:
-        return current_waiver_set_sha256, [
-            prefix
-            + "only active entries without pending state may be removed: "
-            + ", ".join(invalid_states)
-        ]
     unrelated = sorted(set(removed) - set(protected))
     if unrelated:
         return current_waiver_set_sha256, [
             prefix
             + "removed entries must name changed protected RuleSpec modules: "
             + ", ".join(unrelated)
+        ]
+    invalid_states = [
+        path
+        for path in removed
+        if (base_entries[path].active is None or base_entries[path].pending is not None)
+        and ((repo_path / path).exists() or (repo_path / path).is_symlink())
+    ]
+    if invalid_states:
+        return current_waiver_set_sha256, [
+            prefix + "pending state may be removed only with its deleted protected "
+            "RuleSpec module: " + ", ".join(invalid_states)
         ]
     return base_sha256, []
 
