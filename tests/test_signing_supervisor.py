@@ -2178,9 +2178,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"$CITATION" "" false target-preflight \\' in command
     assert '"$REPLACE_LEGACY_RULESPEC_PATH" false' in command
     assert 'final_legacy_source_path=""' in command
-    assert (
-        "source-bundle replacements cannot include dependent migrations" in command
-    )
+    assert "source-bundle replacements cannot include dependent migrations" in command
     assert "Canonicalize signed replacement target before source bundle" in command
     assert "checkpoint_signed_changes()" in command
     assert 'local guard_status="$?"' in command
@@ -2650,7 +2648,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         if step.get("name") == "Encode, review, validate, and apply"
     )
     checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
-        '\n}\n\nfinal_legacy_source_path=',
+        "\n}\n\nfinal_legacy_source_path=",
         1,
     )[0]
     guard_stub = tmp_path / "guard-stub"
@@ -3171,7 +3169,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         1,
     )
     _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
-        '\n}\n\nfinal_legacy_source_path=',
+        "\n}\n\nfinal_legacy_source_path=",
         1,
     )
     command = (
@@ -3179,7 +3177,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         + "checkpoint_signed_changes() {\n"
         + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
         + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
-        + '}\n\nfinal_legacy_source_path='
+        + "}\n\nfinal_legacy_source_path="
         + after_checkpoint
     )
 
