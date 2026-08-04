@@ -1172,9 +1172,10 @@ _STRUCTURAL_SOURCE_FORM_LINE_PATTERN = re.compile(
 _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN = re.compile(
     r"\b\d+\s+"
     r"(?:U\.?\s*S\.?\s*C\.?|USC|C\.?\s*F\.?\s*R\.?|CFR|C\.?\s*C\.?\s*R\.?|CCR)\s+"
+    r"(?:(?:s(?:ec(?:tion)?)?\.?|§{1,2})\s*)?"
     r"\d+[A-Za-z]*(?:[.-]\d+[A-Za-z]*)*(?:\([A-Za-z0-9]+\))*"
     r"(?:\s*(?:,|and|or)\s*\d+[A-Za-z]*(?:[.-]\d+[A-Za-z]*)*(?:\([A-Za-z0-9]+\))*)*"
-    r"(?=$|[\s,.;:])",
+    r"""(?=$|[\s,.;:)\]}\'"”’–—])""",
     re.IGNORECASE,
 )
 _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET = (
