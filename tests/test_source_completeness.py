@@ -1509,7 +1509,14 @@ rules: []
 
 @pytest.mark.parametrize(
     "dependency",
-    ["7 USC 2014", "7 USC section 2014", "7 U.S.C. § 2014"],
+    [
+        "7 USC 2014",
+        "7 USC section 2014",
+        "7 U.S.C. § 2014",
+        "7 U.S.C., section 2014",
+        "7 U.S.C., § 2014",
+        "section 2014 of title 7",
+    ],
 )
 def test_relative_usc_dependency_cannot_bind_wrong_title_from_unrelated_number(
     dependency: str,
@@ -1527,6 +1534,34 @@ rules: []
     source = (
         "(b) The agency shall submit a report within 7 days under section 2014 "
         "of this title and has 550 or fewer units."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+def test_same_external_citation_must_be_missing_and_source_bound():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until eligibility under 7 USC 9999 is encoded.
+        For context, the source mentions 42 USC 1437f(o).
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o) and has 550 or fewer units."
     )
 
     result = _analyze(

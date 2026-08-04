@@ -20,7 +20,11 @@ from typing import Any, Protocol
 
 import yaml
 
-from axiom_encode.statute import normalize_rulespec_path_segment, parse_usc_citation
+from axiom_encode.statute import (
+    CitationParts,
+    normalize_rulespec_path_segment,
+    parse_usc_citation,
+)
 
 
 class NumericOccurrenceLike(Protocol):
@@ -373,11 +377,19 @@ _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
     flags=re.IGNORECASE,
 )
 _USC_DEFERRAL_DEPENDENCY = re.compile(
-    r"\b(?P<title>\d+)\s+U\.?\s*S\.?\s*C\.?\s*"
+    r"\b(?P<title>\d+)\s+U\.?\s*S\.?\s*C\.?(?:\s*[,;:])?\s*"
     r"(?:(?:§{1,2}|sections?)\s*)?"
     r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
     r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
     r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
+    flags=re.IGNORECASE,
+)
+_REVERSED_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\bsections?\s+"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)"
+    r"\s+of\s+title\s+(?P<title>\d+)\b",
     flags=re.IGNORECASE,
 )
 _RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
@@ -1388,10 +1400,6 @@ def _deferred_coverage(
                 for item in blocker_targets
             )
         )
-        reason_identifies_dependency = _reason_names_external_dependency(
-            reason,
-            corpus_citation_path=corpus_citation_path,
-        )
         source_scope_text = _deferred_source_scope_text(
             path,
             source_text=source_text,
@@ -1419,13 +1427,10 @@ def _deferred_coverage(
                 )
             )
         else:
-            precise = (
-                reason_identifies_dependency
-                and _reason_dependency_is_source_bound(
-                    reason,
-                    source_scope_text,
-                    corpus_citation_path=corpus_citation_path,
-                )
+            precise = _reason_dependency_is_source_bound(
+                reason,
+                source_scope_text,
+                corpus_citation_path=corpus_citation_path,
             ) or _reason_names_source_bound_runtime_gap(
                 reason,
                 source_scope_text,
@@ -1631,7 +1636,7 @@ def _source_scope_cites_usc_dependency(
 
     normalized_section = normalize_rulespec_path_segment(section.lower())
     references: list[re.Match[str]] = list(
-        _USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text)
+        _qualified_usc_dependencies(source_scope_text)
     )
     if allow_relative_reference:
         references.extend(_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text))
@@ -1672,6 +1677,18 @@ def _usc_dependency_fragments(match: re.Match[str]) -> tuple[str, ...]:
         for fragment in re.findall(
             r"\(\s*([A-Za-z0-9]+)\s*\)",
             match.group("tail") or "",
+        )
+    )
+
+
+def _qualified_usc_dependencies(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        sorted(
+            (
+                *_USC_DEFERRAL_DEPENDENCY.finditer(text),
+                *_REVERSED_USC_DEFERRAL_DEPENDENCY.finditer(text),
+            ),
+            key=lambda match: (match.start(), match.end()),
         )
     )
 
@@ -1730,14 +1747,23 @@ def _reason_dependency_is_source_bound(
     *,
     corpus_citation_path: str,
 ) -> bool:
-    """Require a prose-only dependency citation to occur in the deferred source."""
+    """Require one external dependency citation to bind to the deferred source."""
 
+    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
+        return False
     try:
         current_citation = parse_usc_citation(corpus_citation_path)
     except ValueError:
         current_citation = None
-    usc_dependencies = tuple(_USC_DEFERRAL_DEPENDENCY.finditer(reason))
+    usc_dependencies = _qualified_usc_dependencies(reason)
     for match in usc_dependencies:
+        if not _reason_match_names_missing_dependency(
+            reason, match
+        ) or not _usc_dependency_is_external(
+            match,
+            current_citation=current_citation,
+        ):
+            continue
         section = normalize_rulespec_path_segment(match.group("section"))
         if _source_scope_cites_usc_dependency(
             source_scope_text,
@@ -1751,6 +1777,9 @@ def _reason_dependency_is_source_bound(
         ):
             return True
 
+    current_section = normalize_rulespec_path_segment(
+        corpus_citation_path.rstrip("/").rsplit("/", 1)[-1].lower()
+    )
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
         if any(
             dependency.start() <= match.start() and match.end() <= dependency.end()
@@ -1758,6 +1787,13 @@ def _reason_dependency_is_source_bound(
         ):
             continue
         dependency = match.group(0).strip()
+        if not _reason_match_names_missing_dependency(
+            reason,
+            match,
+        ) or not _prose_dependency_is_external(
+            dependency, current_section=current_section
+        ):
+            continue
         if "#" in dependency and ":" in dependency:
             if _source_scope_identifies_blocker(
                 source_scope_text,
@@ -1790,6 +1826,90 @@ def _reason_dependency_is_source_bound(
         if normalized_dependency and normalized_dependency in normalized_source:
             return True
     return False
+
+
+def _reason_match_names_missing_dependency(
+    reason: str,
+    match: re.Match[str],
+) -> bool:
+    clause_start = (
+        max(reason.rfind(separator, 0, match.start()) for separator in (".", ";", "\n"))
+        + 1
+    )
+    following_stops = [
+        position
+        for separator in (".", ";", "\n")
+        if (position := reason.find(separator, match.end())) >= 0
+    ]
+    clause_end = min(following_stops, default=len(reason))
+    clause = reason[clause_start:clause_end]
+    if not _MISSING_DEPENDENCY_LANGUAGE.search(clause):
+        return False
+    reference_start = match.start() - clause_start
+    reference_end = match.end() - clause_start
+    if _source_clause_links_dependency(
+        clause,
+        reference_start=reference_start,
+        reference_end=reference_end,
+    ):
+        return True
+    before = clause[:reference_start]
+    after = clause[reference_end:]
+    return bool(
+        re.search(
+            r"\b(?:cited|defined|described|provided|required|set|specified)\s+(?:by|in)\s*$",
+            before,
+            flags=re.IGNORECASE,
+        )
+        or re.match(
+            r"\s*(?:is|are|must\s+be|has\s+not\s+been|have\s+not\s+been)?\s*"
+            r"(?:encoded|implemented|available|missing|unavailable)\b",
+            after,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _usc_dependency_is_external(
+    match: re.Match[str],
+    *,
+    current_citation: CitationParts | None,
+) -> bool:
+    if current_citation is None:
+        return True
+    return match.group(
+        "title"
+    ).lower() != current_citation.title.lower() or normalize_rulespec_path_segment(
+        match.group("section").lower()
+    ) != normalize_rulespec_path_segment(current_citation.section.lower())
+
+
+def _prose_dependency_is_external(
+    dependency: str,
+    *,
+    current_section: str,
+) -> bool:
+    normalized = dependency.lower()
+    if any(
+        pattern.fullmatch(dependency)
+        for pattern in (
+            _ABSATZ_REFERENCE,
+            _SATZ_REFERENCE,
+            _NUMMER_REFERENCE,
+            _BUCHSTABE_REFERENCE,
+        )
+    ):
+        return False
+    if section_match := re.fullmatch(
+        r"§{1,2}\s*(\d+[a-z]?)",
+        dependency,
+        flags=re.IGNORECASE,
+    ):
+        if section_match.group(1).lower() == current_section:
+            return False
+    return not (
+        normalized.rstrip("/").endswith(f"/{current_section}") and "#" not in normalized
+    )
 
 
 def _reason_names_source_bound_runtime_gap(
@@ -1846,66 +1966,6 @@ def _reason_names_source_bound_runtime_gap(
     # Two shared source terms keep an exact self-citation from laundering a vague
     # or invented capability assertion into complete-source coverage.
     return len(substantive_tokens(reason) & substantive_tokens(source_scope_text)) >= 2
-
-
-def _reason_names_external_dependency(
-    reason: str,
-    *,
-    corpus_citation_path: str,
-) -> bool:
-    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
-        return False
-    try:
-        current_citation = parse_usc_citation(corpus_citation_path)
-    except ValueError:
-        current_citation = None
-    current_section = normalize_rulespec_path_segment(
-        corpus_citation_path.rstrip("/").rsplit("/", 1)[-1].lower()
-    )
-    usc_dependencies = tuple(_USC_DEFERRAL_DEPENDENCY.finditer(reason))
-    for match in usc_dependencies:
-        if current_citation is None:
-            return True
-        if match.group(
-            "title"
-        ).lower() != current_citation.title.lower() or normalize_rulespec_path_segment(
-            match.group("section").lower()
-        ) != normalize_rulespec_path_segment(current_citation.section.lower()):
-            return True
-    for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
-        if any(
-            dependency.start() <= match.start() and match.end() <= dependency.end()
-            for dependency in usc_dependencies
-        ):
-            continue
-        dependency = match.group(0).strip()
-        normalized = dependency.lower()
-        if any(
-            pattern.fullmatch(dependency)
-            for pattern in (
-                _ABSATZ_REFERENCE,
-                _SATZ_REFERENCE,
-                _NUMMER_REFERENCE,
-                _BUCHSTABE_REFERENCE,
-            )
-        ):
-            # A bare structural reference names another part of this same
-            # authoritative unit, not a missing external dependency.
-            continue
-        if section_match := re.fullmatch(
-            r"§{1,2}\s*(\d+[a-z]?)",
-            dependency,
-            flags=re.IGNORECASE,
-        ):
-            if section_match.group(1).lower() == current_section:
-                continue
-        if (
-            normalized.rstrip("/").endswith(f"/{current_section}")
-            and "#" not in normalized
-        ):
-            continue
-        return True
-    return False
 
 
 def _rulespec_target_base(corpus_citation_path: str) -> str:
