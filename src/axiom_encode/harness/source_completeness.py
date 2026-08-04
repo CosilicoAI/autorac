@@ -2904,6 +2904,8 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
         tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", coordinated[: linker.start()])
         if len(tokens) < 2:
             continue
+        if _coordinated_phrase_has_finite_predicate(tokens):
+            return True
         if _coordinated_dependency_object_phrase_is_bounded(
             tokens
         ) or _coordinated_dependency_object_modifier_is_bounded(tokens):
@@ -2918,8 +2920,6 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
 
 
 def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
-    if _coordinated_phrase_has_finite_predicate(tokens):
-        return False
     for actor_end in range(1, len(tokens)):
         if not _legal_actor_subject_phrase_is_bounded(" ".join(tokens[:actor_end])):
             continue
@@ -2940,6 +2940,8 @@ def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
 
 
 def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
+    if _unlisted_actor_acronym_starts_finite_clause(tokens):
+        return True
     for subject_end in range(1, len(tokens)):
         subject = " ".join(tokens[:subject_end])
         subject_is_actor = _legal_actor_subject_phrase_is_bounded(subject)
@@ -2981,6 +2983,42 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
         if _dependency_subject_and_predicate_agree(tokens[subject_end - 1], predicate):
             return True
     return False
+
+
+def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
+    if len(tokens) < 3 or not re.fullmatch(r"[A-Z]{2,8}", tokens[0]):
+        return False
+    predicate = tokens[1].lower()
+    if _dependency_token_forms(predicate) & _DEPENDENCY_MODIFIER_TERMS:
+        return False
+    if not _dependency_subject_phrase_is_bounded(" ".join(tokens[2:])):
+        return False
+    return (
+        predicate
+        in {
+            "can",
+            "could",
+            "did",
+            "does",
+            "had",
+            "has",
+            "is",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "should",
+            "was",
+            "will",
+            "would",
+        }
+        or predicate in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
+        or predicate.endswith("ed")
+        or (
+            predicate.endswith(("s", "es", "ies"))
+            and not predicate.endswith(("ss", "us", "is"))
+        )
+    )
 
 
 def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:

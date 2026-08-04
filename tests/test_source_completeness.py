@@ -3507,6 +3507,20 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and CFTC issues rules under "
         "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FHA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and EBSA issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SAMHSA administers programs "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and HRSA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and OCC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FEC issues rules under "
+        "42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3577,6 +3591,7 @@ rules: []
         "SSA benefits",
         "VA benefits",
         "IRS rules",
+        "SNAP benefits program",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
