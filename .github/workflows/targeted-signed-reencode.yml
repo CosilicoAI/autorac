@@ -522,6 +522,7 @@ jobs:
           }
 
       - name: Provision protected signing supervisor
+        id: provision_signing_supervisor
         working-directory: axiom-encode
         env:
           TRUST_APPLY_ROOT: ${{ vars.AXIOM_ENCODE_APPLY_SIGNING_PUBLIC_KEY }}
@@ -2419,6 +2420,7 @@ jobs:
           COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION: ${{ steps.commit_reviewed_lane_changes.conclusion }}
           COMMIT_REVIEWED_LANE_CHANGES_OUTCOME: ${{ steps.commit_reviewed_lane_changes.outcome }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
+          PROVISION_SIGNING_SUPERVISOR_CONCLUSION: ${{ steps.provision_signing_supervisor.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_CONCLUSION: ${{ steps.publish_lane_pull_request.conclusion }}
           PUBLISH_LANE_PULL_REQUEST_OUTCOME: ${{ steps.publish_lane_pull_request.outcome }}
           QUEUE_DISPATCHER_RUN_ID: ${{ inputs.queue_dispatcher_run_id }}
@@ -2444,9 +2446,10 @@ jobs:
           generated="$RUNNER_TEMP/generated"
           artifact="$RUNNER_TEMP/targeted-reencode-failure"
           mkdir -p "$artifact"
-          workflow_python=/opt/axiom-verification/python/bin/python
-          if [ ! -x "$workflow_python" ]; then
-            workflow_python=/usr/bin/python3
+          workflow_python=/usr/bin/python3
+          if [ "${PROVISION_SIGNING_SUPERVISOR_CONCLUSION:-}" = success ] && \
+             [ -x /opt/axiom-verification/python/bin/python ]; then
+            workflow_python=/opt/axiom-verification/python/bin/python
           fi
           test -x "$workflow_python"
           "$workflow_python" -I - \

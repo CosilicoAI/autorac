@@ -2232,6 +2232,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "COMMIT_REVIEWED_LANE_CHANGES_CONCLUSION",
         "COMMIT_REVIEWED_LANE_CHANGES_OUTCOME",
         "PR_BASE_BRANCH",
+        "PROVISION_SIGNING_SUPERVISOR_CONCLUSION",
         "PUBLISH_LANE_PULL_REQUEST_CONCLUSION",
         "PUBLISH_LANE_PULL_REQUEST_OUTCOME",
         "QUEUE_DISPATCHER_RUN_ID",
@@ -2256,10 +2257,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "toJSON(steps)" not in json.dumps(failure_package_step)
     assert ".outputs" not in json.dumps(failure_package_step["env"])
     failure_package_command = failure_package_step["run"]
+    assert "workflow_python=/usr/bin/python3" in failure_package_command
+    assert '"${PROVISION_SIGNING_SUPERVISOR_CONCLUSION:-}" = success' in (
+        failure_package_command
+    )
     assert "workflow_python=/opt/axiom-verification/python/bin/python" in (
         failure_package_command
     )
-    assert "workflow_python=/usr/bin/python3" in failure_package_command
     assert 'test -x "$workflow_python"' in failure_package_command
     assert '"$workflow_python" -I -' in failure_package_command
     assert "read_bounded_regular_file" in failure_package_command
@@ -2456,8 +2460,18 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert steps.index(failure_upload_step) == len(steps) - 1
 
 
+@pytest.mark.parametrize(
+    ("provision_conclusion", "protected_runtime_state"),
+    [
+        ("skipped", "missing"),
+        ("failure", "executable-remnant"),
+        ("success", "trusted"),
+    ],
+)
 def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     tmp_path: Path,
+    provision_conclusion: str,
+    protected_runtime_state: str,
 ) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
@@ -2467,9 +2481,15 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         for item in workflow["jobs"]["encode"]["steps"]
         if item.get("name") == "Package failed re-encode diagnostics"
     )
+    protected_python = tmp_path / "protected-python"
+    if protected_runtime_state == "executable-remnant":
+        protected_python.write_text("#!/bin/sh\nexit 127\n")
+        protected_python.chmod(0o755)
+    elif protected_runtime_state == "trusted":
+        protected_python = Path(sys.executable)
     command = step["run"].replace(
-        "workflow_python=/opt/axiom-verification/python/bin/python",
-        f"workflow_python={tmp_path / 'missing-protected-python'}",
+        "/opt/axiom-verification/python/bin/python",
+        str(protected_python),
     )
     generated = tmp_path / "generated" / "target" / "model"
     generated.mkdir(parents=True)
@@ -2514,6 +2534,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         "QUEUE_ITEM_GENERATION_SHA256": "generation-sha",
         "QUEUE_ITEM_ID": "us/statute/42/1437c-1",
         "QUEUE_MANIFEST_SHA256": "manifest-sha",
+        "PROVISION_SIGNING_SUPERVISOR_CONCLUSION": provision_conclusion,
     }
 
     subprocess.run(["bash", "-c", command], env=env, check=True)
