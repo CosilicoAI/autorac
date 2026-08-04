@@ -3697,6 +3697,12 @@ rules: []
         "eligibility requirements under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and Medicaid programs record "
         "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs manage "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs influence "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA programs condition "
+        "eligibility rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3849,6 +3855,9 @@ rules: []
         "SNAP LIHEAP rules",
         "Medicare MA-PD rules",
         "Medicare I-SNP eligibility",
+        "NHTSA program records retention policies",
+        "NHTSA benefit rules administration procedures",
+        "NHTSA policy records management procedures",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):

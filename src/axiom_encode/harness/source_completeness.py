@@ -3271,28 +3271,25 @@ def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bo
         if not _dependency_subject_phrase_is_bounded(" ".join(subject_tokens)):
             continue
         predicate = object_tokens[predicate_index].lower()
+        predicate_forms = _dependency_token_forms(predicate)
         trailing_object = object_tokens[predicate_index + 1 :]
         if not _dependency_subject_phrase_is_bounded(" ".join(trailing_object)):
             continue
-        if predicate in _DEPENDENCY_COMPOUND_NOMINAL_TERMS or predicate.endswith(
-            (
-                "age",
-                "al",
-                "ance",
-                "ence",
-                "ful",
-                "ic",
-                "ing",
-                "ion",
-                "ity",
-                "ive",
-                "less",
-                "ment",
-                "ness",
-                "ory",
-                "ous",
-                "ship",
+        if predicate_forms & _DEPENDENCY_COMPOUND_NOMINAL_TERMS:
+            continue
+        if (
+            predicate_forms
+            & (
+                _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
+                - _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
             )
+            and not predicate_forms & _DEPENDENCY_ACTOR_ALWAYS_FINITE_PREDICATE_TERMS
+        ):
+            continue
+        if _dependency_token_forms(
+            trailing_object[0]
+        ) & _DEPENDENCY_COMPOUND_NOMINAL_TERMS and (
+            _dependency_token_is_actor_nominal_prefix(predicate)
         ):
             continue
         is_input_requirement = (
