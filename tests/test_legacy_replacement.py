@@ -568,6 +568,110 @@ def test_contract_absorbs_exact_unowned_canonical_destination_predecessor(
     ).exists()
 
 
+def test_primary_move_with_destination_predecessor_reconciles_metadata(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _legacy_checkout(tmp_path)
+    legacy = checkout / "us-la/statutes/47:32.yaml"
+    legacy_test = legacy.with_name("47:32.test.yaml")
+    destination = checkout / "us-la/statutes/47/32.yaml"
+    destination_test = destination.with_name("32.test.yaml")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(legacy.read_bytes())
+    destination_test.write_bytes(legacy_test.read_bytes())
+
+    old_module = "us-la/statutes/47:32.yaml"
+    new_module = "us-la/statutes/47/32.yaml"
+    old_manifest = ".axiom/encoding-manifests/us-la/statutes/47:32.json"
+    index = checkout / ".axiom/index/provisions_to_rules.json"
+    index.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"module": old_module},
+                    {"module": new_module},
+                ]
+            }
+        )
+        + "\n"
+    )
+    pending = checkout / ".axiom/pending-validation-fingerprints.json"
+    pending.write_text(
+        json.dumps(
+            {
+                old_module: {"fingerprint": "legacy"},
+                new_module: {"fingerprint": "canonical"},
+            }
+        )
+        + "\n"
+    )
+    known_gaps = checkout / "known-validation-gaps.yaml"
+    known_gaps.write_text(
+        "validate_failures:\n"
+        f"  '{old_module}':\n"
+        "    pending:\n"
+        "      fingerprint: sha256:legacy\n"
+        "  'us-hi/statutes/example.yaml':\n"
+        "    pending:\n"
+        "      fingerprint: sha256:keep\n"
+    )
+    base_waiver_sha256 = hashlib.sha256(known_gaps.read_bytes()).hexdigest()
+    toolchain = checkout / ".axiom/toolchain.toml"
+    toolchain.write_text(
+        'rulespec_root = "rulespec-us"\n'
+        f'validation_waiver_set_sha256 = "{base_waiver_sha256}"\n'
+    )
+    oracle_pending = checkout / "oracle-coverage-pending.yaml"
+    oracle_pending.write_text(
+        "version: 1\n"
+        "ceiling: 1\n"
+        "entries:\n"
+        "- legal_id: us-hi:statutes/example#amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+    )
+    oracle_pending_before = oracle_pending.read_bytes()
+    manifest_inventory = checkout / "tests/test_encoding_manifests.py"
+    manifest_inventory.parent.mkdir(parents=True)
+    manifest_inventory.write_text(
+        f"ALLOW = {{\n    '{old_manifest}',\n    'keep.json',\n}}\n"
+    )
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "canonical predecessor metadata")
+
+    with patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source):
+        contract = _resolve_legacy_replacement_contract(
+            source_raw=Path(old_module),
+            destination_raw=Path(new_module),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+        )
+
+    reconciled = {item.path: item for item in contract.metadata_reconciliations}
+    assert set(reconciled) == {
+        Path(".axiom/index/provisions_to_rules.json"),
+        Path(".axiom/pending-validation-fingerprints.json"),
+        Path(".axiom/toolchain.toml"),
+        Path("known-validation-gaps.yaml"),
+        Path("tests/test_encoding_manifests.py"),
+    }
+    assert Path("oracle-coverage-pending.yaml") not in reconciled
+    assert oracle_pending.read_bytes() == oracle_pending_before
+    assert all(item.path not in reconciled for item in contract.rewrites)
+
+    reconciled_waivers = reconciled[Path("known-validation-gaps.yaml")].raw
+    assert old_module.encode() not in reconciled_waivers
+    assert new_module.encode() not in reconciled_waivers
+    reconciled_waiver_sha256 = hashlib.sha256(reconciled_waivers).hexdigest()
+    reconciled_toolchain = reconciled[Path(".axiom/toolchain.toml")].raw.decode()
+    assert (
+        f'validation_waiver_set_sha256 = "{reconciled_waiver_sha256}"'
+        in reconciled_toolchain
+    )
+
+
 def test_contract_admits_cryptographically_verified_retained_successor(
     tmp_path: Path,
 ) -> None:
@@ -1466,6 +1570,128 @@ def test_toolchain_reconciliation_binds_exact_post_migration_waiver_digest() -> 
             moves=moves,
             validation_waiver_set_sha256=digest,
         )
+
+
+def test_oracle_reconciliation_supports_canonical_mapping_schema() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    raw = (
+        "version: 1\n"
+        "ceiling: 2\n"
+        "entries:\n"
+        "- legal_id: us-la:statutes/47:294#legacy_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+        "- legal_id: us-la:statutes/47/294#canonical_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+    ).encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("oracle-coverage-pending.yaml"),
+        raw,
+        moves=moves,
+    )
+
+    assert b"ceiling: 1\n" in rewritten
+    assert b"us-la:statutes/47:294#legacy_amount" not in rewritten
+    assert b"us-la:statutes/47/294#canonical_amount" in rewritten
+    assert operations == ({"operation": "remove_legacy_oracle_pending", "count": 1},)
+
+
+def test_oracle_reconciliation_no_match_preserves_mapping_bytes() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    raw = (
+        "version: 1\n"
+        "ceiling: 1\n"
+        "entries:\n"
+        "- legal_id: us-hi:statutes/example#amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+    ).encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("oracle-coverage-pending.yaml"),
+        raw,
+        moves=moves,
+    )
+
+    assert rewritten == raw
+    assert operations == ({"operation": "remove_legacy_oracle_pending", "count": 0},)
+
+
+def test_oracle_reconciliation_requires_successor_only_for_removed_source() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+        PlannedMove(
+            source=Path("us-la/statutes/47:295.yaml"),
+            destination=Path("us-la/statutes/47/295.yaml"),
+        ),
+    )
+    raw = (
+        "version: 1\n"
+        "entries:\n"
+        "- legal_id: us-la:statutes/47:294#legacy_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+        "- legal_id: us-la:statutes/47/294#canonical_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+    ).encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("oracle-coverage-pending.yaml"),
+        raw,
+        moves=moves,
+    )
+
+    assert b"us-la:statutes/47:294#legacy_amount" not in rewritten
+    assert b"us-la:statutes/47/294#canonical_amount" in rewritten
+    assert b"ceiling:" not in rewritten
+    assert operations == ({"operation": "remove_legacy_oracle_pending", "count": 1},)
+
+
+def test_oracle_reconciliation_preserves_explicit_null_ceiling() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:294.yaml"),
+            destination=Path("us-la/statutes/47/294.yaml"),
+        ),
+    )
+    raw = (
+        "version: 1\n"
+        "ceiling: null\n"
+        "entries:\n"
+        "- legal_id: us-la:statutes/47:294#legacy_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+        "- legal_id: us-la:statutes/47/294#canonical_amount\n"
+        "  source: manual\n"
+        "  since: '2026-01-01'\n"
+    ).encode()
+
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("oracle-coverage-pending.yaml"),
+        raw,
+        moves=moves,
+    )
+
+    assert b"ceiling: null\n" in rewritten
+    assert b"us-la:statutes/47:294#legacy_amount" not in rewritten
+    assert b"us-la:statutes/47/294#canonical_amount" in rewritten
+    assert operations == ({"operation": "remove_legacy_oracle_pending", "count": 1},)
 
 
 @pytest.mark.parametrize(
