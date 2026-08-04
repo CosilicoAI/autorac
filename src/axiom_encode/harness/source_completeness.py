@@ -296,6 +296,7 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
     r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
+    r"amount\s+of\s+(?:the\s+)?excess|"
     r"\d+(?:[.,]\d+)?\s+times\b|"
     r"percentage\s+of|in\s+excess\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
@@ -382,6 +383,25 @@ _APPLICABILITY_LANGUAGE = re.compile(
     r"wenn|falls|sofern|soweit|when|if|"
     r"bei\s+(?:(?:vorliegen|bestehen)\b|"
     r"(?:(?:einer?|bestehender)\s+)?(?:anspruchsberechtigung|berechtigung)\b)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_NEGATIVE_NONAPPLICABILITY_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"(?:shall|does)\s+not\s+apply|"
+    r"(?:is|are)\s+not\s+(?:eligible|qualified|allowed|entitled)|"
+    r"findet\s+keine\s+anwendung|"
+    r"gilt\b[^.;]{0,80}\bnicht|"
+    r"nicht\s+berechtigt|"
+    r"kein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_LOCAL_CONDITION_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"if|when|where|unless|except|in\s+the\s+case\s+of|"
+    r"wenn|falls|sofern|soweit|bei|ohne|mangels|im\s+falle|"
+    r"au(?:ß|ss)er|es\s+sei\s+denn"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -3289,7 +3309,8 @@ def _actor_nominal_object_contains_finite_clause(object_tokens: list[str]) -> bo
         if _dependency_token_forms(
             trailing_object[0]
         ) & _DEPENDENCY_COMPOUND_NOMINAL_TERMS and (
-            _dependency_token_is_actor_nominal_prefix(predicate)
+            not _dependency_token_is_plural_nominal(subject_tokens[-1])
+            and _dependency_token_is_plural_nominal(predicate)
         ):
             continue
         is_input_requirement = (
@@ -3480,6 +3501,19 @@ def _dependency_subject_and_predicate_agree(
         ("s", "es", "ies")
     ) and not predicate.endswith(("ss", "us", "is"))
     return subject_is_plural != predicate_is_singular
+
+
+def _dependency_token_is_plural_nominal(token: str) -> bool:
+    lowered = token.lower()
+    return lowered in _DEPENDENCY_IRREGULAR_PLURAL_TERMS or any(
+        candidate
+        in (
+            _DEPENDENCY_SUBJECT_TERMS
+            | _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS
+            | _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
+        )
+        for candidate in _dependency_token_forms(lowered) - {lowered}
+    )
 
 
 def _reason_direct_missing_introduction_is_bounded(
@@ -4082,32 +4116,69 @@ def _companion_test_issues(
         branches=branches,
         active_branches=active_branches,
         deferred_paths=deferred_paths,
+        formula_branches=formula_branches,
     )
     if exception_branches:
+        paired_exception_branches = tuple(
+            branch
+            for branch in exception_branches
+            if _source_exception_requires_paired_witness(branch.text)
+        )
+        unconditional_nonapplicability_branches = tuple(
+            branch
+            for branch in exception_branches
+            if _source_unconditional_nonapplicability(branch.text)
+        )
         toggled_exception_selectors = _toggled_formula_boolean_selectors(
             principal_rules,
             asserted_by_rule=asserted_by_rule,
             formula_environment=formula_environment,
         )
         missing_exception_branches = _unwitnessed_exception_branches(
-            exception_branches,
+            paired_exception_branches,
             principal_rule_paths=principal_rule_paths,
             toggled_exception_selectors=toggled_exception_selectors,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
         if missing_exception_branches:
-            missing_citations = ", ".join(
-                dict.fromkeys(
-                    _branch_citation(corpus_citation_path, branch)
-                    for branch in missing_exception_branches
-                )
+            missing_conditions = "; ".join(
+                f"{_branch_citation(corpus_citation_path, branch)} "
+                f"[{_source_exception_effect_requirement(branch.text)}]: `"
+                f"{_bounded_source_feedback_excerpt(branch.text, limit=220)}`"
+                for branch in missing_exception_branches
             )
             issues.append(
                 "[complete-source-unit:tests] Source-stated exceptions or "
                 "applicability conditions require paired positive/blocking cases "
                 "that assert the affected principal output and toggle its "
-                "controlling formula selector; missing at "
-                f"{missing_citations}."
+                "controlling formula selector. Each listed condition needs its "
+                "own same-period case pair differing in exactly that one input; "
+                f"missing: {missing_conditions}."
+            )
+        missing_unconditional_branches = _unmatched_evidence_obligations(
+            {
+                branch: _unconditional_nonapplicability_witnesses(
+                    branch,
+                    corpus_citation_path=corpus_citation_path,
+                    principal_rules=principal_rules,
+                    principal_rule_paths=principal_rule_paths,
+                    asserted_by_rule=asserted_by_rule,
+                    formula_environment=formula_environment,
+                )
+                for branch in unconditional_nonapplicability_branches
+            }
+        )
+        if missing_unconditional_branches:
+            missing_conditions = "; ".join(
+                f"{_branch_citation(corpus_citation_path, branch)}: `"
+                f"{_bounded_source_feedback_excerpt(branch.text, limit=220)}`"
+                for branch in missing_unconditional_branches
+            )
+            issues.append(
+                "[complete-source-unit:tests] Unconditional source-stated "
+                "non-applicability requires a source-bound principal Judgment "
+                "output whose formula executes to false and is asserted false "
+                f"by a companion case; missing: {missing_conditions}."
             )
 
     rounding_obligations = _source_rounding_obligations(
@@ -4287,6 +4358,7 @@ def _source_control_branches(
             branches=branches,
             active_branches=active_branches,
             deferred_paths=deferred_paths,
+            formula_branches=formula_branches,
         )
     )
     return tuple(
@@ -8088,6 +8160,7 @@ def _source_exception_branches(
     branches: Sequence[SourceStructureBranch],
     active_branches: Sequence[SourceStructureBranch],
     deferred_paths: set[tuple[str, ...]],
+    formula_branches: Sequence[SourceStructureBranch] = (),
 ) -> tuple[SourceStructureBranch, ...]:
     obligations: list[SourceStructureBranch] = []
     source_clauses = tuple(_source_clause_spans(source_text, branches=branches))
@@ -8154,6 +8227,16 @@ def _source_exception_branches(
                     else clause_end
                 )
                 branch_text = source_text[branch_start:branch_end]
+            if (
+                _EXCEPTION_LANGUAGE.search(branch_text) is None
+                and _source_has_arithmetic_comparison_condition(branch_text)
+                and any(
+                    formula_branch.start == branch_start
+                    and formula_branch.end == branch_end
+                    for formula_branch in formula_branches
+                )
+            ):
+                continue
             obligations.append(
                 SourceStructureBranch(
                     owner.path,
@@ -8168,6 +8251,29 @@ def _source_exception_branches(
         {
             (branch.path, branch.start, branch.end): branch for branch in obligations
         }.values()
+    )
+
+
+def _source_has_arithmetic_comparison_condition(text: str) -> bool:
+    """Identify an arithmetic ``if/when`` already owned by formula coverage."""
+
+    collapsed = _collapse_text(text)
+    condition = re.search(
+        r"\b(?:if|when|wenn|falls)\b(?P<body>[^,;.]*)",
+        collapsed,
+        flags=re.IGNORECASE,
+    )
+    if condition is None:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:exceeds?|exceeded|greater\s+than|less\s+than|more\s+than|"
+            r"at\s+least|at\s+most|above|below|over|under|"
+            r"übersteigt|überschreitet|mehr\s+als|weniger\s+als|"
+            r"mindestens|höchstens|über|unter)\b|[<>]=?",
+            condition.group("body"),
+            flags=re.IGNORECASE,
+        )
     )
 
 
@@ -8220,6 +8326,281 @@ def _exception_cues_have_distinct_conditions(between: str) -> bool:
         )
         is not None
     )
+
+
+def _source_exception_requires_paired_witness(text: str) -> bool:
+    """Return whether a source condition has two locally testable states.
+
+    Cross-reference reservations and unconditional non-applicability rules are
+    still validated as source structure and formula/output coverage.  They do
+    not, however, describe a local condition that companion cases can toggle.
+    """
+
+    collapsed = _collapse_text(text)
+    if re.search(
+        r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    ) and _source_reference_reservation_is_only_references(collapsed):
+        return False
+    if _source_unconditional_nonapplicability(collapsed):
+        return False
+    if re.search(
+        r"\b(?:subject\s+to|vorbehaltlich)\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    ) and _source_reference_reservation_is_only_references(collapsed):
+        return False
+    return True
+
+
+def _source_has_formal_cross_reference(text: str) -> bool:
+    target = (
+        r"(?:chapter|title|article|part|subchapter|subtitle|division|section|"
+        r"subsection|paragraph|act|law|code|gesetz|absatz|absätze)"
+    )
+    label = r"(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|[IVXLCDM]+)"
+    deictic = r"(?:this|that|the|these|those|dies(?:e[rmns]?))"
+    if re.search(
+        r"\b(?:all\s+)?(?:provisions?|restrictions?|vorschriften?|bestimmungen?)"
+        rf"\s+(?:of|in|under|nach|gemäß)\s+(?:{deictic}\s+{target}"
+        rf"(?:\s+{label})?|{target}\s+{label})(?=\W|$)|"
+        rf"\b{deictic}\s+{target}\b|"
+        rf"\b{target}\s+{label}(?=\W|$)|§",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if any(
+        pattern.search(text)
+        for pattern in (
+            _PRECISE_DEFERRAL_DEPENDENCY,
+            _GERMAN_LEGAL_CITATION,
+            _ENGLISH_LEGAL_CITATION,
+            _STRUCTURAL_REFERENCE,
+        )
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b\d+\s+U\.?\s*S\.?\s*C\.?\s*(?:§|s\.)?\s*\d+[a-z0-9.-]*\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b[A-Z][A-Z.]{1,8}\s*\d+[A-Za-z0-9:.-]*",
+            text,
+        )
+    )
+
+
+def _source_is_simple_main_proposition(text: str) -> bool:
+    proposition = text.strip(" \t,;:.")
+    determiner = r"(?:(?:a|an|the|this|that|such)\s+)?"
+    program_modifier = (
+        r"(?:(?:income|earned|child|dependent|property|sales|use|tax|"
+        r"refundable|nonrefundable|standard|itemized|personal|business|"
+        r"corporate|individual|state|federal|local|earned-income|child-tax|"
+        r"income-tax|property-tax|sales-tax|use-tax)\s+)"
+    )
+    program_subject = (
+        rf"(?:{program_modifier})*"
+        r"(?:credit|claim|benefit|deduction|exemption|allowance|provision|"
+        r"section|subsection|paragraph|rule)"
+    )
+    program_predicate = (
+        r"(?:applies|shall\s+apply|is\s+applicable|is\s+allowed|is\s+available)"
+    )
+    eligible_subject = r"(?:claimant|taxpayer|person|individual)"
+    german_subject = r"(?:der|die|das)\s+(?:anspruch|leistung|regel|vorschrift)"
+    return bool(
+        re.fullmatch(
+            rf"(?:{determiner}{program_subject}\s+{program_predicate}|"
+            rf"{determiner}{eligible_subject}\s+is\s+eligible|"
+            rf"{german_subject}\s+(?:gilt|besteht)|"
+            rf"(?:gilt|besteht)\s+{german_subject})",
+            proposition,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_reference_reservation_is_only_references(text: str) -> bool:
+    clause = _strip_source_clause_marker(_collapse_text(text)).strip()
+    marker = re.search(
+        r"\b(?P<marker>subject\s+to|vorbehaltlich|except\s+as)\b",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if marker is None:
+        return False
+    complement = clause[marker.end() :].strip(" \t,;:.")
+    if marker.start() == 0:
+        tail = clause[marker.end() :]
+        delimiter = re.search(r"[,;]", tail)
+        if delimiter is not None and _source_is_simple_main_proposition(
+            tail[delimiter.end() :]
+        ):
+            complement = tail[: delimiter.start()].strip(" \t,;:.")
+        elif delimiter is None:
+            for proposition_start in re.finditer(
+                r"\b(?:a|an|the|this|that|such|der|die|das|gilt|besteht)\b",
+                tail,
+                flags=re.IGNORECASE,
+            ):
+                if _source_is_simple_main_proposition(
+                    tail[proposition_start.start() :]
+                ):
+                    complement = tail[: proposition_start.start()].strip(" \t,;:.")
+                    break
+    if marker.group("marker").lower().startswith("except") and re.fullmatch(
+        r"(?:(?:may|might)\s+)?(?:otherwise\s+)?(?:specifically\s+)?"
+        r"(?:be\s+)?provided(?:\s+by\s+law)?",
+        complement,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if not _source_has_formal_cross_reference(complement):
+        return False
+    target = (
+        r"(?:chapters?|titles?|articles?|parts?|subchapters?|subtitles?|"
+        r"divisions?|sections?|subsections?|paragraphs?|acts?|laws?|codes?|"
+        r"gesetz|absatz|absätze)"
+    )
+    label = r"(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|[IVXLCDM]+)"
+    deictic = r"(?:this|that|the|these|those|dies(?:e[rmns]?))"
+    remainder = complement
+    for pattern in (
+        _GERMAN_LEGAL_CITATION,
+        _ENGLISH_LEGAL_CITATION,
+        _STRUCTURAL_REFERENCE,
+    ):
+        remainder = pattern.sub(" ", remainder)
+    for pattern in (
+        rf"\b{deictic}\s+{target}(?:\s+{label})?\b",
+        rf"\b{target}\s+{label}(?=\W|$)",
+        r"\b\d+\s+U\.?\s*S\.?\s*C\.?\s*(?:§|s\.)?\s*\d+[a-z0-9.-]*\b",
+    ):
+        remainder = re.sub(pattern, " ", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(
+        r"\b[A-Z][A-Z.]{1,8}\s*\d+[A-Za-z0-9:.-]*",
+        " ",
+        remainder,
+    )
+    allowed_words = (
+        r"all|the|this|that|these|those|provisions?|restrictions?|"
+        r"modifications?|requirements?|limitations?|of|in|under|and|or|except|"
+        r"as|may|might|be|otherwise|specifically|provided|by|law|code|act|et|al|"
+        r"seq|chapters?|titles?|articles?|parts?|subchapters?|subtitles?|"
+        r"divisions?|sections?|subsections?|paragraphs?|vorschriften?|"
+        r"bestimmungen?|dies(?:e[rmns]?)|gemäß|nach|und|oder|gesetz|absatz|absätze"
+    )
+    remainder = re.sub(
+        rf"\b(?:{allowed_words})\b",
+        " ",
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    remainder = re.sub(
+        r"(?<![A-Za-z0-9])(?:\(?\d+[A-Za-z0-9.-]*\)?|\(?[A-Za-z]\)?|"
+        r"[IVXLCDM]+)(?![A-Za-z0-9])",
+        " ",
+        remainder,
+    )
+    return re.fullmatch(r"[\s.,;:()§'/-]*", remainder) is not None
+
+
+def _source_unconditional_nonapplicability(text: str) -> bool:
+    clause = _strip_source_clause_marker(_collapse_text(text)).strip()
+    clause = re.sub(
+        r"^provided\s+however\s*,?\s+(?:that\s+)?",
+        "",
+        clause,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    negative_matches = tuple(_NEGATIVE_NONAPPLICABILITY_LANGUAGE.finditer(clause))
+    if not negative_matches:
+        return False
+    negative = negative_matches[-1]
+    if (
+        re.match(r"gilt\b", negative.group(0), flags=re.IGNORECASE)
+        and re.fullmatch(
+            r"gilt\s+nicht",
+            negative.group(0),
+            flags=re.IGNORECASE,
+        )
+        is None
+    ):
+        return False
+    if clause[negative.end() :].strip(" \t,;:."):
+        return False
+    subject = clause[: negative.start()].strip(" \t,;:")
+    return _source_is_unconditional_subject(subject)
+
+
+def _source_is_unconditional_subject(text: str) -> bool:
+    """Accept only bare subjects or explicit legal-reference noun phrases."""
+
+    subject = re.sub(
+        r"^(?:the|this|that|such|der|die|das|dies(?:e[rmns]?))\s+",
+        "",
+        text.strip(),
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    bare_subjects = (
+        r"claimants?|persons?|individuals?|taxpayers?|residents?|claims?|credits?|"
+        r"benefits?|payments?|deductions?|exemptions?|rules?|anspr(?:uch|üche)|"
+        r"leistungen?|regeln?"
+    )
+    if re.fullmatch(bare_subjects, subject, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(
+        r"(?:preceding|previous|following|vorherige[rmns]?|folgende[rmns]?)\s+"
+        r"(?:sentence|paragraph|clause|satz|absatz)",
+        subject,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    reference_head = (
+        r"provisions?|requirements?|limitations?|subsections?|sections?|"
+        r"paragraphs?|clauses?|sentences?|chapters?|titles?|articles?|parts?|"
+        r"subchapters?|subtitles?|divisions?|absatz|absätze|satz|sätze|nummern?"
+    )
+    head = re.match(rf"^(?P<head>{reference_head})\b", subject, flags=re.IGNORECASE)
+    if head is None:
+        return False
+    tail = subject[head.end() :].strip()
+    if not tail:
+        return True
+    reference_split = re.fullmatch(
+        r"(?:(?P<labels>.*?)\s+)?(?:of|under|des|der)\s+(?P<reference>.+)",
+        tail,
+        flags=re.IGNORECASE,
+    )
+    if reference_split is not None:
+        labels = (reference_split.group("labels") or "").strip()
+        return (
+            not labels or _source_reference_labels_are_structural(labels)
+        ) and _source_has_formal_cross_reference(reference_split.group("reference"))
+    return _source_reference_labels_are_structural(tail)
+
+
+def _source_reference_labels_are_structural(text: str) -> bool:
+    if re.fullmatch(r"[A-Za-z0-9()., -]+", text) is None:
+        return False
+    connectors = {"and", "or", "through", "to", "und", "oder", "bis"}
+    for token in re.findall(r"[A-Za-z0-9]+", text):
+        if (
+            token.lower() in connectors
+            or len(token) == 1
+            or any(character.isdigit() for character in token)
+            or re.fullmatch(r"[IVXLCDM]+", token) is not None
+        ):
+            continue
+        return False
+    return True
 
 
 def _source_rounding_obligations(
@@ -8346,6 +8727,59 @@ def _unwitnessed_exception_branches(
     return _unmatched_evidence_obligations(candidate_witnesses)
 
 
+def _unconditional_nonapplicability_witnesses(
+    branch: SourceStructureBranch,
+    *,
+    corpus_citation_path: str,
+    principal_rules: dict[str, dict[str, Any]],
+    principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    asserted_by_rule: dict[str, list[dict[str, Any]]],
+    formula_environment: dict[str, Any],
+) -> set[tuple[str, int]]:
+    """Return unique executable-false evidence for an unconditional rule."""
+
+    branch_text = _collapse_text(branch.text).lower()
+    witnesses: set[tuple[str, int]] = set()
+    for rule_name in _rules_covering_branch(branch, principal_rule_paths):
+        rule = principal_rules[rule_name]
+        if str(rule.get("dtype", "")).strip().lower() not in {
+            "bool",
+            "judgment",
+        }:
+            continue
+        if not any(
+            citation_path == corpus_citation_path
+            and (excerpt_text := _collapse_text(excerpt).lower())
+            and excerpt_text in branch_text
+            for citation_path, excerpt in _rule_source_excerpts(rule)
+        ):
+            continue
+        for case_index, case in enumerate(asserted_by_rule.get(rule_name, ())):
+            asserted = _test_case_asserted_output_value(case, rule_name)
+            if _boolean_value(asserted) is not False:
+                continue
+            dependencies = _case_asserted_dependency_environment(
+                principal_rules,
+                case,
+                formula_environment=formula_environment,
+            )
+            execution = _case_formula_execution(
+                rule,
+                case,
+                formula_environment=formula_environment,
+                dependency_environment=dependencies,
+            )
+            if execution is None:
+                continue
+            runtime = _formula_execution_runtime_value(execution)
+            if _boolean_value(runtime) is False and _formula_runtime_values_equal(
+                runtime,
+                asserted,
+            ):
+                witnesses.add((rule_name, case_index))
+    return witnesses
+
+
 def _exception_witnesses_for_branch(
     branch: SourceStructureBranch,
     *,
@@ -8440,6 +8874,79 @@ def _source_exception_effect_requirement(text: str) -> str:
         return "zero"
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
+    condition = next(
+        iter(_source_exception_or_applicability_matches(collapsed)),
+        None,
+    )
+    if condition is not None:
+        cue = condition.group(0).strip().lower()
+        proposition = collapsed[: condition.start()]
+        negative_proposition = _source_negative_effect_matches(proposition)
+        positive_proposition = _source_positive_effect_matches(proposition)
+        if (
+            not negative_proposition
+            and positive_proposition
+            and re.fullmatch(
+                r"(?:if|when|wenn|falls|sofern|soweit|"
+                r"vorausgesetzt\s*,?\s*dass|"
+                r"unter\s+der\s+voraussetzung\s*,?\s+dass)",
+                cue,
+                flags=re.IGNORECASE,
+            )
+        ):
+            return "enable"
+        if (
+            negative_proposition
+            and not positive_proposition
+            and re.fullmatch(
+                r"(?:if|when|wenn|falls|sofern|soweit|"
+                r"vorausgesetzt\s*,?\s*dass|"
+                r"unter\s+der\s+voraussetzung\s*,?\s+dass)",
+                cue,
+                flags=re.IGNORECASE,
+            )
+        ):
+            return "exclude"
+        if (
+            not negative_proposition
+            and not positive_proposition
+            and re.fullmatch(
+                r"(?:if|when|wenn|falls|sofern|soweit|"
+                r"vorausgesetzt\s*,?\s*dass|"
+                r"unter\s+der\s+voraussetzung\s*,?\s+dass)",
+                cue,
+                flags=re.IGNORECASE,
+            )
+        ):
+            tail = collapsed[condition.end() :]
+            positive_tail = _source_positive_effect_matches(tail)
+            negative_tail = _source_negative_effect_matches(tail)
+            latest_positive = max(
+                (match.start() for match in positive_tail),
+                default=-1,
+            )
+            latest_negative = max(
+                (match.start() for match in negative_tail),
+                default=-1,
+            )
+            if latest_positive > latest_negative:
+                return "enable"
+            if latest_negative > latest_positive:
+                return "exclude"
+        if (
+            cue.startswith("except")
+            and re.search(
+                r"\b(?:qualifications?|requirements?|conditions?)\b",
+                proposition,
+                flags=re.IGNORECASE,
+            )
+            and re.search(
+                r"\b(?:eligible|qualif(?:y|ied|ication))\b",
+                collapsed[condition.end() :],
+                flags=re.IGNORECASE,
+            )
+        ):
+            return "enable"
     if re.search(
         r"\b(?:"
         r"gilt\b[^.;]{0,80}\bnicht|"
@@ -8469,6 +8976,34 @@ def _source_exception_effect_requirement(text: str) -> str:
     return "change"
 
 
+def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        re.finditer(
+            r"\bto\s+qualify\b|"
+            r"\b(?:shall|is|are|will|may)\s+be\s+"
+            r"(?:eligible|qualified|allowed|entitled)\b|"
+            r"\b(?:is|are)\s+(?:eligible|qualified|allowed|entitled)\b|"
+            r"\b(?:claim|credit|benefit|provision)\s+applies\b|"
+            r"\b(?:ist|sind|wird|werden)\s+(?:\w+\s+){0,2}berechtigt\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        re.finditer(
+            r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
+            r"allowed|entitled)\b|"
+            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
+            r"\bnicht\s+berechtigt\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _exception_reverses_negative_proposition(text: str) -> bool:
     reversal = re.search(
         r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
@@ -8484,6 +9019,7 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
             flags=re.IGNORECASE,
@@ -8496,8 +9032,6 @@ def _source_exception_selector_is_relevant(text: str, name: str) -> bool:
     """Reject formula toggles with no semantic link to the source exception."""
 
     normalized_name = _normalized_selector_name(name)
-    if _exception_semantic_identifier(normalized_name):
-        return True
     collapsed = _collapse_text(text).lower()
     if _source_selector_concept_matches(collapsed, normalized_name):
         return True
@@ -8575,7 +9109,11 @@ def _source_selector_concept_matches(
         "income": r"\b(?:income|einkommen)\w*",
         "qualified": r"\b(?:qualified|berechtig|anspruch)\w*",
         "exempt": r"\b(?:exempt|befrei)\w*",
-        "exception": r"\b(?:exception|ausnahme)\w*",
+        "exception": r"\b(?:exception|ausnahme|abweich|befrei)\w*",
+        "barred": r"\b(?:barred|sperr)\w*",
+        "excluded": r"\b(?:excluded|ausgeschlossen|ausgenommen)\w*",
+        "remarried": r"\b(?:remarri|wiederverheirat)\w*",
+        "waiver": r"\b(?:waiver|waived|verzicht)\w*",
         "surcharge": r"\b(?:surcharge|zuschlag)\w*",
         "status": r"\bstatus\w*",
     }
@@ -8620,7 +9158,12 @@ def _source_selector_concept_polarity(
         before = text[max(0, match.start() - 48) : match.start()]
         after = text[match.end() : min(len(text), match.end() + 48)]
         negative = bool(
-            re.search(
+            re.fullmatch(
+                r"(?:ineligible|disqualified|unqualified)",
+                match.group(0),
+                flags=re.IGNORECASE,
+            )
+            or re.search(
                 r"\b(?:kein(?:e|en|em|er|es)?|fehlend\w*|ohne|mangels|"
                 r"no|without|lack(?:ing)?(?:\s+of)?|absence\s+of)"
                 r"\b[^.;]{0,40}$|"
@@ -9208,26 +9751,25 @@ def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
         selector_names.add(name)
 
     def inspect_expression(text: str) -> None:
-        with contextlib.suppress(SyntaxError):
-            expression = ast.parse(text.strip(), mode="eval").body
-            if not isinstance(
-                expression,
-                (ast.BoolOp, ast.Compare, ast.Name, ast.UnaryOp),
-            ):
-                return
-            function_names = {
-                node.func.id
-                for node in ast.walk(expression)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            }
-            for name in {
-                node.id
-                for node in ast.walk(expression)
-                if isinstance(node, ast.Name)
-                and node.id.lower() not in {"true", "false", "holds", "not_holds"}
-                and node.id not in function_names
-            }:
-                record(name)
+        expression = _parse_formula_expression(text)
+        if not isinstance(
+            expression,
+            (ast.BoolOp, ast.Compare, ast.Name, ast.UnaryOp),
+        ):
+            return
+        function_names = {
+            node.func.id
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        for name in {
+            node.id
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Name)
+            and node.id.lower() not in {"true", "false", "holds", "not_holds"}
+            and node.id not in function_names
+        }:
+            record(name)
 
     def inspect(text: str, *, depth: int = 0) -> None:
         if depth > 32:
@@ -9283,17 +9825,6 @@ def _exception_selector_semantic_active_value(name: str) -> bool:
 
 def _formula_indent_width(value: str) -> int:
     return len(value.expandtabs(4))
-
-
-def _exception_semantic_identifier(identifier: str) -> bool:
-    return bool(
-        re.search(
-            r"(?:exception|exempt|exclud|disqual|inelig|remarri|"
-            r"barred|blocking|waiver|befrei|ausnahme)",
-            identifier,
-            flags=re.IGNORECASE,
-        )
-    )
 
 
 def _ordinary_semantic_identifier(identifier: str) -> bool:
