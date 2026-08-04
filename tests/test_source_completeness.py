@@ -2729,10 +2729,7 @@ module:
         referenced by 42 USC 1437f(o) is encoded.
 rules: []
 """
-    source = (
-        f"(b) The {instrument} governs assistance received under "
-        "42 USC 1437f(o)."
-    )
+    source = f"(b) The {instrument} governs assistance received under 42 USC 1437f(o)."
 
     result = _analyze(
         content,

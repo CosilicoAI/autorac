@@ -2437,9 +2437,7 @@ def _reason_named_instruments_are_source_bound(
     match = named_instrument.search(before)
     if match is None:
         return True
-    instrument = re.sub(
-        r"[^a-z0-9]+", " ", match.group("instrument").lower()
-    ).strip()
+    instrument = re.sub(r"[^a-z0-9]+", " ", match.group("instrument").lower()).strip()
     source = re.sub(r"[^a-z0-9]+", " ", source_scope_text.lower()).strip()
     return bool(instrument and instrument in source)
 
