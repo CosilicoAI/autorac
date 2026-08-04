@@ -422,6 +422,14 @@ _ADVERSATIVE_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_CONTEXTUAL_REFERENCE_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"background|comparison|completeness|context|contrast|discussion|example|"
+    r"explanatory|historical|history|illustration|informational|merely|"
+    r"non-?operative|only\s+for|reference\s+only|solely"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
     r"\b(?:"
     r"administrative|calendar|capabilit(?:y|ies)|classification|complaint|"
@@ -1906,16 +1914,7 @@ def _reason_match_names_missing_dependency(
     reason: str,
     match: re.Match[str],
 ) -> bool:
-    clause_start = (
-        max(reason.rfind(separator, 0, match.start()) for separator in (".", ";", "\n"))
-        + 1
-    )
-    following_stops = [
-        position
-        for separator in (".", ";", "\n")
-        if (position := reason.find(separator, match.end())) >= 0
-    ]
-    clause_end = min(following_stops, default=len(reason))
+    clause_start, clause_end = _reason_clause_bounds(reason, match)
     clause = reason[clause_start:clause_end]
     reference_start = match.start() - clause_start
     reference_end = match.end() - clause_start
@@ -1933,6 +1932,7 @@ def _reason_match_names_missing_dependency(
     if (
         direct_missing_state
         and _MISSING_DEPENDENCY_LANGUAGE.search(before)
+        and not _CONTEXTUAL_REFERENCE_LANGUAGE.search(clause)
         and _reason_state_tail_is_bounded(after[direct_missing_state.end() :])
     ):
         return True
@@ -1973,6 +1973,8 @@ def _reason_match_names_missing_dependency(
 
     if signal_text == "until":
         before_reference = clause[:reference_start]
+        if _CONTEXTUAL_REFERENCE_LANGUAGE.search(before_reference):
+            return False
         operative_reference = _source_clause_links_dependency(
             clause,
             reference_start=reference_start,
@@ -1990,6 +1992,32 @@ def _reason_match_names_missing_dependency(
             allow_descriptive_list=operative_reference,
         )
     return True
+
+
+def _reason_clause_bounds(
+    reason: str,
+    match: re.Match[str],
+) -> tuple[int, int]:
+    masked = list(reason)
+    for dependency in _qualified_usc_dependencies(reason):
+        for position in range(dependency.start(), dependency.end()):
+            if masked[position] == ".":
+                masked[position] = " "
+    masked_reason = "".join(masked)
+    preceding_stops = [
+        position
+        for separator in (".", ";", "\n")
+        if (position := masked_reason.rfind(separator, 0, match.start())) >= 0
+    ]
+    following_stops = [
+        position
+        for separator in (".", ";", "\n")
+        if (position := masked_reason.find(separator, match.end())) >= 0
+    ]
+    return (
+        max(preceding_stops, default=-1) + 1,
+        min(following_stops, default=len(reason)),
+    )
 
 
 def _reason_suffix_has_dependency_state(
@@ -2051,7 +2079,10 @@ def _reason_suffix_has_dependency_state(
 def _reason_state_tail_is_bounded(tail: str) -> bool:
     if re.fullmatch(
         r"[\s,)]*(?:by\s+(?:the\s+)?"
-        r"(?:agency|administrator|authority|commission|department|hud|secretary))?"
+        r"(?:(?:a|an|the)\s+)?"
+        r"(?:(?:federal|local|public\s+housing|state)\s+)?"
+        r"(?:agency|administrator|authority|commission|department|hud|"
+        r"secretary(?:\s+of\s+[a-z][a-z\s]+)?))?"
         r"[\s,)]*",
         tail,
         flags=re.IGNORECASE,
@@ -2065,19 +2096,36 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
     if not coordination:
         return False
     continuation = tail[coordination.end() :]
-    dependencies = (
-        *_qualified_usc_dependencies(continuation),
-        *_PRECISE_DEFERRAL_DEPENDENCY.finditer(continuation),
+    dependencies = sorted(
+        (
+            *_qualified_usc_dependencies(continuation),
+            *_PRECISE_DEFERRAL_DEPENDENCY.finditer(continuation),
+        ),
+        key=lambda dependency: (dependency.start(), -dependency.end()),
     )
-    return any(dependency.start() == 0 for dependency in dependencies)
+    dependency = next(
+        (dependency for dependency in dependencies if dependency.start() == 0),
+        None,
+    )
+    if dependency is None:
+        return False
+    return _reason_suffix_has_dependency_state(
+        continuation[dependency.end() :],
+        allow_descriptive_list=False,
+    )
 
 
 def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
     if not re.match(r"\s*,?\s+(?:and|or)\s+", prefix, flags=re.IGNORECASE):
         return False
+    masked_prefix = list(prefix)
+    for dependency in _qualified_usc_dependencies(prefix):
+        for position in range(dependency.start(), dependency.end()):
+            if masked_prefix[position] == ",":
+                masked_prefix[position] = " "
     items = [
         re.sub(r"^\s*(?:and|or)\s+", "", item, flags=re.IGNORECASE).strip()
-        for item in prefix.split(",")
+        for item in "".join(masked_prefix).split(",")
         if item.strip()
     ]
     if not items:
@@ -2090,19 +2138,15 @@ def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
         r")\s*$",
         flags=re.IGNORECASE,
     )
-    finite_clause = re.compile(
-        r"\b(?:is|are|was|were|has|have|does|do|applies?|holds?|exists?)\b",
-        flags=re.IGNORECASE,
-    )
     for item in items:
-        if finite_clause.search(item):
+        if _CONTEXTUAL_REFERENCE_LANGUAGE.search(item):
             return False
         dependencies = sorted(
             (
                 *_qualified_usc_dependencies(item),
                 *_PRECISE_DEFERRAL_DEPENDENCY.finditer(item),
             ),
-            key=lambda dependency: (dependency.end(), dependency.start()),
+            key=lambda dependency: (dependency.end(), -dependency.start()),
             reverse=True,
         )
         if not dependencies:
@@ -2111,8 +2155,16 @@ def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
         if item[dependency.end() :].strip():
             return False
         introduction = item[: dependency.start()]
-        if introduction.strip() and not operative_linker.search(introduction):
-            return False
+        if introduction.strip():
+            if not operative_linker.search(introduction) or not (
+                _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE.search(introduction)
+                or re.search(
+                    r"\b(?:assistance|eligibility|receipt|requirement|standard)\b",
+                    introduction,
+                    flags=re.IGNORECASE,
+                )
+            ):
+                return False
     return True
 
 
