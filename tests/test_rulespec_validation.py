@@ -2701,7 +2701,9 @@ def test_literal_comparison_truth_value_matches_rulespec_semantics(formula, expe
         "1e3 == 1000",
         '"unterminated == 1',
         "9223372036854775808 == 0",
+        f"{'9' * 5000} == 0",
         "0.00000000000000000000000000001 == 0.0",
+        f"{'9' * 5000}.0 == 0.0",
     ],
 )
 def test_literal_comparison_truth_value_rejects_unsupported_rulespec_forms(

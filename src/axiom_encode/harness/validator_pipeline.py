@@ -11578,7 +11578,11 @@ def _rulespec_literal_value(
         return "boolean", False
 
     if re.fullmatch(r"-?[0-9][0-9_]*", literal):
-        value = int(literal.replace("_", ""))
+        exact = literal.replace("_", "")
+        magnitude = exact.removeprefix("-").lstrip("0") or "0"
+        if len(magnitude) > 19:
+            return None
+        value = int(exact)
         if -(2**63) <= value <= 2**63 - 1:
             return "integer", value
         return None
@@ -11587,8 +11591,11 @@ def _rulespec_literal_value(
         exact = literal.replace("_", "")
         unsigned = exact.removeprefix("-")
         whole, fractional = unsigned.split(".", 1)
-        coefficient = int(f"{whole}{fractional}")
-        if len(fractional) > 28 or coefficient > 2**96 - 1:
+        coefficient_text = f"{whole}{fractional}".lstrip("0") or "0"
+        if len(fractional) > 28 or len(coefficient_text) > 29:
+            return None
+        coefficient = int(coefficient_text)
+        if coefficient > 2**96 - 1:
             return None
         try:
             return "decimal", Decimal(exact)
