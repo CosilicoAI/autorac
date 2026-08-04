@@ -422,13 +422,20 @@ _ADVERSATIVE_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
-_CONTEXTUAL_REFERENCE_LANGUAGE = re.compile(
+_DEPENDENCY_SUBJECT_LANGUAGE = re.compile(
     r"\b(?:"
-    r"background|comparison|completeness|context|contrast|discussion|example|"
-    r"explanatory|historical|history|illustration|informational|merely|"
-    r"non-?operative|only\s+for|reference\s+only|solely"
-    r")\b",
+    r"amount|assistance|benefit|calendar|classification|condition|data|date|"
+    r"designation|determination|document|eligibility|fact|filing|form|"
+    r"information|input|notice|process|procedure|receipt|record|requirement|"
+    r"standard|status|submission|timing|workflow"
+    r")s?\b",
     flags=re.IGNORECASE,
+)
+_DEPENDENCY_STATE_VALUE = (
+    r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
+    r"established|furnished|implemented|known|made\s+available|missing|"
+    r"issued|needed|obtained|produced|provided|received|required|resolved|set|"
+    r"supplied|unavailable|verified)"
 )
 _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
     r"\b(?:"
@@ -1932,7 +1939,10 @@ def _reason_match_names_missing_dependency(
     if (
         direct_missing_state
         and _MISSING_DEPENDENCY_LANGUAGE.search(before)
-        and not _CONTEXTUAL_REFERENCE_LANGUAGE.search(clause)
+        and not (
+            _qualified_usc_dependencies(before)
+            or _PRECISE_DEFERRAL_DEPENDENCY.search(before)
+        )
         and _reason_state_tail_is_bounded(after[direct_missing_state.end() :])
     ):
         return True
@@ -1973,7 +1983,7 @@ def _reason_match_names_missing_dependency(
 
     if signal_text == "until":
         before_reference = clause[:reference_start]
-        if _CONTEXTUAL_REFERENCE_LANGUAGE.search(before_reference):
+        if not _reason_reference_introduction_is_bounded(bridge):
             return False
         operative_reference = _source_clause_links_dependency(
             clause,
@@ -2001,7 +2011,7 @@ def _reason_clause_bounds(
     masked = list(reason)
     for dependency in _qualified_usc_dependencies(reason):
         for position in range(dependency.start(), dependency.end()):
-            if masked[position] == ".":
+            if masked[position] in {".", ";"}:
                 masked[position] = " "
     masked_reason = "".join(masked)
     preceding_stops = [
@@ -2028,18 +2038,12 @@ def _reason_suffix_has_dependency_state(
     """Require a state predicate for this citation or its coordinated list."""
 
     bounded = _ADVERSATIVE_LANGUAGE.split(after, maxsplit=1)[0]
-    dependency_state = (
-        r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
-        r"established|furnished|implemented|known|made\s+available|missing|"
-        r"issued|needed|obtained|produced|provided|received|required|resolved|set|"
-        r"supplied|unavailable|verified)"
-    )
     state_pattern = re.compile(
         r"\b(?:"
         r"(?:is|are|was|were|must\s+be)\s+(?:not\s+(?:yet\s+)?)?"
-        + dependency_state
+        + _DEPENDENCY_STATE_VALUE
         + r"|(?:has|have)\s+(?:not\s+)?been\s+"
-        + dependency_state
+        + _DEPENDENCY_STATE_VALUE
         + r")\b",
         flags=re.IGNORECASE,
     )
@@ -2080,9 +2084,10 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
     if re.fullmatch(
         r"[\s,)]*(?:by\s+(?:the\s+)?"
         r"(?:(?:a|an|the)\s+)?"
-        r"(?:(?:federal|local|public\s+housing|state)\s+)?"
-        r"(?:agency|administrator|authority|commission|department|hud|"
-        r"secretary(?:\s+of\s+[a-z][a-z\s]+)?))?"
+        r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
+        r"(?:agency|administrator|authority|commission|hud|"
+        r"(?:department|secretary)(?:\s+of\s+(?:agriculture|housing\s+and\s+"
+        r"urban\s+development|health\s+and\s+human\s+services|labor|treasury))?))?"
         r"[\s,)]*",
         tail,
         flags=re.IGNORECASE,
@@ -2103,11 +2108,11 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
         ),
         key=lambda dependency: (dependency.start(), -dependency.end()),
     )
-    dependency = next(
-        (dependency for dependency in dependencies if dependency.start() == 0),
-        None,
-    )
+    dependency = dependencies[0] if dependencies else None
     if dependency is None:
+        return False
+    introduction = continuation[: dependency.start()]
+    if not _reason_dependency_introduction_is_bounded(introduction):
         return False
     return _reason_suffix_has_dependency_state(
         continuation[dependency.end() :],
@@ -2130,17 +2135,7 @@ def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
     ]
     if not items:
         return False
-    operative_linker = re.compile(
-        r"\b(?:"
-        r"under|pursuant\s+to|according\s+to|"
-        r"(?:cited|defined|described|provided|required|set|specified|referenced)"
-        r"\s+(?:by|in)"
-        r")\s*$",
-        flags=re.IGNORECASE,
-    )
     for item in items:
-        if _CONTEXTUAL_REFERENCE_LANGUAGE.search(item):
-            return False
         dependencies = sorted(
             (
                 *_qualified_usc_dependencies(item),
@@ -2155,17 +2150,65 @@ def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
         if item[dependency.end() :].strip():
             return False
         introduction = item[: dependency.start()]
-        if introduction.strip():
-            if not operative_linker.search(introduction) or not (
-                _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE.search(introduction)
-                or re.search(
-                    r"\b(?:assistance|eligibility|receipt|requirement|standard)\b",
-                    introduction,
-                    flags=re.IGNORECASE,
-                )
-            ):
-                return False
+        if not _reason_dependency_introduction_is_bounded(introduction):
+            return False
     return True
+
+
+def _reason_reference_introduction_is_bounded(bridge: str) -> bool:
+    if not bridge.strip() or _reason_dependency_introduction_is_bounded(bridge):
+        return True
+    masked = list(bridge)
+    dependencies = (
+        *_qualified_usc_dependencies(bridge),
+        *_PRECISE_DEFERRAL_DEPENDENCY.finditer(bridge),
+    )
+    if not dependencies:
+        return False
+    for dependency in dependencies:
+        masked[dependency.start() : dependency.end()] = " " * (
+            dependency.end() - dependency.start()
+        )
+    remainder = "".join(masked)
+    if re.fullmatch(
+        r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
+        remainder,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.fullmatch(
+            r"\s*(?:(?:is|are|was|were|must\s+be)\s+"
+            + _DEPENDENCY_STATE_VALUE
+            + r"|(?:has|have)\s+(?:not\s+)?been\s+"
+            + _DEPENDENCY_STATE_VALUE
+            + r")\s*,?\s*(?:and|or)\s*",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
+    if not introduction.strip():
+        return True
+    if re.search(
+        r"\b(?:depends?\s+on|requires?)\s*$",
+        introduction,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if not re.search(
+        r"\b(?:"
+        r"under|pursuant\s+to|according\s+to|"
+        r"(?:cited|defined|described|provided|required|set|specified|referenced)"
+        r"\s+(?:by|in)"
+        r")\s*$",
+        introduction,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return bool(_DEPENDENCY_SUBJECT_LANGUAGE.search(introduction))
 
 
 def _usc_dependency_is_external(
