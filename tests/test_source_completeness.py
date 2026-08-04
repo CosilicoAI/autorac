@@ -1949,40 +1949,11 @@ rules: []
     )
     assert "Required shape" in issue
     assert "module:\n  deferred_outputs:" in issue
-    assert "42 U.S.C. 1437c-1(f)" in issue
     assert "the output path is not a source citation" in issue.lower()
     assert "output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax" in issue
     assert "reason: Cannot be computed until" in issue
     assert "EStG § 26" in issue
     assert "`blocked_by` is optional" in issue
-
-
-def test_imprecise_deferral_retry_runtime_gap_example_is_validator_accepted():
-    content = """\
-format: rulespec/v1
-module:
-  source_verification:
-    corpus_citation_path: us/statute/42/1437c–1
-  deferred_outputs:
-    - output: us:statutes/42/1437c-1/f#public_hearing_process
-      reason: >-
-        Cannot be computed until the public-hearing event and governing-body
-        consultation records required by 42 U.S.C. 1437c-1(f) are available at runtime.
-rules: []
-"""
-    source = """\
-(f) Public hearings The agency shall conduct a public hearing and consult with
-its governing body.
-"""
-
-    result = _analyze(
-        content,
-        source,
-        corpus_citation_path="us/statute/42/1437c–1",
-        test_cases=[],
-    )
-
-    assert not result.issues
 
 
 def test_deferral_cannot_name_its_own_branch_as_missing_dependency():
@@ -2069,6 +2040,12 @@ rules: []
     )
 
     assert _has_issue(result, "(a)", "deferral", "runtime capability")
+    issue = next(
+        issue
+        for issue in result.issues
+        if issue.startswith("[complete-source-unit:deferral]")
+    )
+    assert "`42 U.S.C. 1437c-1(a)`" in issue
 
 
 def test_current_usc_branch_cannot_defer_directly_computable_source():

@@ -1652,9 +1652,10 @@ Complete-source-unit mode is enabled for this request:
   `blocked_by` only for known exact RuleSpec targets with a `#rule_fragment`;
   otherwise omit `blocked_by` and name the exact missing legal dependency or
   citation in `reason`. For a runtime-gap deferral of a current-source branch,
-  the `reason` itself must literally cite the complete legal branch (for
-  example, `42 U.S.C. 1437c-1(f)`) and name a concrete source-stated missing
-  input or runtime capability. The output path alone is not that citation.
+  the `reason` itself must literally cite the complete legal branch, including
+  every subsection marker represented by the output branch, and name a
+  concrete source-stated missing input or runtime capability. The output path
+  is not a source citation.
   Never guess a blocker target.
 - Before returning YAML, inventory every top-level structural branch in the
   authoritative source and verify that each branch has either an executable

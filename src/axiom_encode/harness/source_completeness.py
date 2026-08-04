@@ -1025,18 +1025,36 @@ module:
   deferred_outputs:
     - output: de:statutes/estg/32a/6#surviving_spouse_splitting_tax
       reason: Cannot be computed until the joint-assessment conditions cited in EStG § 26 are encoded.
-For a current-source administrative runtime gap, use this shape instead:
-module:
-  deferred_outputs:
-    - output: us:statutes/42/1437c-1/f#public_hearing_process
-      reason: >-
-        Cannot be computed until the public-hearing event and governing-body
-        consultation records required by 42 U.S.C. 1437c-1(f) are available at runtime.
 `output` and `reason` are required; `blocked_by` is optional and, when present, \
 must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
 exists, cite the exact current source branch and name its concrete source-stated missing \
 input or runtime capability in the `reason` itself; the output path is not a source \
 citation, and a generic claim that the branch is unavailable is invalid."""
+
+
+def _imprecise_deferral_retry_shape(
+    *,
+    corpus_citation_path: str,
+    path: tuple[str, ...],
+) -> str:
+    """Render branch-specific retry guidance without inventing source facts."""
+
+    branch_hint = ""
+    if path and corpus_citation_path.startswith("us/statute/"):
+        with contextlib.suppress(ValueError):
+            citation = parse_usc_citation(corpus_citation_path)
+            section = normalize_rulespec_path_segment(citation.section)
+            fragments = "".join(
+                f"({normalize_rulespec_path_segment(part)})" for part in path
+            )
+            branch_hint = (
+                "\nFor this rejected current-source branch, the literal citation "
+                f"required in `reason` is `{citation.title} U.S.C. "
+                f"{section}{fragments}`."
+            )
+    return f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}{branch_hint}"
+
+
 _ABSATZ_REFERENCE = re.compile(
     r"\b(?:Absatz(?:es)?|Absätze(?:n)?|Abs\.)\s*(?P<label>\d+[a-z]?)\b",
     flags=re.IGNORECASE,
@@ -2067,12 +2085,16 @@ def _deferred_coverage(
         else:
             branch_label = path[0] if path else "source unit"
             rendered_path = "/".join(path) or "<source-unit>"
+            retry_shape = _imprecise_deferral_retry_shape(
+                corpus_citation_path=corpus_citation_path,
+                path=path,
+            )
             issues.append(
                 "[complete-source-unit:deferral] "
                 f"`module.deferred_outputs[{index}]` identifies source branch "
                 f"({branch_label}) (`{rendered_path}`) but its deferral does not "
                 "name an exact missing dependency, input, or runtime capability.\n"
-                f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}"
+                f"{retry_shape}"
             )
     return covered, issues
 

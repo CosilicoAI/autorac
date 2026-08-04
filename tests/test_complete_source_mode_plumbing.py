@@ -108,7 +108,7 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "the `reason` itself must literally cite the complete legal branch" in (
         complete_prompt
     )
-    assert "The output path alone is not that citation" in complete_prompt
+    assert "The output path\n  is not a source citation" in complete_prompt
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
@@ -251,7 +251,7 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
     assert "the `reason` itself must literally cite the complete legal branch" in (
         complete_prompt
     )
-    assert "The output path alone is not that citation" in complete_prompt
+    assert "The output path\n  is not a source citation" in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
     )
