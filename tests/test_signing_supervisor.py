@@ -2171,6 +2171,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '> "$RUNNER_TEMP/source-bundle-citations.txt"' in command
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
     assert '"$source_citation" "" true "$source_lane" "" "" false' in command
+    assert '"$CITATION" "" true target-preflight \\' in command
+    assert "Canonicalize signed replacement target before source bundle" in command
     assert "checkpoint_signed_changes()" in command
     assert 'local guard_status="$?"' in command
     assert 'jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2' in command
@@ -2639,7 +2641,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         if step.get("name") == "Encode, review, validate, and apply"
     )
     checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
-        "\n}\n\nsource_index=0",
+        '\n}\n\nif [ "$source_bundle_enabled"',
         1,
     )[0]
     guard_stub = tmp_path / "guard-stub"
@@ -3160,7 +3162,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         1,
     )
     _checkpoint_body, after_checkpoint = checkpoint_and_after.split(
-        "\n}\n\nsource_index=0",
+        '\n}\n\nif [ "$source_bundle_enabled"',
         1,
     )
     command = (
@@ -3168,7 +3170,7 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
         + "checkpoint_signed_changes() {\n"
         + '  printf \'%s\\n\' "$1" >> "$CHECKPOINTS_PATH"\n'
         + '  : > "$RUNNER_TEMP/checkpoint-guard-generated.json"\n'
-        + "}\n\nsource_index=0"
+        + '}\n\nif [ "$source_bundle_enabled"'
         + after_checkpoint
     )
 
@@ -3192,6 +3194,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     runner_temp.mkdir()
     _prepare_empty_signed_import_inputs(runner_temp)
     primary = "us-ri/statute/44-30-2.6"
+    replacement_path = "us-ri/statutes/44-30-2.6.yaml"
     sources = [
         "us-ri/statute/44-30-1",
         "us-ri/guidance/revenue/2026/rate-schedule",
@@ -3210,6 +3213,8 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "DEPENDENT_CITATION": "",
             "DEPENDENT_REVIEW_FINDING": "",
             "GITHUB_WORKSPACE": str(tmp_path),
+            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "REPLACE_RULESPEC_PATH": replacement_path,
             "REVIEW_FINDING": "Preserve the composed target semantics.",
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RULESPEC_REF": "a" * 40,
@@ -3224,9 +3229,17 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
     calls = [
         json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert len(calls) == 3
+    assert len(calls) == 4
     encode_args = [call[call.index("--") + 1 :] for call in calls]
-    for index, source in enumerate(sources):
+    preflight_args = encode_args[0]
+    assert preflight_args[-1] == primary
+    assert "--apply-target-only" in preflight_args
+    assert "--review-findings" not in preflight_args
+    replacement_index = preflight_args.index("--replace-rulespec-path")
+    assert preflight_args[replacement_index + 1] == replacement_path
+    assert "--required-import-rulespec-path" not in preflight_args
+
+    for index, source in enumerate(sources, start=1):
         assert encode_args[index][-1] == source
         assert "--apply-target-only" in encode_args[index]
         assert "--required-import-rulespec-path" not in encode_args[index]
@@ -3244,6 +3257,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "us-ri/policies/revenue/2026/rate-schedule.yaml",
     ]
     assert checkpoints_path.read_text(encoding="utf-8").splitlines() == [
+        "Canonicalize signed replacement target before source bundle",
         f"Add signed source module for {sources[0]}",
         f"Add signed source module for {sources[1]}",
         f"Compose signed source bundle for {primary}",

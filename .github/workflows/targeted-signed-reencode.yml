@@ -1108,6 +1108,18 @@ jobs:
               commit -m "$message"
           }
 
+          if [ "$source_bundle_enabled" = "true" ] && \
+             [ -n "$REPLACE_RULESPEC_PATH" ] && \
+             [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+            run_signed_encode \
+              "$CITATION" "" true target-preflight \
+              "$REPLACE_RULESPEC_PATH" "" false
+            checkpoint_signed_changes \
+              "Canonicalize signed replacement target before source bundle"
+            cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
+              "$RUNNER_TEMP/target-preflight-guard-generated.json"
+          fi
+
           source_index=0
           while IFS= read -r source_citation; do
             source_index=$((source_index + 1))
@@ -1260,6 +1272,9 @@ jobs:
               cp "$source_guard" "$artifact/"
             fi
           done
+          if [ -f "$RUNNER_TEMP/target-preflight-guard-generated.json" ]; then
+            cp "$RUNNER_TEMP/target-preflight-guard-generated.json" "$artifact/"
+          fi
           "${workflow_python[@]}" - \
             "$artifact/context-manifest.json" \
             "$artifact/apply-manifests.json" <<'PY'
