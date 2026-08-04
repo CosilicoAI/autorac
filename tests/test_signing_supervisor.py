@@ -2090,6 +2090,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "--workflow-run-id",
     ):
         assert immutable_argument in repair_command
+    assert 'echo "runner=$(jq -r' in repair_command
 
     provision_step = next(
         step
@@ -2395,6 +2396,18 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert package_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
     assert package_step["env"]["RULESPEC_REF"] == "${{ inputs.rulespec_ref }}"
+    assert package_step["env"]["REPAIR_CANDIDATE_PATH"] == (
+        "${{ steps.repair_candidate.outputs.path }}"
+    )
+    assert package_step["env"]["REPAIR_CANDIDATE_RUNNER"] == (
+        "${{ steps.repair_candidate.outputs.runner }}"
+    )
+    assert package_step["env"]["REPAIR_CANDIDATE_RULESPEC_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.rulespec_sha256 }}"
+    )
+    assert package_step["env"]["REPAIR_CANDIDATE_TESTS_SHA256"] == (
+        "${{ steps.repair_candidate.outputs.tests_sha256 }}"
+    )
     assert '"$RULESPEC_REF" > "$artifact/tracked.patch"' in package_command
     assert '"$RULESPEC_REF" HEAD >> "$artifact/status.txt"' in package_command
     assert "diff --binary --full-index HEAD" not in package_command
@@ -2432,6 +2445,11 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '"queue_item_generation_sha256": (' in package_command
     assert '"queue_manifest_sha256": (' in package_command
     assert '"repair_candidate": repair_candidate' in package_command
+    assert 'Path(os.environ["RUNNER_TEMP"]) / "repair-candidate.json"' not in (
+        package_command
+    )
+    assert "consumed_rulespec_sha256 = os.environ.get(" in package_command
+    assert "consumed_tests_sha256 = os.environ.get(" in package_command
     assert '"repair_run_id": os.environ.get("REPAIR_RUN_ID") or None' in (
         package_command
     )
@@ -4006,6 +4024,103 @@ def _targeted_package_script() -> str:
     return package_command.split(marker, 1)[1].split(
         '\nPY\n"${workflow_python[@]}" - "$artifact/metadata.json"', 1
     )[0]
+
+
+def _targeted_metadata_script() -> str:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    package_command = next(
+        step
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Package exact generated changes"
+    )["run"]
+    marker = '"${workflow_python[@]}" - "$artifact/metadata.json" <<\'PY\'\n'
+    return package_command.split(marker, 1)[1].split(
+        '\nPY\ntest -s "$artifact/status.txt"', 1
+    )[0]
+
+
+def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation(
+    tmp_path: Path,
+) -> None:
+    script = _targeted_metadata_script()
+    heads: dict[str, str] = {}
+    for name in ("axiom-encode", "axiom-corpus", "axiom-rules-engine", "rulespec-us"):
+        repository = tmp_path / name
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=repository,
+            check=True,
+        )
+        (repository / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repository, check=True)
+        heads[name] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+        ).strip()
+
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    (runner_temp / "source-bundle.json").write_text("[]\n", encoding="utf-8")
+    (runner_temp / "existing-signed-imports.json").write_text("[]\n", encoding="utf-8")
+    (runner_temp / "existing-signed-import-inventory.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    (runner_temp / "repair-candidate.json").write_text(
+        json.dumps(
+            {
+                "path": "statutes/42/mutated.yaml",
+                "root": "/mutated",
+                "rulespec_sha256": "b" * 64,
+                "runner": "mutated-runner",
+                "tests_sha256": "c" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metadata_path = tmp_path / "metadata.json"
+    completed = subprocess.run(
+        [sys.executable, "-", str(metadata_path)],
+        cwd=tmp_path,
+        input=script,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "CITATION": "us/statute/42/1437c\u20131",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "5678",
+            "PR_BASE_BRANCH": "hard-cut/canonical-layout-us",
+            "REPAIR_CANDIDATE_PATH": "statutes/42/1437c-1.yaml",
+            "REPAIR_CANDIDATE_RUNNER": "openai-gpt-5.6-sol",
+            "REPAIR_CANDIDATE_RULESPEC_SHA256": "d" * 64,
+            "REPAIR_CANDIDATE_TESTS_SHA256": "e" * 64,
+            "REPAIR_RUN_ID": "1234",
+            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+            "RULESPEC_REF": heads["rulespec-us"],
+            "RUNNER_TEMP": str(runner_temp),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["repair_candidate"] == {
+        "path": "statutes/42/1437c-1.yaml",
+        "rulespec_sha256": "d" * 64,
+        "run_id": "1234",
+        "runner": "openai-gpt-5.6-sol",
+        "tests_sha256": "e" * 64,
+    }
 
 
 @pytest.mark.parametrize(

@@ -186,10 +186,10 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
         if not isinstance(metadata, dict) or metadata.get("schema") != SCHEMA:
             raise ValueError("repair artifact metadata schema is invalid")
         for field, expected in expected_fields.items():
-            if metadata.get(field) != expected:
+            if field not in metadata or metadata[field] != expected:
                 raise ValueError(f"repair artifact metadata mismatch: {field}")
         for field, expected in SINGLE_TARGET_MODE_FIELDS.items():
-            if metadata.get(field) != expected:
+            if field not in metadata or metadata[field] != expected:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )

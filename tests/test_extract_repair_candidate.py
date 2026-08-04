@@ -196,6 +196,20 @@ def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
         extract_candidate(_args(tmp_path, replacement))
 
 
+@pytest.mark.parametrize("field", sorted(SINGLE_TARGET_MODE_FIELDS))
+def test_rejects_missing_prior_run_mode_field(tmp_path, field):
+    archive, metadata = _archive(tmp_path)
+    del metadata[field]
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "missing-mode-field.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match=f"single-target run: {field}"):
+        extract_candidate(_args(tmp_path, replacement))
+
+
 def test_candidate_size_bound_is_shared_at_exact_limit(tmp_path):
     archive, _ = _archive(tmp_path, candidate=b"x" * MAX_CANDIDATE_BYTES)
 

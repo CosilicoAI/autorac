@@ -474,6 +474,8 @@ jobs:
             >> "$GITHUB_OUTPUT"
           echo "path=$(jq -r '.path' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
+          echo "runner=$(jq -r '.runner' "$RUNNER_TEMP/repair-candidate.json")" \
+            >> "$GITHUB_OUTPUT"
           echo "rulespec_sha256=$(jq -r '.rulespec_sha256' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
           echo "tests_sha256=$(jq -r '.tests_sha256' "$RUNNER_TEMP/repair-candidate.json")" \
@@ -1422,6 +1424,10 @@ jobs:
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_RUNNER: ${{ steps.repair_candidate.outputs.runner }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -2352,30 +2358,35 @@ jobs:
 
           repair_run_id = os.environ.get("REPAIR_RUN_ID") or None
           repair_candidate = None
-          repair_candidate_path = (
-              Path(os.environ["RUNNER_TEMP"]) / "repair-candidate.json"
-          )
           if repair_run_id:
-              repair_candidate_payload = json.loads(
-                  repair_candidate_path.read_text(encoding="utf-8")
+              consumed_path = os.environ.get("REPAIR_CANDIDATE_PATH", "")
+              consumed_runner = os.environ.get("REPAIR_CANDIDATE_RUNNER", "")
+              consumed_rulespec_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_RULESPEC_SHA256", ""
               )
-              if (
-                  not isinstance(repair_candidate_payload, dict)
-                  or set(repair_candidate_payload)
-                  != {"path", "root", "rulespec_sha256", "runner", "tests_sha256"}
-                  or any(
-                      re.fullmatch(r"[0-9a-f]{64}", str(repair_candidate_payload[key]))
-                      is None
-                      for key in ("rulespec_sha256", "tests_sha256")
+              consumed_tests_sha256 = os.environ.get(
+                  "REPAIR_CANDIDATE_TESTS_SHA256", ""
+              )
+              if not consumed_path or not re.fullmatch(
+                  r"[a-z0-9][a-z0-9._:/-]*\.yaml", consumed_path
+              ):
+                  raise SystemExit("repair candidate evidence path is malformed")
+              if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumed_runner):
+                  raise SystemExit("repair candidate evidence runner is malformed")
+              if any(
+                  re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  for digest in (
+                      consumed_rulespec_sha256,
+                      consumed_tests_sha256,
                   )
               ):
                   raise SystemExit("repair candidate evidence is malformed")
               repair_candidate = {
                   "run_id": repair_run_id,
-                  "path": repair_candidate_payload["path"],
-                  "runner": repair_candidate_payload["runner"],
-                  "rulespec_sha256": repair_candidate_payload["rulespec_sha256"],
-                  "tests_sha256": repair_candidate_payload["tests_sha256"],
+                  "path": consumed_path,
+                  "runner": consumed_runner,
+                  "rulespec_sha256": consumed_rulespec_sha256,
+                  "tests_sha256": consumed_tests_sha256,
               }
 
           payload = {
