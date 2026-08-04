@@ -58,6 +58,11 @@ from axiom_encode.repo_routing import (
     jurisdiction_subdir_names,
     monorepo_checkout_name,
 )
+from axiom_encode.retry_feedback import (
+    VALIDATION_RETRY_FEEDBACK_MAX_ITEMS,
+    VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS,
+    bounded_validation_retry_feedback_item,
+)
 from axiom_encode.signing_broker import SigningBroker
 from axiom_encode.statute import (
     CitationParts,
@@ -9080,13 +9085,19 @@ def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
     """Render bounded prior-attempt validator output as non-authority guidance."""
 
     rendered_items: list[str] = []
+    rendered_chars = 0
     seen: set[str] = set()
-    for raw_item in feedback[:12]:
-        item = str(raw_item).strip()[:2000]
-        if not item or item in seen:
+    for raw_item in feedback[:VALIDATION_RETRY_FEEDBACK_MAX_ITEMS]:
+        item = bounded_validation_retry_feedback_item(str(raw_item))
+        if (
+            not item
+            or item in seen
+            or rendered_chars + len(item) > VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS
+        ):
             continue
         seen.add(item)
         rendered_items.append(f"- {json.dumps(item, ensure_ascii=False)}")
+        rendered_chars += len(item)
     if not rendered_items:
         return ""
     return f"""
