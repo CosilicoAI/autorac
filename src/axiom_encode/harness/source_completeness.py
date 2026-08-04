@@ -645,6 +645,31 @@ _LEGAL_ACTOR_HEAD_TERMS = frozenset(
         "service",
     }
 )
+_LEGAL_ACTOR_ACRONYMS = frozenset(
+    {
+        "cms",
+        "dhs",
+        "dod",
+        "doe",
+        "doj",
+        "dol",
+        "dot",
+        "epa",
+        "fcc",
+        "fda",
+        "fema",
+        "fns",
+        "ftc",
+        "hhs",
+        "hud",
+        "irs",
+        "omb",
+        "sec",
+        "ssa",
+        "usda",
+        "va",
+    }
+)
 _LEGAL_INSTRUMENT_TERMS = frozenset(
     {
         "act",
@@ -2856,9 +2881,13 @@ def _coordinated_dependency_object_phrase_is_bounded(tokens: list[str]) -> bool:
         object_tokens = tokens[actor_end:]
         if not _dependency_subject_phrase_is_bounded(" ".join(object_tokens)):
             continue
-        if len(object_tokens) == 1 and (
-            _dependency_token_forms(object_tokens[0])
-            & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+        if (
+            len(object_tokens) == 1
+            and (
+                _dependency_token_forms(object_tokens[0])
+                & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+            )
+            and not _legal_actor_acronym_phrase_is_bounded(" ".join(tokens[:actor_end]))
         ):
             return False
         return True
@@ -2880,6 +2909,7 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
                 continue
             is_input_requirement = (
                 predicate.lower() == "input"
+                and len(trailing_object) == 1
                 and "requirement" in _dependency_token_forms(trailing_object[-1])
                 and not {
                     "a",
@@ -2900,6 +2930,7 @@ def _coordinated_phrase_has_finite_predicate(tokens: list[str]) -> bool:
             subject_is_actor
             and _dependency_token_forms(predicate)
             & _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS
+            and not _legal_actor_acronym_phrase_is_bounded(subject)
         ):
             continue
         if _dependency_subject_and_predicate_agree(tokens[subject_end - 1], predicate):
@@ -2925,6 +2956,8 @@ def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> boo
 
 
 def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
+    if _legal_actor_acronym_phrase_is_bounded(phrase):
+        return True
     if re.fullmatch(
         r"(?:the\s+)?(?:[A-Z][A-Za-z-]*\s+){0,5}"
         r"(?:Administration|Agency|Authority|Board|Commission|Department|Office|Service)s?",
@@ -2950,8 +2983,7 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             r"(?:(?:administering|federal|local|public(?:-|\s+)housing|state)\s+)?"
             r"(?:"
             r"agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
-            r"cms|commissioners?|departments?|dhs|dod|doe|dol|epa|fcc|fns|hhs|"
-            r"hud|irs|omb|sec|secretar(?:y|ies)|services?|ssa|usda|va|"
+            r"commissioners?|departments?|secretar(?:y|ies)|services?|"
             r"internal\s+revenue\s+services?|"
             r"social\s+security\s+administrations?|"
             r"(?:united\s+states\s+)?departments?\s+of\s+(?:the\s+)?"
@@ -2970,6 +3002,11 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _legal_actor_acronym_phrase_is_bounded(phrase: str) -> bool:
+    normalized = re.sub(r"^(?:the\s+)", "", phrase.strip(), flags=re.IGNORECASE)
+    return normalized.lower() in _LEGAL_ACTOR_ACRONYMS
 
 
 def _dependency_token_is_object_modifier_adverb(token: str) -> bool:

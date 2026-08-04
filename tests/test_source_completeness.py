@@ -3483,6 +3483,20 @@ rules: []
         "requirements under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and the program input the data "
         "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the agency input applicable "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and the program input federal "
+        "requirements under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FEMA administers benefits "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FDA determines eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and FTC issues rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and DOJ enforces requirements "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and DOT administers programs "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3550,6 +3564,9 @@ rules: []
         "SSI benefits",
         "TANF program",
         "USC rules",
+        "SSA benefits",
+        "VA benefits",
+        "IRS rules",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
