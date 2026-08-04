@@ -449,12 +449,12 @@ _COORDINATED_FINITE_CLAUSE = re.compile(
     r"(?:,\s*)?\b(?:and|but|or|yet)\s+"
     r"(?:the\s+|a\s+|an\s+|this\s+|that\s+|these\s+|those\s+)?"
     r"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,8}\s+"
-    r"(?:is|are|was|were|has|have|had|does|do|did|receives?|received|"
-    r"depends?|requires?|uses?|includes?|applies?|governs?)\b",
+    r"(?:can|could|is|are|was|were|has|have|had|does|do|did|may|might|must|"
+    r"shall|should|will|would)\b",
     flags=re.IGNORECASE,
 )
 _DEPENDENCY_CONTEXT_COORDINATION = re.compile(
-    r"(?:,\s*)?\b(?:although|and|but|or|while|whereas|yet)\s+",
+    r"(?:,\s*)?\b(?:although|and|but|even\s+though|or|while|whereas|yet)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -2007,7 +2007,10 @@ def _reason_dependency_is_source_bound(
     usc_dependencies = _qualified_usc_dependencies(reason)
     for match in usc_dependencies:
         if not _reason_match_names_missing_dependency(
-            reason, match, source_scope_text=source_scope_text
+            reason,
+            match,
+            source_scope_text=source_scope_text,
+            current_usc_title=(current_citation.title if current_citation else None),
         ) or not _usc_dependency_is_external(
             match,
             current_citation=current_citation,
@@ -2040,6 +2043,7 @@ def _reason_dependency_is_source_bound(
             reason,
             match,
             source_scope_text=source_scope_text,
+            current_usc_title=(current_citation.title if current_citation else None),
         ) or not _prose_dependency_is_external(
             dependency, current_section=current_section
         ):
@@ -2083,6 +2087,7 @@ def _reason_match_names_missing_dependency(
     match: re.Match[str],
     *,
     source_scope_text: str,
+    current_usc_title: str | None,
 ) -> bool:
     clause_start, clause_end = _reason_clause_bounds(reason, match)
     clause = reason[clause_start:clause_end]
@@ -2090,7 +2095,11 @@ def _reason_match_names_missing_dependency(
     reference_end = match.end() - clause_start
     before = clause[:reference_start]
     after = clause[reference_end:]
-    if _reason_dependency_occurrence_is_contextual(reason, match):
+    if _reason_dependency_occurrence_is_contextual(
+        reason,
+        match,
+        current_usc_title=current_usc_title,
+    ):
         return False
     if not _reason_named_instruments_are_source_bound(
         before,
@@ -2204,6 +2213,8 @@ def _reason_match_names_missing_dependency(
 def _reason_dependency_occurrence_is_contextual(
     reason: str,
     match: re.Match[str],
+    *,
+    current_usc_title: str | None,
 ) -> bool:
     """Reject context attached to this citation without crossing into another one."""
 
@@ -2217,7 +2228,12 @@ def _reason_dependency_occurrence_is_contextual(
             *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
         )
         for candidate in candidates:
-            if _usc_dependency_occurrences_match(reason, candidate, match) and (
+            if _usc_dependency_occurrences_match(
+                reason,
+                candidate,
+                match,
+                current_usc_title=current_usc_title,
+            ) and (
                 _CONTEXTUAL_AUTHORITY_LANGUAGE.search(
                     _reason_dependency_local_context(
                         reason,
@@ -2308,12 +2324,19 @@ def _usc_dependency_occurrences_match(
     reason: str,
     left: re.Match[str],
     right: re.Match[str],
+    *,
+    current_usc_title: str | None,
 ) -> bool:
     if _usc_dependencies_match(left, right):
         return True
     left_groups = left.groupdict()
     right_groups = right.groupdict()
-    if left_groups.get("title") or not right_groups.get("title"):
+    if (
+        left_groups.get("title")
+        or not right_groups.get("title")
+        or not current_usc_title
+        or right_groups["title"].lower() != current_usc_title.lower()
+    ):
         return False
     if not re.match(
         r"\s+of\s+this\s+title\b",
@@ -2712,14 +2735,61 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
         tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", coordinated[: linker.start()])
         if len(tokens) < 2:
             continue
-        predicate = tokens[-1].lower()
-        subject = " ".join(tokens[:-1])
-        if _dependency_subject_phrase_is_bounded(subject) and (
-            predicate in {"is", "are", "was", "were", "has", "have", "had"}
-            or re.fullmatch(r"[a-z]+(?:ed|es|ies|s)", predicate)
+        modal_positions = [
+            index
+            for index, token in enumerate(tokens)
+            if token.lower()
+            in {
+                "can",
+                "could",
+                "may",
+                "might",
+                "must",
+                "shall",
+                "should",
+                "will",
+                "would",
+            }
+        ]
+        if any(
+            position > 0
+            and _dependency_subject_phrase_is_bounded(" ".join(tokens[:position]))
+            for position in modal_positions
         ):
             return True
+        predicate = tokens[-1].lower()
+        subject_tokens = tokens[:-1]
+        subject = " ".join(subject_tokens)
+        if not _dependency_subject_phrase_is_bounded(subject):
+            continue
+        if _dependency_subject_phrase_is_bounded(" ".join(tokens)):
+            continue
+        predicate_candidates = {predicate}
+        if predicate.endswith("ies"):
+            predicate_candidates.add(f"{predicate[:-3]}y")
+        if predicate.endswith("es"):
+            predicate_candidates.add(predicate[:-2])
+        if predicate.endswith("s"):
+            predicate_candidates.add(predicate[:-1])
+        if predicate_candidates & _DEPENDENCY_MODIFIER_TERMS:
+            continue
+        subject_is_plural = _dependency_subject_token_is_plural(subject_tokens[-1])
+        predicate_is_singular = bool(re.fullmatch(r"[a-z]+(?:es|ies|s)", predicate))
+        if subject_is_plural != predicate_is_singular and not predicate.endswith("ed"):
+            return True
     return False
+
+
+def _dependency_subject_token_is_plural(token: str) -> bool:
+    lowered = token.lower()
+    candidates = []
+    if lowered.endswith("ies"):
+        candidates.append(f"{lowered[:-3]}y")
+    if lowered.endswith("es"):
+        candidates.append(lowered[:-2])
+    if lowered.endswith("s"):
+        candidates.append(lowered[:-1])
+    return any(candidate in _DEPENDENCY_SUBJECT_TERMS for candidate in candidates)
 
 
 def _reason_direct_missing_introduction_is_bounded(
