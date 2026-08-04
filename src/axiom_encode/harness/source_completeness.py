@@ -215,7 +215,8 @@ _SYMBOLIC_ARITHMETIC_OPERAND = (
     r")"
 )
 _WORDED_ARITHMETIC_EXPRESSION = re.compile(
-    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}\s+(?:plus|minus|mal)\s+"
+    rf"{_SYMBOLIC_ARITHMETIC_OPERAND}\s+"
+    r"(?:plus|minus|mal|less(?!\s+than\b))\s+(?:the\s+)?"
     r"(?!(?:beträgt|gilt|ist|sind|wird|werden|equals?|applies?)\b)"
     rf"{_SYMBOLIC_ARITHMETIC_OPERAND}",
     flags=re.IGNORECASE,
@@ -373,7 +374,14 @@ _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
 )
 _USC_DEFERRAL_DEPENDENCY = re.compile(
     r"\b(?P<title>\d+)\s+U\.?\s*S\.?\s*C\.?\s*"
-    r"(?:§{1,2}\s*)?"
+    r"(?:(?:§{1,2}|sections?)\s*)?"
+    r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
+    flags=re.IGNORECASE,
+)
+_RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
+    r"\bsections?\s+"
     r"(?P<section>\d+[a-z0-9]*(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
     r"\u2212\ufe58\ufe63\uff0d]\d+)?)"
     r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
@@ -1616,15 +1624,24 @@ def _source_scope_cites_usc_dependency(
     *,
     title: str,
     section: str,
+    fragments: tuple[str, ...],
+    allow_relative_reference: bool,
 ) -> bool:
-    """Return whether an operative source clause cites the same USC section."""
+    """Return whether an operative source clause cites the same USC provision."""
 
     normalized_section = normalize_rulespec_path_segment(section.lower())
-    for reference in _USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text):
+    references: list[re.Match[str]] = list(
+        _USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text)
+    )
+    if allow_relative_reference:
+        references.extend(_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(source_scope_text))
+    for reference in references:
+        reference_title = reference.groupdict().get("title")
         if (
-            reference.group("title").lower() != title.lower()
+            (reference_title is not None and reference_title.lower() != title.lower())
             or normalize_rulespec_path_segment(reference.group("section").lower())
             != normalized_section
+            or _usc_dependency_fragments(reference) != fragments
         ):
             continue
         clause_start = (
@@ -1647,6 +1664,16 @@ def _source_scope_cites_usc_dependency(
         ):
             return True
     return False
+
+
+def _usc_dependency_fragments(match: re.Match[str]) -> tuple[str, ...]:
+    return tuple(
+        fragment.lower()
+        for fragment in re.findall(
+            r"\(\s*([A-Za-z0-9]+)\s*\)",
+            match.group("tail") or "",
+        )
+    )
 
 
 def _citation_instrument_identity(
@@ -1705,23 +1732,31 @@ def _reason_dependency_is_source_bound(
 ) -> bool:
     """Require a prose-only dependency citation to occur in the deferred source."""
 
-    for match in _USC_DEFERRAL_DEPENDENCY.finditer(reason):
+    try:
+        current_citation = parse_usc_citation(corpus_citation_path)
+    except ValueError:
+        current_citation = None
+    usc_dependencies = tuple(_USC_DEFERRAL_DEPENDENCY.finditer(reason))
+    for match in usc_dependencies:
         section = normalize_rulespec_path_segment(match.group("section"))
         if _source_scope_cites_usc_dependency(
             source_scope_text,
             title=match.group("title"),
             section=section,
-        ):
-            return True
-        blocker = f"us:statutes/{match.group('title')}/{section}#dependency"
-        if _source_scope_identifies_blocker(
-            source_scope_text,
-            blocker,
-            corpus_citation_path=corpus_citation_path,
+            fragments=_usc_dependency_fragments(match),
+            allow_relative_reference=(
+                current_citation is not None
+                and current_citation.title.lower() == match.group("title").lower()
+            ),
         ):
             return True
 
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
+        if any(
+            dependency.start() <= match.start() and match.end() <= dependency.end()
+            for dependency in usc_dependencies
+        ):
+            continue
         dependency = match.group(0).strip()
         if "#" in dependency and ":" in dependency:
             if _source_scope_identifies_blocker(
@@ -1792,9 +1827,10 @@ def _reason_names_source_bound_runtime_gap(
         rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
         for part in path
     )
+    descendant_guard = r"(?!\s*\()" if len(path) > 1 else ""
     exact_branch_citation = re.compile(
         rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
-        rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}",
+        rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}{descendant_guard}",
         flags=re.IGNORECASE,
     )
     if not exact_branch_citation.search(reason):
@@ -1826,7 +1862,8 @@ def _reason_names_external_dependency(
     current_section = normalize_rulespec_path_segment(
         corpus_citation_path.rstrip("/").rsplit("/", 1)[-1].lower()
     )
-    for match in _USC_DEFERRAL_DEPENDENCY.finditer(reason):
+    usc_dependencies = tuple(_USC_DEFERRAL_DEPENDENCY.finditer(reason))
+    for match in usc_dependencies:
         if current_citation is None:
             return True
         if match.group(
@@ -1836,6 +1873,11 @@ def _reason_names_external_dependency(
         ) != normalize_rulespec_path_segment(current_citation.section.lower()):
             return True
     for match in _PRECISE_DEFERRAL_DEPENDENCY.finditer(reason):
+        if any(
+            dependency.start() <= match.start() and match.end() <= dependency.end()
+            for dependency in usc_dependencies
+        ):
+            continue
         dependency = match.group(0).strip()
         normalized = dependency.lower()
         if any(
