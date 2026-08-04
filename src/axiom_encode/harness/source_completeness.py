@@ -1045,7 +1045,8 @@ def _imprecise_deferral_retry_shape(
             citation = parse_usc_citation(corpus_citation_path)
             section = normalize_rulespec_path_segment(citation.section)
             fragments = "".join(
-                f"({normalize_rulespec_path_segment(part)})" for part in path
+                f"({normalize_rulespec_path_segment(part)})"
+                for part in (*citation.fragments, *path)
             )
             branch_hint = (
                 "\nFor this rejected current-source branch, the literal citation "
@@ -2005,14 +2006,15 @@ def _deferred_coverage(
         output = str(record.get("output") or "").strip()
         output_path = output.split("#", 1)[0]
         path: tuple[str, ...] | None = None
+        display_path: tuple[str, ...] | None = None
         if output_path == base_target:
             path = ()
+            display_path = ()
         elif output_path.startswith(f"{base_target}/"):
-            path = tuple(
-                part.lower()
-                for part in output_path[len(base_target) + 1 :].split("/")
-                if part
+            display_path = tuple(
+                part for part in output_path[len(base_target) + 1 :].split("/") if part
             )
+            path = tuple(part.lower() for part in display_path)
         if path is None:
             continue
         reason = str(record.get("reason") or "").strip()
@@ -2087,7 +2089,7 @@ def _deferred_coverage(
             rendered_path = "/".join(path) or "<source-unit>"
             retry_shape = _imprecise_deferral_retry_shape(
                 corpus_citation_path=corpus_citation_path,
-                path=path,
+                path=display_path or path,
             )
             issues.append(
                 "[complete-source-unit:deferral] "
@@ -3643,11 +3645,12 @@ def _reason_names_source_bound_runtime_gap(
     section_pattern = re.escape(
         normalize_rulespec_path_segment(citation.section)
     ).replace(r"\-", dash_pattern)
+    complete_branch = (*citation.fragments, *path)
     branch_pattern = r"\s*".join(
         rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
-        for part in path
+        for part in complete_branch
     )
-    descendant_guard = r"(?!\s*\()" if len(path) > 1 else ""
+    descendant_guard = r"(?!\s*\()" if len(complete_branch) > 1 else ""
     exact_branch_citation = re.compile(
         rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
         rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}{descendant_guard}",
