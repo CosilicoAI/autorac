@@ -454,7 +454,7 @@ _COORDINATED_FINITE_CLAUSE = re.compile(
     flags=re.IGNORECASE,
 )
 _DEPENDENCY_CONTEXT_COORDINATION = re.compile(
-    r"(?:,\s*)?\b(?:although|and|but|even\s+though|or|while|whereas|yet)\s+",
+    r"(?:,\s*)?\b(?:although|and|but|even\s+though|or|though|while|whereas|yet)\s+",
     flags=re.IGNORECASE,
 )
 
@@ -546,6 +546,36 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "troubled-agency",
     "year",
 }
+_LEGAL_ACTOR_SUBJECT_TERMS = frozenset(
+    {
+        "administrator",
+        "agency",
+        "authority",
+        "commission",
+        "commissioner",
+        "department",
+        "hud",
+        "irs",
+        "secretary",
+        "service",
+    }
+)
+_DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
+    {
+        "available",
+        "cited",
+        "defined",
+        "described",
+        "eligible",
+        "provided",
+        "received",
+        "referenced",
+        "required",
+        "set",
+        "specified",
+        "supplied",
+    }
+)
 _LEGAL_INSTRUMENT_TERMS = frozenset(
     {
         "act",
@@ -2735,13 +2765,29 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
         tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", coordinated[: linker.start()])
         if len(tokens) < 2:
             continue
-        modal_positions = [
-            index
-            for index, token in enumerate(tokens)
-            if token.lower()
-            in {
+        for subject_end in range(1, len(tokens)):
+            subject_tokens = tokens[:subject_end]
+            subject = " ".join(subject_tokens)
+            if not (
+                _dependency_subject_phrase_is_bounded(subject)
+                or _legal_actor_subject_phrase_is_bounded(subject)
+            ):
+                continue
+            predicate_tokens = tokens[subject_end:]
+            predicate = predicate_tokens[0].lower()
+            if predicate in {
                 "can",
                 "could",
+                "is",
+                "are",
+                "was",
+                "were",
+                "has",
+                "have",
+                "had",
+                "does",
+                "do",
+                "did",
                 "may",
                 "might",
                 "must",
@@ -2749,35 +2795,42 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
                 "should",
                 "will",
                 "would",
-            }
-        ]
-        if any(
-            position > 0
-            and _dependency_subject_phrase_is_bounded(" ".join(tokens[:position]))
-            for position in modal_positions
-        ):
-            return True
-        predicate = tokens[-1].lower()
-        subject_tokens = tokens[:-1]
-        subject = " ".join(subject_tokens)
-        if not _dependency_subject_phrase_is_bounded(subject):
-            continue
-        if _dependency_subject_phrase_is_bounded(" ".join(tokens)):
-            continue
-        predicate_candidates = {predicate}
-        if predicate.endswith("ies"):
-            predicate_candidates.add(f"{predicate[:-3]}y")
-        if predicate.endswith("es"):
-            predicate_candidates.add(predicate[:-2])
-        if predicate.endswith("s"):
-            predicate_candidates.add(predicate[:-1])
-        if predicate_candidates & _DEPENDENCY_MODIFIER_TERMS:
-            continue
-        subject_is_plural = _dependency_subject_token_is_plural(subject_tokens[-1])
-        predicate_is_singular = bool(re.fullmatch(r"[a-z]+(?:es|ies|s)", predicate))
-        if subject_is_plural != predicate_is_singular and not predicate.endswith("ed"):
-            return True
+            }:
+                return True
+            predicate_candidates = {predicate}
+            if predicate.endswith("ies"):
+                predicate_candidates.add(f"{predicate[:-3]}y")
+            if predicate.endswith("es"):
+                predicate_candidates.add(predicate[:-2])
+            if predicate.endswith("s"):
+                predicate_candidates.add(predicate[:-1])
+            if predicate_candidates & _DEPENDENCY_MODIFIER_TERMS:
+                continue
+            if (
+                len(predicate_tokens) == 1
+                and predicate in _DEPENDENCY_OBJECT_MODIFIER_TERMS
+            ):
+                continue
+            if predicate.endswith("ed"):
+                return True
+            subject_is_plural = _dependency_subject_token_is_plural(subject_tokens[-1])
+            predicate_is_singular = bool(re.fullmatch(r"[a-z]+(?:es|ies|s)", predicate))
+            if subject_is_plural != predicate_is_singular:
+                return True
     return False
+
+
+def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:a|an|the|this|that|these|those)?\s*"
+            r"(?:(?:administering|federal|local|public-housing|state)\s+)?"
+            r"(?:agency|administrator|authority|commission|commissioner|"
+            r"department|hud|irs|secretary|service)",
+            phrase,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _dependency_subject_token_is_plural(token: str) -> bool:
@@ -2789,7 +2842,11 @@ def _dependency_subject_token_is_plural(token: str) -> bool:
         candidates.append(lowered[:-2])
     if lowered.endswith("s"):
         candidates.append(lowered[:-1])
-    return any(candidate in _DEPENDENCY_SUBJECT_TERMS for candidate in candidates)
+    return any(
+        candidate in _DEPENDENCY_SUBJECT_TERMS
+        or candidate in _LEGAL_ACTOR_SUBJECT_TERMS
+        for candidate in candidates
+    )
 
 
 def _reason_direct_missing_introduction_is_bounded(

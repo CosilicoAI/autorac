@@ -3085,6 +3085,14 @@ rules: []
         "may qualify under 42 USC 1437f(o).",
         "(b) The Social Security Act governs historical records and benefits "
         "qualify under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and an agency provides "
+        "assistance under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and assistance remains "
+        "available under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and benefits qualify "
+        "independently under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and assistance existed "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3111,7 +3119,14 @@ rules: []
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
 
 
-def test_named_instrument_can_cross_coordinated_object_participle():
+@pytest.mark.parametrize(
+    "object_phrase",
+    [
+        "assistance received",
+        "benefits eligible",
+    ],
+)
+def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
     content = """\
 format: rulespec/v1
 module:
@@ -3125,8 +3140,8 @@ module:
 rules: []
 """
     source = (
-        "(b) The Social Security Act governs historical records and assistance "
-        "received under 42 USC 1437f(o)."
+        "(b) The Social Security Act governs historical records and "
+        f"{object_phrase} under 42 USC 1437f(o)."
     )
 
     result = _analyze(
@@ -3495,8 +3510,9 @@ rules: []
     assert not _has_issue(result, "(b)", "deferral")
 
 
-def test_prior_citation_context_across_even_though_is_not_attributed():
-    content = """\
+@pytest.mark.parametrize("coordination", ["even though", "though"])
+def test_prior_citation_context_across_though_is_not_attributed(coordination: str):
+    content = f"""\
 format: rulespec/v1
 module:
   source_verification:
@@ -3504,7 +3520,7 @@ module:
   deferred_outputs:
     - output: us:statutes/42/1437c-1/b#annual_plan_requirement
       reason: >-
-        7 USC 9999 is included only as nonbinding authority, even though 42 USC
+        7 USC 9999 is included only as nonbinding authority, {coordination} 42 USC
         1437f(o) is binding. Cannot be computed until benefit amount depends on
         42 USC 1437f(o) is encoded.
 rules: []
