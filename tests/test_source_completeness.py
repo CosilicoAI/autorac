@@ -2576,6 +2576,8 @@ rules: []
         "the assertion that this historical example requires",
         "benefit amount under the nonbinding example program referenced by",
         "eligibility status under the merely illustrative statute cited in",
+        "benefit amount under the Nonbinding Example Program referenced by",
+        "eligibility status under the Merely Illustrative Statute cited in",
     ],
 )
 def test_contextual_subject_cannot_launder_dependency_linker(subject: str):
@@ -2603,6 +2605,45 @@ rules: []
     )
 
     assert _has_issue(result, "(b)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    [
+        "Section 8 Management Assessment Program",
+        "Food and Nutrition Act",
+        "Internal Revenue Code",
+        "Social Security Act",
+        "Administrative Procedure Act",
+        "Veterans Benefits Act",
+    ],
+)
+def test_named_legal_instrument_dependency_is_bounded(instrument: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1/b#annual_plan_requirement
+      reason: >-
+        Cannot be computed until benefit amount under the {instrument}
+        referenced by 42 USC 1437f(o) is encoded.
+rules: []
+"""
+    source = (
+        "(b) The annual plan applies when an agency receives assistance under "
+        "42 USC 1437f(o)."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1437c-1",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(b)", "deferral")
 
 
 @pytest.mark.parametrize(

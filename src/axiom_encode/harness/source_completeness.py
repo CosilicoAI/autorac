@@ -494,6 +494,40 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "troubled-agency",
     "year",
 }
+_LEGAL_INSTRUMENT_TERMS = frozenset(
+    {
+        "act",
+        "administrative",
+        "affordable",
+        "assessment",
+        "assistance",
+        "benefit",
+        "benefits",
+        "care",
+        "code",
+        "education",
+        "families",
+        "federal",
+        "food",
+        "housing",
+        "internal",
+        "management",
+        "needy",
+        "nutrition",
+        "procedure",
+        "program",
+        "public",
+        "regulation",
+        "revenue",
+        "section",
+        "security",
+        "social",
+        "statute",
+        "supplemental",
+        "temporary",
+        "veterans",
+    }
+)
 _DEPENDENCY_STATE_VALUE = (
     r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
     r"established|furnished|implemented|known|made\s+available|missing|"
@@ -2350,7 +2384,9 @@ def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
         return False
     connectors = {"and", "for", "of", "the", "to"}
     return all(
-        token.isdigit() or token.lower() in connectors or token[0].isupper()
+        token.isdigit()
+        or token.lower() in connectors
+        or token.lower() in _LEGAL_INSTRUMENT_TERMS
         for token in tokens[:-1]
     )
 
