@@ -619,38 +619,36 @@ _DEPENDENCY_NUMBER_AMBIGUOUS_TERMS = frozenset({"data"})
 _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS = frozenset(
     {"cost", "cut", "hit", "input", "put", "read", "set", "spread"}
 )
-_DEPENDENCY_IRREGULAR_FINITE_VERB_TERMS = frozenset(
+_DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS = frozenset(
     {
-        "became",
-        "began",
-        "brought",
-        "built",
-        "bought",
-        "chose",
-        "came",
-        "did",
-        "drew",
-        "found",
-        "gave",
-        "got",
-        "had",
-        "held",
-        "kept",
-        "led",
-        "left",
-        "lost",
-        "made",
-        "met",
-        "paid",
-        "ran",
-        "sent",
-        "showed",
-        "taught",
-        "told",
-        "took",
-        "went",
-        "won",
-        "wrote",
+        "amendment",
+        "benefit",
+        "earning",
+        "payment",
+        "policy",
+        "prescription",
+        "program",
+        "record",
+        "resource",
+        "rule",
+        "saving",
+        "waiver",
+        "work",
+    }
+)
+_DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS = frozenset(
+    {
+        "administration",
+        "criteria",
+        "eligibility",
+        "limit",
+        "policy",
+        "procedure",
+        "program",
+        "requirement",
+        "rule",
+        "standard",
+        "threshold",
     }
 )
 _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
@@ -3054,35 +3052,9 @@ def _unlisted_actor_acronym_starts_finite_clause(tokens: list[str]) -> bool:
         return False
     if _actor_nominal_object_is_bounded(tokens, actor_end=1):
         return False
-    predicate = tokens[1].lower()
     if not _dependency_subject_phrase_is_bounded(" ".join(tokens[2:])):
         return False
-    return _dependency_predicate_is_finite(tokens[0], predicate)
-
-
-def _dependency_predicate_is_finite(subject: str, predicate: str) -> bool:
-    return (
-        predicate
-        in {
-            "can",
-            "could",
-            "does",
-            "has",
-            "is",
-            "may",
-            "might",
-            "must",
-            "shall",
-            "should",
-            "was",
-            "will",
-            "would",
-        }
-        or predicate in _DEPENDENCY_IRREGULAR_FINITE_VERB_TERMS
-        or predicate in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
-        or predicate.endswith("ed")
-        or _dependency_subject_and_predicate_agree(subject, predicate)
-    )
+    return True
 
 
 def _legal_actor_acronym_sequence_end(tokens: list[str]) -> int | None:
@@ -3115,27 +3087,28 @@ def _actor_nominal_object_is_bounded(
     if (
         len(object_tokens) < 2
         or object_tokens[0].lower() in _DEPENDENCY_ZERO_MARKED_FINITE_VERB_TERMS
-        or not (_dependency_token_forms(object_tokens[0]) & _DEPENDENCY_MODIFIER_TERMS)
-        or not _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
     ):
         return False
+    predicate_forms = _dependency_token_forms(object_tokens[0])
+    if (
+        len(object_tokens) >= 3
+        and predicate_forms & _DEPENDENCY_MODIFIER_TERMS
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens))
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens[1:]))
+    ):
+        return True
+    if (
+        predicate_forms & _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS
+        and _dependency_token_forms(object_tokens[-1])
+        & _DEPENDENCY_ACTOR_NOMINAL_HEAD_TERMS
+        and _dependency_subject_phrase_is_bounded(" ".join(object_tokens[1:]))
+    ):
+        return True
     if len(object_tokens) >= 3 and _dependency_subject_phrase_is_bounded(
         " ".join(object_tokens[1:])
     ):
-        return True
-    if len(object_tokens) == 2 and (
-        "benefit" in _dependency_token_forms(object_tokens[0])
-        and "program" in _dependency_token_forms(object_tokens[1])
-    ):
-        return True
-    actor_tokens = [
-        token.lower()
-        for token in tokens[:actor_end]
-        if token.lower() not in {"and", "or"}
-    ]
-    return len(actor_tokens) > 1 and all(
-        token in _LEGAL_ACTOR_ACRONYMS for token in actor_tokens
-    )
+        return bool(predicate_forms & _DEPENDENCY_COMPOUND_NOMINAL_TERMS)
+    return False
 
 
 def _coordinated_dependency_object_modifier_is_bounded(tokens: list[str]) -> bool:

@@ -3567,6 +3567,12 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and nhtsa limits benefits under "
         "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA oversaw programs under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and BIA sought information under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NPS saw benefits under "
+        "42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3650,6 +3656,10 @@ rules: []
         "Medicaid waiver eligibility rules",
         "Medicare prescription benefit rules",
         "TSA benefits program",
+        "Medicare Savings Program rules",
+        "SNAP earnings requirements",
+        "VA benefits eligibility",
+        "IRS records policy",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
