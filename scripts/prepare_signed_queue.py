@@ -605,9 +605,7 @@ def build_all_state_snap_queue(
     if not isinstance(states, list) or len(states) != 51:
         raise ValueError("state SNAP source inventory must contain 51 jurisdictions")
 
-    release_path = (
-        corpus_root / "manifests/releases" / f"{release_name}.json"
-    )
+    release_path = corpus_root / "manifests/releases" / f"{release_name}.json"
     release = _load_json(release_path)
     release_scopes = release.get("scopes")
     if not isinstance(release_scopes, list):
@@ -646,9 +644,7 @@ def build_all_state_snap_queue(
             if scope is None:
                 continue
             if not isinstance(scope, dict):
-                raise ValueError(
-                    f"{jurisdiction} {scope_field} is malformed"
-                )
+                raise ValueError(f"{jurisdiction} {scope_field} is malformed")
             scope_key = (
                 scope.get("jurisdiction"),
                 scope.get("document_class"),
@@ -1259,7 +1255,9 @@ def verify_activation_evidence(
     activation = queue["activation"]
     _require_sha(expected_base_sha, "expected_base_sha")
     if activation["finalizer_head_sha"] != expected_base_sha:
-        raise ValueError("activation finalizer head does not match the pull request base")
+        raise ValueError(
+            "activation finalizer head does not match the pull request base"
+        )
     if activation["previous_queue_object_sha256"] != _json_sha256(previous_queue):
         raise ValueError("activation base queue digest does not match")
     if activation["check_runs_sha256"] != _json_sha256(check_runs):
@@ -1333,8 +1331,7 @@ def verify_activation_commit(
     }
     if (
         set(provenance) != expected_fields
-        or provenance.get("schema")
-        != "axiom-encode/snap-queue-activation-commit/v1"
+        or provenance.get("schema") != "axiom-encode/snap-queue-activation-commit/v1"
         or provenance.get("repository") != "TheAxiomFoundation/axiom-encode"
         or provenance.get("queue_path") != activation_changed_files[0]
         or provenance.get("queue_sha256") != queue_file_sha256(queue_path)
@@ -1420,8 +1417,7 @@ def verify_merge_authorization(
     ):
         raise ValueError("merge authorization identifiers are malformed")
     expected_run_url = (
-        "https://github.com/TheAxiomFoundation/axiom-encode/actions/runs/"
-        f"{run_id}"
+        f"https://github.com/TheAxiomFoundation/axiom-encode/actions/runs/{run_id}"
     )
     if authorization.get("merge_workflow_run_url") != expected_run_url:
         raise ValueError("merge authorization workflow URL is malformed")
@@ -1462,7 +1458,9 @@ def verify_merge_authorization(
         or not isinstance(merged_by, dict)
         or merged_by.get("login") != "github-actions[bot]"
     ):
-        raise ValueError("activation pull request was not merged by the trusted workflow")
+        raise ValueError(
+            "activation pull request was not merged by the trusted workflow"
+        )
     if queue_change_sha != authorization["merge_commit"]:
         raise ValueError("active queue was changed outside its authorized merge commit")
 
@@ -1512,13 +1510,9 @@ def verify_paused_transition(
         if any(current[field] != prior[field] for field in immutable_fields):
             raise ValueError(f"paused queue transition rewrote item {item_id}")
         if current["status"] == "completed" and prior["status"] != "completed":
-            raise ValueError(
-                f"paused queue transition cannot complete item {item_id}"
-            )
+            raise ValueError(f"paused queue transition cannot complete item {item_id}")
         if prior["status"] in TERMINAL_STATUSES and current != prior:
-            raise ValueError(
-                f"paused queue transition rewrote terminal item {item_id}"
-            )
+            raise ValueError(f"paused queue transition rewrote terminal item {item_id}")
         if current["attempt"] < prior["attempt"]:
             raise ValueError(
                 f"paused queue transition decreased attempt for item {item_id}"
@@ -1527,7 +1521,10 @@ def verify_paused_transition(
             raise ValueError(
                 f"paused queue transition skipped an attempt for item {item_id}"
             )
-        if current["attempt"] == prior["attempt"] + 1 and current["status"] != "retryable":
+        if (
+            current["attempt"] == prior["attempt"] + 1
+            and current["status"] != "retryable"
+        ):
             raise ValueError(
                 f"paused queue transition changed attempt without retrying {item_id}"
             )
@@ -1546,7 +1543,9 @@ def verify_paused_transition(
             active_queue_sha256=queue_file_sha256(previous_queue_path),
         )
         if queue != expected:
-            raise ValueError("active queue pause transition changed queue items or trust")
+            raise ValueError(
+                "active queue pause transition changed queue items or trust"
+            )
 
 
 def _flatten_pull_requests(payload: object) -> list[dict[str, Any]]:
@@ -1635,9 +1634,9 @@ def _verify_attempt_one_job(
     ):
         raise ValueError(f"{label} job history is incomplete")
     first = by_attempt[1][0]
-    first_success = first.get("status") == "completed" and first.get(
-        "conclusion"
-    ) == "success"
+    first_success = (
+        first.get("status") == "completed" and first.get("conclusion") == "success"
+    )
     first_in_progress = (
         not require_success
         and run_attempt == 1
@@ -1746,9 +1745,7 @@ def reconcile_candidates(
                 None,
             )
             actor = (
-                candidate_run.get("actor")
-                if isinstance(candidate_run, dict)
-                else None
+                candidate_run.get("actor") if isinstance(candidate_run, dict) else None
             )
             if (
                 isinstance(candidate_run, dict)
@@ -1763,8 +1760,7 @@ def reconcile_candidates(
                 == ".github/workflows/targeted-signed-reencode.yml"
                 and isinstance(actor, dict)
                 and actor.get("login") == "github-actions[bot]"
-                and run_marker
-                in str(candidate_run.get("display_title") or "")
+                and run_marker in str(candidate_run.get("display_title") or "")
             ):
                 merged_pr = pr
                 target_run = candidate_run
@@ -1932,8 +1928,7 @@ def _verify_target_evidence(
     artifact_pr = evidence["pull_request"]
     inventory = evidence["apply_manifests"]
     if not all(
-        isinstance(value, dict)
-        for value in (run, metadata, artifact_pr, inventory)
+        isinstance(value, dict) for value in (run, metadata, artifact_pr, inventory)
     ):
         raise ValueError(f"{item['id']} target evidence contains a non-object")
     actor = run.get("actor")
@@ -1993,9 +1988,10 @@ def _verify_target_evidence(
     ):
         raise ValueError(f"{item['id']} target artifact PR identity does not match")
     inventory_items = inventory.get("items")
-    if (
-        inventory.get("schema") != "axiom-encode/applied-manifest-inventory/v1"
-        or not isinstance(inventory_items, list)
+    if inventory.get(
+        "schema"
+    ) != "axiom-encode/applied-manifest-inventory/v1" or not isinstance(
+        inventory_items, list
     ):
         raise ValueError(f"{item['id']} applied manifest inventory is malformed")
     matches = [
@@ -2004,9 +2000,7 @@ def _verify_target_evidence(
         if isinstance(value, dict) and value.get("citation") == item["citation"]
     ]
     if len(matches) != 1:
-        raise ValueError(
-            f"{item['id']} target artifact lacks one applied manifest"
-        )
+        raise ValueError(f"{item['id']} target artifact lacks one applied manifest")
     applied = matches[0]
     relative_path = applied.get("path")
     digest = _require_digest(
@@ -2173,10 +2167,7 @@ def finalize_and_repin(
         expected_markers = (
             f"Queue item: `{payload['queue_id']}/{item['id']}`",
             f"Citation: `{item['citation']}`",
-            (
-                "Queue generation SHA-256: "
-                f"`{evidence['generation_sha256']}`"
-            ),
+            (f"Queue generation SHA-256: `{evidence['generation_sha256']}`"),
             f"Axiom Encode run: {evidence['target_run_url']}",
         )
         pr_head = pr.get("head") if isinstance(pr, dict) else None
@@ -2658,9 +2649,7 @@ def main() -> None:
                 ),
                 merge_run=json.loads(args.merge_run.read_text(encoding="utf-8")),
                 merge_jobs=json.loads(args.merge_jobs.read_text(encoding="utf-8")),
-                pull_request=json.loads(
-                    args.pull_request.read_text(encoding="utf-8")
-                ),
+                pull_request=json.loads(args.pull_request.read_text(encoding="utf-8")),
                 current_head_sha=args.current_head_sha,
                 queue_change_sha=args.queue_change_sha,
             )
@@ -2669,9 +2658,7 @@ def main() -> None:
             verify_activation_commit(
                 args.queue,
                 provenance=json.loads(args.provenance.read_text(encoding="utf-8")),
-                pull_request=json.loads(
-                    args.pull_request.read_text(encoding="utf-8")
-                ),
+                pull_request=json.loads(args.pull_request.read_text(encoding="utf-8")),
                 current_base_sha=args.current_base_sha,
                 current_head_sha=args.current_head_sha,
                 current_tree_sha=args.current_tree_sha,

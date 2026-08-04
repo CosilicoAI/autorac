@@ -10,6 +10,7 @@ import tempfile
 import textwrap
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from unittest.mock import patch
 
 import pytest
@@ -32,6 +33,7 @@ from axiom_encode.harness.policyengine_runtime import (
     PolicyEngineRuntimeError,
 )
 from axiom_encode.harness.proof_validator import (
+    _source_top_level_marker_for_numeric_parent,
     find_rulespec_proof_issues,
     validate_rulespec_proofs,
 )
@@ -13174,6 +13176,436 @@ rules:
         "outside the rule's declared subsection scope" in issue
         and "(7)" in issue
         and "(f)(1)" in issue
+        for issue in result.issues
+    )
+
+
+def _proof_scope_fixture(*, rule_source: str, excerpt: str) -> str:
+    return f"""format: rulespec/v1
+rules:
+  - name: credit_before_proration
+    kind: derived
+    dtype: Money
+    source: {rule_source}
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+
+def test_rulespec_proof_validator_allows_nested_alpha_band_in_numeric_paragraph():
+    source_text = (
+        "a. (1) A resident individual shall be allowed a credit, subject to "
+        "this subsection and subsections b., c., d. and e. of this section. "
+        "(2) The percentage referred to in paragraph (1) shall be: "
+        "(a) 10% for the first taxable year; "
+        "(b) 15% for the second taxable year; (c) 17.5% thereafter. "
+        "(3) A married claimant shall file a joint return."
+    )
+    excerpt = "(b) 15% for the second taxable year;"
+    content = f"""format: rulespec/v1
+rules:
+  - name: credit_before_proration
+    kind: derived
+    dtype: Money
+    source: N.J.S.54A:4-7(a)(1), (a)(2), (a)(4)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_inline_parenthesized_top_level_parent():
+    source_text = (
+        "The resident rules are: (a) Resident credit. "
+        "(2) The percentage shall be: "
+        "(a) 10% for year one; (b) 15% for year two."
+    )
+    excerpt = "(b) 15% for year two."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_period_terminated_nested_items():
+    source_text = (
+        "a. Resident credit. (2) Requirements are: "
+        "(a) First requirement. (b) Second requirement."
+    )
+    excerpt = "(b) Second requirement."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_keeps_dotted_parent_after_prior_nested_item():
+    source_text = (
+        "a. (1) Prior requirements are: (a) Prior item. "
+        "(2) Current requirements are: (a) First. (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_stale_parent_after_new_inline_parent():
+    source_text = (
+        "a. (1) Previous resident rule. The nonresident rules are:\n"
+        "(c) Nonresident credit. (2) Schedule: (a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any("outside" in issue for issue in result.issues)
+
+
+def test_rulespec_proof_validator_allows_inline_parent_after_prior_numeric():
+    source_text = (
+        "(1) Introductory provision. The resident rules are:\n"
+        "(a) Resident credit. (2) Schedule: (a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_keeps_parent_across_abbreviation_period():
+    source_text = (
+        "c. (1) Benefits for U.S. residents include: (a) First category. "
+        "(2) Schedule: (a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    correct_content = _proof_scope_fixture(
+        rule_source="N.J.S.54A:4-7(c)(2)", excerpt=excerpt
+    )
+    stale_content = _proof_scope_fixture(
+        rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt
+    )
+
+    correct_result = validate_rulespec_proofs(
+        correct_content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+    stale_result = validate_rulespec_proofs(
+        stale_content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert correct_result.passed is True
+    assert correct_result.issues == []
+    assert stale_result.passed is False
+    assert any("outside" in issue for issue in stale_result.issues)
+
+
+def test_rulespec_proof_parent_resolution_is_bounded_for_repeated_lists():
+    def resolve_repeated_lists(count: int) -> tuple[tuple[str, str] | None, float]:
+        source_text = " ".join("a. (1) Items: (a) Item." for _ in range(count))
+        numeric_start = source_text.rfind("(1)")
+        started = monotonic()
+        result = _source_top_level_marker_for_numeric_parent(source_text, numeric_start)
+        return result, monotonic() - started
+
+    small_result, small_elapsed = resolve_repeated_lists(192)
+    large_result, large_elapsed = resolve_repeated_lists(768)
+
+    assert small_result == large_result == ("a", "dotted")
+    assert large_elapsed < 1.0
+    assert large_elapsed < max(small_elapsed * 16, 0.05)
+
+
+def test_rulespec_proof_reference_chain_resolution_is_bounded():
+    def resolve_reference_chain(count: int) -> float:
+        source_text = "paragraph " + "".join(
+            f"({index})" for index in range(1, count + 1)
+        )
+        numeric_start = source_text.rfind(f"({count})")
+        started = monotonic()
+        result = _source_top_level_marker_for_numeric_parent(source_text, numeric_start)
+        elapsed = monotonic() - started
+        assert result is None
+        return elapsed
+
+    small_elapsed = resolve_reference_chain(800)
+    large_elapsed = resolve_reference_chain(3200)
+
+    assert large_elapsed < 1.0
+    assert large_elapsed < max(small_elapsed * 10, 0.05)
+
+
+def test_rulespec_proof_parent_resolution_supports_multi_digit_paragraphs():
+    source_text = "a. (12) Categories: (a) First. (13) Current requirement."
+
+    result = _source_top_level_marker_for_numeric_parent(
+        source_text, source_text.rfind("(13)")
+    )
+
+    assert result == ("a", "dotted")
+
+
+def test_rulespec_proof_validator_allows_aligned_parenthesized_parent():
+    source_text = "(a)      (12) Categories: (a) First; (b) Second."
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(12)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_wrapped_numeric_cross_reference():
+    source_text = (
+        f"a. (2) Existing rule. See paragraph\n{' ' * 40}(9): (a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(9)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any("outside" in issue for issue in result.issues)
+
+
+@pytest.mark.parametrize("separator", ["", "      "])
+def test_rulespec_proof_validator_rejects_hierarchical_cross_reference(
+    separator: str,
+):
+    source_text = (
+        "c. Existing rule. See subsection "
+        f"(a){separator}(12) for categories:\n"
+        "(a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(c)(12)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any("outside" in issue for issue in result.issues)
+
+
+@pytest.mark.parametrize("separator", ["", "      "])
+def test_rulespec_proof_validator_rejects_long_hierarchical_cross_reference(
+    separator: str,
+):
+    source_text = (
+        "c. Existing rule. See paragraph "
+        f"(1){separator}(a){separator}(12) for categories:\n"
+        "(a) First; (b) Second."
+    )
+    excerpt = "(b) Second."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(c)(12)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any("outside" in issue for issue in result.issues)
+
+
+def test_rulespec_proof_validator_rejects_ambiguous_period_top_level_transition():
+    source_text = (
+        "(a) Resident credit. (2) Requirement: (a) First requirement. "
+        "(b) Part-year resident credits are prorated."
+    )
+    excerpt = "(b) Part-year resident credits are prorated."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(b)" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_nested_band_under_uncited_top_level():
+    source_text = (
+        "a. (2) The resident percentage shall be: (a) 10% for year one; "
+        "(b) 15% for year two. "
+        "c. (2) The nonresident percentage shall be: (a) 25% for year one; "
+        "(b) 30% for year two."
+    )
+    excerpt = "(b) 30% for year two."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(b)" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_checks_all_duplicate_nested_band_occurrences():
+    excerpt = "(b) 15% for year two."
+    source_text = (
+        "c. (3) The other percentage shall be: (a) 10% for year one; "
+        f"{excerpt} "
+        "a. (2) The resident percentage shall be: (a) 10% for year one; "
+        f"{excerpt}"
+    )
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_ignores_unbounded_in_scope_occurrence():
+    excerpt = "(b) 15 percent"
+    source_text = (
+        "a. (2) The resident percentage shall be: (a) 10 percent; "
+        "(b) 15 percentage points. "
+        "c. (2) The other percentage shall be: (a) 10 percent; "
+        "(b) 15 percent."
+    )
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(b)" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_cross_reference_as_nested_list_marker():
+    source_text = (
+        "(a) Resident credit. (2) See subsection (a) for the percentage. "
+        "(b) Part-year resident credits are prorated."
+    )
+    excerpt = "(b) Part-year resident credits are prorated."
+    content = _proof_scope_fixture(rule_source="N.J.S.54A:4-7(a)(2)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(b)" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_still_rejects_top_level_alpha_after_numeric_child():
+    source_text = (
+        "(a) Resident credit. (2) The percentage is determined by the director. "
+        "(b) Part-year resident credits are prorated."
+    )
+    excerpt = "(b) Part-year resident credits are prorated."
+    content = f"""format: rulespec/v1
+rules:
+  - name: resident_credit
+    kind: derived
+    dtype: Money
+    source: N.J.S.54A:4-7(a)(2)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: {excerpt!r}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_credit * state_percentage
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue and "(b)" in issue
         for issue in result.issues
     )
 

@@ -499,6 +499,7 @@ def _validate_source_proof_atom(
                 else:
                     issues.extend(
                         _proof_excerpt_subsection_scope_issues(
+                            source_text=resolved_text,
                             evidence_text=evidence_text,
                             rule_source=rule_source,
                             label=label,
@@ -938,6 +939,7 @@ def _is_hyphen_marker(character: str) -> bool:
 
 def _proof_excerpt_subsection_scope_issues(
     *,
+    source_text: str,
     evidence_text: str,
     rule_source: Any,
     label: str,
@@ -954,6 +956,13 @@ def _proof_excerpt_subsection_scope_issues(
     excerpt_marker = re.match(r"^\s*\((?P<marker>[a-z])\)(?:\s|$)", evidence_text)
     marker = excerpt_marker.group("marker") if excerpt_marker is not None else None
     if declared and marker is not None and marker not in declared:
+        if _is_nested_alpha_marker_in_declared_numeric_scope(
+            source_text=source_text,
+            evidence_text=evidence_text,
+            marker=marker,
+            scope=scope,
+        ):
+            return []
         return [
             "Proof source evidence not found: "
             f"{label} `source.{field}` appears outside the rule's declared "
@@ -979,6 +988,298 @@ def _proof_excerpt_subsection_scope_issues(
         f"{label} `source.{field}` appears outside the rule's declared "
         f"subsection scope `{rule_source}` (excerpt begins at `({numeric})`)."
     ]
+
+
+def _is_nested_alpha_marker_in_declared_numeric_scope(
+    *,
+    source_text: str,
+    evidence_text: str,
+    marker: str,
+    scope: Mapping[str, frozenset[str] | None],
+) -> bool:
+    """Recognize an alphabetic list nested inside a cited numeric paragraph."""
+    if not any(children for children in scope.values()):
+        return False
+
+    words = re.split(r"\s+", evidence_text.strip())
+    evidence_pattern = r"\s+".join(re.escape(word) for word in words)
+    reference_context_cache: dict[int, bool] = {}
+    for evidence_match in re.finditer(evidence_pattern, source_text):
+        if not _source_evidence_span_is_bounded(
+            evidence_text=evidence_text,
+            source_text=source_text,
+            start=evidence_match.start(),
+            end=evidence_match.end(),
+        ):
+            continue
+        prefix = source_text[: evidence_match.start()]
+        numeric_matches = [
+            match
+            for match in re.finditer(r"\((?P<marker>\d+)\)", prefix)
+            if _source_marker_has_numeric_paragraph_context(
+                source_text,
+                match.start(),
+                reference_context_cache=reference_context_cache,
+            )
+        ]
+        if not numeric_matches:
+            continue
+        numeric_parent = numeric_matches[-1]
+        top_level_scope = _source_top_level_marker_for_numeric_parent(
+            source_text, numeric_parent.start()
+        )
+        if top_level_scope is None:
+            continue
+        top_level, top_level_style = top_level_scope
+        declared_children = scope.get(top_level)
+        if (
+            declared_children is None
+            or numeric_parent.group("marker") not in declared_children
+        ):
+            continue
+
+        nested_matches = list(
+            re.finditer(
+                r"\((?P<marker>[a-z])\)(?:\s|$)",
+                source_text[numeric_parent.end() : evidence_match.start()],
+            )
+        )
+        nested_markers = []
+        for nested_match in nested_matches:
+            nested_start = numeric_parent.end() + nested_match.start()
+            if _source_marker_has_nested_list_context(
+                source_text,
+                start=nested_start,
+                lower_bound=numeric_parent.end(),
+                allow_period=(bool(nested_markers) and top_level_style == "dotted"),
+            ):
+                nested_markers.append(nested_match.group("marker"))
+        if not _source_marker_has_nested_list_context(
+            source_text,
+            start=evidence_match.start(),
+            lower_bound=numeric_parent.end(),
+            allow_period=bool(nested_markers) and top_level_style == "dotted",
+        ):
+            continue
+        nested_markers.append(marker)
+        expected = [chr(ord("a") + index) for index in range(len(nested_markers))]
+        if nested_markers == expected:
+            return True
+    return False
+
+
+def _source_top_level_marker_for_numeric_parent(
+    source_text: str, numeric_start: int
+) -> tuple[str, str] | None:
+    """Resolve alpha parents from one ordered structural-marker stream."""
+    numeric_end = source_text.find(")", numeric_start)
+    end_position = len(source_text) if numeric_end < 0 else numeric_end + 1
+    events = [
+        *(
+            (match.start(), "dotted", match)
+            for match in re.compile(r"(?<![A-Za-z])(?P<marker>[a-z])\.(?=\s)").finditer(
+                source_text, 0, end_position
+            )
+        ),
+        *(
+            (match.start(), "parenthesized", match)
+            for match in re.compile(r"\((?P<marker>[a-z])\)(?=\s)").finditer(
+                source_text, 0, end_position
+            )
+        ),
+        *(
+            (match.start(), "numeric", match)
+            for match in re.compile(r"\(\d+\)").finditer(source_text, 0, end_position)
+        ),
+    ]
+    events.sort(key=lambda event: event[0])
+
+    current_parent: tuple[str, str] | None = None
+    numeric_parent_end: int | None = None
+    numeric_parent_scope: tuple[str, str] | None = None
+    nested_markers: list[str] = []
+    reference_context_cache: dict[int, bool] = {}
+    for start, kind, match in events:
+        if start > numeric_start:
+            break
+        if kind == "numeric":
+            if not _source_marker_has_numeric_paragraph_context(
+                source_text,
+                start,
+                reference_context_cache=reference_context_cache,
+            ):
+                continue
+            if start == numeric_start:
+                return current_parent
+            numeric_parent_end = match.end()
+            numeric_parent_scope = current_parent
+            nested_markers = []
+            continue
+
+        if kind == "dotted":
+            if _source_marker_has_top_level_context(source_text, start):
+                current_parent = (match.group("marker"), "dotted")
+            continue
+
+        is_subordinate = False
+        if numeric_parent_end is not None and numeric_parent_scope is not None:
+            _, numeric_parent_style = numeric_parent_scope
+            if _source_marker_has_nested_list_context(
+                source_text,
+                start=start,
+                lower_bound=numeric_parent_end,
+                allow_period=(
+                    bool(nested_markers) and numeric_parent_style == "dotted"
+                ),
+            ):
+                nested_markers.append(match.group("marker"))
+                expected = [
+                    chr(ord("a") + index) for index in range(len(nested_markers))
+                ]
+                is_subordinate = nested_markers == expected
+        if not is_subordinate and _source_marker_has_top_level_context(
+            source_text, start
+        ):
+            current_parent = (match.group("marker"), "parenthesized")
+    return None
+
+
+def _source_marker_has_top_level_context(source_text: str, start: int) -> bool:
+    line_start = source_text.rfind("\n", 0, start)
+    index = start - 1
+    while index >= 0 and source_text[index].isspace():
+        index -= 1
+    if index < 0 or index <= line_start:
+        return True
+    return source_text[index] in ".?!:"
+
+
+def _source_marker_has_numeric_paragraph_context(
+    source_text: str,
+    start: int,
+    *,
+    reference_context_cache: dict[int, bool] | None = None,
+) -> bool:
+    if _source_position_follows_reference_word(
+        source_text, start, cache=reference_context_cache
+    ):
+        return False
+    index = start - 1
+    while index >= 0 and source_text[index].isspace():
+        index -= 1
+    context_index = index
+    line_start = source_text.rfind("\n", 0, start)
+    if context_index < 0 or context_index <= line_start:
+        return True
+    follows_parenthesized_alpha = (
+        source_text[context_index] == ")"
+        and context_index >= 2
+        and source_text[context_index - 2] == "("
+        and source_text[context_index - 1].islower()
+        and source_text[context_index - 1].isalpha()
+    )
+    follows_dotted_alpha = (
+        source_text[context_index] == "."
+        and context_index >= 1
+        and source_text[context_index - 1].islower()
+        and source_text[context_index - 1].isalpha()
+        and (context_index < 2 or not source_text[context_index - 2].isalpha())
+    )
+    return (
+        source_text[context_index] in ".?!:;"
+        or follows_parenthesized_alpha
+        or follows_dotted_alpha
+    )
+
+
+def _source_position_follows_reference_word(
+    source_text: str,
+    start: int,
+    *,
+    cache: dict[int, bool] | None = None,
+) -> bool:
+    if cache is not None and start in cache:
+        return cache[start]
+    chain_starts = [start]
+    current_start = start
+    result: bool | None = None
+    while True:
+        index = current_start - 1
+        while index >= 0 and source_text[index].isspace():
+            index -= 1
+        if index >= 0 and source_text[index] == ")":
+            marker_start = source_text.rfind("(", 0, index)
+            if marker_start >= 0 and re.fullmatch(
+                r"(?:[a-z]|\d+)", source_text[marker_start + 1 : index]
+            ):
+                if cache is not None and marker_start in cache:
+                    result = cache[marker_start]
+                    break
+                chain_starts.append(marker_start)
+                current_start = marker_start
+                continue
+        if (
+            index >= 1
+            and source_text[index] == "."
+            and source_text[index - 1].islower()
+            and source_text[index - 1].isalpha()
+            and (index < 2 or not source_text[index - 2].isalpha())
+        ):
+            marker_start = index - 1
+            if cache is not None and marker_start in cache:
+                result = cache[marker_start]
+                break
+            chain_starts.append(marker_start)
+            current_start = marker_start
+            continue
+        break
+    if result is None:
+        word_end = index + 1
+        while index >= 0 and source_text[index].isalpha():
+            index -= 1
+        result = source_text[index + 1 : word_end].lower() in {
+            "paragraph",
+            "paragraphs",
+            "subparagraph",
+            "subparagraphs",
+            "subsection",
+            "subsections",
+            "section",
+            "sections",
+            "clause",
+            "clauses",
+            "item",
+            "items",
+        }
+    if cache is not None:
+        cache.update(dict.fromkeys(chain_starts, result))
+    return result
+
+
+def _source_marker_has_nested_list_context(
+    source_text: str,
+    *,
+    start: int,
+    lower_bound: int,
+    allow_period: bool,
+) -> bool:
+    line_start = source_text.rfind("\n", lower_bound, start)
+    if line_start >= lower_bound:
+        line_prefix = source_text[line_start + 1 : start]
+        if line_prefix and not line_prefix.strip():
+            return len(line_prefix.expandtabs(2)) >= 2
+
+    index = start - 1
+    while index >= lower_bound and source_text[index].isspace():
+        index -= 1
+    word_end = index + 1
+    while index >= lower_bound and source_text[index].isalpha():
+        index -= 1
+    if source_text[index + 1 : word_end].lower() in {"and", "or"}:
+        while index >= lower_bound and source_text[index].isspace():
+            index -= 1
+    punctuation = (":", ";", ",", ".") if allow_period else (":", ";", ",")
+    return index >= lower_bound and source_text[index] in punctuation
 
 
 def _rule_source_subsection_scope(
