@@ -6416,7 +6416,7 @@ rules:
     "source",
     [
         "The amount equals " + "income plus supplement, " * 30 + "income.",
-        "The amount equals " + "`income` plus " * 40 + "supplement.",
+        "The amount equals " + "`" * 200 + " income.",
     ],
 )
 def test_long_formula_output_locator_does_not_present_ellipsis_as_source_text(
@@ -6436,7 +6436,14 @@ def test_long_formula_output_locator_does_not_present_ellipsis_as_source_text(
         corpus_citation_path=CORPUS_CITATION_PATH,
         has_path_covering_principal=True,
     )
+    preview, was_truncated = completeness_module._bounded_source_feedback_preview(
+        source
+    )
 
+    if "`" in source:
+        assert len(source) <= 360
+    assert was_truncated
+    assert " ... " in preview
     assert " ... " in feedback
     assert "only a bounded locator and is not source text" in feedback
     assert "copy one contiguous verbatim" in feedback
