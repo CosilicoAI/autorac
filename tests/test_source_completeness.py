@@ -3657,6 +3657,14 @@ rules: []
         "agency determines eligibility under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and federal labor relations "
         "authority determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and TSA and FHA pass rules under "
+        "42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SSA and VA pass eligibility "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal highway administrator "
+        "determines eligibility under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and federal communications "
+        "commissioner issued rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3788,6 +3796,14 @@ rules: []
         "Medicaid LTSS eligibility",
         "SNAP HEA eligibility",
         "TANF SSP requirements",
+        "SSI PASS rules",
+        "Medicare SNP eligibility",
+        "Medicare PACE eligibility",
+        "Medicaid MCO rules",
+        "Medicaid DSH rules",
+        "Medicaid SPA rules",
+        "SNAP LIEAP rules",
+        "Medicare D-SNP eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
