@@ -2071,16 +2071,13 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '.conclusion == "failure"' in repair_command
     assert '.event == "workflow_dispatch"' in repair_command
     assert '.head_branch == "main"' in repair_command
-    assert '.run_attempt == 1' in repair_command
-    assert (
-        '.path == ".github/workflows/targeted-signed-reencode.yml"'
-        in repair_command
-    )
+    assert ".run_attempt == 1" in repair_command
+    assert '.path == ".github/workflows/targeted-signed-reencode.yml"' in repair_command
     assert "merge-base --is-ancestor" in repair_command
     assert '"$repair_encoder_commit" "$GITHUB_SHA"' in repair_command
     assert "repair replay is limited to one non-legacy target" in repair_command
     assert 'test -n "$REPLACE_RULESPEC_PATH"' not in repair_command
-    assert 'targeted-reencode-failure-${REPAIR_RUN_ID}-1' in repair_command
+    assert "targeted-reencode-failure-${REPAIR_RUN_ID}-1" in repair_command
     assert "extract_repair_candidate.py" in repair_command
     for immutable_argument in (
         "--citation",
