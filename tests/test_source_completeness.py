@@ -6302,6 +6302,151 @@ rules:
         "formula clause 2",
         "principal",
     )
+    issue = next(
+        issue
+        for issue in result.issues
+        if "formula-output" in issue and "formula clause 2" in issue
+    )
+    assert "internal punctuation-span ordinal" in issue
+    assert "not a statutory paragraph number" in issue
+    assert "existing path-covering principal output's formula" in issue
+    assert "Otherwise create a principal" in issue
+    assert "or precisely defer the computation" in issue
+    assert "`versions[N].formula` proof atom" in issue
+    assert "`source.corpus_citation_path` is exactly `de/statute/estg/32a`" in issue
+    assert "characters" in issue
+    assert "der zweite Betrag ist Einkommen * 3" in issue
+    assert "shorter excerpt that does not itself state the computation" in issue
+
+
+def test_formula_output_diagnostic_repairs_nj_shaped_root_schedule_binding():
+    schedule_clause = (
+        "(2) For the purposes of the calculation of the New Jersey earned "
+        "income tax credit, the percentage of the federal earned income tax "
+        "credit referred to in paragraph (1) of this subsection shall be: "
+        "(a) 10% for the taxable year beginning on or after January 1, 2000, "
+        "but before January 1, 2001;"
+    )
+    overpayment_clause = (
+        " If the credit exceeds the amount of tax otherwise due, that amount "
+        "of excess shall be an overpayment for the purposes of N.J.S.54A:9-7;"
+    )
+    source_prefix = "New Jersey earned income tax credit program. "
+    source = source_prefix + schedule_clause + overpayment_clause
+    short_schedule_excerpt = (
+        "10% for the taxable year beginning on or after January 1, 2000"
+    )
+
+    def content(derived_excerpt: str) -> str:
+        return f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-nj/statute/54a:4-7
+rules:
+  - name: credit_percentage
+    kind: parameter
+    dtype: Rate
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: parameter
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: "{schedule_clause}"
+    versions:
+      - effective_from: '2000-01-01'
+        formula: 0.10
+  - name: credit_amount
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: "{derived_excerpt}"
+    versions:
+      - effective_from: '2000-01-01'
+        formula: federal_credit * credit_percentage
+  - name: credit_overpayment
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: "{overpayment_clause.strip()}"
+    versions:
+      - effective_from: '2000-01-01'
+        formula: max(0, credit_amount - tax_due)
+"""
+
+    unbound = _analyze(
+        content(short_schedule_excerpt),
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=[],
+    )
+    bound = _analyze(
+        content(schedule_clause),
+        source,
+        corpus_citation_path="us-nj/statute/54a:4-7",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue
+        for issue in unbound.issues
+        if "formula-output" in issue and schedule_clause in issue
+    )
+    assert f"characters {len(source_prefix)}:" in issue
+    assert schedule_clause in issue
+    assert "A parameter rule" in issue
+    assert not _has_issue(bound, "formula-output")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "The amount equals " + "income plus supplement, " * 30 + "income.",
+        "The amount equals " + "`" * 200 + " income.",
+    ],
+)
+def test_long_formula_output_locator_does_not_present_ellipsis_as_source_text(
+    source: str,
+):
+    branch = completeness_module.SourceStructureBranch(
+        (),
+        "formula-clause",
+        "source unit formula clause 1",
+        source,
+        10,
+        10 + len(source),
+    )
+
+    feedback = completeness_module._formula_output_binding_feedback(
+        branch,
+        corpus_citation_path=CORPUS_CITATION_PATH,
+        has_path_covering_principal=True,
+    )
+    preview, was_truncated = completeness_module._bounded_source_feedback_preview(
+        source
+    )
+
+    if "`" in source:
+        assert len(source) <= 360
+    assert was_truncated
+    assert " ... " in preview
+    assert " ... " in feedback
+    assert "only a bounded locator and is not source text" in feedback
+    assert "copy one contiguous verbatim" in feedback
 
 
 COMPANION_COVERAGE_SOURCE = """\
