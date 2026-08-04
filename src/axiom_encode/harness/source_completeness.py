@@ -612,7 +612,34 @@ _DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
     }
 )
 _DEPENDENCY_DETERMINER_TERMS = frozenset(
-    {"a", "an", "that", "the", "these", "this", "those"}
+    {
+        "a",
+        "all",
+        "an",
+        "any",
+        "both",
+        "each",
+        "either",
+        "every",
+        "few",
+        "her",
+        "his",
+        "its",
+        "many",
+        "my",
+        "neither",
+        "no",
+        "our",
+        "several",
+        "some",
+        "that",
+        "the",
+        "their",
+        "these",
+        "this",
+        "those",
+        "your",
+    }
 )
 _DEPENDENCY_ACTOR_AMBIGUOUS_OBJECT_TERMS = frozenset(
     {"benefit", "limit", "process", "program", "rate", "record", "rule"}
@@ -629,15 +656,30 @@ _DEPENDENCY_ACTOR_NOMINAL_PREFIX_TERMS = frozenset(
     {
         "amendment",
         "benefit",
+        "cash",
+        "child",
         "earning",
+        "elderly",
+        "family",
+        "household",
+        "medical",
         "payment",
         "policy",
+        "premium",
         "prescription",
         "program",
         "record",
+        "refugee",
         "resource",
         "rule",
         "saving",
+        "school",
+        "senior",
+        "shelter",
+        "spenddown",
+        "student",
+        "utility",
+        "wage",
         "waiver",
         "work",
     }
@@ -3135,7 +3177,24 @@ def _dependency_token_is_actor_nominal_prefix(token: str) -> bool:
             | _LEGAL_INSTRUMENT_TERMS
         )
         or lowered.endswith(
-            ("age", "ance", "ence", "ing", "ion", "ity", "ment", "ness", "ship")
+            (
+                "age",
+                "al",
+                "ance",
+                "ence",
+                "ful",
+                "ic",
+                "ing",
+                "ion",
+                "ity",
+                "ive",
+                "less",
+                "ment",
+                "ness",
+                "ory",
+                "ous",
+                "ship",
+            )
         )
     )
 

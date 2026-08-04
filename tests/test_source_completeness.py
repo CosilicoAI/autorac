@@ -3581,6 +3581,20 @@ rules: []
         "under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and NHTSA rules the program "
         "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records its policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA records each policy "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA benefits every program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rules some program "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA limits any benefit "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA processes each record "
+        "under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and NHTSA rates all programs "
+        "under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):
@@ -3674,6 +3688,11 @@ rules: []
         "SNAP training requirements",
         "TANF participation requirements",
         "VA disability eligibility",
+        "SNAP student eligibility",
+        "SNAP categorical eligibility",
+        "SSI child eligibility",
+        "Medicare premium rules",
+        "Medicaid spenddown eligibility",
     ],
 )
 def test_named_instrument_can_cross_coordinated_object_modifier(object_phrase: str):
