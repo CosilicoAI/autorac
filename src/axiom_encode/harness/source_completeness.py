@@ -2282,17 +2282,18 @@ def _companion_test_issues(
                 "own same-period case pair differing in exactly that one input; "
                 f"missing: {missing_conditions}."
             )
-        missing_unconditional_branches = tuple(
-            branch
-            for branch in unconditional_nonapplicability_branches
-            if not _unconditional_nonapplicability_is_asserted(
-                branch,
-                corpus_citation_path=corpus_citation_path,
-                principal_rules=principal_rules,
-                principal_rule_paths=principal_rule_paths,
-                asserted_by_rule=asserted_by_rule,
-                formula_environment=formula_environment,
-            )
+        missing_unconditional_branches = _unmatched_evidence_obligations(
+            {
+                branch: _unconditional_nonapplicability_witnesses(
+                    branch,
+                    corpus_citation_path=corpus_citation_path,
+                    principal_rules=principal_rules,
+                    principal_rule_paths=principal_rule_paths,
+                    asserted_by_rule=asserted_by_rule,
+                    formula_environment=formula_environment,
+                )
+                for branch in unconditional_nonapplicability_branches
+            }
         )
         if missing_unconditional_branches:
             missing_conditions = "; ".join(
@@ -6353,10 +6354,13 @@ def _source_exception_branches(
                     else clause_end
                 )
                 branch_text = source_text[branch_start:branch_end]
-            if any(
-                formula_branch.start == branch_start
-                and formula_branch.end == branch_end
-                for formula_branch in formula_branches
+            if (
+                _EXCEPTION_LANGUAGE.search(branch_text) is None
+                and any(
+                    formula_branch.start == branch_start
+                    and formula_branch.end == branch_end
+                    for formula_branch in formula_branches
+                )
             ):
                 continue
             obligations.append(
@@ -6437,8 +6441,7 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
 
     collapsed = _collapse_text(text)
     if re.search(
-        r"\bexcept\s+as\s+(?:may|might|otherwise\b|[^.;]{0,40}\botherwise\b)"
-        r"[^.;]{0,80}\bprovided\b",
+        r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
         collapsed,
         flags=re.IGNORECASE,
     ):
@@ -6452,15 +6455,41 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
         r"\b(?:subject\s+to|vorbehaltlich)\b",
         collapsed,
         flags=re.IGNORECASE,
-    ) and re.search(
+    ) and _source_has_formal_cross_reference(collapsed):
+        return False
+    return True
+
+
+def _source_has_formal_cross_reference(text: str) -> bool:
+    if re.search(
         r"\b(?:all\s+)?(?:provisions?|restrictions?|subsections?|paragraphs?|"
         r"sections?|chapters?|vorschriften?|bestimmungen?|absätze?|paragraphen?)"
         r"\b|§",
-        collapsed,
+        text,
         flags=re.IGNORECASE,
     ):
-        return False
-    return True
+        return True
+    if any(
+        pattern.search(text)
+        for pattern in (
+            _PRECISE_DEFERRAL_DEPENDENCY,
+            _GERMAN_LEGAL_CITATION,
+            _ENGLISH_LEGAL_CITATION,
+            _STRUCTURAL_REFERENCE,
+        )
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b\d+\s+U\.?\s*S\.?\s*C\.?\s*(?:§|s\.)?\s*\d+[a-z0-9.-]*\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b[A-Z][A-Z.]{1,8}\s*\d+[A-Za-z0-9:.-]*",
+            text,
+        )
+    )
 
 
 def _source_unconditional_nonapplicability(text: str) -> bool:
@@ -6595,7 +6624,7 @@ def _unwitnessed_exception_branches(
     return _unmatched_evidence_obligations(candidate_witnesses)
 
 
-def _unconditional_nonapplicability_is_asserted(
+def _unconditional_nonapplicability_witnesses(
     branch: SourceStructureBranch,
     *,
     corpus_citation_path: str,
@@ -6603,10 +6632,11 @@ def _unconditional_nonapplicability_is_asserted(
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     formula_environment: dict[str, Any],
-) -> bool:
-    """Require executable false evidence for an unconditional negative rule."""
+) -> set[tuple[str, int]]:
+    """Return unique executable-false evidence for an unconditional rule."""
 
     branch_text = _collapse_text(branch.text).lower()
+    witnesses: set[tuple[str, int]] = set()
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         rule = principal_rules[rule_name]
         if str(rule.get("dtype", "")).strip().lower() not in {
@@ -6621,7 +6651,7 @@ def _unconditional_nonapplicability_is_asserted(
             for citation_path, excerpt in _rule_source_excerpts(rule)
         ):
             continue
-        for case in asserted_by_rule.get(rule_name, ()):
+        for case_index, case in enumerate(asserted_by_rule.get(rule_name, ())):
             asserted = _test_case_asserted_output_value(case, rule_name)
             if _boolean_value(asserted) is not False:
                 continue
@@ -6643,8 +6673,8 @@ def _unconditional_nonapplicability_is_asserted(
                 runtime,
                 asserted,
             ):
-                return True
-    return False
+                witnesses.add((rule_name, case_index))
+    return witnesses
 
 
 def _exception_witnesses_for_branch(
@@ -6748,23 +6778,11 @@ def _source_exception_effect_requirement(text: str) -> str:
     if condition is not None:
         cue = condition.group(0).strip().lower()
         proposition = collapsed[: condition.start()]
-        negative_proposition = re.search(
-            r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
-            r"allowed|entitled)\b|\b(?:ineligible|excluded)\b",
-            proposition,
-            flags=re.IGNORECASE,
-        )
-        positive_proposition = re.search(
-            r"\bto\s+qualify\b|"
-            r"\b(?:shall|is|are|will|may)\s+be\s+"
-            r"(?:eligible|qualified|allowed|entitled)\b|"
-            r"\b(?:is|are)\s+(?:eligible|qualified|allowed|entitled)\b",
-            proposition,
-            flags=re.IGNORECASE,
-        )
+        negative_proposition = _source_negative_effect_matches(proposition)
+        positive_proposition = _source_positive_effect_matches(proposition)
         if (
-            negative_proposition is None
-            and positive_proposition is not None
+            not negative_proposition
+            and positive_proposition
             and re.fullmatch(
                 r"(?:if|when|wenn|falls|sofern|soweit|"
                 r"vorausgesetzt\s*,?\s*dass|"
@@ -6774,6 +6792,32 @@ def _source_exception_effect_requirement(text: str) -> str:
             )
         ):
             return "enable"
+        if (
+            not negative_proposition
+            and not positive_proposition
+            and re.fullmatch(
+                r"(?:if|when|wenn|falls|sofern|soweit|"
+                r"vorausgesetzt\s*,?\s*dass|"
+                r"unter\s+der\s+voraussetzung\s*,?\s+dass)",
+                cue,
+                flags=re.IGNORECASE,
+            )
+        ):
+            tail = collapsed[condition.end() :]
+            positive_tail = _source_positive_effect_matches(tail)
+            negative_tail = _source_negative_effect_matches(tail)
+            latest_positive = max(
+                (match.start() for match in positive_tail),
+                default=-1,
+            )
+            latest_negative = max(
+                (match.start() for match in negative_tail),
+                default=-1,
+            )
+            if latest_positive > latest_negative:
+                return "enable"
+            if latest_negative > latest_positive:
+                return "exclude"
         if (
             cue.startswith("except")
             and re.search(
@@ -6817,6 +6861,32 @@ def _source_exception_effect_requirement(text: str) -> str:
     return "change"
 
 
+def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        re.finditer(
+            r"\bto\s+qualify\b|"
+            r"\b(?:shall|is|are|will|may)\s+be\s+"
+            r"(?:eligible|qualified|allowed|entitled)\b|"
+            r"\b(?:is|are)\s+(?:eligible|qualified|allowed|entitled)\b|"
+            r"\b(?:claim|credit|benefit|provision)\s+applies\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_negative_effect_matches(text: str) -> tuple[re.Match[str], ...]:
+    return tuple(
+        re.finditer(
+            r"\b(?:shall|does|is|are)\s+not\s+(?:apply|eligible|qualified|"
+            r"allowed|entitled)\b|"
+            r"\b(?:ineligible|excluded|disqualified|unqualified)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _exception_reverses_negative_proposition(text: str) -> bool:
     reversal = re.search(
         r"\b(?:außer|ausser|es\s+sei\s+denn|unless|except)\b",
@@ -6832,6 +6902,7 @@ def _exception_reverses_negative_proposition(text: str) -> bool:
             r"\bfindet\s+keine\s+anwendung\b|"
             r"\b(?:does|shall)\s+not\s+apply\b|"
             r"\b(?:is|are)\s+not\s+(?:eligible|qualified|entitled)\b|"
+            r"\b(?:ineligible|excluded|disqualified|unqualified)\b|"
             r"\bkein(?:e|en|em|er|es)?\s+(?:anspruch|berechtigung)\b",
             proposition,
             flags=re.IGNORECASE,

@@ -8280,6 +8280,29 @@ def test_arithmetic_if_clause_is_formula_evidence_not_exception_toggle():
     assert not exception_branches
 
 
+def test_formula_clause_with_explicit_carveout_keeps_exception_obligation():
+    source = """\
+(1) The amount is computed from income, except when exempt, when it is zero.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+        formula_branches=formula_branches,
+    )
+
+    assert len(formula_branches) == 1
+    assert len(exception_branches) == 1
+
+
 def test_positive_eligibility_condition_requires_enabling_effect():
     source = """\
 (1) The claimant shall be eligible if the claimant is ineligible due to age.
@@ -8320,6 +8343,23 @@ def test_positive_eligibility_condition_requires_enabling_effect():
 
     assert not correct_result.issues
     assert _has_issue(wrong_result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The claimant is ineligible unless an exception applies.",
+        "(1) The claim is excluded except when a waiver applies.",
+        (
+            "(1) If the claimant is ineligible solely due to age, "
+            "the claimant shall be eligible."
+        ),
+    ],
+)
+def test_enabling_effect_is_independent_of_proposition_order(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
 
 
 def test_qualification_exception_requires_enabling_effect():
@@ -8367,6 +8407,20 @@ def test_non_toggleable_cross_reference_does_not_require_paired_cases(
     result = _analyze(content, source, test_cases=[case])
 
     assert not _has_issue(result, "exception", "test")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) The credit applies except as provided in section 5.",
+        "(1) The credit is subject to section 32.",
+        "(1) The credit is subject to 26 U.S.C. 32.",
+    ],
+)
+def test_formal_cross_reference_does_not_require_synthetic_toggle(source: str):
+    assert not completeness_module._source_exception_requires_paired_witness(
+        source
+    )
 
 
 @pytest.mark.parametrize(
@@ -8443,6 +8497,47 @@ rules:
     result = _analyze(content, source, test_cases=[case])
 
     assert not result.issues
+
+
+def test_one_false_case_cannot_cover_two_unconditional_obligations():
+    source = """\
+(1) Subsection (a) shall not apply; subsection (b) shall not apply.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: both_subsections_apply
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Subsection (a) shall not apply
+          - path: versions[0].formula
+            kind: exception
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: subsection (b) shall not apply
+    versions:
+      - formula: 'false'
+"""
+    case = {
+        "name": "aggregate false assertion",
+        "input": {},
+        "output": {"both_subsections_apply": False},
+    }
+
+    result = _analyze(content, source, test_cases=[case])
+
+    assert _has_issue(result, "non-applicability", "tests")
 
 
 def test_conditional_nonapplicability_still_requires_paired_cases():
