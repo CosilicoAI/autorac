@@ -1919,6 +1919,7 @@ def _reason_match_names_missing_dependency(
     clause = reason[clause_start:clause_end]
     reference_start = match.start() - clause_start
     reference_end = match.end() - clause_start
+    before = clause[:reference_start]
     after = clause[reference_end:]
     direct_missing_state = re.match(
         r"\s*(?:"
@@ -1929,12 +1930,13 @@ def _reason_match_names_missing_dependency(
         after,
         flags=re.IGNORECASE,
     )
-    if direct_missing_state and _reason_state_tail_is_bounded(
-        after[direct_missing_state.end() :]
+    if (
+        direct_missing_state
+        and _MISSING_DEPENDENCY_LANGUAGE.search(before)
+        and _reason_state_tail_is_bounded(after[direct_missing_state.end() :])
     ):
         return True
 
-    before = clause[:reference_start]
     signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
     if not signals:
         return False
@@ -2039,23 +2041,79 @@ def _reason_suffix_has_dependency_state(
             flags=re.IGNORECASE,
         ):
             return True
-        if allow_descriptive_list and re.match(
-            r"\s*(?:,?\s+(?:and|or)\b)",
-            prefix,
-            flags=re.IGNORECASE,
+        if allow_descriptive_list and _reason_descriptive_dependency_list_is_bounded(
+            prefix
         ):
             return True
     return False
 
 
 def _reason_state_tail_is_bounded(tail: str) -> bool:
-    if re.fullmatch(r"[\s,)]*", tail):
+    if re.fullmatch(
+        r"[\s,)]*(?:by\s+(?:the\s+)?"
+        r"(?:agency|administrator|authority|commission|department|hud|secretary))?"
+        r"[\s,)]*",
+        tail,
+        flags=re.IGNORECASE,
+    ):
         return True
-    if not re.match(r"\s*,?\s+(?:and|or)\b", tail, flags=re.IGNORECASE):
-        return False
-    return bool(
-        _qualified_usc_dependencies(tail) or _PRECISE_DEFERRAL_DEPENDENCY.search(tail)
+    coordination = re.match(
+        r"\s*,?\s+(?:and|or)\s+",
+        tail,
+        flags=re.IGNORECASE,
     )
+    if not coordination:
+        return False
+    continuation = tail[coordination.end() :]
+    dependencies = (
+        *_qualified_usc_dependencies(continuation),
+        *_PRECISE_DEFERRAL_DEPENDENCY.finditer(continuation),
+    )
+    return any(dependency.start() == 0 for dependency in dependencies)
+
+
+def _reason_descriptive_dependency_list_is_bounded(prefix: str) -> bool:
+    if not re.match(r"\s*,?\s+(?:and|or)\s+", prefix, flags=re.IGNORECASE):
+        return False
+    items = [
+        re.sub(r"^\s*(?:and|or)\s+", "", item, flags=re.IGNORECASE).strip()
+        for item in prefix.split(",")
+        if item.strip()
+    ]
+    if not items:
+        return False
+    operative_linker = re.compile(
+        r"\b(?:"
+        r"under|pursuant\s+to|according\s+to|"
+        r"(?:cited|defined|described|provided|required|set|specified|referenced)"
+        r"\s+(?:by|in)"
+        r")\s*$",
+        flags=re.IGNORECASE,
+    )
+    finite_clause = re.compile(
+        r"\b(?:is|are|was|were|has|have|does|do|applies?|holds?|exists?)\b",
+        flags=re.IGNORECASE,
+    )
+    for item in items:
+        if finite_clause.search(item):
+            return False
+        dependencies = sorted(
+            (
+                *_qualified_usc_dependencies(item),
+                *_PRECISE_DEFERRAL_DEPENDENCY.finditer(item),
+            ),
+            key=lambda dependency: (dependency.end(), dependency.start()),
+            reverse=True,
+        )
+        if not dependencies:
+            return False
+        dependency = dependencies[0]
+        if item[dependency.end() :].strip():
+            return False
+        introduction = item[: dependency.start()]
+        if introduction.strip() and not operative_linker.search(introduction):
+            return False
+    return True
 
 
 def _usc_dependency_is_external(
