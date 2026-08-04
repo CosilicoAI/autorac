@@ -3685,6 +3685,10 @@ rules: []
         "implementation rules under 42 USC 1437f(o).",
         "(b) The Social Security Act governs records and SNAP benefits based eligibility "
         "rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and Medicaid programs chip "
+        "eligibility rules under 42 USC 1437f(o).",
+        "(b) The Social Security Act governs records and SNAP benefits part eligibility "
+        "rules under 42 USC 1437f(o).",
     ],
 )
 def test_named_instrument_cannot_cross_other_finite_coordination(source: str):

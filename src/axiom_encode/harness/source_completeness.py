@@ -777,7 +777,9 @@ _DEPENDENCY_POLICY_PROGRAM_SUBJECT_TERMS = frozenset(
 _DEPENDENCY_POLICY_COMPOUND_CONNECTOR_TERMS = frozenset(
     {"based", "non", "part", "waiver"}
 )
-_DEPENDENCY_POLICY_LEADING_ONLY_TERMS = frozenset({"based", "pace", "pass"})
+_DEPENDENCY_POLICY_LEADING_ONLY_TERMS = frozenset(
+    {"based", "chip", "pace", "part", "pass"}
+)
 _DEPENDENCY_COMPOUND_NOMINAL_TERMS = frozenset(
     {
         "administration",
