@@ -452,6 +452,7 @@ _DEPENDENCY_SUBJECT_TERMS = frozenset(
         "record",
         "requirement",
         "rule",
+        "size",
         "standard",
         "status",
         "submission",
@@ -464,6 +465,7 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "a",
     "an",
     "administrative",
+    "adjusted",
     "agency",
     "annual",
     "applicable",
@@ -472,6 +474,7 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "federal",
     "fiscal",
     "fiscal-year",
+    "gross",
     "historical",
     "household",
     "initial",
@@ -483,6 +486,7 @@ _DEPENDENCY_MODIFIER_TERMS = _DEPENDENCY_SUBJECT_TERMS | {
     "program",
     "public",
     "public-housing",
+    "residency",
     "state",
     "tax",
     "the",
@@ -2026,6 +2030,11 @@ def _reason_match_names_missing_dependency(
         return False
 
     signal_text = signal.group(0).lower()
+    if re.fullmatch(r"depends?\s+on|requires?", signal_text):
+        introduction_start = signals[-2].end() if len(signals) > 1 else 0
+        return _reason_dependency_introduction_is_bounded(
+            before[introduction_start : signal.end()]
+        )
     if signal_text in {
         "missing",
         "unavailable",
@@ -2149,11 +2158,12 @@ def _reason_state_tail_is_bounded(tail: str) -> bool:
         r"[\s,)]*(?:by\s+(?:the\s+)?"
         r"(?:(?:a|an|the)\s+)?"
         r"(?:(?:administering|federal|local|public\s+housing|state)\s+)?"
-        r"(?:agency|administrator|authority|commission|commissioner|hud|"
+        r"(?:agency|administrator|authority|commission|"
+        r"commissioner(?:\s+of\s+social\s+security)?|hud|irs|"
         r"internal\s+revenue\s+service|social\s+security\s+administration|"
         r"(?:department|secretary)(?:\s+of\s+(?:agriculture|housing\s+and\s+"
         r"urban\s+development|education|health\s+and\s+human\s+services|labor|"
-        r"treasury))?))?"
+        r"treasury|veterans\s+affairs))?))?"
         r"[\s,)]*",
         tail,
         flags=re.IGNORECASE,
@@ -2258,12 +2268,15 @@ def _reason_reference_introduction_is_bounded(bridge: str) -> bool:
 def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
     if not introduction.strip():
         return True
-    if re.search(
+    strong_linker = re.search(
         r"\b(?:depends?\s+on|requires?)\s*$",
         introduction,
         flags=re.IGNORECASE,
-    ):
-        return True
+    )
+    if strong_linker:
+        return _dependency_subject_phrase_is_bounded(
+            introduction[: strong_linker.start()]
+        )
     linker = re.search(
         r"\b(?:"
         r"under|pursuant\s+to|according\s+to|"
@@ -2280,14 +2293,14 @@ def _reason_dependency_introduction_is_bounded(introduction: str) -> bool:
         return True
     chain = re.fullmatch(
         r"(?P<subject>.+?)\s+under\s+(?:the\s+)?"
-        r"(?P<instrument>(?:section\s+\d+\s+)?"
-        r"(?:[a-z0-9-]+\s+)*(?:act|code|program|regulation|statute))\s*",
+        r"(?P<instrument>(?:[a-z0-9-]+\s+)*(?:act|code|program|regulation|statute))\s*",
         subject_scope,
         flags=re.IGNORECASE,
     )
     return bool(
         chain
         and _dependency_subject_phrase_is_bounded(chain.group("subject"))
+        and _legal_instrument_phrase_is_bounded(chain.group("instrument"))
         and re.match(
             r"(?:cited|defined|described|provided|required|set|specified|referenced)"
             r"\s+(?:by|in)",
@@ -2301,15 +2314,44 @@ def _dependency_subject_phrase_is_bounded(phrase: str) -> bool:
     tokens = []
     for raw_token in re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*", phrase):
         token = raw_token.lower()
-        if token not in _DEPENDENCY_MODIFIER_TERMS and token.endswith("ies"):
-            token = f"{token[:-3]}y"
-        if token not in _DEPENDENCY_MODIFIER_TERMS and token.endswith("s"):
-            token = token[:-1]
+        if token not in _DEPENDENCY_MODIFIER_TERMS:
+            candidates = []
+            if token.endswith("ies"):
+                candidates.append(f"{token[:-3]}y")
+            if token.endswith("es"):
+                candidates.append(token[:-2])
+            if token.endswith("s"):
+                candidates.append(token[:-1])
+            token = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate in _DEPENDENCY_MODIFIER_TERMS
+                ),
+                token,
+            )
         tokens.append(token)
     return bool(
         tokens
         and tokens[-1] in _DEPENDENCY_SUBJECT_TERMS
         and all(token in _DEPENDENCY_MODIFIER_TERMS for token in tokens)
+    )
+
+
+def _legal_instrument_phrase_is_bounded(phrase: str) -> bool:
+    tokens = re.findall(r"[A-Za-z]+(?:-[A-Za-z]+)*|\d+", phrase)
+    if not tokens or tokens[-1].lower() not in {
+        "act",
+        "code",
+        "program",
+        "regulation",
+        "statute",
+    }:
+        return False
+    connectors = {"and", "for", "of", "the", "to"}
+    return all(
+        token.isdigit() or token.lower() in connectors or token[0].isupper()
+        for token in tokens[:-1]
     )
 
 
