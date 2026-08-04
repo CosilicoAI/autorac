@@ -576,6 +576,22 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
         "supplied",
     }
 )
+_DEPENDENCY_OBJECT_MODIFIER_ADVERBS = frozenset(
+    {
+        "already",
+        "currently",
+        "directly",
+        "independently",
+        "lawfully",
+        "only",
+        "otherwise",
+        "previously",
+        "properly",
+        "solely",
+        "subsequently",
+    }
+)
+_DEPENDENCY_IRREGULAR_PLURAL_TERMS = frozenset({"criteria", "data"})
 _LEGAL_INSTRUMENT_TERMS = frozenset(
     {
         "act",
@@ -2774,6 +2790,11 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
             ):
                 continue
             predicate_tokens = tokens[subject_end:]
+            while (
+                len(predicate_tokens) > 1
+                and predicate_tokens[0].lower() in _DEPENDENCY_OBJECT_MODIFIER_ADVERBS
+            ):
+                predicate_tokens = predicate_tokens[1:]
             predicate = predicate_tokens[0].lower()
             if predicate in {
                 "can",
@@ -2804,11 +2825,14 @@ def _bridge_crosses_coordinated_finite_clause(bridge: str) -> bool:
                 predicate_candidates.add(predicate[:-2])
             if predicate.endswith("s"):
                 predicate_candidates.add(predicate[:-1])
-            if predicate_candidates & _DEPENDENCY_MODIFIER_TERMS:
-                continue
             if (
                 len(predicate_tokens) == 1
-                and predicate in _DEPENDENCY_OBJECT_MODIFIER_TERMS
+                and predicate_candidates & _DEPENDENCY_MODIFIER_TERMS
+            ):
+                continue
+            if predicate in _DEPENDENCY_OBJECT_MODIFIER_TERMS and all(
+                token.lower() in _DEPENDENCY_OBJECT_MODIFIER_ADVERBS
+                for token in predicate_tokens[1:]
             ):
                 continue
             if predicate.endswith("ed"):
@@ -2825,8 +2849,8 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
         re.fullmatch(
             r"(?:a|an|the|this|that|these|those)?\s*"
             r"(?:(?:administering|federal|local|public-housing|state)\s+)?"
-            r"(?:agency|administrator|authority|commission|commissioner|"
-            r"department|hud|irs|secretary|service)",
+            r"(?:agenc(?:y|ies)|administrators?|authorit(?:y|ies)|commissions?|"
+            r"commissioners?|departments?|hud|irs|secretar(?:y|ies)|services?)",
             phrase,
             flags=re.IGNORECASE,
         )
@@ -2835,6 +2859,8 @@ def _legal_actor_subject_phrase_is_bounded(phrase: str) -> bool:
 
 def _dependency_subject_token_is_plural(token: str) -> bool:
     lowered = token.lower()
+    if lowered in _DEPENDENCY_IRREGULAR_PLURAL_TERMS:
+        return True
     candidates = []
     if lowered.endswith("ies"):
         candidates.append(f"{lowered[:-3]}y")
