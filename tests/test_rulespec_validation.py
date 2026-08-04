@@ -41,6 +41,7 @@ from axiom_encode.harness.validator_pipeline import (
     _corpus_citation_to_normalized_target,
     _extract_json_object,
     _infer_us_state_code_from_rulespec_path,
+    _literal_comparison_truth_value,
     _normalize_us_tax_filing_status,
     _normalize_validation_staging_text,
     _policyengine_expected_float,
@@ -2567,13 +2568,22 @@ rules:
     assert issues == []
 
 
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 == 0",
+        "true == false",
+        '"same" != "same"',
+        "9007199254740992.0 == 9007199254740993.0",
+    ],
+)
 def test_judgment_positive_companion_output_allows_false_literal_comparison(
-    tmp_path,
+    tmp_path, formula
 ):
     policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
     rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
     rules_file.parent.mkdir(parents=True)
-    content = """format: rulespec/v1
+    content = f"""format: rulespec/v1
 rules:
   - name: subsection_f_applies
     kind: derived
@@ -2583,7 +2593,8 @@ rules:
     source: N.J.S.54A:4-7
     versions:
       - effective_from: '2000-01-01'
-        formula: 1 == 0
+        formula: |-
+          {formula}
 """
     cases = [
         {
@@ -2604,13 +2615,21 @@ rules:
     assert issues == []
 
 
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "1 == 1",
+        '"A" != "a"',
+        "9007199254740992.0 != 9007199254740993.0",
+    ],
+)
 def test_judgment_positive_companion_output_requires_positive_for_true_literal_comparison(
-    tmp_path,
+    tmp_path, formula
 ):
     policy_repo = _canonical_rulespec_content_root(tmp_path, "us-nj")
     rules_file = policy_repo / "statutes" / "54a" / "4-7.yaml"
     rules_file.parent.mkdir(parents=True)
-    content = """format: rulespec/v1
+    content = f"""format: rulespec/v1
 rules:
   - name: subsection_f_applies
     kind: derived
@@ -2620,7 +2639,8 @@ rules:
     source: N.J.S.54A:4-7
     versions:
       - effective_from: '2000-01-01'
-        formula: 1 == 1
+        formula: |-
+          {formula}
 """
     cases = [
         {
@@ -2643,6 +2663,47 @@ rules:
         "`us-nj:statutes/54a/4-7#subsection_f_applies` is not asserted as "
         "`holds` by the companion `.test.yaml` file."
     ]
+
+
+@pytest.mark.parametrize(
+    ("formula", "expected"),
+    [
+        ("1 == 0", False),
+        ("1 != 0", True),
+        ("1 < 2", True),
+        ("2 <= 1", False),
+        ("2 > 1", True),
+        ("2 >= 3", False),
+        ('"A" != "a"', True),
+        ("9007199254740992.0 != 9007199254740993.0", True),
+        ("true == false", False),
+        ("False != false", False),
+        (r'"line\n" == "line\n"', True),
+    ],
+)
+def test_literal_comparison_truth_value_matches_rulespec_semantics(formula, expected):
+    assert _literal_comparison_truth_value(formula) is expected
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        '"a" < "b"',
+        "true > false",
+        "1 == true",
+        "1 < 2 < 3",
+        "None == None",
+        "claim_count == 0",
+        "1e3 == 1000",
+        '"unterminated == 1',
+        "9223372036854775808 == 0",
+        "0.00000000000000000000000000001 == 0.0",
+    ],
+)
+def test_literal_comparison_truth_value_rejects_unsupported_rulespec_forms(
+    formula,
+):
+    assert _literal_comparison_truth_value(formula) is None
 
 
 def test_synthetic_source_authorized_input_rejected_for_prohibition():
