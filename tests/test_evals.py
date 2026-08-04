@@ -1,6 +1,7 @@
 """Tests for model comparison eval helpers."""
 
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -44,6 +45,7 @@ from axiom_encode.harness.evals import (
     EvalSuiteManifest,
     EvalWorkspace,
     GroundingMetric,
+    ValidationRetryCandidate,
     _bind_eval_result_payload,
     _build_empty_artifact_retry_prompt,
     _build_eval_prompt,
@@ -691,6 +693,7 @@ def _workspace_prompt_for_source_unit(
     source_unit: CorpusSourceUnit,
     *,
     required_import_targets: tuple[str, ...] = (),
+    validation_retry_candidate: ValidationRetryCandidate | None = None,
 ):
     workspace = prepare_eval_workspace(
         citation=source_unit.requested,
@@ -713,8 +716,85 @@ def _workspace_prompt_for_source_unit(
         include_tests=True,
         runner_backend="openai",
         required_import_targets=required_import_targets,
+        validation_retry_candidate=validation_retry_candidate,
     )
     return workspace, prompt
+
+
+def test_workspace_prompt_embeds_latest_retry_candidate_as_untrusted_edit_context(
+    tmp_path,
+):
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "dk/statute/benefit/section-1",
+                "body": "The benefit is ten percent of the qualifying amount.",
+            }
+        ],
+    )
+    source_unit = resolve_corpus_source_unit("dk/statute/benefit/section-1", release)
+    candidate = ValidationRetryCandidate(
+        rulespec=(
+            "format: rulespec/v1\n"
+            "# preserve historical TY2000 rate\n"
+            "# preserve current TY2026 rate\n"
+            "rules: []\n"
+        ),
+        tests=("# TY2000 historical branch case\n# TY2026 current branch case\n[]\n"),
+    )
+
+    _workspace, prompt = _workspace_prompt_for_source_unit(
+        tmp_path,
+        source_unit,
+        validation_retry_candidate=candidate,
+    )
+
+    assert "UNTRUSTED REJECTED CANDIDATE RULESPEC" in prompt
+    assert "preserve historical TY2000 rate" in prompt
+    assert "preserve current TY2026 rate" in prompt
+    assert "TY2000 historical branch case" in prompt
+    assert "TY2026 current branch case" in prompt
+    assert candidate.rulespec_sha256 in prompt or candidate.rulespec in prompt
+    assert str(tmp_path) not in prompt
+
+
+def test_retry_candidate_formatter_requires_fresh_content_digest():
+    candidate = ValidationRetryCandidate(
+        rulespec="format: rulespec/v1\nrules: []\n",
+        tests=None,
+    )
+    object.__setattr__(candidate, "rulespec_sha256", "0" * 64)
+
+    with pytest.raises(ValueError, match="digest does not match"):
+        evals_module._format_validation_retry_candidate(
+            candidate,
+            target_file_name="section.yaml",
+        )
+
+
+def test_retry_candidate_formatter_explicitly_handles_missing_tests():
+    section = evals_module._format_validation_retry_candidate(
+        ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\nrules: []\n",
+            tests=None,
+        ),
+        target_file_name="section.yaml",
+    )
+
+    assert "No companion test file was present" in section
+    assert "complete replacement RuleSpec and companion test files" in section
+
+
+def test_run_model_eval_appends_retry_candidate_after_existing_public_parameters():
+    parameters = list(inspect.signature(run_model_eval).parameters)
+
+    assert parameters[-4:] == [
+        "required_import_targets",
+        "legacy_replacement",
+        "replacement_overlay_scope",
+        "validation_retry_candidate",
+    ]
 
 
 def test_workspace_prompt_requires_each_atomic_composition_import(tmp_path):
