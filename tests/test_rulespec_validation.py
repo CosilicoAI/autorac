@@ -2681,6 +2681,8 @@ rules:
         ("true == false", False),
         ("False != false", False),
         (r'"line\n" == "line\n"', True),
+        ('(")") == (")")', True),
+        ('("(") == (")")', False),
     ],
 )
 def test_literal_comparison_truth_value_matches_rulespec_semantics(formula, expected):

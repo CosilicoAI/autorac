@@ -11632,7 +11632,20 @@ def _strip_balanced_outer_parentheses(expression: str) -> str:
     while stripped.startswith("(") and stripped.endswith(")"):
         depth = 0
         encloses_all = True
+        quote: str | None = None
+        escaped = False
         for index, char in enumerate(stripped):
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+            if char in {'"', "'"}:
+                quote = char
+                continue
             if char == "(":
                 depth += 1
             elif char == ")":
@@ -11643,7 +11656,7 @@ def _strip_balanced_outer_parentheses(expression: str) -> str:
             if depth < 0:
                 encloses_all = False
                 break
-        if not encloses_all or depth != 0:
+        if not encloses_all or depth != 0 or quote is not None:
             break
         stripped = stripped[1:-1].strip()
     return stripped
