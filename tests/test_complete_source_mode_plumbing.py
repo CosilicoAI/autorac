@@ -132,9 +132,8 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert "single-principal-output case pairs" in complete_prompt
     assert "one large omnibus case" in complete_prompt
     assert "Build those boolean-gate witnesses mechanically" in complete_prompt
-    assert "Every member of the pair must have the identical input-key set" in (
-        complete_prompt
-    )
+    assert "plus every reached local derived dependency required for" in complete_prompt
+    assert "identical input-key and output-key sets" in complete_prompt
 
 
 def test_validator_pipeline_complete_source_mode_is_default_off(tmp_path):

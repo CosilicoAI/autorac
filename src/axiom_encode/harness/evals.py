@@ -9556,10 +9556,12 @@ Test file rules:
   untested just because another negative case toggles a different gate.
 - Build those boolean-gate witnesses mechanically. First emit a minimal
   all-gates-positive case whose `input:` contains exactly the local facts
-  reached by that one asserted principal output and whose `output:` asserts
-  only that principal output. Clone the complete case once per gate, changing
-  exactly one input value and the expected value of the same single output.
-  Every member of the pair must have the identical input-key set; put helper,
+  reached by that one asserted principal output. Its `output:` must assert the
+  principal output plus every reached local derived dependency required for
+  corroboration, but no unrelated output. Clone the complete case once per
+  gate, changing exactly one input value and the expected principal output plus
+  any asserted reached dependency whose value also changes. Every member of the
+  pair must have identical input-key and output-key sets; put unrelated helper,
   amount, and downstream-output demonstrations in separate cases.
 - If a formula negates multiple exception predicates, include a separate companion test for each predicate that sets that exception input true and expects the directly affected Judgment rule to be `not_holds`.
 - For any negated exception predicate, include a paired positive case with the same output rule where only the exception input changes from `false` to `true`; do not combine the exception test with another branch change.
@@ -10426,10 +10428,12 @@ RuleSpec requirements:
   untested just because another negative case toggles a different gate.
 - Build those boolean-gate witnesses mechanically. First emit a minimal
   all-gates-positive case whose `input:` contains exactly the local facts
-  reached by that one asserted principal output and whose `output:` asserts
-  only that principal output. Clone the complete case once per gate, changing
-  exactly one input value and the expected value of the same single output.
-  Every member of the pair must have the identical input-key set; put helper,
+  reached by that one asserted principal output. Its `output:` must assert the
+  principal output plus every reached local derived dependency required for
+  corroboration, but no unrelated output. Clone the complete case once per
+  gate, changing exactly one input value and the expected principal output plus
+  any asserted reached dependency whose value also changes. Every member of the
+  pair must have identical input-key and output-key sets; put unrelated helper,
   amount, and downstream-output demonstrations in separate cases.
 - If a formula negates multiple exception predicates, include a separate companion test for each predicate that sets that exception input true and expects the directly affected Judgment rule to be `not_holds`.
 - For any negated exception predicate, include a paired positive case with the same output rule where only the exception input changes from `false` to `true`; do not combine the exception test with another branch change.
