@@ -1039,6 +1039,13 @@ _TESTS_PROTOCOL = """- Emit only RuleSpec YAML; use `.test.yaml` companions when
   gates joined by `and`, include one all-gates-positive case and enough negative
   cases to toggle each gate at least once. Do not leave a source-stated gate
   untested just because another negative case toggles a different gate.
+- Build those boolean-gate witnesses mechanically. First emit a minimal
+  all-gates-positive case whose `input:` contains exactly the local facts
+  reached by that one asserted principal output and whose `output:` asserts
+  only that principal output. Clone the complete case once per gate, changing
+  exactly one input value and the expected value of the same single output.
+  Every member of the pair must have the identical input-key set; put helper,
+  amount, and downstream-output demonstrations in separate cases.
 - If a formula negates multiple exception predicates, include a separate
   companion test for each predicate that sets that exception input true and
   expects the directly affected Judgment rule to be `not_holds`.
