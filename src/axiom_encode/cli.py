@@ -19948,7 +19948,11 @@ def guard_generated_change_issues(
         return [f"RuleSpec corpus/toolchain binding is invalid: {exc}"]
     if all_files:
         changed = (
-            _git_changed_files(repo_path, base_ref=base_ref, head_ref=head_ref)
+            _git_guard_changed_files(
+                repo_path,
+                base_ref=base_ref,
+                head_ref=head_ref,
+            )
             if base_ref is not None
             else []
         )
@@ -19968,7 +19972,11 @@ def guard_generated_change_issues(
         changed = (
             changed_files
             if changed_files is not None
-            else _git_changed_files(repo_path, base_ref=base_ref, head_ref=head_ref)
+            else _git_guard_changed_files(
+                repo_path,
+                base_ref=base_ref,
+                head_ref=head_ref,
+            )
         )
         protected = [
             path
@@ -20383,6 +20391,20 @@ def _git_changed_files(
             os.fsdecode(path) for path in untracked.stdout.split(b"\0") if path
         )
     return sorted(set(changed))
+
+
+def _git_guard_changed_files(
+    repo_path: Path,
+    *,
+    base_ref: str | None,
+    head_ref: str,
+) -> list[str]:
+    """Union reviewed-base commits with uncommitted and untracked changes."""
+
+    changed = set(_git_changed_files(repo_path, base_ref=base_ref, head_ref=head_ref))
+    if base_ref is not None:
+        changed.update(_git_changed_files(repo_path, base_ref=None, head_ref=head_ref))
+    return sorted(changed)
 
 
 def _protected_rulespec_root_index(path: Path, *, roots: tuple[str, ...]) -> int | None:

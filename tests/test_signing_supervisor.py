@@ -2172,6 +2172,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert 'source_lane="$(printf \'source-%02d\' "$source_index")"' in command
     assert '"$source_citation" "" true "$source_lane" "" "" false' in command
     assert "checkpoint_signed_changes()" in command
+    assert 'local guard_status="$?"' in command
+    assert 'jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2' in command
     assert '"$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"' in (
         command
     )
@@ -2365,10 +2367,10 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert guard_step["id"] == "verify_generated_provenance"
     assert "guard-generated" in guard_step["run"]
-    assert 'guard_ref_args+=(--base-ref "$RULESPEC_REF")' in guard_step["run"]
-    assert (
-        "jq -e 'length > 0' \"$RUNNER_TEMP/source-bundle.json\"" in (guard_step["run"])
-    )
+    assert '--base-ref "$RULESPEC_REF"' in guard_step["run"]
+    assert "guard_ref_args" not in guard_step["run"]
+    assert 'guard_status="$?"' in guard_step["run"]
+    assert 'jq . "$RUNNER_TEMP/guard-generated.json" >&2' in guard_step["run"]
 
     secret_steps = [
         step
@@ -2457,6 +2459,16 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     (generated / "statutes/54a:4-7.test.yaml").write_text("format: rulespec/v1\n")
     (generated / "target.repair.json").write_text('{"outcome": "blocked"}\n')
     (generated / "ignored.bin").write_bytes(b"not diagnostic output")
+    (tmp_path / "guard-generated.json").write_text(
+        json.dumps(
+            {
+                "repo": "/runner/rulespec-us",
+                "passed": False,
+                "issues": ["waiver transition requires protected base"],
+            }
+        )
+        + "\n"
+    )
     env = {
         **os.environ,
         "CITATION": "us/statute/42/1437c-1",
@@ -2491,6 +2503,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         assert file_member_names == {
             "generated/target/model/statutes/54a:4-7.test.yaml",
             "generated/target/model/target.repair.json",
+            "guards/guard-generated.json",
             "metadata.json",
         }
         assert "generated/target/model/ignored.bin" not in file_member_names
@@ -2498,12 +2511,19 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "./generated/target/model/statutes/54a:4-7.test.yaml"
         )
         repair = bundle.extractfile("./generated/target/model/target.repair.json")
+        guard = bundle.extractfile("./guards/guard-generated.json")
         metadata_file = bundle.extractfile("./metadata.json")
         assert target is not None
         assert repair is not None
+        assert guard is not None
         assert metadata_file is not None
         assert target.read() == b"format: rulespec/v1\n"
         assert json.loads(repair.read()) == {"outcome": "blocked"}
+        assert json.loads(guard.read()) == {
+            "repo": "/runner/rulespec-us",
+            "passed": False,
+            "issues": ["waiver transition requires protected base"],
+        }
         metadata = json.loads(metadata_file.read())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
     assert metadata["workflow_run_id"] == "1234"
@@ -2533,6 +2553,134 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         target_inventory["sha256"]
         == hashlib.sha256(b"format: rulespec/v1\n").hexdigest()
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("symlink", "Could not safely open"),
+        ("oversize", "safety limit"),
+        ("malformed", "not valid JSON"),
+        ("wrong_shape", "invalid shape"),
+    ],
+)
+def test_targeted_signed_reencode_rejects_unsafe_guard_diagnostics(
+    tmp_path: Path,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Package failed re-encode diagnostics"
+    )
+    command = step["run"].replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    (tmp_path / "generated").mkdir()
+    guard = tmp_path / "guard-generated.json"
+    if mutation == "symlink":
+        outside = tmp_path / "outside.json"
+        outside.write_text('{"repo":"outside","passed":false,"issues":[]}\n')
+        guard.symlink_to(outside)
+    elif mutation == "oversize":
+        guard.write_bytes(b"x" * (1024 * 1024 + 1))
+    elif mutation == "malformed":
+        guard.write_text("{\n")
+    else:
+        guard.write_text(
+            json.dumps(
+                {
+                    "repo": "/runner/rulespec-us",
+                    "passed": False,
+                    "issues": [],
+                    "unexpected": True,
+                }
+            )
+            + "\n"
+        )
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "CITATION": "us/statute/42/1437c-1",
+            "CORPUS_REF": "corpus-ref",
+            "COUNTRY": "us",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "1234",
+            "GITHUB_SHA": "encoder-ref",
+            "RULES_ENGINE_REF": "rules-engine-ref",
+            "RULESPEC_REF": "rulespec-ref",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not (tmp_path / "targeted-reencode-failure.tar").exists()
+
+
+def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Encode, review, validate, and apply"
+    )
+    checkpoint = command.split("checkpoint_signed_changes() {", 1)[1].split(
+        "\n}\n\nsource_index=0",
+        1,
+    )[0]
+    guard_stub = tmp_path / "guard-stub"
+    guard_stub.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        '\'{"repo":"/runner/rulespec-us","passed":false,'
+        '"issues":["checkpoint manifest mismatch"]}\'\n'
+        "exit 7\n"
+    )
+    guard_stub.chmod(0o700)
+    script = (
+        "set -euo pipefail\n"
+        "checkpoint_signed_changes() {"
+        + checkpoint.replace(
+            "/opt/axiom-verification/axiom-encode-signing-supervisor",
+            '"$GUARD_STUB"',
+        )
+        + "\n}\ncheckpoint_signed_changes test\n"
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "GITHUB_WORKSPACE": str(tmp_path),
+            "GUARD_STUB": str(guard_stub),
+            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 7
+    assert "checkpoint manifest mismatch" in completed.stderr
+    assert json.loads((tmp_path / "checkpoint-guard-generated.json").read_text()) == {
+        "repo": "/runner/rulespec-us",
+        "passed": False,
+        "issues": ["checkpoint manifest mismatch"],
+    }
 
 
 def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(

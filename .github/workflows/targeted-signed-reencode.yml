@@ -1080,6 +1080,7 @@ jobs:
 
           checkpoint_signed_changes() {
             local message="$1"
+            set +e
             /opt/axiom-verification/axiom-encode-signing-supervisor \
               --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
               --trusted-python-runtime-root /opt/axiom-verification/python \
@@ -1090,6 +1091,14 @@ jobs:
               --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
               --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
               --json > "$RUNNER_TEMP/checkpoint-guard-generated.json"
+            local guard_status="$?"
+            set -e
+            if [ "$guard_status" -ne 0 ]; then
+              if ! jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2; then
+                echo "checkpoint provenance guard returned malformed diagnostics" >&2
+              fi
+              return "$guard_status"
+            fi
             git -C "$RULESPEC_CHECKOUT" diff --check
             "$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"
             git -C "$RULESPEC_CHECKOUT" \
@@ -1147,10 +1156,7 @@ jobs:
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
-          guard_ref_args=()
-          if jq -e 'length > 0' "$RUNNER_TEMP/source-bundle.json" > /dev/null; then
-            guard_ref_args+=(--base-ref "$RULESPEC_REF")
-          fi
+          set +e
           /opt/axiom-verification/axiom-encode-signing-supervisor \
             --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
             --trusted-python-runtime-root /opt/axiom-verification/python \
@@ -1160,8 +1166,16 @@ jobs:
             --repo "$RULESPEC_CHECKOUT" \
             --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
             --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
-            "${guard_ref_args[@]}" \
+            --base-ref "$RULESPEC_REF" \
             --json > "$RUNNER_TEMP/guard-generated.json"
+          guard_status="$?"
+          set -e
+          if [ "$guard_status" -ne 0 ]; then
+            if ! jq . "$RUNNER_TEMP/guard-generated.json" >&2; then
+              echo "generated provenance guard returned malformed diagnostics" >&2
+            fi
+            exit "$guard_status"
+          fi
           git -C "$RULESPEC_CHECKOUT" diff --check
 
       - name: Verify existing signed import integrity
@@ -2386,7 +2400,8 @@ jobs:
           artifact="$RUNNER_TEMP/targeted-reencode-failure"
           mkdir -p "$artifact"
           /opt/axiom-verification/python/bin/python -I - \
-            "$generated" "$artifact" <<'PY'
+            "$generated" "$artifact" \
+            "$RUNNER_TEMP" <<'PY'
           import hashlib
           import json
           import os
@@ -2401,6 +2416,7 @@ jobs:
 
           generated = Path(os.path.abspath(sys.argv[1]))
           artifact = Path(os.path.abspath(sys.argv[2]))
+          guard_root = Path(os.path.abspath(sys.argv[3]))
           allowed_suffixes = {".json", ".log", ".txt", ".yaml", ".yml"}
           max_entries = 4096
           max_files = 1024
@@ -2463,6 +2479,47 @@ jobs:
                               "size": len(payload),
                           }
                       )
+
+          guard_candidates = [
+              guard_root / "guard-generated.json",
+              guard_root / "checkpoint-guard-generated.json",
+              *[
+                  guard_root / f"source-{index:02d}-guard-generated.json"
+                  for index in range(1, 17)
+              ],
+          ]
+          for guard_generated in guard_candidates:
+              if not guard_generated.exists() and not guard_generated.is_symlink():
+                  continue
+              try:
+                  guard_payload = read_bounded_regular_file(
+                      guard_root,
+                      guard_generated,
+                      label="generated provenance guard diagnostics",
+                      max_bytes=1024 * 1024,
+                  )
+              except UnsafeCorpusPathError as exc:
+                  raise SystemExit(str(exc)) from exc
+              try:
+                  parsed_guard = json.loads(guard_payload)
+              except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+                  raise SystemExit(
+                      "generated provenance guard diagnostics are not valid JSON"
+                  ) from exc
+              if (
+                  not isinstance(parsed_guard, dict)
+                  or set(parsed_guard) != {"repo", "passed", "issues"}
+                  or not isinstance(parsed_guard["repo"], str)
+                  or not isinstance(parsed_guard["passed"], bool)
+                  or not isinstance(parsed_guard["issues"], list)
+                  or any(not isinstance(issue, str) for issue in parsed_guard["issues"])
+              ):
+                  raise SystemExit(
+                      "generated provenance guard diagnostics have invalid shape"
+                  )
+              guard_destination = artifact / "guards" / guard_generated.name
+              guard_destination.parent.mkdir(parents=True, exist_ok=True)
+              guard_destination.write_bytes(guard_payload)
 
           inventory.sort(key=lambda item: item["path"])
           step_env_prefixes = {
