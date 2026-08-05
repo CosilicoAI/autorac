@@ -9370,6 +9370,348 @@ rules:
     assert not correct.issues
 
 
+def test_louisiana_cpi_formula_separates_effective_year_from_computation():
+    source = """\
+Beginning January 1, 2026, and thereafter, the amount of the standard deduction
+provided in Subsection A of this Section shall be adjusted annually by an amount calculated
+by multiplying the amount of the prior year's standard deduction by the percentage increase
+in the Consumer Price Index United States city average for all urban consumers (CPI-U), as
+reported by the United States Department of Labor, Bureau of Labor Statistics, or its
+successor, for the previous calendar year.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: annual_standard_deduction_adjustment
+    kind: derived
+    dtype: Money
+    source: La. R.S. 47:294(B)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: |-
+                Beginning January 1, 2026, and thereafter, the amount of the standard deduction
+                provided in Subsection A of this Section shall be adjusted annually by an amount calculated
+                by multiplying the amount of the prior year's standard deduction by the percentage increase
+                in the Consumer Price Index United States city average for all urban consumers (CPI-U), as
+                reported by the United States Department of Labor, Bureau of Labor Statistics, or its
+                successor, for the previous calendar year.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: prior_year_standard_deduction * consumer_price_index_u_percentage_increase_for_previous_calendar_year
+"""
+    case = {
+        "name": "2026 CPI-U adjustment",
+        "period": {
+            "period_kind": "tax_year",
+            "start": "2026-01-01",
+            "end": "2026-12-31",
+        },
+        "input": {
+            "prior_year_standard_deduction": 20000,
+            "consumer_price_index_u_percentage_increase_for_previous_calendar_year": 0.05,
+        },
+        "output": {"annual_standard_deduction_adjustment": 1000},
+    }
+
+    def analyze(candidate_content, candidate_case):
+        return analyze_complete_source_unit(
+            candidate_content,
+            source,
+            corpus_citation_path="us-la/statute/47:294",
+            test_cases=[candidate_case],
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            extract_numeric_grounding_occurrences=(
+                EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+            ),
+            extract_named_scalars=extract_named_scalar_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    correct = analyze(content, case)
+    wrong_operation_content = content.replace(
+        "prior_year_standard_deduction * consumer_price_index_u_percentage_increase_for_previous_calendar_year",
+        "prior_year_standard_deduction + consumer_price_index_u_percentage_increase_for_previous_calendar_year",
+    )
+    wrong_operation_case = yaml.safe_load(yaml.safe_dump(case))
+    wrong_operation_case["output"]["annual_standard_deduction_adjustment"] = 20000.05
+    wrong_operation = analyze(wrong_operation_content, wrong_operation_case)
+    pre_effective_case = yaml.safe_load(yaml.safe_dump(case))
+    pre_effective_case["name"] = "pre-effective CPI-U adjustment"
+    pre_effective_case["period"] = {
+        "period_kind": "tax_year",
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+    }
+    pre_effective = analyze(content, pre_effective_case)
+
+    assert not correct.issues
+    assert _has_issue(wrong_operation, "formula branch")
+    assert _has_issue(pre_effective, "formula branch")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Effective January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
+    ),
+)
+def test_common_formula_applicability_prefaces_are_not_coefficients(source):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: adjusted_amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: >-
+                {source}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * rate
+"""
+    case = {
+        "name": "effective formula",
+        "period": "2026",
+        "input": {"income": 100, "rate": 0.05},
+        "output": {"adjusted_amount": 5},
+    }
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[case],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+
+
+def test_temporal_formula_filter_keeps_substantive_multiplier_grounding():
+    source = (
+        "For tax year 2026, the amount is calculated by multiplying "
+        "the prior amount by 3."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: multiplier
+    kind: parameter
+    dtype: Decimal
+    source: us-la/statute/47:294(B)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 2
+  - name: adjusted_amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294(B)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: prior_amount * multiplier
+"""
+    case = {
+        "name": "wrong substantive multiplier",
+        "period": "2026",
+        "input": {"prior_amount": 10},
+        "output": {"adjusted_amount": 20},
+    }
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[case],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula branch")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is calculated by subtracting tax year 2020 from the current tax year.",
+        "Tax year 2020 is subtracted from the current tax year, and the amount is calculated.",
+        "Effective rate is calculated by subtracting tax year 2020, from the current tax year.",
+        "For purposes of this section, the base is tax year 2020, and the amount is calculated as the current tax year minus the base.",
+        "For tax year calculations, the amount is calculated by subtracting tax year 2020 from the current tax year.",
+    ),
+)
+def test_temporal_formula_operand_remains_required_outside_applicability_preface(
+    source,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: base_tax_year
+    kind: parameter
+    dtype: Decimal
+    source: us-la/statute/47:294
+    versions:
+      - formula: 2020
+  - name: elapsed_tax_years
+    kind: derived
+    dtype: Decimal
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: >-
+                {source}
+    versions:
+      - formula: tax_year - base_tax_year
+"""
+    case = {
+        "name": "elapsed years from the statutory base year",
+        "period": "2026",
+        "input": {"tax_year": 2026},
+        "output": {"elapsed_tax_years": 6},
+    }
+
+    def analyze(candidate_content, candidate_case):
+        return analyze_complete_source_unit(
+            candidate_content,
+            source,
+            corpus_citation_path="us-la/statute/47:294",
+            test_cases=[candidate_case],
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            extract_numeric_grounding_occurrences=(
+                EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+            ),
+            extract_named_scalars=extract_named_scalar_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    correct = analyze(content, case)
+    wrong_content = content.replace(
+        "tax_year - base_tax_year",
+        "tax_year - unrelated_year",
+    )
+    wrong_case = yaml.safe_load(yaml.safe_dump(case))
+    wrong_case["input"]["unrelated_year"] = 2000
+    wrong_case["output"]["elapsed_tax_years"] = 26
+    wrong = analyze(wrong_content, wrong_case)
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
+def test_louisiana_line_wrapped_two_hundred_percent_formula_grounds_factor_two():
+    source = """\
+(2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+Spouse, and Head of Household provided for Single Individuals
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: joint_standard_deduction_multiplier
+    kind: parameter
+    dtype: Rate
+    source: La. R.S. 47:294(A)(2)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 2.0
+  - name: joint_standard_deduction
+    kind: derived
+    dtype: Money
+    source: La. R.S. 47:294(A)(2)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: |-
+                Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+                Spouse, and Head of Household provided for Single Individuals
+    versions:
+      - effective_from: '2025-01-01'
+        formula: single_standard_deduction * joint_standard_deduction_multiplier
+"""
+    case = {
+        "name": "joint deduction is twice the single amount",
+        "period": "2025",
+        "input": {"single_standard_deduction": 12500},
+        "output": {"joint_standard_deduction": 25000},
+    }
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[case],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    wrong_multiplier_case = yaml.safe_load(yaml.safe_dump(case))
+    wrong_multiplier_case["output"]["joint_standard_deduction"] = 37500
+    wrong_multiplier = analyze_complete_source_unit(
+        content.replace("formula: 2.0", "formula: 3.0"),
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[wrong_multiplier_case],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+    assert _has_issue(wrong_multiplier, "formula branch")
+
+
 def test_formula_witness_preserves_source_operation_topology():
     source = "(1) Der Betrag wird als Einkommen * 2 + 3 berechnet."
     content = """\

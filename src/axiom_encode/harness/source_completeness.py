@@ -307,6 +307,30 @@ _COMPUTATION_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_FORMULA_APPLICABILITY_YEAR = r"(?:18|19|20)\d{2}"
+_FORMULA_APPLICABILITY_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_FORMULA_APPLICABILITY_DAY = r"(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+_FORMULA_APPLICABILITY_DATE = (
+    rf"(?:{_FORMULA_APPLICABILITY_MONTH}\s+"
+    rf"(?:{_FORMULA_APPLICABILITY_DAY}\s*,?\s*)?"
+    rf"{_FORMULA_APPLICABILITY_YEAR}|{_FORMULA_APPLICABILITY_YEAR})"
+)
+_FORMULA_APPLICABILITY_PREFACE = re.compile(
+    rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
+    rf"beginning\s+(?:on\s+)?{_FORMULA_APPLICABILITY_DATE}"
+    rf"(?:,?\s+and\s+thereafter)?|"
+    rf"(?:for|during)\s+(?:the\s+)?"
+    rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
+    rf"{_FORMULA_APPLICABILITY_YEAR}|"
+    rf"(?:effective(?:\s+(?:on|from))?|starting(?:\s+(?:on|from))?|"
+    rf"as\s+of|on\s+or\s+after)\s+{_FORMULA_APPLICABILITY_DATE}"
+    rf")\s*,",
+    flags=re.IGNORECASE,
+)
 _STATED_CONVERSION_CUE = re.compile(
     r"\b(?:umgerechnet|converted)\b",
     flags=re.IGNORECASE,
@@ -5600,7 +5624,11 @@ def _formula_execution_matches_source_branch(
     computation_occurrences = tuple(
         occurrence
         for occurrence in source_occurrences
-        if not any(
+        if not _temporal_occurrence_is_formula_applicability_preface(
+            occurrence,
+            branch.text,
+        )
+        and not any(
             _numeric_occurrences_are_equivalent(occurrence, boundary)
             for boundary in boundaries
         )
@@ -5636,6 +5664,22 @@ def _formula_execution_matches_source_branch(
     )
 
 
+def _temporal_occurrence_is_formula_applicability_preface(
+    occurrence: NumericOccurrenceLike,
+    source_text: str,
+) -> bool:
+    """Separate leading temporal applicability from arithmetic operands."""
+
+    if not occurrence.has_temporal_context:
+        return False
+    preface = _FORMULA_APPLICABILITY_PREFACE.match(source_text)
+    return bool(
+        preface is not None
+        and occurrence.start >= preface.start()
+        and occurrence.end <= preface.end()
+    )
+
+
 def _formula_operation_kinds(text: str) -> set[str]:
     """Recognize operations in source prose or an explicit expression."""
 
@@ -5664,7 +5708,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
         "multiply": (
             r"(?:[*×·•∗∙]|\d+(?:[.,]\d+)?\s*%\s+(?:des|der|von|of)\b|"
             r"\bprodukt\b|\bproduct\s+of\b|"
-            r"\b(?:multiplied|multiply|multiplication|multipliziert|"
+            r"\b(?:multiplied|multiply|multiplying|multiplication|multipliziert|"
             r"multiplizieren|multiplikation)\b|\bvervielfach\w*\b|\bmal\b|"
             r"\b(?:verfünf|versechs|versieben|veracht|verneun|verzehn)"
             r"fach\w*\b|"
