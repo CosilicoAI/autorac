@@ -1400,23 +1400,50 @@ jobs:
 
           checkpoint_signed_changes() {
             local message="$1"
+            local guard_json="$RUNNER_TEMP/checkpoint-guard-generated.json"
+            local guard_stderr="$RUNNER_TEMP/checkpoint-guard-generated.stderr.log"
             set +e
-            /opt/axiom-verification/axiom-encode-signing-supervisor \
-              --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
-              --trusted-python-runtime-root /opt/axiom-verification/python \
-              --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages \
-              --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode \
-              -- /opt/axiom-verification/axiom-encode guard-generated \
-              --repo "$RULESPEC_CHECKOUT" \
-              --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
-              --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
-              --json > "$RUNNER_TEMP/checkpoint-guard-generated.json"
+            (
+              unset AXIOM_ENCODE_APPLY_SIGNING_KEY
+              /opt/axiom-verification/axiom-encode-signing-supervisor \
+                --trusted-signing-roots /opt/axiom-verification/signing-trust-roots.json \
+                --trusted-python-runtime-root /opt/axiom-verification/python \
+                --trusted-python-import-root /opt/axiom-verification/python/lib/python3.13/site-packages \
+                --trusted-python-package-root /opt/axiom-verification/python/lib/python3.13/site-packages/axiom_encode \
+                -- /opt/axiom-verification/axiom-encode guard-generated \
+                --repo "$RULESPEC_CHECKOUT" \
+                --corpus-path "$GITHUB_WORKSPACE/axiom-corpus" \
+                --expected-encoder-checkout "$GITHUB_WORKSPACE/axiom-encode" \
+                --json
+            ) > "$guard_json" 2> "$guard_stderr"
             local guard_status="$?"
             set -e
-            if [ "$guard_status" -ne 0 ]; then
-              if ! jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2; then
-                echo "checkpoint provenance guard returned malformed diagnostics" >&2
+            if [ -s "$guard_stderr" ]; then
+              cat "$guard_stderr" >&2
+            else
+              rm "$guard_stderr"
+            fi
+            if ! jq -e -s '
+              select(
+                length == 1
+                and (
+                  .[0] | type == "object"
+                  and keys == ["issues", "passed", "repo"]
+                  and (.repo | type == "string")
+                  and (.passed | type == "boolean")
+                  and (.issues | type == "array" and all(.[]; type == "string"))
+                )
+              )
+              | .[0]
+            ' "$guard_json" >&2; then
+              mv "$guard_json" \
+                "$RUNNER_TEMP/checkpoint-guard-generated.stdout.log"
+              echo "checkpoint provenance guard returned malformed diagnostics" >&2
+              if [ "$guard_status" -eq 0 ]; then
+                guard_status=1
               fi
+            fi
+            if [ "$guard_status" -ne 0 ]; then
               return "$guard_status"
             fi
             git -C "$RULESPEC_CHECKOUT" diff --check
@@ -3189,6 +3216,33 @@ jobs:
               guard_inventory.append(
                   {
                       "path": f"guards/{guard_generated.name}",
+                      "sha256": hashlib.sha256(guard_payload).hexdigest(),
+                      "size": len(guard_payload),
+                  }
+              )
+
+          guard_log_candidates = [
+              guard_root / "checkpoint-guard-generated.stderr.log",
+              guard_root / "checkpoint-guard-generated.stdout.log",
+          ]
+          for guard_log in guard_log_candidates:
+              if not guard_log.exists() and not guard_log.is_symlink():
+                  continue
+              try:
+                  guard_payload = read_bounded_regular_file(
+                      guard_root,
+                      guard_log,
+                      label="generated provenance guard raw diagnostics",
+                      max_bytes=1024 * 1024,
+                  )
+              except UnsafeDiagnosticPathError as exc:
+                  raise SystemExit(str(exc)) from exc
+              guard_destination = artifact / "guards" / guard_log.name
+              guard_destination.parent.mkdir(parents=True, exist_ok=True)
+              guard_destination.write_bytes(guard_payload)
+              guard_inventory.append(
+                  {
+                      "path": f"guards/{guard_log.name}",
                       "sha256": hashlib.sha256(guard_payload).hexdigest(),
                       "size": len(guard_payload),
                   }
