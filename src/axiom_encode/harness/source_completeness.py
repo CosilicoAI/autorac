@@ -350,6 +350,10 @@ _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
 _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     r"(?:"
     r"\b(?:calculated|computed|determined)\s+as\s+follows|"
+    r"\b(?:calculated|computed|determined)\s+"
+    r"(?:pursuant\s+to|as\s+set\s+forth\s+in)\s+"
+    r"(?:the\s+)?following\s+(?:amounts?|percentages?|rates?|values?|"
+    r"tables?|schedules?)|"
     r"\b(?:using|according\s+to|under|based\s+on|equal\s+to|"
     r"set\s+forth\s+in)\s+"
     r"(?:the\s+)?following\s+(?:amounts?|percentages?|rates?|values?|"
@@ -359,11 +363,14 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
 )
 _FORMULA_RESULT_PREDICATE = (
     r"(?:(?:is|are|shall\s+be|must\s+be|may\s+be)\s+equal\s+to|"
-    r"is|are|equals?|shall\s+be|must\s+be|may\s+be|means|constitutes?)"
+    r"(?:shall|must|may)\s+equal|is|are|equals?|shall\s+be|must\s+be|"
+    r"may\s+be|means|constitutes?)"
 )
 _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
-    r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
+    r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on|"
+    r"pursuant\s+to\s+(?:the\s+)?following|as\s+set\s+forth\s+in\s+"
+    r"(?:the\s+)?following)\b)|"
     r"\b(?:sum|product)\s+of\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
     r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
     r"\bdifference\s+between\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
@@ -416,6 +423,8 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "increase",
         "liability",
         "limit",
+        "loss",
+        "networth",
         "number",
         "offset",
         "overpayment",
@@ -425,6 +434,7 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "proceeds",
         "quantity",
         "rate",
+        "rebate",
         "reduction",
         "refund",
         "result",
@@ -435,6 +445,7 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "threshold",
         "total",
         "value",
+        "worth",
     }
 )
 _FORMULA_SUBJECT_PHRASE_BREAK = re.compile(
@@ -456,6 +467,7 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "determined",
         "due",
         "imposed",
+        "herein",
         "otherwise",
         "payable",
         "permitted",
@@ -468,6 +480,7 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "set",
         "subject",
         "forth",
+        "then",
     }
 )
 _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS = frozenset(
@@ -494,6 +507,21 @@ _FORMULA_SUBJECT_PARENTHETICAL = re.compile(
     r"(?:as|adjusted|calculated|computed|described|determined|if|provided|"
     r"specified|subject|when|where)\b",
     flags=re.IGNORECASE,
+)
+_FORMULA_SUBJECT_PREAMBLE = re.compile(
+    r"(?:for\s+purposes\s+of|subject\s+to|pursuant\s+to|"
+    r"except\s+as\s+provided\s+in)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_AMBIGUOUS_RESULT_HEADS = frozenset({"assessment", "charge", "distribution"})
+_FORMULA_NUMERIC_OPERAND_LANGUAGE = re.compile(
+    r"\b(?:allowance|amount|asset|base|benefit|bonus|cap|credit|deduction|"
+    r"expense|factor|income|interest|liability|limit|offset|payment|rate|"
+    r"salary|supplement|surcharge|tax|threshold|value|wage)s?\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_ADMINISTRATIVE_PARTICIPLE = frozenset(
+    {"administering", "handling", "providing"}
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
     r"(?=[ivxlcdm]+\Z)m{0,3}(?:cm|cd|d?c{0,3})"
@@ -1838,25 +1866,38 @@ def _is_editorial_omission(text: str) -> bool:
     return bool(_EDITORIAL_OMISSION_ONLY.fullmatch(text))
 
 
-def _formula_result_subject_head(prefix: str) -> str:
-    """Return the grammatical head of a formula predicate's subject phrase."""
+def _normalize_formula_result_head(head: str) -> str:
+    head = head.lower()
+    if head in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head
+    if head.endswith("ies") and head[:-3] + "y" in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-3] + "y"
+    if head.endswith("es") and head[:-2] in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-2]
+    if head.endswith("s") and head[:-1] in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-1]
+    return ""
 
-    subject = _strip_source_clause_marker(prefix).strip()
-    segments = [segment.strip() for segment in subject.split(",")]
-    while segments and not segments[-1]:
-        segments.pop()
-    if subject.rstrip().endswith(","):
-        while len(segments) > 1 and _FORMULA_SUBJECT_PARENTHETICAL.match(segments[-1]):
-            segments.pop()
-    subject = segments[-1] if segments else ""
+
+def _formula_subject_segment_head(subject: str) -> str:
+    """Return the grammatical head of one comma-delimited subject segment."""
+
     subject = _FORMULA_SUBJECT_PHRASE_BREAK.split(subject, maxsplit=1)[0]
     words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", subject)
     for index, word in enumerate(words):
-        if not word.lower().endswith("ing"):
+        lowered = word.lower()
+        if not lowered.endswith("ing"):
             continue
-        if any(
+        preceding_has_head = any(
             preceding.lower() not in _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS
             for preceding in words[:index]
+        )
+        following = words[index + 1 :]
+        next_is_numeric_head = bool(
+            following and _normalize_formula_result_head(following[0])
+        )
+        if preceding_has_head and (
+            lowered in _FORMULA_ADMINISTRATIVE_PARTICIPLE or not next_is_numeric_head
         ):
             words = words[:index]
             break
@@ -1865,13 +1906,40 @@ def _formula_result_subject_head(prefix: str) -> str:
     return words[-1].lower() if words else ""
 
 
-def _formula_result_subject_is_numeric(prefix: str) -> bool:
-    head = _formula_result_subject_head(prefix)
-    if head in _FORMULA_NUMERIC_RESULT_HEADS:
-        return True
-    if head.endswith("ies") and head[:-3] + "y" in _FORMULA_NUMERIC_RESULT_HEADS:
-        return True
-    return head.endswith("s") and head[:-1] in _FORMULA_NUMERIC_RESULT_HEADS
+def _formula_result_subject_head(prefix: str) -> str:
+    """Return the grammatical head of a formula predicate's subject phrase."""
+
+    subject = _strip_source_clause_marker(prefix).strip()
+    if _FORMULA_SUBJECT_PREAMBLE.match(subject):
+        words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", subject)
+        determiner_indexes = [
+            index
+            for index, word in enumerate(words)
+            if word.lower() in {"a", "an", "such", "the", "this"}
+        ]
+        if determiner_indexes:
+            subject = " ".join(words[determiner_indexes[-1] :])
+        else:
+            for index in range(len(words) - 1, -1, -1):
+                if _normalize_formula_result_head(words[index]):
+                    subject = " ".join(words[index:])
+                    break
+
+    segments = [segment.strip() for segment in subject.split(",")]
+    while segments and not segments[-1]:
+        segments.pop()
+    if subject.rstrip().endswith(","):
+        while len(segments) > 1 and _FORMULA_SUBJECT_PARENTHETICAL.match(segments[-1]):
+            segments.pop()
+    selected = segments[-1] if segments else ""
+    if not _normalize_formula_result_head(_formula_subject_segment_head(selected)):
+        for segment in segments[:-1]:
+            if not _FORMULA_SUBJECT_PHRASE_BREAK.search(segment):
+                continue
+            if _normalize_formula_result_head(_formula_subject_segment_head(segment)):
+                selected = segment
+                break
+    return _formula_subject_segment_head(selected)
 
 
 def _formula_states_contextual_operator(source_text: str) -> bool:
@@ -1891,7 +1959,15 @@ def _formula_states_contextual_operator(source_text: str) -> bool:
                 flags=re.IGNORECASE,
             ):
                 continue
-            if _formula_result_subject_is_numeric(prefix):
+            head = _normalize_formula_result_head(_formula_result_subject_head(prefix))
+            if head and (
+                head not in _FORMULA_AMBIGUOUS_RESULT_HEADS
+                or _FORMULA_NUMERIC_OPERAND_LANGUAGE.search(
+                    source_text[
+                        match.start() : min(len(source_text), match.end() + 160)
+                    ]
+                )
+            ):
                 return True
     return False
 

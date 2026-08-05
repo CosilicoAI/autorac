@@ -2064,6 +2064,33 @@ B. End.
 
 
 @pytest.mark.parametrize(
+    "heading",
+    (
+        "computed pursuant to the following schedule",
+        "computed as set forth in the following table",
+        "calculated pursuant to the following rates",
+    ),
+)
+def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
+    source = f"""\
+A. The credit shall be {heading}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize(
     "source",
     (
         "A. The Division of Revenue shall administer this section.\nB. End.",
@@ -2106,6 +2133,10 @@ B. End.
         "B. End.",
         "A. The office handling the refund is the Division of Revenue by "
         "designation.\nB. End.",
+        "A. The committee's charge is the division of responsibilities by office.\n"
+        "B. End.",
+        "A. The assessment is the product of a review and public comment.\nB. End.",
+        "A. The distribution is the division of responsibilities by office.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2171,6 +2202,27 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The exemption is the lesser of the following values",
         "The surtax is the percentage of taxable income set forth below",
         "The surcharge shall be reduced by the allowable credit",
+        "The taxes are the sum of the base and surcharge",
+        "The taxpayer's taxes are the sum of the base and surcharge",
+        "The credit shall equal the sum of the base and supplement",
+        "The credit must equal the lesser of the following values",
+        "The credits shall equal the sum of the base and supplement",
+        "The tax then due is the sum of the base and surcharge",
+        "The tax then imposed is the sum of the base and surcharge",
+        "The credit herein allowed shall be the lesser of the following values",
+        "Subject to subsection A the credit is the sum of the base and supplement",
+        "Pursuant to paragraph (1) the amount is the lesser of the following values",
+        "Except as provided in paragraph (1) the tax is the sum of the base and "
+        "surcharge",
+        "For purposes of this section the credit is the average of the following "
+        "values",
+        "The credit for individuals who are resident, elderly, or disabled is the "
+        "average of the following values",
+        "The taxpayer's operating income is the sum of wages and interest",
+        "The taxpayer's withholding credit is the sum of payments and offsets",
+        "The rebates are the sum of refundable credits and payments",
+        "The loss is the difference between gross income and deductions",
+        "The taxable net worth is the sum of assets and liabilities",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
