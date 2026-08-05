@@ -577,6 +577,13 @@ jobs:
             source_bundle_args+=(--exclude-citation "$SECOND_DEPENDENT_CITATION")
           fi
           normalized_source_bundle="$("${source_bundle_args[@]}")"
+          axiom-encode/.venv/bin/python \
+            axiom-encode/scripts/prepare_signed_backfill.py \
+            validate-source-add-targets "$RULESPEC_CHECKOUT" \
+            "$normalized_source_bundle" \
+            --primary-citation "$CITATION" \
+            --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
+            > /dev/null
           normalized_canonical_refresh_bundle="$(
             axiom-encode/.venv/bin/python \
               axiom-encode/scripts/prepare_signed_backfill.py \

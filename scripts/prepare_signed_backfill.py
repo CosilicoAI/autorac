@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -366,6 +367,95 @@ def parse_source_bundle(
         seen_citations.add(citation)
         seen_paths.add(path)
     return tuple(citations)
+
+
+def _checkout_path_exists_without_indirection(
+    repo: Path,
+    relative: PurePosixPath,
+    *,
+    label: str,
+) -> bool:
+    """Return whether a checkout path exists, rejecting parent indirection."""
+
+    cursor = repo
+    for index, component in enumerate(relative.parts):
+        cursor /= component
+        try:
+            metadata = cursor.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise ValueError(f"cannot inspect {label}: {relative}") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"{label} contains a symlink: {relative}")
+        if index < len(relative.parts) - 1 and not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{label} parent is not a directory: {relative}")
+        if index == len(relative.parts) - 1:
+            return True
+    return False
+
+
+def validate_source_add_targets(
+    repo: Path,
+    source_bundle_json: str,
+    *,
+    primary_citation: str,
+    primary_rulespec_path: str = "",
+) -> tuple[str, ...]:
+    """Require source-add destinations to be absent in the pinned checkout.
+
+    Existing canonical modules belong to the canonical-refresh protocol.  A
+    primary replacement may still compose genuinely new source modules, but
+    those additions must not collide with a primary, companion, or ownership
+    manifest already present in the immutable RuleSpec base.
+    """
+
+    sources = parse_source_bundle(
+        source_bundle_json,
+        primary_citation=primary_citation,
+    )
+    primary_jurisdiction = primary_citation.partition("/")[0]
+    expected_repo_name = f"rulespec-{primary_jurisdiction.partition('-')[0]}"
+    repo = Path(repo).resolve(strict=True)
+    if not repo.is_dir() or repo.name != expected_repo_name:
+        raise ValueError(
+            "repository directory must match the primary citation country: "
+            f"{expected_repo_name}"
+        )
+
+    if primary_rulespec_path:
+        _safe_relative_path(
+            primary_rulespec_path,
+            label="source-add primary replacement",
+        )
+        additions = sources
+    else:
+        additions = (primary_citation, *sources)
+
+    conflicts: list[str] = []
+    for citation in additions:
+        rulespec_path = citation_rulespec_path(citation)
+        companion_path = rulespec_path.with_name(f"{rulespec_path.stem}.test.yaml")
+        manifest_path = MANIFEST_ROOT / rulespec_path.with_suffix(".json")
+        for label, path in (
+            ("RuleSpec primary", rulespec_path),
+            ("RuleSpec companion", companion_path),
+            ("RuleSpec ownership manifest", manifest_path),
+        ):
+            if _checkout_path_exists_without_indirection(
+                repo,
+                path,
+                label=label,
+            ):
+                conflicts.append(path.as_posix())
+
+    if conflicts:
+        raise ValueError(
+            "source-add destination already exists in the pinned RuleSpec "
+            "checkout; existing modules must use canonical_refresh_bundle: "
+            + ", ".join(sorted(conflicts))
+        )
+    return sources
 
 
 def parse_canonical_refresh_bundle(
@@ -2488,6 +2578,17 @@ def main() -> None:
         default=[],
         help="additional forbidden canonical citation; may be repeated",
     )
+    source_add_parser = subparsers.add_parser(
+        "validate-source-add-targets",
+        help=(
+            "reject source-add destinations already present in the pinned "
+            "RuleSpec checkout"
+        ),
+    )
+    source_add_parser.add_argument("repo", type=Path)
+    source_add_parser.add_argument("source_bundle_json")
+    source_add_parser.add_argument("--primary-citation", required=True)
+    source_add_parser.add_argument("--primary-rulespec-path", default="")
     atomic_source_parser = subparsers.add_parser(
         "split-atomic-source-input",
         help=(
@@ -2615,6 +2716,18 @@ def main() -> None:
                     split_atomic_source_input(args.atomic_source_json),
                     separators=(",", ":"),
                     sort_keys=True,
+                )
+            )
+        elif args.command == "validate-source-add-targets":
+            print(
+                json.dumps(
+                    validate_source_add_targets(
+                        args.repo,
+                        args.source_bundle_json,
+                        primary_citation=args.primary_citation,
+                        primary_rulespec_path=args.primary_rulespec_path,
+                    ),
+                    separators=(",", ":"),
                 )
             )
         elif args.command == "parse-canonical-refresh-bundle":

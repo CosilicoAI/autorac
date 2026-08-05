@@ -2,6 +2,11 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Reject source-add dispatches when the primary or bundled canonical RuleSpec
+  destination already exists in the pinned checkout. Existing modules must use
+  the authenticated canonical-refresh contract, so mode mistakes fail before
+  model execution or signing instead of reaching an invalid full-tree compile.
+
 - Classify affirmative duties introduced by a `notwithstanding` exemption as
   enabling exception effects, so complete-source companion tests can prove
   obligations that remain operative despite a separate filing exemption.
