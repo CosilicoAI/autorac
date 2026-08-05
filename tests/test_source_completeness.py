@@ -5572,6 +5572,59 @@ def test_terminal_session_law_history_is_not_numeric_recall(history_tail):
     assert cleaned == operative
 
 
+def test_louisiana_session_law_citations_are_not_numeric_recall_values():
+    source = """\
+A. A standard deduction shall be allowed in determining a taxpayer's tax liability
+pursuant to this Part. Taxpayers are required to use the same filing status on their return
+required to be filed under this Part as they used on their federal income tax return. For tax
+year 2025, the amount of the standard deduction shall be as follows:
+
+(1) Single Individual and Married-Separate $12,500.00
+
+(2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+Spouse, and Head of Household provided for Single Individuals
+
+B. Beginning January 1, 2026, and thereafter, the amount of the standard deduction
+provided in Subsection A of this Section shall be adjusted annually by an amount calculated
+by multiplying the amount of the prior year's standard deduction by the percentage increase
+in the Consumer Price Index United States city average for all urban consumers (CPI-U), as
+reported by the United States Department of Labor, Bureau of Labor Statistics, or its
+successor, for the previous calendar year.
+
+Acts 1980, No. 316, §1. Acts 1983, 2nd Ex. Sess., No. 1, §1, eff. Dec. 19,
+1983; Acts 2024, 3rd Ex. Sess., No. 11, §2, eff. Dec. 4, 2024.
+
+{{NOTE: SECTION 4 OF ACTS 1983, 2ND EX. SESS., NO. 1,
+PROVIDES AS FOLLOWS: "THE PROVISIONS OF THIS ACT SHALL
+BE APPLICABLE TO TAXABLE YEARS BEGINNING AFTER
+DECEMBER 31, 1982. FOR TAXABLE YEARS BEGINNING PRIOR TO
+JANUARY 1, 1983, THE TAX SHALL BE AS REQUIRED BY LAW
+PRIOR TO THE EFFECTIVE DATE OF THIS ACT."}}
+"""
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(source),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [
+        (12500.0, "12,500.00"),
+        (200.0, "200"),
+    ]
+
+
+def test_louisiana_session_law_citation_filter_preserves_operative_value():
+    source = "Acts 2024, 3rd Ex. Sess., No. 11, §2 establishes an 11 dollar fee."
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(source),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(11.0, "11")]
+
+
 @pytest.mark.parametrize(
     "references",
     (
