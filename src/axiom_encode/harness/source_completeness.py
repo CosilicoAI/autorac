@@ -191,7 +191,7 @@ _DOTTED_SUBSECTION_MARKER = re.compile(
 )
 _JOINED_DOTTED_BOUNDARY_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)"
-    r"(?=(?:\d+[A-Z]?(?::|\.\d)|(?i:e)\.[ \t]))"
+    r"(?=(?:\d+[A-Z]?(?::|\.\d)|(?i:e)\.(?:[ \t]|(?=\r?$))))"
 )
 _NUMBER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>\d+[a-z]?)\.)[ \t]+",
@@ -1493,7 +1493,7 @@ def _dotted_marker_is_ignorable(source_text: str, match: re.Match[str]) -> bool:
         line_end = len(source_text)
     remainder = source_text[match.end() : line_end].lstrip()
     return match.group("label") == "I" and bool(
-        re.match(r"e\.\s", remainder, flags=re.IGNORECASE)
+        re.match(r"e\.(?:\s|$)", remainder, flags=re.IGNORECASE)
     )
 
 

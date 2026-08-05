@@ -1392,28 +1392,59 @@ def test_dotted_subsection_label_may_occupy_its_own_line():
 
 
 @pytest.mark.parametrize(
-    ("rejected_marker", "placement"),
+    ("rejected_marker", "placement", "newline"),
     (
-        ("C.54A:4-6 controls", "interposed"),
-        ("C.54A:4-6 controls", "trailing"),
-        ("I.e. explanatory prose", "interposed"),
-        ("I.e. explanatory prose", "trailing"),
+        ("C.54A:4-6 controls", "interposed", "\n"),
+        ("C.54A:4-6 controls", "trailing", "\n"),
+        ("I.e. explanatory prose", "interposed", "\n"),
+        ("I.e. explanatory prose", "trailing", "\n"),
+        ("I.e.", "interposed", "\n"),
+        ("I.e.", "trailing", "\n"),
+        ("I.e.", "interposed", "\r\n"),
+        ("I.e.", "trailing", "\r\n"),
     ),
 )
 def test_joined_rejected_marker_is_a_fail_closed_boundary(
     rejected_marker: str,
     placement: str,
+    newline: str,
 ):
     if placement == "interposed":
         source = (
-            f"A. First rule.\n{rejected_marker}\namount = income * 2\nB. Second rule."
+            f"A. First rule.{newline}{rejected_marker}{newline}"
+            f"amount = income * 2{newline}B. Second rule."
         )
     else:
         source = (
-            f"A. First rule.\nB. Second rule.\n{rejected_marker}\namount = income * 2"
+            f"A. First rule.{newline}B. Second rule.{newline}"
+            f"{rejected_marker}{newline}amount = income * 2"
         )
 
     branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert any(
+        branch.path == () and "amount = income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_standalone_spaced_i_e_is_a_fail_closed_boundary(newline: str):
+    source = (
+        f"A. First rule.{newline}I. e.{newline}amount = income * 2{newline}"
+        "B. Second rule."
+    )
+    branches = recognize_source_structure(source)
+
     assert [(branch.path, branch.label) for branch in branches] == [
         (("a",), "A."),
         (("b",), "B."),
