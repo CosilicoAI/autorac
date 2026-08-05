@@ -2626,6 +2626,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
         ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
         ("us", "1e04e456ab404860050586c34eef51321eea95e9"),
         ("us", "b1a6e07af093d62f613f83afe26fcb4dd87de491"),
+        ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
         ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
@@ -2644,6 +2645,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
             ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
             ("us", "1e04e456ab404860050586c34eef51321eea95e9"),
             ("us", "b1a6e07af093d62f613f83afe26fcb4dd87de491"),
+            ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
             ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }

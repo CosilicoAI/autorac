@@ -1480,15 +1480,51 @@ def verify_paused_transition(
         raise ValueError("paused transition verification requires a paused queue")
     for field in (
         "description",
-        "dispatch",
         "expected_counts",
         "issue",
         "queue_id",
-        "release",
         "schema",
     ):
         if queue[field] != previous[field]:
             raise ValueError(f"paused queue transition changed trusted field {field}")
+    toolchain_repin = (
+        queue["dispatch"] != previous["dispatch"]
+        or queue["release"] != previous["release"]
+    )
+    if toolchain_repin:
+        if previous["state"] != "paused":
+            raise ValueError("paused queue toolchain repin requires a paused base")
+        unchanged_dispatch_fields = set(queue["dispatch"]) - {
+            "corpus_ref",
+            "rules_engine_ref",
+            "rulespec_ref",
+        }
+        if any(
+            queue["dispatch"][field] != previous["dispatch"][field]
+            for field in unchanged_dispatch_fields
+        ):
+            raise ValueError("paused queue toolchain repin changed dispatch policy")
+        if any(
+            queue["dispatch"][field] == previous["dispatch"][field]
+            for field in ("corpus_ref", "rules_engine_ref", "rulespec_ref")
+        ):
+            raise ValueError(
+                "paused queue toolchain repin must replace every source pin"
+            )
+        if queue["release"] == previous["release"]:
+            raise ValueError(
+                "paused queue toolchain repin must replace the signed release"
+            )
+        if (
+            queue.get("suspension") is not None
+            or previous.get("suspension") is not None
+        ):
+            raise ValueError("suspended queue cannot use a pristine toolchain repin")
+        if queue["items"] != previous["items"] or not all(
+            item["status"] == "pending" and item["attempt"] == 1
+            for item in queue["items"]
+        ):
+            raise ValueError("paused queue toolchain repin requires pristine items")
     if previous["state"] == "paused" and queue.get("suspension") != previous.get(
         "suspension"
     ):

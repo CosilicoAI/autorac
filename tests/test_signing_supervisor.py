@@ -3493,7 +3493,9 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
     assert '--finalizer-jobs "$RUNNER_TEMP/finalizer-jobs.json"' in validate_command
     assert "snap-queue-finalization-$run_id" in validate_command
     assert "git/ref/heads/hard-cut/canonical-layout-us" in validate_command
-    assert 'echo "initial=$initial" >> "$GITHUB_OUTPUT"' in validate_command
+    assert 'echo "initial=$authenticate_queue" >> "$GITHUB_OUTPUT"' in validate_command
+    assert ".dispatch != $previous[0].dispatch" in validate_command
+    assert ".release != $previous[0].release" in validate_command
 
     steps = validate["jobs"]["validate"]["steps"]
     initial_checkouts = [
@@ -3530,6 +3532,11 @@ def test_snap_queue_activation_checks_and_merge_revalidate_live_state() -> None:
     assert "unsupported initial SNAP queue" in provenance_command
     assert "--state paused" in provenance_command
     assert "cmp --silent" in provenance_command
+    assert "rulespec-us/git/ref/heads/hard-cut/canonical-layout-us" in (
+        provenance_command
+    )
+    assert "initial-axiom-rules-engine merge-base --is-ancestor" in (provenance_command)
+    assert "rules-engine-check-runs.json" in provenance_command
 
     merge = yaml.safe_load(
         (ROOT / ".github/workflows/merge-snap-queue-activation.yml").read_text()

@@ -72,6 +72,10 @@ REVIEWED_RULESPEC_REFS = frozenset(
         ),
         (
             "us",
+            "38ddc92d4160a0d39af13bfe232a446b554a15c5",
+        ),
+        (
+            "us",
             "6535019ce780d9e78f10509f2fe7a2607fb2bdc4",
         ),
         (
