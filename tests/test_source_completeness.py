@@ -11279,6 +11279,12 @@ from the requirement under paragraph (1), each qualified agency shall certify.
         "qualified agencies are waived from filing",
         "qualified agencies are excepted from filing",
         "the filing exception applies",
+        "the statute exempts qualified agencies",
+        "the statute excludes qualified agencies",
+        "the agency waives filing",
+        "the statute excepts qualified agencies",
+        "the filing requirement is not applicable",
+        "the filing requirement is inapplicable",
     ],
 )
 def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
@@ -11339,6 +11345,70 @@ def test_notwithstanding_exemption_does_not_invert_negative_duty(source: str):
 def test_notwithstanding_exemption_double_negative_enables(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == (
         "enable"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Notwithstanding the filing exemption, each agency shall report "
+            "excluded applicants."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, an agency with no pending "
+            "application shall certify."
+        ),
+    ],
+)
+def test_notwithstanding_embedded_negative_terms_do_not_invert_duty(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+def test_notwithstanding_negative_duty_with_negative_object_stays_blocking():
+    source = (
+        "(1) Notwithstanding the filing exemption, each agency shall not certify "
+        "an ineligible applicant."
+    )
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "exclude"
+    )
+
+
+@pytest.mark.parametrize(
+    ("effect", "expected"),
+    [
+        ("is required to remain ineligible", "exclude"),
+        ("is required not to certify", "exclude"),
+        ("is not required to remain ineligible", "enable"),
+        ("is required not to remain ineligible", "enable"),
+    ],
+)
+def test_notwithstanding_required_to_complement_polarity(
+    effect: str,
+    expected: str,
+):
+    source = f"(1) Notwithstanding the filing exemption, each agency {effect}."
+
+    assert completeness_module._source_exception_effect_requirement(source) == expected
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        "shall be denied eligibility",
+        "shall lose eligibility",
+        "shall cease to be eligible",
+    ],
+)
+def test_notwithstanding_negative_result_vocabulary_is_blocking(effect: str):
+    source = f"(1) Notwithstanding the filing exemption, each agency {effect}."
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "exclude"
     )
 
 

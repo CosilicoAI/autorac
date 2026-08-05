@@ -9092,9 +9092,9 @@ def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
 
     match = re.search(
         r"\bnotwithstanding\b"
-        r"(?P<condition>[^.;]{0,640}?\b(?:exempt(?:ed|ion|ions)?|"
-        r"excluded|exclus(?:ion|ions)|waiv(?:ed|er|ers)|"
-        r"except(?:ed|ion|ions)|"
+        r"(?P<condition>[^.;]{0,640}?\b(?:exempt(?:ed|ion|ions|s)?|"
+        r"exclud(?:e[ds])|exclus(?:ion|ions)|waiv(?:e[ds]|er|ers)|"
+        r"except(?:ed|s|ion|ions)|inapplicable|not\s+applicable|"
         r"does\s+not\s+apply|shall\s+not\s+apply)\b[^.;]{0,320}?),"
         r"\s*(?P<effect>[^.;]{0,320})",
         text,
@@ -9104,41 +9104,67 @@ def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
         return None
     effect = match.group("effect")
 
-    modal = re.search(r"\b(?:shall|must)\b", effect, flags=re.IGNORECASE)
-    if modal is not None:
-        before_modal = effect[: modal.start()]
-        after_modal = effect[modal.end() :]
-        negative_subject = re.search(
-            r"\bno\b[^.;]{0,80}$", before_modal, flags=re.IGNORECASE
-        )
-        negative_modal = re.match(r"\s+not\b", after_modal, flags=re.IGNORECASE)
-        negative_status = re.search(
-            r"\b(?:barred|disqualified|excluded|ineligible|prohibited|"
-            r"unqualified)\b",
-            after_modal[:120],
-            flags=re.IGNORECASE,
-        )
+    requirement = re.search(
+        r"\b(?:is|are)\s+(?P<not_required>not\s+)?required\s+"
+        r"(?P<not_to>not\s+)?to\b",
+        effect,
+        flags=re.IGNORECASE,
+    )
+    if requirement is not None:
         negative_count = sum(
-            marker is not None
-            for marker in (negative_subject, negative_modal, negative_status)
+            (
+                _notwithstanding_effect_has_negative_subject(
+                    effect[: requirement.start()]
+                ),
+                requirement.group("not_required") is not None,
+                requirement.group("not_to") is not None,
+                _notwithstanding_complement_is_negative(effect[requirement.end() :]),
+            )
         )
         return "exclude" if negative_count % 2 else "enable"
 
-    if re.search(
-        r"\b(?:is|are)\s+(?:not\s+)?required\s+to\b",
-        effect,
-        flags=re.IGNORECASE,
-    ):
-        return (
-            "exclude"
-            if re.search(
-                r"\b(?:is|are)\s+not\s+required\s+to\b",
-                effect,
-                flags=re.IGNORECASE,
-            )
-            else "enable"
+    modal = re.search(r"\b(?:shall|must)\b", effect, flags=re.IGNORECASE)
+    if modal is None:
+        return None
+    complement = effect[modal.end() :]
+    negative_modal = re.match(r"\s+not\b", complement, flags=re.IGNORECASE)
+    if negative_modal is not None:
+        complement = complement[negative_modal.end() :]
+    negative_count = sum(
+        (
+            _notwithstanding_effect_has_negative_subject(effect[: modal.start()]),
+            negative_modal is not None,
+            _notwithstanding_complement_is_negative(complement),
         )
-    return None
+    )
+    return "exclude" if negative_count % 2 else "enable"
+
+
+def _notwithstanding_effect_has_negative_subject(text: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(?:\([A-Za-z0-9ivxIVX]+\)\s*)*no\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _notwithstanding_complement_is_negative(text: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(?:"
+            r"(?:be|remain|continue\s+to\s+be|become|be\s+deemed)\s+"
+            r"(?:\w+\s+){0,3}(?:barred|disqualified|excluded|ineligible|"
+            r"prohibited|unqualified)\b|"
+            r"(?:be\s+)?denied\s+(?:eligibility|qualification|benefits?)\b|"
+            r"lose\s+(?:eligibility|qualification|benefits?)\b|"
+            r"cease\s+to\s+be\s+(?:eligible|qualified|allowed|entitled)\b"
+            r")",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
