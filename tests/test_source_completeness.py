@@ -1792,6 +1792,10 @@ B. End.
         "greater of",
         "minimum of",
         "maximum of",
+        "min of the following amounts",
+        "max of the following amounts",
+        "smallest of the following amounts",
+        "largest of the following amounts",
         "lesser of the following amounts",
         "greater of the following amounts",
     ),
@@ -1803,6 +1807,40 @@ def test_selection_chapeau_remains_distinct_from_computational_child(
 A. The credit shall be computed as the {selection}:
 (1) income * rate.
 (2) the fixed cap.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "by adding the following amounts",
+        "by subtracting the following amounts",
+        "by dividing by the following amounts",
+        "as the average of the following amounts",
+        "as the mean of the following values",
+        "as the median of the following values",
+        "as the ratio of the following values",
+        "as the quotient of the following values",
+    ),
+)
+def test_aggregation_chapeau_remains_distinct_from_computational_child(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be computed {operation}:
+(1) income * rate.
+(2) the fixed amount.
 B. End.
 """
     branches = recognize_source_structure(source)

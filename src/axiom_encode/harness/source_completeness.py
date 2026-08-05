@@ -344,8 +344,24 @@ _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
-    r"\b(?:as\s+follows|following\s+(?:amounts?|percentages?|rates?|"
-    r"values?|tables?|schedules?|tax\s+years?))\b",
+    r"(?:"
+    r"\b(?:calculated|computed|determined)\s+as\s+follows|"
+    r"\b(?:using|according\s+to|under|equal\s+to|set\s+forth\s+in)\s+"
+    r"(?:the\s+)?following\s+(?:amounts?|percentages?|rates?|values?|"
+    r"tables?|schedules?)(?:\s+for\s+(?:the\s+)?following\s+tax\s+years?)?"
+    r")\s*:\s*$",
+    flags=re.IGNORECASE,
+)
+_FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
+    r"\b(?:"
+    r"add(?:ed|ing)?|addition|summ?(?:ed|ing)?|total(?:ed|ing)?|"
+    r"subtract(?:ed|ing)?|subtraction|"
+    r"divid(?:e|ed|ing)|division|"
+    r"multipli(?:ed|es|ying)|multiplication|"
+    r"min|max|minimum|maximum|least|greatest|lesser|greater|"
+    r"lower|higher|lowest|highest|smallest|largest|smaller|larger|"
+    r"average|mean|median|ratio|quotient|difference|product|remainder"
+    r")\b",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
@@ -4922,6 +4938,7 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         or _formula_operation_kinds(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or re.search(r"\b(?:percentage|percent)\s+of\b", clause, re.IGNORECASE)
+        or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(clause)
         or re.search(
             r"\b(?:lesser|least|minimum|lower|greater|greatest|maximum|higher)"
             r"\s+(?:amount\s+)?of\b",
