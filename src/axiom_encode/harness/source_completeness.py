@@ -4536,10 +4536,15 @@ def _source_clause_spans(
         r";|[.!?](?=(?:[ \t]+[A-ZÄÖÜ(]|\s*$))",
         flags=re.MULTILINE,
     )
+    boundary_matches = (
+        match
+        for match in boundary.finditer(source_text)
+        if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+    )
     split_points = {
         0,
         len(source_text),
-        *(match.end() for match in boundary.finditer(source_text)),
+        *(match.end() for match in boundary_matches),
         *(branch.start for branch in branches),
     }
     for start, end in zip(sorted(split_points), sorted(split_points)[1:]):
@@ -4552,6 +4557,22 @@ def _source_clause_spans(
                 start + right_trimmed,
                 raw[left_trimmed:right_trimmed],
             )
+
+
+def _source_clause_boundary_splits_state_code_citation(
+    source_text: str,
+    boundary: re.Match[str],
+) -> bool:
+    """Keep a line-wrapped ``R.S. 47:...`` citation in one legal clause."""
+
+    return bool(
+        boundary.group(0) == "."
+        and re.search(r"\bR\.S\.$", source_text[: boundary.end()], re.IGNORECASE)
+        and re.match(
+            r"\s*\d+[A-Za-z]?:\d+[A-Za-z]?",
+            source_text[boundary.end() :],
+        )
+    )
 
 
 def _span_is_deferred(
@@ -8451,6 +8472,12 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
 
     collapsed = _collapse_text(text)
     if re.search(
+        r"\bnotwithstanding\b",
+        collapsed,
+        flags=re.IGNORECASE,
+    ) and _source_reference_reservation_is_only_references(collapsed):
+        return False
+    if re.search(
         r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
         collapsed,
         flags=re.IGNORECASE,
@@ -8541,7 +8568,7 @@ def _source_is_simple_main_proposition(text: str) -> bool:
 def _source_reference_reservation_is_only_references(text: str) -> bool:
     clause = _strip_source_clause_marker(_collapse_text(text)).strip()
     marker = re.search(
-        r"\b(?P<marker>subject\s+to|vorbehaltlich|except\s+as)\b",
+        r"\b(?P<marker>subject\s+to|vorbehaltlich|except\s+as|notwithstanding)\b",
         clause,
         flags=re.IGNORECASE,
     )
@@ -8551,7 +8578,12 @@ def _source_reference_reservation_is_only_references(text: str) -> bool:
     if marker.start() == 0:
         tail = clause[marker.end() :]
         delimiter = re.search(r"[,;]", tail)
-        if delimiter is not None and _source_is_simple_main_proposition(
+        if (
+            marker.group("marker").lower() == "notwithstanding"
+            and delimiter is not None
+        ):
+            complement = tail[: delimiter.start()].strip(" \t,;:.")
+        elif delimiter is not None and _source_is_simple_main_proposition(
             tail[delimiter.end() :]
         ):
             complement = tail[: delimiter.start()].strip(" \t,;:.")

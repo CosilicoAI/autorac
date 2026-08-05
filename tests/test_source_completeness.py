@@ -5433,6 +5433,121 @@ def test_en_us_state_code_citations_are_structural_for_numeric_recall():
     assert inventory == []
 
 
+def test_louisiana_revised_statutes_citations_are_structural_for_numeric_recall():
+    source = (
+        "The amount is determined under R.S. 47:32. Notwithstanding R.S.\n"
+        "47:1508, a 25,000 dollar threshold applies, with a separate 2:1 ratio."
+    )
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [
+        (25000.0, "25,000"),
+        (2.0, "2"),
+        (1.0, "1"),
+    ]
+
+
+def test_line_wrapped_louisiana_cross_reference_stays_in_one_clause():
+    source = """\
+Notwithstanding the provisions of R.S.
+47:1508, beginning January 1, 2016, waivers of all penalties exceeding twenty-five
+thousand dollars shall be subject to oversight. This provision shall not apply to a
+penalty waived under the voluntary disclosure program.
+"""
+
+    clauses = tuple(completeness_module._source_clause_spans(source, branches=()))
+    exception_branches = completeness_module._source_exception_branches(
+        source,
+        branches=(),
+        active_branches=(),
+        deferred_paths=set(),
+        formula_branches=(),
+    )
+
+    assert any(
+        "R.S.\n47:1508" in clause and "subject to oversight" in clause
+        for _start, _end, clause in clauses
+    )
+    assert [
+        completeness_module._source_exception_requires_paired_witness(branch.text)
+        for branch in exception_branches
+    ] == [False, True]
+
+
+def test_louisiana_cross_reference_does_not_require_synthetic_case_pair():
+    source = """\
+Notwithstanding the provisions of R.S.
+47:1508, beginning January 1, 2016, waivers of all penalties exceeding twenty-five
+thousand dollars shall be subject to oversight. This provision shall not apply to a
+penalty waived under the voluntary disclosure program.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+rules:
+  - name: penalty_waiver_oversight_threshold
+    kind: parameter
+    dtype: Money
+    unit: USD
+    period: Day
+    source: us-la/statute/47:295
+    versions:
+      - formula: 25000
+  - name: penalty_waiver_subject_to_oversight
+    kind: derived
+    dtype: Judgment
+    period: Day
+    source: us-la/statute/47:295
+    versions:
+      - formula: penalty_amount > penalty_waiver_oversight_threshold and not voluntary_disclosure_program
+"""
+    cases = [
+        {
+            "name": "above threshold",
+            "input": {
+                "penalty_amount": 26000,
+                "voluntary_disclosure_program": False,
+            },
+            "output": {"penalty_waiver_subject_to_oversight": True},
+        },
+        {
+            "name": "at threshold",
+            "input": {
+                "penalty_amount": 25000,
+                "voluntary_disclosure_program": False,
+            },
+            "output": {"penalty_waiver_subject_to_oversight": False},
+        },
+        {
+            "name": "voluntary disclosure exception",
+            "input": {
+                "penalty_amount": 26000,
+                "voluntary_disclosure_program": True,
+            },
+            "output": {"penalty_waiver_subject_to_oversight": False},
+        },
+    ]
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not _has_issue(result, "exception", "test")
+    assert not _has_issue(result, "numeric-recall")
+
+
 def test_en_us_state_code_citation_filter_preserves_real_unit_and_ratio_values():
     source = (
         "Under N.J.S.54A:1-1, the amount is 1 dollar, the required ratio is 2:1, "

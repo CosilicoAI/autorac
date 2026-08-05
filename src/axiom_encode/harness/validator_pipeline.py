@@ -1191,7 +1191,7 @@ _STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN = re.compile(
     r")\s+of\s+(?:18|19|20)\d{2}\b"
 )
 _STRUCTURAL_SOURCE_STATE_CODE_CITATION_TARGET = (
-    r"\d+[A-Za-z]?:\d+[A-Za-z]?-\d+[A-Za-z]?(?:\.\d+)*"
+    r"\d+[A-Za-z]?:\d+[A-Za-z]?(?:-\d+[A-Za-z]?(?:\.\d+)*)?"
     r"(?:\([A-Za-z0-9]+\)[A-Za-z0-9]*)*"
 )
 _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN = re.compile(
