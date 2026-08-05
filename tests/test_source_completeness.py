@@ -1264,17 +1264,51 @@ def test_dotted_subsection_sequence_ignores_later_citation_marker():
         (("a",), "A."),
         (("b",), "B."),
     ]
+    subsection_b = next(
+        branch for branch in recognize_source_structure(source) if branch.path == ("b",)
+    )
+    assert "54A:4-6" not in subsection_b.text
 
 
 def test_dotted_subsection_sequence_survives_later_duplicate_marker():
-    source = "A. First.\nB. Second.\nB. Smith citation."
+    source = "A. First.\nB. Second.\nB. Smith formula amount = 999."
 
-    assert [
-        (branch.path, branch.label) for branch in recognize_source_structure(source)
-    ] == [
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
         (("a",), "A."),
         (("b",), "B."),
     ]
+    subsection_b = next(branch for branch in branches if branch.path == ("b",))
+    assert "999" not in subsection_b.text
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert not any(
+        branch.path == ("b",) and "999" in branch.text for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize(
+    "interposed",
+    ("C. 54A:4-6 controls.", "I. e. explanatory prose."),
+)
+def test_ignorable_dotted_candidate_between_a_and_b_preserves_hierarchy(
+    interposed: str,
+):
+    source = f"A. First.\n{interposed}\nB. Second."
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    assert (
+        interposed
+        not in next(branch for branch in branches if branch.path == ("a",)).text
+    )
 
 
 def test_dotted_subsection_sequence_uses_later_valid_a_b_run():

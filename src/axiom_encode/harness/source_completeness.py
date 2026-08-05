@@ -1235,14 +1235,22 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
     branches: list[SourceStructureBranch] = []
     paragraph_segments: list[tuple[tuple[str, ...], int, int, str]] = []
     dotted_matches = _qualified_dotted_subsection_matches(source_text)
+    dotted_candidates = tuple(_DOTTED_SUBSECTION_MARKER.finditer(source_text))
     outer_segments = [
-        (match, match.start(), dotted_matches[index + 1].start())
-        for index, match in enumerate(dotted_matches[:-1])
-    ]
-    if dotted_matches:
-        outer_segments.append(
-            (dotted_matches[-1], dotted_matches[-1].start(), len(source_text))
+        (
+            match,
+            match.start(),
+            next(
+                (
+                    candidate.start()
+                    for candidate in dotted_candidates
+                    if candidate.start() > match.start()
+                ),
+                len(source_text),
+            ),
         )
+        for match in dotted_matches
+    ]
 
     if outer_segments:
         prefix_end = outer_segments[0][1]
@@ -1437,10 +1445,10 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
             continue
         sequence = [match]
         for candidate in candidates[start + 1 :]:
+            if _dotted_marker_is_ignorable(source_text, candidate):
+                continue
             expected = chr(ord(sequence[-1].group("label")) + 1)
-            if candidate.group("label") != expected or _dotted_marker_starts_citation(
-                source_text, candidate
-            ):
+            if candidate.group("label") != expected:
                 break
             sequence.append(candidate)
         if len(sequence) >= 2:
@@ -1454,6 +1462,18 @@ def _dotted_marker_starts_citation(source_text: str, match: re.Match[str]) -> bo
         line_end = len(source_text)
     remainder = source_text[match.end() : line_end].lstrip()
     return bool(re.match(r"\d+[A-Z]?(?::|\.\d)", remainder, flags=re.IGNORECASE))
+
+
+def _dotted_marker_is_ignorable(source_text: str, match: re.Match[str]) -> bool:
+    if _dotted_marker_starts_citation(source_text, match):
+        return True
+    line_end = source_text.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(source_text)
+    remainder = source_text[match.end() : line_end].lstrip()
+    return match.group("label") == "I" and bool(
+        re.match(r"e\.\s", remainder, flags=re.IGNORECASE)
+    )
 
 
 def _is_editorial_omission(text: str) -> bool:
