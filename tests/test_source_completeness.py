@@ -5614,8 +5614,26 @@ PRIOR TO THE EFFECTIVE DATE OF THIS ACT."}}
     ]
 
 
-def test_louisiana_session_law_citation_filter_preserves_operative_value():
-    source = "Acts 2024, 3rd Ex. Sess., No. 11, §2 establishes an 11 dollar fee."
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "Acts 2024, 3rd Ex. Sess., No. 11, §2",
+        "Acts 1983, 2d Ex. Sess., No. 1, §1",
+        "Acts 2000, 2d Ex.Sess., No. 21, §1",
+        "Acts 1950, 2nd Ex.Sess., No. 11, §2",
+        "Acts 1973, Ex.Sess., No. 8, §1",
+        "Acts 2016, 1 st Ex. Sess., No.\n29, §2",
+        "Acts 1977, 1st Ex. Sess. No. 2, §1",
+        "Acts 2024, Third Ex. Sess., No. 11, §§2, 4",
+        "Acts 2002, No. 51, §§1 and 2",
+        "Acts 1997, No.\n129, §1",
+        "Acts 1995, No. 95-255, §1",
+    ),
+)
+def test_louisiana_session_law_citation_filter_preserves_operative_value(
+    citation: str,
+):
+    source = f"{citation} establishes an 11 dollar fee."
 
     inventory = extract_typed_numeric_inventory_occurrences_from_text(
         authoritative_numeric_recall_text(source),
