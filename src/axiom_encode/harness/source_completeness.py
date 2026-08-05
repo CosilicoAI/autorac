@@ -307,6 +307,18 @@ _COMPUTATION_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_FORMULA_APPLICABILITY_PREFACE = re.compile(
+    r"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
+    r"beginning\b[^.;]{0,80}?\b(?:18|19|20)\d{2}\b"
+    r"(?:,\s*and\s+thereafter)?|"
+    r"(?:for|during)\b[^,.;]{0,80}?\b"
+    r"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\b"
+    r"[^,.;]{0,40}?\b(?:18|19|20)\d{2}\b|"
+    r"(?:effective(?:\s+(?:on|from))?|starting|as\s+of|on\s+or\s+after)\b"
+    r"[^,.;]{0,80}?\b(?:18|19|20)\d{2}\b"
+    r")\s*,",
+    flags=re.IGNORECASE,
+)
 _STATED_CONVERSION_CUE = re.compile(
     r"\b(?:umgerechnet|converted)\b",
     flags=re.IGNORECASE,
@@ -5648,16 +5660,12 @@ def _temporal_occurrence_is_formula_applicability_preface(
 
     if not occurrence.has_temporal_context:
         return False
-    computation_starts = [
-        match.start()
-        for pattern in (
-            _COMPUTATION_LANGUAGE,
-            _ARITHMETIC_EXPRESSION,
-            _WORDED_ARITHMETIC_EXPRESSION,
-        )
-        if (match := pattern.search(source_text)) is not None
-    ]
-    return bool(computation_starts) and occurrence.end <= min(computation_starts)
+    preface = _FORMULA_APPLICABILITY_PREFACE.match(source_text)
+    return bool(
+        preface is not None
+        and occurrence.start >= preface.start()
+        and occurrence.end <= preface.end()
+    )
 
 
 def _formula_operation_kinds(text: str) -> set[str]:

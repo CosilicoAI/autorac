@@ -9506,12 +9506,17 @@ rules:
     assert _has_issue(result, "formula branch")
 
 
-def test_temporal_formula_operand_remains_required_after_computation_cue():
-    source = (
-        "The amount is calculated by subtracting tax year 2020 from "
-        "the current tax year."
-    )
-    content = """\
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is calculated by subtracting tax year 2020 from the current tax year.",
+        "Tax year 2020 is subtracted from the current tax year, and the amount is calculated.",
+    ),
+)
+def test_temporal_formula_operand_remains_required_outside_applicability_preface(
+    source,
+):
+    content = f"""\
 format: rulespec/v1
 module:
   source_verification:
@@ -9535,8 +9540,7 @@ rules:
             source:
               corpus_citation_path: us-la/statute/47:294
               excerpt: >-
-                The amount is calculated by subtracting tax year 2020 from the
-                current tax year.
+                {source}
     versions:
       - formula: tax_year - base_tax_year
 """
