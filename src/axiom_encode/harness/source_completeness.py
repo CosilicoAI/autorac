@@ -307,16 +307,28 @@ _COMPUTATION_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+_FORMULA_APPLICABILITY_YEAR = r"(?:18|19|20)\d{2}"
+_FORMULA_APPLICABILITY_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_FORMULA_APPLICABILITY_DAY = r"(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+_FORMULA_APPLICABILITY_DATE = (
+    rf"(?:{_FORMULA_APPLICABILITY_MONTH}\s+"
+    rf"(?:{_FORMULA_APPLICABILITY_DAY}\s*,?\s*)?"
+    rf"{_FORMULA_APPLICABILITY_YEAR}|{_FORMULA_APPLICABILITY_YEAR})"
+)
 _FORMULA_APPLICABILITY_PREFACE = re.compile(
-    r"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
-    r"beginning\b[^.;]{0,80}?\b(?:18|19|20)\d{2}\b"
-    r"(?:,?\s+and\s+thereafter)?|"
-    r"(?:for|during)\b[^.;]{0,80}?\b"
-    r"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\b"
-    r"[^.;]{0,40}?\b(?:18|19|20)\d{2}\b|"
-    r"(?:effective(?:\s+(?:on|from))?|starting|as\s+of|on\s+or\s+after)\b"
-    r"[^.;]{0,80}?\b(?:18|19|20)\d{2}\b"
-    r")\s*,",
+    rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
+    rf"beginning\s+(?:on\s+)?{_FORMULA_APPLICABILITY_DATE}"
+    rf"(?:,?\s+and\s+thereafter)?|"
+    rf"(?:for|during)\s+(?:the\s+)?"
+    rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
+    rf"{_FORMULA_APPLICABILITY_YEAR}|"
+    rf"(?:effective(?:\s+(?:on|from))?|starting(?:\s+(?:on|from))?|"
+    rf"as\s+of|on\s+or\s+after)\s+{_FORMULA_APPLICABILITY_DATE}"
+    rf")\s*,",
     flags=re.IGNORECASE,
 )
 _STATED_CONVERSION_CUE = re.compile(

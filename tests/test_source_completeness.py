@@ -9565,6 +9565,9 @@ rules:
     (
         "The amount is calculated by subtracting tax year 2020 from the current tax year.",
         "Tax year 2020 is subtracted from the current tax year, and the amount is calculated.",
+        "Effective rate is calculated by subtracting tax year 2020, from the current tax year.",
+        "For purposes of this section, the base is tax year 2020, and the amount is calculated as the current tax year minus the base.",
+        "For tax year calculations, the amount is calculated by subtracting tax year 2020 from the current tax year.",
     ),
 )
 def test_temporal_formula_operand_remains_required_outside_applicability_preface(
