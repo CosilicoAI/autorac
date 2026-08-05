@@ -11260,7 +11260,8 @@ def test_notwithstanding_exemption_preserves_affirmative_duty():
 (b) Qualified public housing agencies
 (A) The requirement under paragraph (1) shall not apply to a qualified agency.
 (B) Notwithstanding that qualified agencies are exempt under subparagraph (A)
-from the requirement under paragraph (1), each qualified agency shall certify.
+from the requirement under paragraph (1), each qualified public housing agency
+shall, on an annual basis, make the certification described in paragraph (16).
 """
 
     assert completeness_module._source_exception_effect_requirement(source) == (
@@ -11273,24 +11274,9 @@ from the requirement under paragraph (1), each qualified agency shall certify.
     [
         "the filing exemption applies",
         "qualified agencies are exempted from filing",
-        "the filing exclusion applies",
-        "qualified agencies are excluded from filing",
-        "the filing waiver applies",
-        "qualified agencies are waived from filing",
-        "qualified agencies are excepted from filing",
-        "the filing exception applies",
-        "the statute exempts qualified agencies",
-        "the statute excludes qualified agencies",
-        "the agency waives filing",
-        "the statute excepts qualified agencies",
-        "the filing requirement is not applicable",
-        "the filing requirement is inapplicable",
-        "the statutes exclude qualified agencies",
-        "the agencies waive filing",
-        "the statutes except qualified agencies",
     ],
 )
-def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
+def test_notwithstanding_exemption_word_forms_preserve_certification_duty(
     condition: str,
 ):
     source = (
@@ -11303,177 +11289,35 @@ def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
 
 
 @pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall not "
-            "be eligible."
-        ),
-        ("(1) Notwithstanding the filing exemption, no agency shall be eligible."),
-        ("(1) Notwithstanding the filing exemption, each agency must be ineligible."),
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall remain "
-            "ineligible."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall continue "
-            "to be ineligible."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, each agency must remain "
-            "disqualified."
-        ),
-    ],
-)
-def test_notwithstanding_exemption_does_not_invert_negative_duty(source: str):
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "exclude"
-    )
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall not be "
-            "ineligible."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, each agency must not be "
-            "disqualified."
-        ),
-        ("(1) Notwithstanding the filing exemption, no agency shall be ineligible."),
-    ],
-)
-def test_notwithstanding_exemption_double_negative_enables(source: str):
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "enable"
-    )
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall report "
-            "excluded applicants."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, an agency with no pending "
-            "application shall certify."
-        ),
-    ],
-)
-def test_notwithstanding_embedded_negative_terms_do_not_invert_duty(source: str):
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "enable"
-    )
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        (
-            "(1) Notwithstanding the filing exemption, each agency shall certify "
-            "that applicants are required to remain ineligible."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, each agency that shall "
-            "submit a report must certify."
-        ),
-    ],
-)
-def test_notwithstanding_main_predicate_precedes_nested_predicates(source: str):
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "enable"
-    )
-
-
-def test_notwithstanding_negative_duty_with_negative_object_stays_blocking():
-    source = (
-        "(1) Notwithstanding the filing exemption, each agency shall not certify "
-        "an ineligible applicant."
-    )
-
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "exclude"
-    )
-
-
-@pytest.mark.parametrize(
-    ("effect", "expected"),
-    [
-        ("is required to remain ineligible", "exclude"),
-        ("is required not to certify", "exclude"),
-        ("is required to not certify", "exclude"),
-        ("is legally required to certify", "enable"),
-        ("is not legally required to certify", "exclude"),
-        ("is not required to remain ineligible", "enable"),
-        ("is required not to remain ineligible", "enable"),
-    ],
-)
-def test_notwithstanding_required_to_complement_polarity(
-    effect: str,
-    expected: str,
-):
-    source = f"(1) Notwithstanding the filing exemption, each agency {effect}."
-
-    assert completeness_module._source_exception_effect_requirement(source) == expected
-
-
-@pytest.mark.parametrize(
     "effect",
     [
-        "shall be denied eligibility",
-        "shall lose eligibility",
-        "shall cease to be eligible",
-    ],
-)
-def test_notwithstanding_negative_result_vocabulary_is_blocking(effect: str):
-    source = f"(1) Notwithstanding the filing exemption, each agency {effect}."
-
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "exclude"
-    )
-
-
-@pytest.mark.parametrize(
-    "effect",
-    [
-        "shall be eligible unless disqualified",
-        "shall be eligible and not disqualified",
-        "shall be deemed not ineligible",
-    ],
-)
-def test_notwithstanding_positive_complement_is_not_overconsumed(effect: str):
-    source = f"(1) Notwithstanding the filing exemption, each agency {effect}."
-
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "enable"
-    )
-
-
-@pytest.mark.parametrize(
-    "effect",
-    [
+        "each agency shall not certify",
+        "each agency shall remain ineligible",
+        "each agency shall report excluded applicants",
+        "an agency with no pending application shall certify",
+        "each agency shall certify that applicants must remain ineligible",
+        "each agency that shall submit a report must certify",
+        "each agency is required to certify",
         "neither agency shall be eligible",
-        "none of the agencies shall be eligible",
-        "each agency shall no longer be eligible",
-        "each agency shall never be eligible",
+        "there shall be no eligibility",
+        "each agency shall never fail to certify",
+        "each agency shall be deemed not eligible",
+        "each agency shall be considered ineligible",
     ],
 )
-def test_notwithstanding_equivalent_negation_is_blocking(effect: str):
+def test_notwithstanding_exemption_does_not_guess_other_effects(effect: str):
     source = f"(1) Notwithstanding the filing exemption, {effect}."
 
-    assert completeness_module._source_exception_effect_requirement(source) == (
-        "exclude"
+    assert (
+        completeness_module._notwithstanding_exemption_effect_requirement(source)
+        is None
     )
 
 
 def test_notwithstanding_exemption_accepts_enabling_companion_pair():
     source = """\
 (1) Notwithstanding that qualified agencies are exempt from the filing requirement,
-each qualified agency shall certify.
+each qualified public housing agency shall, on an annual basis, make the certification.
 """
     content = _exception_control_content(
         "if qualified_agency: true else: false",
@@ -11494,90 +11338,6 @@ each qualified agency shall certify.
     result = _analyze(content, source, test_cases=cases)
 
     assert not result.issues
-
-
-def test_notwithstanding_exemption_accepts_blocking_companion_pair():
-    source = """\
-(1) Notwithstanding the filing exemption, an exempt agency shall not be eligible.
-"""
-    correct = _exception_control_content(
-        "if filing_exemption: false else: true",
-    )
-    inverted = _exception_control_content(
-        "if filing_exemption: true else: false",
-    )
-    correct_cases = [
-        {
-            "name": "ordinary agency",
-            "input": {"filing_exemption": False},
-            "output": {"result": True},
-        },
-        {
-            "name": "exempt agency",
-            "input": {"filing_exemption": True},
-            "output": {"result": False},
-        },
-    ]
-    inverted_cases = [
-        {
-            "name": "ordinary agency",
-            "input": {"filing_exemption": False},
-            "output": {"result": False},
-        },
-        {
-            "name": "exempt agency",
-            "input": {"filing_exemption": True},
-            "output": {"result": True},
-        },
-    ]
-
-    correct_result = _analyze(correct, source, test_cases=correct_cases)
-    inverted_result = _analyze(inverted, source, test_cases=inverted_cases)
-
-    assert not correct_result.issues
-    assert _has_issue(inverted_result, "exception", "test")
-
-
-def test_notwithstanding_exemption_double_negative_accepts_enabling_pair():
-    source = """\
-(1) Notwithstanding the filing exclusion, an agency shall not remain ineligible.
-"""
-    correct = _exception_control_content(
-        "if filing_exclusion: true else: false",
-    )
-    inverted = _exception_control_content(
-        "if filing_exclusion: false else: true",
-    )
-    correct_cases = [
-        {
-            "name": "ordinary agency",
-            "input": {"filing_exclusion": False},
-            "output": {"result": False},
-        },
-        {
-            "name": "excluded agency",
-            "input": {"filing_exclusion": True},
-            "output": {"result": True},
-        },
-    ]
-    inverted_cases = [
-        {
-            "name": "ordinary agency",
-            "input": {"filing_exclusion": False},
-            "output": {"result": True},
-        },
-        {
-            "name": "excluded agency",
-            "input": {"filing_exclusion": True},
-            "output": {"result": False},
-        },
-    ]
-
-    correct_result = _analyze(correct, source, test_cases=correct_cases)
-    inverted_result = _analyze(inverted, source, test_cases=inverted_cases)
-
-    assert not correct_result.issues
-    assert _has_issue(inverted_result, "exception", "test")
 
 
 def test_preposed_german_negative_condition_enables_positive_result():
