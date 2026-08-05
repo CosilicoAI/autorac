@@ -2003,6 +2003,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert "split-atomic-source-input" in source_bundle_command
     assert 'parse-source-bundle "$source_bundle_json"' in source_bundle_command
+    assert "validate-source-add-targets" in source_bundle_command
+    assert 'validate-source-add-targets "$RULESPEC_CHECKOUT"' in (source_bundle_command)
     assert 'parse-existing-signed-imports "$RULESPEC_CHECKOUT"' in (
         source_bundle_command
     )
@@ -4114,6 +4116,65 @@ def test_targeted_signed_reencode_rejects_nonatomic_source_bundle_replacements_e
 
     assert completed.returncode != 0
     assert expected_error in completed.stderr
+
+
+def test_targeted_signed_reencode_rejects_existing_source_add_targets_early(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = (
+        next(
+            step["run"]
+            for step in workflow["jobs"]["encode"]["steps"]
+            if step.get("name") == "Validate atomic source inputs"
+        )
+        .replace("axiom-encode/.venv/bin/python", sys.executable)
+        .replace(
+            "axiom-encode/scripts/prepare_signed_backfill.py",
+            str(ROOT / "scripts/prepare_signed_backfill.py"),
+        )
+    )
+    checkout = tmp_path / "rulespec-us"
+    for relative in (
+        "us-la/statutes/47/294.yaml",
+        "us-la/statutes/47/295.yaml",
+        "us-la/statutes/47/32.yaml",
+        "us-la/statutes/47:32.yaml",
+    ):
+        target = checkout / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "ATOMIC_SOURCE_JSON": '["us-la/statute/47:295"]',
+            "CITATION": "us-la/statute/47:294",
+            "DEPENDENT_CITATION": "",
+            "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": "[]",
+            "QUEUE_ID": "",
+            "REPAIR_RUN_ID": "",
+            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "REPLACE_RULESPEC_PATH": "",
+            "RULESPEC_CHECKOUT": str(checkout),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+        },
+    )
+
+    assert completed.returncode != 0
+    assert "existing modules must use canonical_refresh_bundle" in completed.stderr
+    assert "us-la/statutes/47/294.yaml" in completed.stderr
+    assert "us-la/statutes/47/295.yaml" in completed.stderr
 
 
 def test_targeted_signed_reencode_reuses_verified_existing_import(

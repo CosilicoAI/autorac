@@ -31,6 +31,7 @@ from scripts.prepare_signed_backfill import (
     validate_dependent_cascade,
     validate_queue_tracking,
     validate_rulespec_base,
+    validate_source_add_targets,
     verify_canonical_refresh_target,
 )
 from scripts.prepare_signed_backfill import (
@@ -389,6 +390,87 @@ def test_parse_source_bundle_cli_emits_normalized_json_array(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == '["us-ri/statute/44-30-1"]\n'
+
+
+def test_validate_source_add_targets_accepts_absent_primary_and_bundle(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    repo.mkdir()
+
+    assert validate_source_add_targets(
+        repo,
+        '["us-la/statute/47:295"]',
+        primary_citation="us-la/statute/47:294",
+    ) == ("us-la/statute/47:295",)
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        "us-la/statutes/47/294.yaml",
+        "us-la/statutes/47/295.test.yaml",
+        ".axiom/encoding-manifests/us-la/statutes/47/295.json",
+    ],
+)
+def test_validate_source_add_targets_rejects_existing_destinations(
+    tmp_path: Path,
+    existing: str,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    target = repo / existing
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("existing\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="existing modules must use canonical_refresh_bundle",
+    ):
+        validate_source_add_targets(
+            repo,
+            '["us-la/statute/47:295"]',
+            primary_citation="us-la/statute/47:294",
+        )
+
+
+def test_validate_source_add_targets_allows_existing_replacement_primary(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    primary = repo / "us-la/statutes/47/294.yaml"
+    primary.parent.mkdir(parents=True)
+    primary.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+
+    assert validate_source_add_targets(
+        repo,
+        '["us-la/statute/47:295"]',
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+    ) == ("us-la/statute/47:295",)
+
+
+def test_validate_source_add_targets_rejects_existing_bundle_with_replacement_primary(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rulespec-us"
+    for relative in (
+        "us-la/statutes/47/294.yaml",
+        "us-la/statutes/47/295.yaml",
+    ):
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="existing modules must use canonical_refresh_bundle",
+    ):
+        validate_source_add_targets(
+            repo,
+            '["us-la/statute/47:295"]',
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
 
 
 def _canonical_refresh_repo(tmp_path: Path) -> Path:
