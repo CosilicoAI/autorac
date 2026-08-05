@@ -1423,14 +1423,18 @@ jobs:
             else
               rm "$guard_stderr"
             fi
-            if ! jq -e '
+            if ! jq -e -s '
               select(
-                type == "object"
-                and keys == ["issues", "passed", "repo"]
-                and (.repo | type == "string")
-                and (.passed | type == "boolean")
-                and (.issues | type == "array" and all(.[]; type == "string"))
+                length == 1
+                and (
+                  .[0] | type == "object"
+                  and keys == ["issues", "passed", "repo"]
+                  and (.repo | type == "string")
+                  and (.passed | type == "boolean")
+                  and (.issues | type == "array" and all(.[]; type == "string"))
+                )
               )
+              | .[0]
             ' "$guard_json" >&2; then
               mv "$guard_json" \
                 "$RUNNER_TEMP/checkpoint-guard-generated.stdout.log"

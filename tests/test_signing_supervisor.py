@@ -2289,6 +2289,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "unset AXIOM_ENCODE_APPLY_SIGNING_KEY" in command
     assert ') > "$guard_json" 2> "$guard_stderr"' in command
     assert 'local guard_status="$?"' in command
+    assert "if ! jq -e -s" in command
+    assert "length == 1" in command
     assert 'and keys == ["issues", "passed", "repo"]' in command
     assert 'and (.issues | type == "array"' in command
     assert 'if [ "$guard_status" -eq 0 ]; then' in command
@@ -3112,8 +3114,19 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
     }
 
 
-def test_targeted_signed_reencode_packages_stderr_only_checkpoint_failure(
+@pytest.mark.parametrize(
+    "guard_stdout",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(
+            '{"repo":"/runner/rulespec-us","passed":false,"issues":[]}\n{}\n',
+            id="multiple-json-roots",
+        ),
+    ],
+)
+def test_targeted_signed_reencode_packages_noncontract_checkpoint_failure(
     tmp_path: Path,
+    guard_stdout: str,
 ) -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
@@ -3135,6 +3148,7 @@ def test_targeted_signed_reencode_packages_stderr_only_checkpoint_failure(
         "  echo 'signing key reached direct supervisor invocation' >&2\n"
         "  exit 91\n"
         "fi\n"
+        "printf '%s' \"${GUARD_STDOUT:-}\"\n"
         "echo 'private keys are forbidden in the signing supervisor' >&2\n"
         "exit 7\n"
     )
@@ -3154,6 +3168,7 @@ def test_targeted_signed_reencode_packages_stderr_only_checkpoint_failure(
             **os.environ,
             "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
             "GITHUB_WORKSPACE": str(tmp_path),
+            "GUARD_STDOUT": guard_stdout,
             "GUARD_STUB": str(guard_stub),
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
             "RUNNER_TEMP": str(tmp_path),
@@ -3165,7 +3180,9 @@ def test_targeted_signed_reencode_packages_stderr_only_checkpoint_failure(
     assert checkpoint_result.returncode == 7
     assert "private keys are forbidden" in checkpoint_result.stderr
     assert not (tmp_path / "checkpoint-guard-generated.json").exists()
-    assert (tmp_path / "checkpoint-guard-generated.stdout.log").read_bytes() == b""
+    assert (
+        tmp_path / "checkpoint-guard-generated.stdout.log"
+    ).read_text() == guard_stdout
     assert (
         tmp_path / "checkpoint-guard-generated.stderr.log"
     ).read_text() == "private keys are forbidden in the signing supervisor\n"
