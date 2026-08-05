@@ -1828,6 +1828,7 @@ B. End.
         "as the average of the following amounts",
         "as the mean of the following values",
         "as the median of the following values",
+        "as the product of the following amounts",
         "as the ratio of the following values",
         "as the quotient of the following values",
     ),
@@ -2081,6 +2082,18 @@ B. End.
         "determined pursuant to the table set forth below",
         "computed using the table below",
         "computed according to the table below",
+        "computed from the rates in the following table",
+        "computed from the rates shown in the table below",
+        "calculated in accordance with the rates prescribed in the table below",
+        "determined pursuant to the percentages in the following schedule",
+        "computed using Table 1 below",
+        "computed using the following Table 1",
+        "computed according to Schedule A below",
+        "computed using the table below for tax year 2026",
+        "computed according to the following table for taxable year 2026",
+        "determined by the following schedule",
+        "computed by reference to the table below",
+        "computed in the manner shown in the table below",
     ),
 )
 def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
@@ -2161,6 +2174,12 @@ B. End.
         "Division of Revenue.\nB. End.",
         "A. Pursuant to paragraph (1), the administrator for the benefit is the "
         "product of a merger.\nB. End.",
+        "A. The benefit is the product of a collective bargaining agreement and "
+        "employer policy.\nB. End.",
+        "A. The withholding is the product of a court order and agency action.\n"
+        "B. End.",
+        "A. The margin is the difference between the printed text and the page "
+        "edge.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2287,6 +2306,50 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "(1) and the rate",
         "The charge is the division of the total tax shown on the return by the "
         "number of installments",
+        "For purposes of this Part the credit is the sum of the base and supplement",
+        "For purposes of this Title the amount is the lesser of the following values",
+        "Pursuant to R.S. 47:297.4 the credit is the sum of the base and supplement",
+        "Under R.S. 47:297.4 the tax is the sum of the base and surcharge",
+        "Subject to the limitations of paragraph (1) the credit is the average of "
+        "the following values",
+        "Except as provided in R.S. 47:297.4 the amount is the lesser of the "
+        "following values",
+        "Effective on or after January 1 2025 the credit is the sum of the base and "
+        "supplement",
+        "Beginning on January 1 2025 the tax is the sum of the base and surcharge",
+        "Under Title 47 the credit is the sum of the base and supplement",
+        "Under Article I the credit is the sum of the base and supplement",
+        "Under Part A the credit is the sum of the base and supplement",
+        "Subject to subdivision (a)(1) the credit is the sum of the base and "
+        "supplement",
+        "Except as otherwise provided in subsection A the credit is the sum of the "
+        "base and supplement",
+        "To the extent provided in subsection A the credit is the sum of the base "
+        "and supplement",
+        "The income derived from sources in this state is the sum of wages and "
+        "interest",
+        "The credit previously allowed shall equal the lesser of the following values",
+        "The assessment is the sum of assets and liabilities",
+        "The assessment is the sum of wages and salaries",
+        "The assessment is the sum of income, net of deductions, and interest",
+        "The assessment is the sum of wages, including bonuses, and interest",
+        "The charge is the sum of $100 and 200 dollars",
+        "The charge is the difference between ($100) and $50",
+        "The assessment is the lesser of taxable value and adjusted basis",
+        "The distribution is the average of partnership income and capital gains",
+        "The assessment is the ratio of taxable value to adjusted basis",
+        "The assessment is the difference between gains and losses",
+        "The distribution is the product of partnership income and the ownership "
+        "percentage",
+        "The charge is the product of hours and the hourly rate",
+        "The assessment is the sum of wages paid during the taxable year and "
+        "interest received during the taxable year",
+        "The assessment is the difference between income derived from sources in "
+        "this state and deductions allowable under this section",
+        "The assessment is the sum of one hundred dollars and two hundred dollars",
+        "The assessment is the difference between $100 and ($20)",
+        "The assessment is the total of wages and interest",
+        "The assessment is the smaller of taxable value and adjusted basis",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):

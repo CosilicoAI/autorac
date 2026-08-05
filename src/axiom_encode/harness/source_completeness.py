@@ -347,25 +347,32 @@ _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
     r"\b\d+(?:[.,]\d+)?\s*(?:%|percent)\s+of\b",
     flags=re.IGNORECASE,
 )
+_FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+)?"
 _FORMULA_GENERIC_TABLE_TARGET = (
     r"(?:the\s+)?(?:"
     r"following\s+(?:amounts?|percentages?|rates?|values?|tables?|schedules?)"
     r"(?:\s+for\s+(?:the\s+)?following\s+tax\s+years?)?|"
-    r"(?:table|schedule)\s+(?:set\s+forth\s+)?below|"
-    r"(?:amounts?|percentages?|rates?|values?)\s+set\s+forth\s+in\s+"
-    r"(?:the\s+)?following\s+(?:table|schedule))"
+    rf"following\s+{_FORMULA_TABLE_NAME}|"
+    rf"{_FORMULA_TABLE_NAME}\s+(?:set\s+forth\s+)?below|"
+    r"(?:amounts?|percentages?|rates?|values?)\s+"
+    r"(?:(?:set\s+forth|shown|prescribed)\s+)?in\s+(?:the\s+)?"
+    rf"(?:following\s+{_FORMULA_TABLE_NAME}|{_FORMULA_TABLE_NAME}\s+below))"
 )
 _FORMULA_GENERIC_TABLE_REFERENCE = (
-    r"(?:pursuant\s+to|as\s+set\s+forth\s+in|in\s+accordance\s+with|from)\s+"
+    r"(?:pursuant\s+to|as\s+set\s+forth\s+in|in\s+accordance\s+with|"
+    r"from|by\s+reference\s+to)\s+"
     rf"{_FORMULA_GENERIC_TABLE_TARGET}"
 )
-_FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
-    rf"(?:"
-    r"\b(?:calculated|computed|determined)\s+as\s+follows|"
-    rf"\b(?:calculated|computed|determined)\s+{_FORMULA_GENERIC_TABLE_REFERENCE}|"
-    r"\b(?:using|according\s+to|under|based\s+on|equal\s+to|"
-    rf"set\s+forth\s+in)\s+{_FORMULA_GENERIC_TABLE_TARGET}"
-    r")\s*:\s*$",
+_FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
+    r"\b(?:calculated|computed|determined)\s+(?:"
+    r"(?:by|through)\s+(?:adding|addition|subtracting|subtraction|dividing|"
+    r"division|multiplying|multiplication|reducing|reduction|deducting|"
+    r"deduction|increasing|increase|decreasing|decrease)\b|"
+    r"as\s+(?:the\s+)?(?:addition|average|difference|mean|median|ratio|"
+    r"quotient|remainder|product|sum|total|min|max|minimum|maximum|least|"
+    r"greatest|lesser|greater|lower|higher|lowest|highest|smallest|largest|"
+    r"smaller|larger|percent|percentage)\s+(?:of|between)\b"
+    r")",
     flags=re.IGNORECASE,
 )
 _FORMULA_RESULT_PREDICATE = (
@@ -458,7 +465,7 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
 )
 _FORMULA_SUBJECT_PHRASE_BREAK = re.compile(
     r"\b(?:of|for|to|under|by|from|in|on|with|without|that|which|who|whose|"
-    r"before|after)\b",
+    r"before|after|during|throughout|within)\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
@@ -473,6 +480,7 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "computed",
         "currently",
         "described",
+        "derived",
         "determined",
         "due",
         "hereby",
@@ -481,11 +489,13 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "hereunder",
         "now",
         "otherwise",
+        "paid",
         "payable",
         "permitted",
         "prescribed",
         "provided",
         "pursuant",
+        "received",
         "responsible",
         "shown",
         "so",
@@ -495,6 +505,8 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "forth",
         "then",
         "thereon",
+        "previously",
+        "below",
     }
 )
 _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS = frozenset(
@@ -522,28 +534,88 @@ _FORMULA_SUBJECT_PARENTHETICAL = re.compile(
     r"specified|subject|when|where)\b",
     flags=re.IGNORECASE,
 )
-_FORMULA_SUBJECT_PREAMBLE_PREFIX = re.compile(
+_FORMULA_LEGAL_PROVISION_REFERENCE = (
     r"(?:"
-    r"(?:for\s+purposes\s+of|subject\s+to|pursuant\s+to|"
-    r"except\s+as\s+provided\s+in|under|according\s+to|"
-    r"in\s+accordance\s+with|as\s+provided\s+in|except\s+under)\s+"
-    r"(?:(?:this|the)\s+)?(?:section|subsection|paragraph|chapter)"
-    r"(?:\s+(?:\([^)]+\)|[A-Z]|\d+(?:\.\d+)*))?|"
+    r"(?:(?:this|the)\s+)?(?:section|subsection|paragraph|chapter|part|title|"
+    r"article|subdivision)"
+    r"(?:\s+(?:(?:\([^)]+\))+|[A-Z]+|[IVXLCDM]+|\d+(?:\.\d+)*))?|"
+    r"R\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*)"
+)
+_FORMULA_SUBJECT_PREAMBLE_PREFIX = re.compile(
+    rf"(?:"
+    rf"(?:for\s+purposes\s+of|pursuant\s+to|under|according\s+to|"
+    rf"in\s+accordance\s+with|except\s+under|to\s+the\s+extent\s+provided\s+in)"
+    rf"\s+{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
+    rf"subject\s+to\s+(?:(?:the\s+)?(?:limitations?|provisions?|requirements?)"
+    rf"\s+of\s+)?{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
+    rf"(?:except\s+)?as\s+(?:otherwise\s+)?provided\s+in\s+"
+    rf"{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
     r"for\s+(?:taxable|tax|calendar|fiscal)\s+years?[^,.;:\n]*?"
     r"(?:18|19|20)\d{2}|"
     r"effective\s+for\s+(?:taxable|tax|calendar|fiscal)\s+years?"
     r"[^,.;:\n]*?(?:18|19|20)\d{2}|"
     r"(?:after|beginning\s+after)\s+(?:18|19|20)\d{2}|"
-    r"on\s+or\s+after\s+[A-Za-z]+\s+\d{1,2}\s*,?\s*(?:18|19|20)\d{2}"
+    r"(?:effective\s+)?on\s+or\s+after\s+[A-Za-z]+\s+\d{1,2}\s*,?\s*"
+    r"(?:18|19|20)\d{2}|"
+    r"beginning\s+on\s+[A-Za-z]+\s+\d{1,2}\s*,?\s*(?:18|19|20)\d{2}"
     r")(?:\s*,\s*|\s+)",
     flags=re.IGNORECASE,
 )
-_FORMULA_AMBIGUOUS_RESULT_HEADS = frozenset({"assessment", "charge", "distribution"})
-_FORMULA_NUMERIC_OPERAND_HEAD = re.compile(
-    r"\b(?:allowance|amount|asset|base|basis|benefit|bonus|cap|credit|"
-    r"deduction|dividend|expense|factor|fee|income|interest|liability|limit|"
-    r"margin|number|offset|payment|proceeds|rate|ratio|receipt|salary|"
-    r"supplement|surcharge|tax|threshold|value|wage)s?\b$",
+_FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
+    {
+        "allowance",
+        "amount",
+        "asset",
+        "base",
+        "basis",
+        "benefit",
+        "bonus",
+        "cap",
+        "credit",
+        "deduction",
+        "dividend",
+        "divisor",
+        "expense",
+        "factor",
+        "fee",
+        "gain",
+        "hour",
+        "income",
+        "interest",
+        "liability",
+        "limit",
+        "loss",
+        "margin",
+        "number",
+        "offset",
+        "payment",
+        "percent",
+        "percentage",
+        "proceeds",
+        "rate",
+        "ratio",
+        "receipt",
+        "salary",
+        "supplement",
+        "surcharge",
+        "tax",
+        "threshold",
+        "total",
+        "unit",
+        "value",
+        "voucher",
+        "wage",
+    }
+)
+_FORMULA_NUMERIC_OPERAND_LITERAL_CORE = (
+    rf"(?:(?:[$€£]\s*)?-?\d+(?:,\d{{3}})*(?:\.\d+)?|"
+    rf"{_ENGLISH_NUMBER_WORD}"
+    rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*)"
+    r"(?:\s+(?:dollars?|cents?|percent(?:age)?(?:\s+points?)?|hours?|units?))?"
+)
+_FORMULA_NUMERIC_OPERAND_LITERAL = re.compile(
+    rf"\s*(?:the\s+)?(?:\(\s*{_FORMULA_NUMERIC_OPERAND_LITERAL_CORE}\s*\)|"
+    rf"{_FORMULA_NUMERIC_OPERAND_LITERAL_CORE})\s*",
     flags=re.IGNORECASE,
 )
 _FORMULA_ADMINISTRATIVE_PARTICIPLE = frozenset(
@@ -1959,31 +2031,55 @@ def _formula_result_subject_head(prefix: str) -> str:
 
 
 def _formula_operand_is_numeric(operand: str) -> bool:
-    if re.fullmatch(
-        r"\s*(?:the\s+)?(?:[$€£]\s*)?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*%)?\s*",
-        operand,
-        flags=re.IGNORECASE,
-    ):
+    if _FORMULA_NUMERIC_OPERAND_LITERAL.fullmatch(operand):
         return True
     head = _formula_subject_segment_head(operand)
-    return bool(head and _FORMULA_NUMERIC_OPERAND_HEAD.fullmatch(head))
+    if head in _FORMULA_NUMERIC_OPERAND_HEADS:
+        return True
+    candidates = []
+    if head.endswith("ies"):
+        candidates.append(head[:-3] + "y")
+    if head.endswith("es"):
+        candidates.append(head[:-2])
+    if head.endswith("s"):
+        candidates.append(head[:-1])
+    return any(candidate in _FORMULA_NUMERIC_OPERAND_HEADS for candidate in candidates)
 
 
 def _formula_aggregate_operands_are_numeric(operands: str) -> bool:
-    parts = [
-        part.strip()
-        for part in re.split(r"\s*,\s*(?:and\s+)?|\s+and\s+", operands)
+    comma_parts = [
+        re.sub(r"^and\s+", "", part.strip(), flags=re.IGNORECASE)
+        for part in re.split(r"\s*,\s*", operands)
         if part.strip()
     ]
-    return len(parts) >= 2 and all(_formula_operand_is_numeric(part) for part in parts)
+    if len(comma_parts) >= 2:
+        return all(_formula_operand_is_numeric(part) for part in comma_parts)
+    conjunctions = list(re.finditer(r"\s+and\s+", operands, flags=re.IGNORECASE))
+    for conjunction in conjunctions:
+        left = operands[: conjunction.start()]
+        right = operands[conjunction.end() :]
+        if _formula_operand_is_numeric(left) and _formula_operand_is_numeric(right):
+            return True
+        left_words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", left)
+        if (
+            _formula_operand_is_numeric(right)
+            and left_words
+            and all(
+                word.lower() in _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS
+                for word in left_words
+            )
+        ):
+            return True
+    return False
 
 
-def _formula_ambiguous_operation_has_numeric_operands(text: str) -> bool:
-    """Require actual numeric operand heads for an ambiguous result subject."""
+def _formula_operation_has_numeric_operands(text: str) -> bool:
+    """Require actual numeric operand heads for a noun-form operation."""
 
     clause = re.split(r"[.;:\n]", text, maxsplit=1)[0]
     clause = re.sub(
-        r",\s*(?:as\s+[A-Za-z]+(?:\s+[A-Za-z]+){0,3}|if\s+any)\s*,",
+        r",\s*(?:as\s+[^,]+|if\s+any|net\s+of\s+[^,]+|"
+        r"including\s+[^,]+|excluding\s+[^,]+)\s*,",
         " ",
         clause,
         flags=re.IGNORECASE,
@@ -1994,8 +2090,20 @@ def _formula_ambiguous_operation_has_numeric_operands(text: str) -> bool:
         flags=re.IGNORECASE,
     ):
         return True
+    if re.search(
+        r"\b(?:addition|average|difference|greater|greatest|higher|highest|"
+        r"larger|largest|least|lesser|lower|lowest|max|maximum|mean|median|min|"
+        r"minimum|product|quotient|ratio|remainder|smaller|smallest|sum|total)"
+        r"\s+(?:of|between)\s*$",
+        clause,
+        flags=re.IGNORECASE,
+    ):
+        return True
     aggregate = re.search(
-        r"\b(?:addition|product|sum)\s+of\s+(?P<operands>.+)$",
+        r"\b(?:addition|average|greater|greatest|higher|highest|largest|least|"
+        r"larger|lesser|lower|lowest|max|maximum|mean|median|min|minimum|product|"
+        r"remainder|smaller|smallest|sum|total|difference)\s+of\s+"
+        r"(?P<operands>.+)$",
         clause,
         flags=re.IGNORECASE,
     )
@@ -2004,6 +2112,8 @@ def _formula_ambiguous_operation_has_numeric_operands(text: str) -> bool:
 
     patterns = (
         r"\bdifference\s+between\s+(?P<left>.+?)\s+and\s+(?P<right>.+)$",
+        r"\b(?:quotient|ratio)\s+of\s+(?P<left>.+?)\s+"
+        r"(?:and|by|to)\s+(?P<right>.+)$",
         r"\b(?:decrease|division|increase|multiplication|reduction)\s+of\s+"
         r"(?P<left>.+?)\s+by\s+(?P<right>.+)$",
         r"\b(?:deduction|subtraction)\s+of\s+(?P<left>.+?)\s+from\s+"
@@ -2016,13 +2126,27 @@ def _formula_ambiguous_operation_has_numeric_operands(text: str) -> bool:
             return _formula_operand_is_numeric(
                 operation.group("left")
             ) and _formula_operand_is_numeric(right)
+    unary = re.search(
+        r"\b(?:percent|percentage)\s+of\s+(?P<operand>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if unary is not None:
+        operand = unary.group("operand").split(",", maxsplit=1)[0]
+        return _formula_operand_is_numeric(operand)
     return False
 
 
-def _formula_states_contextual_operator(source_text: str) -> bool:
+def _formula_states_contextual_operator(
+    source_text: str,
+    *,
+    include_unconditional: bool = True,
+) -> bool:
     """Recognize result operations only when their grammatical subject is numeric."""
 
-    if _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE.search(source_text):
+    if include_unconditional and _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE.search(
+        source_text
+    ):
         return True
     for pattern in (
         _FORMULA_RESULT_OPERATION_LANGUAGE,
@@ -2038,10 +2162,8 @@ def _formula_states_contextual_operator(source_text: str) -> bool:
                 continue
             head = _normalize_formula_result_head(_formula_result_subject_head(prefix))
             if head and (
-                head not in _FORMULA_AMBIGUOUS_RESULT_HEADS
-                or _formula_ambiguous_operation_has_numeric_operands(
-                    source_text[match.start() :]
-                )
+                pattern is _FORMULA_PARTICIPIAL_RESULT_LANGUAGE
+                or _formula_operation_has_numeric_operands(source_text[match.start() :])
             ):
                 return True
     return False
@@ -5246,11 +5368,9 @@ def _formula_clause_is_structural_chapeau(
 ) -> bool:
     """Let a colon-ended computation heading delegate to its child rows."""
 
-    if (
-        not clause.rstrip().endswith(":")
-        or _formula_clause_states_substantive_operation(clause)
-        or not _FORMULA_NONOPERATIVE_TABLE_HEADING.search(clause)
-    ):
+    if not clause.rstrip().endswith(
+        ":"
+    ) or _formula_clause_states_substantive_operation(clause):
         return False
     descendants = tuple(
         branch
@@ -5287,7 +5407,8 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         _has_substantive_arithmetic_expression(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(clause)
-        or _formula_states_contextual_operator(clause)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(clause)
+        or _formula_states_contextual_operator(clause, include_unconditional=False)
     )
 
 
