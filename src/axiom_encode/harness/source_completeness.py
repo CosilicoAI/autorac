@@ -343,6 +343,10 @@ _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
     r"\s+percent\s+of\b",
     flags=re.IGNORECASE,
 )
+_EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*(?:%|percent)\s+of\b",
+    flags=re.IGNORECASE,
+)
 _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     r"(?:"
     r"\b(?:calculated|computed|determined)\s+as\s+follows|"
@@ -356,12 +360,19 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
 _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
     r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
-    r"\b(?:is|equals?|shall\s+be|means|constitutes?)\s+(?:the\s+)?(?:"
+    r"(?<!before it is )\b(?:reduced|deducted|increased|decreased)\s+by\b|"
+    r"\b(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
+    r"constitutes?)\s+(?:the\s+)?(?:"
     r"min|max|minimum|maximum|least|greatest|lesser|greater|lower|higher|"
     r"lowest|highest|smallest|largest|smaller|larger|sum|total|average|mean|"
-    r"median|ratio|quotient|difference|product|remainder|addition|subtraction|"
-    r"reduction|deduction|increase|decrease|division|multiplication)\s+"
-    r"(?:amount\s+)?(?:of|between)\b",
+    r"median|ratio|quotient|difference|product|remainder|percentage|percent)\s+"
+    r"(?:amount\s+)?(?:of|between)\b|"
+    r"\b(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
+    r"constitutes?)\s+(?:the\s+)?(?:"
+    r"addition\s+of\b[^.;:\n]{1,120}\band\b|"
+    r"(?:subtraction|deduction)\s+of\b[^.;:\n]{1,120}\bfrom\b|"
+    r"(?:reduction|increase|decrease|division|multiplication)\s+of\b"
+    r"[^.;:\n]{1,120}\bby\b)",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
@@ -4635,6 +4646,15 @@ def _companion_test_issues(
         active_branches=active_branches,
         deferred_paths=deferred_paths,
     )
+    boundary_branches = tuple(
+        branch
+        for branch in boundary_branches
+        if not _is_marker_only_container(
+            branch,
+            branches=branches,
+            source_text=source_text,
+        )
+    )
     boundary_obligations = _source_boundary_obligations(
         boundary_branches,
         narrative_formula_branches=formula_branches,
@@ -4936,9 +4956,8 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
 
     return bool(
         _has_substantive_arithmetic_expression(clause)
-        or _formula_operation_kinds(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
-        or re.search(r"\b(?:percentage|percent)\s+of\b", clause, re.IGNORECASE)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(clause)
         or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(clause)
     )
 
@@ -4980,7 +4999,13 @@ def _source_control_branches(
     )
     return tuple(
         {
-            (branch.path, branch.start, branch.end): branch for branch in controlled
+            (branch.path, branch.start, branch.end): branch
+            for branch in controlled
+            if not _is_marker_only_container(
+                branch,
+                branches=branches,
+                source_text=source_text,
+            )
         }.values()
     )
 

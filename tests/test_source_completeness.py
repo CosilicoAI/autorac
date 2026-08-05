@@ -1597,13 +1597,11 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
 
     principal_suffixes = (
         "(A)",
-        "(A)(1)",
         "(A)(1)(a)",
         "(A)(1)(b)",
         "(A)(2)",
         "(A)(3)",
         "(A)(4)",
-        "(B)",
         "(B)(1)",
         "(B)(2)",
     )
@@ -1886,6 +1884,70 @@ B. End.
 @pytest.mark.parametrize(
     "operation",
     (
+        "reduced by deductions, using the following rates",
+        "deducted by offsets, using the following rates",
+        "increased by bonuses, using the following rates",
+        "decreased by adjustments, using the following rates",
+    ),
+)
+def test_participial_operation_chapeau_cannot_delegate_to_table_children(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit shall be equal to the lesser of the following values",
+        "The credit is equal to the average of the following values",
+    ),
+)
+def test_equal_to_result_chapeau_is_an_explicit_formula_obligation(operation: str):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
         "The credit shall be determined by decreasing the base by an amount under "
         "the following schedule",
         "The credit is the average of the following values",
@@ -1953,6 +2015,9 @@ B. End.
         "higher education tax credit",
         "product use tax credit",
         "average-income tax credit",
+        "product of agriculture tax credit",
+        "sum of services tax credit",
+        "difference between generations tax credit",
     ),
 )
 def test_incidental_operator_word_in_program_name_does_not_block_table_delegation(
@@ -2004,6 +2069,9 @@ B. End.
         "A. The Division of Revenue shall administer this section.\nB. End.",
         "A. The addition of a dependent to the household shall be reported.\nB. End.",
         "A. An increase of benefits shall take effect next year.\nB. End.",
+        "A. The responsible agency is the Division of Revenue.\nB. End.",
+        "A. The amendment is the addition of a dependent category.\nB. End.",
+        "A. The change constitutes the increase of available benefits.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2018,6 +2086,28 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
 
     assert not source_states_explicit_computation(source)
     assert formula_branches == ()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit is the addition of the base and the bonus",
+        "The credit shall be the division of income by the divisor",
+    ),
+)
+def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
+    source = f"A. {operation}.\nB. End."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert source_states_explicit_computation(source)
+    assert [branch.path for branch in formula_branches] == [("a",)]
 
 
 @pytest.mark.parametrize(
