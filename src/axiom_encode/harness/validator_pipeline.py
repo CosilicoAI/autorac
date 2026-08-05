@@ -23686,7 +23686,7 @@ def numeric_value_is_grounded(
             return True
         if (
             occurrence.has_rate_context
-            and 0 < abs(value) <= 1
+            and 0 < abs(value)
             and math.isclose(
                 value * 100,
                 occurrence.source_value

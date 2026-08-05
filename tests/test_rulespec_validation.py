@@ -5925,7 +5925,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1559"')
+        .startswith('__version__ = "0.2.1560"')
     )
 
 
@@ -6157,13 +6157,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1559"
+    assert encoder_package["version"] == "0.2.1560"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1559"
+    assert project["project"]["version"] == "0.2.1560"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1559"')
+        .startswith('__version__ = "0.2.1560"')
     )
 
 
@@ -6425,13 +6425,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1559"
+    assert encoder_package["version"] == "0.2.1560"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1559"
+    assert project["project"]["version"] == "0.2.1560"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1559"')
+        .startswith('__version__ = "0.2.1560"')
     )
 
 
@@ -9193,6 +9193,27 @@ rules:
 """
 
     assert find_ungrounded_numeric_issues(content, source_text=source_text) == []
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("The multiplier is 200% of the amount.", True),
+        ("The multiplier is 200 percent of the amount.", True),
+        ("The amount is 200 dollars.", False),
+        ("The amount is $200.", False),
+    ),
+)
+def test_numeric_grounding_scales_rates_above_one_only_with_local_rate_context(
+    source_text,
+    expected,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="en-US",
+    )
+
+    assert numeric_value_is_grounded(2.0, occurrences) is expected
 
 
 @pytest.mark.parametrize(

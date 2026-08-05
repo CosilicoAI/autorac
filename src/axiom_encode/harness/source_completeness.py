@@ -5600,7 +5600,8 @@ def _formula_execution_matches_source_branch(
     computation_occurrences = tuple(
         occurrence
         for occurrence in source_occurrences
-        if not any(
+        if not occurrence.has_temporal_context
+        and not any(
             _numeric_occurrences_are_equivalent(occurrence, boundary)
             for boundary in boundaries
         )
@@ -5664,7 +5665,7 @@ def _formula_operation_kinds(text: str) -> set[str]:
         "multiply": (
             r"(?:[*×·•∗∙]|\d+(?:[.,]\d+)?\s*%\s+(?:des|der|von|of)\b|"
             r"\bprodukt\b|\bproduct\s+of\b|"
-            r"\b(?:multiplied|multiply|multiplication|multipliziert|"
+            r"\b(?:multiplied|multiply|multiplying|multiplication|multipliziert|"
             r"multiplizieren|multiplikation)\b|\bvervielfach\w*\b|\bmal\b|"
             r"\b(?:verfünf|versechs|versieben|veracht|verneun|verzehn)"
             r"fach\w*\b|"
