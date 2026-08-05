@@ -347,6 +347,12 @@ _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
     r"\b\d+(?:[.,]\d+)?\s*(?:%|percent)\s+of\b",
     flags=re.IGNORECASE,
 )
+_ENGLISH_FRACTION_OF = re.compile(
+    r"\b(?:half|one[-\s]+half|one[-\s]+third|two[-\s]+thirds?|"
+    r"one[-\s]+fourth|three[-\s]+fourths?|one[-\s]+quarter|"
+    r"three[-\s]+quarters?)\s+of\b",
+    flags=re.IGNORECASE,
+)
 _FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+)?"
 _FORMULA_GENERIC_TABLE_TARGET = (
     r"(?:the\s+)?(?:"
@@ -354,6 +360,7 @@ _FORMULA_GENERIC_TABLE_TARGET = (
     r"(?:\s+for\s+(?:the\s+)?following\s+tax\s+years?)?|"
     rf"following\s+{_FORMULA_TABLE_NAME}|"
     rf"{_FORMULA_TABLE_NAME}\s+(?:set\s+forth\s+)?below|"
+    rf"{_FORMULA_TABLE_NAME}|"
     r"(?:amounts?|percentages?|rates?|values?)\s+"
     r"(?:(?:set\s+forth|shown|prescribed)\s+)?in\s+(?:the\s+)?"
     rf"(?:following\s+{_FORMULA_TABLE_NAME}|{_FORMULA_TABLE_NAME}\s+below))"
@@ -373,7 +380,8 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     rf"|based\s+on\s+[^.;:\n]{{1,240}}?\band\s+(?:\w+\s+)?"
     rf"(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET}"
     rf")|\b(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET})"
-    r"(?:\s+for\s+(?:taxable|tax|calendar|fiscal)\s+year\s+\d{4})?"
+    r"(?:\s+for\s+(?:taxable|tax|calendar|fiscal)\s+years?\s+"
+    r"\d{4}(?:\s*(?:,|and|through|to)\s*\d{4})*)?"
     r"\s*:\s*$",
     flags=re.IGNORECASE,
 )
@@ -607,6 +615,7 @@ _FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
         "benefit",
         "bonus",
         "cap",
+        "contribution",
         "credit",
         "deduction",
         "dividend",
@@ -2040,7 +2049,10 @@ def _formula_subject_segment_head(subject: str) -> str:
         ):
             words = words[:index]
             break
-    while len(words) > 1 and words[-1].lower() in _FORMULA_SUBJECT_TRAILING_MODIFIERS:
+    while len(words) > 1 and (
+        words[-1].lower() in _FORMULA_SUBJECT_TRAILING_MODIFIERS
+        or words[-1].lower().endswith("ly")
+    ):
         words.pop()
     return words[-1].lower() if words else ""
 
@@ -2085,7 +2097,8 @@ def _formula_operand_is_numeric(operand: str) -> bool:
     head = _formula_subject_segment_head(operand)
     if _normalize_formula_operand_head(head):
         return True
-    words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", operand)
+    operand_segment = _FORMULA_SUBJECT_PHRASE_BREAK.split(operand, maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", operand_segment)
     for index, word in enumerate(words):
         if not _normalize_formula_operand_head(word):
             continue
@@ -2146,6 +2159,16 @@ def _formula_aggregate_operands_are_numeric(operands: str) -> bool:
     return False
 
 
+def _formula_inline_operands_are_numeric(operands: str) -> bool:
+    operands = operands.strip().strip(".;:, ")
+    semicolon_parts = [part.strip() for part in operands.split(";") if part.strip()]
+    if len(semicolon_parts) >= 2:
+        return all(_formula_operand_is_numeric(part) for part in semicolon_parts)
+    return _formula_operand_is_numeric(operands) or (
+        _formula_aggregate_operands_are_numeric(operands)
+    )
+
+
 def _formula_operation_has_numeric_operands(text: str) -> bool:
     """Require actual numeric operand heads for a noun-form operation."""
 
@@ -2159,19 +2182,36 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
     )
     direct_following = _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(without_parentheticals)
     if direct_following is not None:
-        tail = without_parentheticals[direct_following.end() :]
+        tail = without_parentheticals[direct_following.end() :].lstrip()
         if tail.lstrip().startswith(":"):
             tail = tail.lstrip()[1:]
-            if re.match(r"\s*\n\s*(?:\([^)]+\)|[A-Z]\.)", tail):
-                return True
-            inline = re.split(r"[.\n]", tail, maxsplit=1)[0].strip()
-            if inline:
-                return _formula_aggregate_operands_are_numeric(inline)
+        elif tail.startswith(","):
+            tail = tail[1:]
+        marker = re.search(r"(?m)^\s*(?:\([^)]+\)|\d+\.)\s*", tail)
+        if marker is not None:
+            entries = [
+                entry.strip()
+                for entry in re.split(
+                    r"(?m)^\s*(?:\([^)]+\)|\d+\.)\s*",
+                    tail[marker.start() :],
+                )
+                if entry.strip()
+            ]
+            return bool(entries) and all(
+                source_states_explicit_computation(entry)
+                or _formula_inline_operands_are_numeric(entry)
+                for entry in entries
+            )
+        inline = re.split(r"\n(?=\s*[A-Z]\.)", tail, maxsplit=1)[0]
+        inline = inline.strip().strip(".;:, ")
+        if inline:
+            return _formula_inline_operands_are_numeric(inline)
         return True
 
     clause = re.split(r"[.;:\n]", without_parentheticals, maxsplit=1)[0]
     clause = re.sub(
-        r",\s*(?:whichever\s+is\s+[^,]+|as\s+applicable|if\s+applicable)\s*$",
+        r",\s*(?:whichever(?:\s+\w+){0,2}\s+is\s+[^,]+|as\s+applicable|"
+        r"if\s+applicable)\s*$",
         "",
         clause,
         flags=re.IGNORECASE,
@@ -2285,6 +2325,8 @@ def source_states_explicit_computation(source_text: str) -> bool:
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
+        or _ENGLISH_FRACTION_OF.search(computation_text)
         or _formula_states_contextual_operator(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
     )
@@ -5489,21 +5531,35 @@ def _formula_clause_has_nonnumeric_inline_following_operands(
         and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(clause)
     ):
         return False
+    descendants = tuple(
+        branch
+        for branch in branches
+        if branch.start >= end
+        and branch.end <= owner.end
+        and len(branch.path) > len(owner.path)
+        and branch.path[: len(owner.path)] == owner.path
+    )
     next_descendant = min(
-        (
-            branch.start
-            for branch in branches
-            if branch.start >= end
-            and branch.end <= owner.end
-            and len(branch.path) > len(owner.path)
-            and branch.path[: len(owner.path)] == owner.path
-        ),
+        (branch.start for branch in descendants),
         default=owner.end,
     )
     inline = source_text[end:next_descendant].strip().strip(".;:")
-    return bool(inline) and not (
-        _formula_operand_is_numeric(inline)
-        or _formula_aggregate_operands_are_numeric(inline)
+    if inline:
+        return not _formula_inline_operands_are_numeric(inline)
+    non_leaf_paths = {
+        candidate.path[:depth]
+        for candidate in descendants
+        for depth in range(len(owner.path) + 1, len(candidate.path))
+    }
+    leaves = tuple(
+        branch for branch in descendants if branch.path not in non_leaf_paths
+    )
+    return bool(leaves) and not all(
+        source_states_explicit_computation(branch.text)
+        or _formula_inline_operands_are_numeric(
+            _strip_source_clause_marker(branch.text)
+        )
+        for branch in leaves
     )
 
 
@@ -5521,7 +5577,7 @@ def _formula_clause_is_structural_chapeau(
     if (
         not clause.rstrip().endswith(":")
         or heading is None
-        or source_states_explicit_computation(clause[: heading.start()])
+        or _formula_clause_states_substantive_operation(clause[: heading.start()])
         or _formula_clause_states_substantive_operation(clause)
     ):
         return False
@@ -5556,12 +5612,37 @@ def _formula_clause_is_structural_chapeau(
 def _formula_clause_states_substantive_operation(clause: str) -> bool:
     """Distinguish an operative formula from a non-operative table heading."""
 
+    coordinate_starts = [
+        match.start()
+        for match in re.finditer(r",?\s+and\s+", clause, flags=re.IGNORECASE)
+        if re.match(
+            r"(?:(?![,.;:\n]).){0,80}\b(?:shall|must|may)\s+(?:be\s+)?equal\b",
+            clause[match.end() :],
+            flags=re.IGNORECASE,
+        )
+    ]
+    operative_prefix = clause[: coordinate_starts[-1]] if coordinate_starts else clause
+    operative_prefix = _strip_source_clause_marker(operative_prefix)
     return bool(
         _has_substantive_arithmetic_expression(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(clause)
+        or _ENGLISH_FRACTION_OF.search(clause)
         or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(clause)
         or _formula_states_contextual_operator(clause, include_unconditional=False)
+        or _formula_operation_has_numeric_operands(operative_prefix)
+        or re.search(r"\btwice\s+(?:the\s+)?\w+", clause, flags=re.IGNORECASE)
+        or re.search(
+            r"\b(?:calculated|computed|determined)\s+(?:by|through)\s+"
+            r"(?:applying|application|combining|doubling|taking)\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:added|divided|multiplied|subtracted)\s+by\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
     )
 
 

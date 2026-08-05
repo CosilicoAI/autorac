@@ -1900,6 +1900,12 @@ B. End.
         "the applicable rate shall be equal to the following percentages",
         "The credit shall be computed as income multiplied by the applicable rate, "
         "and the applicable rate shall be equal to the following percentages",
+        "The credit shall be computed based on the product of income and rate and "
+        "shall be equal to the following amounts",
+        "The credit shall be computed based on income multiplied by the rate and "
+        "shall be equal to the following amounts",
+        "The credit equals three-fourths of income, with the rate computed using "
+        "Table 1 below",
     ),
 )
 def test_unrecognized_operative_chapeau_cannot_delegate_to_formula_children(
@@ -2145,6 +2151,12 @@ B. End.
         "computed under the following table",
         "computed in the following table",
         "determined with the following schedule",
+        "computed using the table below for taxable years 2025 and 2026",
+        "computed from Table 1",
+        "computed pursuant to paragraph (1) and shall be equal to the following amounts",
+        "computed under R.S. 47:1 and shall be equal to the following amounts",
+        "computed using the method prescribed in paragraph (1) and shall be equal "
+        "to the following amounts",
     ),
 )
 def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
@@ -2238,6 +2250,10 @@ B. End.
         "concerning the following amounts of paperwork.\nB. End.",
         "A. The benefit is the product of the following values: fairness and "
         "transparency.\nB. End.",
+        "A. The benefit is the product of the following values, fairness and "
+        "transparency.\nB. End.",
+        "A. The benefit is the product of the following values:\n(1) fairness.\n"
+        "(2) transparency.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2443,6 +2459,24 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The assessment is the sum of income earned and expenses incurred",
         "The assessment is the sum of wages, as defined in R.S. 47:1, and interest",
         "The assessment is the sum of wages, as defined in § 47:1, and interest",
+        "The credit is 75 percent of taxable income",
+        "The credit equals three-fourths of income",
+        "The credit is the lesser of taxable income or the statutory limit, whichever "
+        "amount is less",
+        "The deductible amount is the sum of employer contributions and employee "
+        "contributions",
+        "The income wholly allocable to this state is the sum of wages and interest",
+        "The income entirely allocable to this state is the sum of wages and interest",
+        "The income allocable entirely to this state is the sum of wages and interest",
+        "The assessment is the difference between receipts collected during the year "
+        "and losses sustained during the year",
+        "The assessment is the sum of deductions claimed under this section and "
+        "expenses disallowed under this section",
+        "The assessment is the ratio of income sourced from this state to income earned "
+        "from this state",
+        "The assessment is the sum of the following amounts: monthly wages",
+        "The assessment is the average of the following values: monthly wages",
+        "The assessment is the sum of the following amounts: wages; interest",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
