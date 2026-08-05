@@ -1189,11 +1189,11 @@ by the CPI-U increase.
 
     assert [(branch.path, branch.label) for branch in branches] == [
         (("a",), "A."),
-        (("1",), "(1)"),
-        (("2",), "(2)"),
+        (("a", "1"), "(1)"),
+        (("a", "2"), "(2)"),
         (("b",), "B."),
     ]
-    paragraph_two = next(branch for branch in branches if branch.path == ("2",))
+    paragraph_two = next(branch for branch in branches if branch.path == ("a", "2"))
     assert "200% of the dollar amount" in paragraph_two.text
     assert "Beginning January 1, 2026" not in paragraph_two.text
 
@@ -1209,12 +1209,35 @@ by the CPI-U increase.
     assert any(branch.path == ("b",) for branch in formula_branches)
 
 
-def test_lowercase_dotted_prose_is_not_a_top_level_subsection():
-    branches = recognize_source_structure("a. ordinary prose\n(1) The rule applies.")
+@pytest.mark.parametrize(
+    "source",
+    (
+        "a. ordinary prose\n(1) The rule applies.",
+        "(2) Prior paragraph.\nNO. 1, section 1.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nEX. SESS., No. 1.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nOK. This sentence is prose.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nC. 54A:4-6 controls.\nB. Beginning rule.",
+    ),
+)
+def test_nonsequential_dotted_prose_is_not_a_top_level_subsection(source: str):
+    branches = recognize_source_structure(source)
 
-    assert [(branch.path, branch.label) for branch in branches] == [
-        (("1",), "(1)"),
-    ]
+    assert all(
+        branch.label not in {"NO.", "EX.", "OK.", "C.", "B."} for branch in branches
+    )
+
+
+def test_dotted_subsection_children_match_canonical_source_paths():
+    source = "A. Chapeau.\n(1) First.\n(2) Second.\nB. Other."
+    branches = recognize_source_structure(source)
+    paths = {branch.path for branch in branches}
+
+    assert ("a", "1") in paths
+    assert ("a", "2") in paths
+    assert completeness_module._paths_from_source_reference(
+        "us-la/statute/47:294(A)(2)",
+        corpus_citation_path="us-la/statute/47:294",
+    ) == {("a", "2")}
 
 
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():

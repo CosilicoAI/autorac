@@ -182,11 +182,11 @@ class _NamedSourceNumber:
 
 
 _PARAGRAPH_MARKER = re.compile(
-    r"(?m)^[ \t]*(?P<marker>"
-    r"\((?P<label>\d+[a-z]?|[a-z])\)"
-    r"|(?P<dotted_label>(?-i:[A-Z]{1,2}))\."
-    r")(?=\s|bis\b)",
+    r"(?m)^[ \t]*(?P<marker>\((?P<label>\d+[a-z]?|[a-z])\))(?=\s|bis\b)",
     flags=re.IGNORECASE,
+)
+_DOTTED_SUBSECTION_MARKER = re.compile(
+    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)[ \t]+"
 )
 _NUMBER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>\d+[a-z]?)\.)[ \t]+",
@@ -1232,28 +1232,80 @@ _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch, ...]:
     """Recognize paragraph, list, letter, and glued German sentence markers."""
 
-    paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
     branches: list[SourceStructureBranch] = []
     paragraph_segments: list[tuple[tuple[str, ...], int, int, str]] = []
+    dotted_matches = _qualified_dotted_subsection_matches(source_text)
+    outer_segments = [
+        (match, match.start(), dotted_matches[index + 1].start())
+        for index, match in enumerate(dotted_matches[:-1])
+    ]
+    if dotted_matches:
+        outer_segments.append(
+            (dotted_matches[-1], dotted_matches[-1].start(), len(source_text))
+        )
 
-    for index, match in enumerate(paragraph_matches):
-        start = match.start()
-        end = (
-            paragraph_matches[index + 1].start()
-            if index + 1 < len(paragraph_matches)
-            else len(source_text)
-        )
-        label = (match.group("label") or match.group("dotted_label")).lower()
-        text = source_text[start:end].strip()
-        if _is_editorial_omission(text):
-            continue
-        path = (label,)
-        branches.append(
-            SourceStructureBranch(
-                path, "paragraph", match.group("marker"), text, start, end
+    if outer_segments:
+        for outer_match, outer_start, outer_end in outer_segments:
+            outer_label = outer_match.group("label").lower()
+            outer_path = (outer_label,)
+            outer_text = source_text[outer_start:outer_end].strip()
+            if not _is_editorial_omission(outer_text):
+                branches.append(
+                    SourceStructureBranch(
+                        outer_path,
+                        "paragraph",
+                        outer_match.group("marker"),
+                        outer_text,
+                        outer_start,
+                        outer_end,
+                    )
+                )
+            nested_matches = list(
+                _PARAGRAPH_MARKER.finditer(source_text, outer_start, outer_end)
             )
-        )
-        paragraph_segments.append((path, start, end, text))
+            if not nested_matches:
+                paragraph_segments.append(
+                    (outer_path, outer_start, outer_end, outer_text)
+                )
+                continue
+            for index, match in enumerate(nested_matches):
+                start = match.start()
+                end = (
+                    nested_matches[index + 1].start()
+                    if index + 1 < len(nested_matches)
+                    else outer_end
+                )
+                label = match.group("label").lower()
+                path = (*outer_path, label)
+                text = source_text[start:end].strip()
+                if _is_editorial_omission(text):
+                    continue
+                branches.append(
+                    SourceStructureBranch(
+                        path, "paragraph", match.group("marker"), text, start, end
+                    )
+                )
+                paragraph_segments.append((path, start, end, text))
+    else:
+        paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
+        for index, match in enumerate(paragraph_matches):
+            start = match.start()
+            end = (
+                paragraph_matches[index + 1].start()
+                if index + 1 < len(paragraph_matches)
+                else len(source_text)
+            )
+            label = match.group("label").lower()
+            text = source_text[start:end].strip()
+            if _is_editorial_omission(text):
+                continue
+            path = (label,)
+            branches.append(
+                SourceStructureBranch(
+                    path, "paragraph", match.group("marker"), text, start, end
+                )
+            )
+            paragraph_segments.append((path, start, end, text))
 
     if not paragraph_segments:
         paragraph_segments = [((), 0, len(source_text), source_text)]
@@ -1337,6 +1389,20 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
             key=lambda branch: (branch.start, len(branch.path), branch.kind),
         )
     )
+
+
+def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str], ...]:
+    """Return an ordered legal subsection sequence, excluding isolated initials."""
+
+    candidates = tuple(_DOTTED_SUBSECTION_MARKER.finditer(source_text))
+    labels = tuple(ord(match.group("label")) for match in candidates)
+    if (
+        len(labels) < 2
+        or any(right <= left for left, right in zip(labels, labels[1:]))
+        or not any(right == left + 1 for left, right in zip(labels, labels[1:]))
+    ):
+        return ()
+    return candidates
 
 
 def _is_editorial_omission(text: str) -> bool:
