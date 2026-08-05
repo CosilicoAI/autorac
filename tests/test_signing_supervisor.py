@@ -1871,6 +1871,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert concurrency_suffix("manual-user", "", "queue-generation", "run-3") == "run-3"
     assert concurrency_suffix("github-actions[bot]", "snap", "", "run-4") == "run-4"
     inputs = trigger["workflow_dispatch"]["inputs"]
+    assert len(inputs) == 25
     assert "allowlisted reviewed SHA" in inputs["rulespec_ref"]["description"]
     assert "artifact-only" in inputs["rulespec_ref"]["description"]
     assert inputs["country"] == {
@@ -1893,22 +1894,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["source_bundle_json"] == {
         "description": (
-            "JSON array of additional same-jurisdiction citations to encode as "
-            "signed atomic imports"
+            "JSON citation array for atomic imports, or "
+            '{"canonical_refresh_bundle":[{citation,replace_rulespec_path}]} '
+            "for an independent refresh transaction"
         ),
         "required": False,
         "default": "[]",
         "type": "string",
     }
-    assert inputs["canonical_refresh_bundle_json"] == {
-        "description": (
-            "JSON array of {citation,replace_rulespec_path} additions to "
-            "fresh-encode independently with the primary in one signed transaction"
-        ),
-        "required": False,
-        "default": "[]",
-        "type": "string",
-    }
+    assert "canonical_refresh_bundle_json" not in inputs
     assert inputs["existing_signed_imports_json"] == {
         "description": (
             "JSON array of tracked same-jurisdiction signed-v5 modules to reuse "
@@ -1984,16 +1978,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         step for step in steps if step.get("name") == "Validate atomic source inputs"
     )
     source_bundle_command = source_bundle_step["run"]
-    assert source_bundle_step["env"]["SOURCE_BUNDLE_JSON"] == (
+    assert source_bundle_step["env"]["ATOMIC_SOURCE_JSON"] == (
         "${{ inputs.source_bundle_json }}"
-    )
-    assert source_bundle_step["env"]["CANONICAL_REFRESH_BUNDLE_JSON"] == (
-        "${{ inputs.canonical_refresh_bundle_json }}"
     )
     assert source_bundle_step["env"]["EXISTING_SIGNED_IMPORTS_JSON"] == (
         "${{ inputs.existing_signed_imports_json }}"
     )
-    assert 'parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"' in (source_bundle_command)
+    assert "split-atomic-source-input" in source_bundle_command
+    assert 'parse-source-bundle "$source_bundle_json"' in source_bundle_command
     assert 'parse-existing-signed-imports "$RULESPEC_CHECKOUT"' in (
         source_bundle_command
     )
@@ -2025,6 +2017,14 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         if step.get("name") == "Install encoder"
     )
 
+    repair_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Resolve trusted prior-run repair candidate"
+    )
+    repair_preflight = repair_step["run"].split('api_version="', 1)[0]
+    assert "split-atomic-source-input" in repair_preflight
+    assert ".venv/bin/python" not in repair_preflight
     identity_step = next(
         step
         for step in steps
@@ -2299,7 +2299,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     ) + 1 == steps.index(failure_package_step)
     assert failure_package_step["if"] == "${{ failure() && !cancelled() }}"
     assert set(failure_package_step["env"]) == {
-        "CANONICAL_REFRESH_BUNDLE_JSON",
+        "ATOMIC_SOURCE_JSON",
         "CITATION",
         "CORPUS_REF",
         "COUNTRY",
@@ -2339,7 +2339,6 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "RULESPEC_REF",
         "SECOND_DEPENDENT_CITATION",
         "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH",
-        "SOURCE_BUNDLE_JSON",
         "UPLOAD_SIGNED_REENCODE_ARTIFACT_CONCLUSION",
         "UPLOAD_SIGNED_REENCODE_ARTIFACT_OUTCOME",
         "VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_CONCLUSION",
@@ -2600,6 +2599,45 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert steps.index(checksum_step) + 1 == steps.index(upload_step)
     assert steps.index(failure_upload_step) == len(steps) - 1
+
+
+def test_repair_preflight_splits_atomic_source_before_encoder_install() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = next(
+        step["run"]
+        for step in workflow["jobs"]["encode"]["steps"]
+        if step.get("name") == "Resolve trusted prior-run repair candidate"
+    ).split('api_version="', 1)[0]
+    command = command.replace(
+        "axiom-encode/scripts/prepare_signed_backfill.py",
+        str(ROOT / "scripts/prepare_signed_backfill.py"),
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "ATOMIC_SOURCE_JSON": "[]",
+            "DEPENDENT_CITATION": "",
+            "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+            "GITHUB_RUN_ID": "200",
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": "[]",
+            "QUEUE_ID": "",
+            "REPAIR_RUN_ID": "100",
+            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "REPLACE_RULESPEC_PATH": "us-ri/statutes/44-30-2.6.yaml",
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -3457,7 +3495,7 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
         "AXIOM_TEST_PYTHON": sys.executable,
         "CALLS_PATH": str(calls_path),
-        "CANONICAL_REFRESH_BUNDLE_JSON": json.dumps(additions),
+        "ATOMIC_SOURCE_JSON": json.dumps({"canonical_refresh_bundle": additions}),
         "CHECKPOINTS_PATH": str(checkpoints_path),
         "CITATION": primary_citation,
         "DEPENDENT_CITATION": "",
@@ -3472,7 +3510,6 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SIGNER_STUB": str(signer_stub),
-        "SOURCE_BUNDLE_JSON": "[]",
     }
     subprocess.run(
         ["bash", "-c", command],
@@ -3588,7 +3625,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SIGNER_STUB": str(signer_stub),
-        "SOURCE_BUNDLE_JSON": "[]",
+        "ATOMIC_SOURCE_JSON": '{"canonical_refresh_bundle":[]}',
     }
     if dependent_count >= 1:
         environment.update(
@@ -3740,7 +3777,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "SECOND_DEPENDENT_CITATION": "",
             "SECOND_DEPENDENT_REVIEW_FINDING": "",
             "SIGNER_STUB": str(signer_stub),
-            "SOURCE_BUNDLE_JSON": json.dumps(sources),
+            "ATOMIC_SOURCE_JSON": json.dumps(sources),
         },
     )
 
@@ -3846,7 +3883,7 @@ def test_targeted_signed_reencode_rejects_nonatomic_source_bundle_replacements_e
             "RULESPEC_CHECKOUT": str(checkout),
             "SECOND_DEPENDENT_CITATION": "",
             "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
-            "SOURCE_BUNDLE_JSON": '["us-ri/statute/44-30-1"]',
+            "ATOMIC_SOURCE_JSON": '["us-ri/statute/44-30-1"]',
         },
     )
 
@@ -3929,7 +3966,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
             "SECOND_DEPENDENT_CITATION": "",
             "SECOND_DEPENDENT_REVIEW_FINDING": "",
             "SIGNER_STUB": str(signer_stub),
-            "SOURCE_BUNDLE_JSON": "[]",
+            "ATOMIC_SOURCE_JSON": "[]",
         },
     )
 
@@ -4004,7 +4041,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SIGNER_STUB": str(signer_stub),
-        "SOURCE_BUNDLE_JSON": "[]",
+        "ATOMIC_SOURCE_JSON": "[]",
     }
     subprocess.run(
         ["bash", "-c", command],
@@ -4109,7 +4146,7 @@ with Path(os.environ["CALLS_PATH"]).open("a", encoding="utf-8") as stream:
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
         "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": exact_dependents[1],
         "SIGNER_STUB": str(signer_stub),
-        "SOURCE_BUNDLE_JSON": "[]",
+        "ATOMIC_SOURCE_JSON": "[]",
     }
 
     subprocess.run(["bash", "-c", command], check=True, env=environment)
@@ -4218,7 +4255,7 @@ def test_targeted_signed_reencode_rejects_invalid_second_dependent_inputs(
         "RUNNER_TEMP": str(runner_temp),
         "SECOND_DEPENDENT_CITATION": "",
         "SECOND_DEPENDENT_REVIEW_FINDING": "",
-        "SOURCE_BUNDLE_JSON": "[]",
+        "ATOMIC_SOURCE_JSON": "[]",
         **overrides,
     }
 

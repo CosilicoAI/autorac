@@ -24,6 +24,10 @@ RUNNER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 CONTRACT = runpy.run_path(
     Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
 )
+BACKFILL_CONTRACT = runpy.run_path(
+    Path(__file__).with_name("prepare_signed_backfill.py")
+)
+SPLIT_ATOMIC_SOURCE_INPUT = BACKFILL_CONTRACT["split_atomic_source_input"]
 MAX_CANDIDATE_BYTES = CONTRACT["VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES"]
 SINGLE_TARGET_MODE_FIELDS = {
     "dependent_citation": None,
@@ -38,7 +42,6 @@ SINGLE_TARGET_MODE_FIELDS = {
     "replace_legacy_rulespec_path": None,
     "second_dependent_citation": None,
     "second_legacy_exact_dependent_rulespec_path": None,
-    "source_bundle_input": "[]",
 }
 
 
@@ -156,6 +159,41 @@ def _expected_module_path(country: str, replace_rulespec_path: str) -> str:
     return PurePosixPath(*path.parts[1:]).as_posix()
 
 
+def _require_empty_atomic_source(metadata: dict[str, object]) -> None:
+    has_atomic = "atomic_source_input" in metadata
+    has_legacy_source = "source_bundle_input" in metadata
+    has_legacy_refresh = "canonical_refresh_bundle_input" in metadata
+    if has_atomic:
+        if has_legacy_source or has_legacy_refresh:
+            raise ValueError(
+                "repair artifact is not a compatible single-target run: "
+                "atomic_source_input"
+            )
+        raw_atomic = metadata["atomic_source_input"]
+        try:
+            split = SPLIT_ATOMIC_SOURCE_INPUT(raw_atomic)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "repair artifact is not a compatible single-target run: "
+                "atomic_source_input"
+            ) from exc
+        if split != {"canonical_refresh_bundle": [], "source_bundle": []}:
+            raise ValueError(
+                "repair artifact is not a compatible single-target run: "
+                "atomic_source_input"
+            )
+        return
+    if not has_legacy_source or metadata["source_bundle_input"] != "[]":
+        raise ValueError(
+            "repair artifact is not a compatible single-target run: source_bundle_input"
+        )
+    if has_legacy_refresh and metadata["canonical_refresh_bundle_input"] != "[]":
+        raise ValueError(
+            "repair artifact is not a compatible single-target run: "
+            "canonical_refresh_bundle_input"
+        )
+
+
 def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
     destination = Path(args.destination).resolve()
     destination.mkdir(parents=True, exist_ok=False)
@@ -204,6 +242,7 @@ def extract_candidate(args: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(
                     f"repair artifact is not a compatible single-target run: {field}"
                 )
+        _require_empty_atomic_source(metadata)
         if metadata.get("workflow_run_attempt") != 1:
             raise ValueError("repair artifact must come from workflow attempt 1")
         if metadata.get("failed_steps") != ["encode_apply"]:

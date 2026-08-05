@@ -24,6 +24,7 @@ from scripts.prepare_signed_backfill import (
     parse_canonical_refresh_bundle,
     parse_existing_signed_imports,
     parse_source_bundle,
+    split_atomic_source_input,
     stage_authorized_changes,
     validate_country,
     validate_dependent_cascade,
@@ -34,6 +35,68 @@ from scripts.prepare_signed_backfill import (
 from scripts.prepare_signed_backfill import (
     main as prepare_signed_backfill_main,
 )
+
+
+def test_split_atomic_source_input_preserves_legacy_source_array() -> None:
+    assert split_atomic_source_input('["us-ri/statute/44-30-1"]') == {
+        "canonical_refresh_bundle": [],
+        "source_bundle": ["us-ri/statute/44-30-1"],
+    }
+
+
+def test_split_atomic_source_input_selects_canonical_refresh_mode() -> None:
+    addition = {
+        "citation": "us-la/statute/47:295",
+        "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+    }
+
+    assert split_atomic_source_input(
+        json.dumps({"canonical_refresh_bundle": [addition]})
+    ) == {
+        "canonical_refresh_bundle": [addition],
+        "source_bundle": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "null",
+        '"citation"',
+        "{}",
+        '{"canonical_refresh_bundle":[],"source_bundle":[]}',
+        '{"canonical_refresh_bundle":"invalid"}',
+    ],
+)
+def test_split_atomic_source_input_rejects_ambiguous_or_invalid_modes(raw: str) -> None:
+    with pytest.raises(ValueError, match="atomic source|canonical_refresh_bundle"):
+        split_atomic_source_input(raw)
+
+
+def test_split_atomic_source_input_rejects_oversized_json_before_parsing() -> None:
+    with pytest.raises(ValueError, match="maximum input size"):
+        split_atomic_source_input(" " * (MAX_SOURCE_BUNDLE_JSON_BYTES + 1))
+
+
+def test_split_atomic_source_input_cli_emits_normalized_object(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "split-atomic-source-input",
+            '["us-ri/statute/44-30-1"]',
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    assert capsys.readouterr().out == (
+        '{"canonical_refresh_bundle":[],"source_bundle":["us-ri/statute/44-30-1"]}\n'
+    )
 
 
 def test_parse_source_bundle_accepts_ordered_same_jurisdiction_citations() -> None:

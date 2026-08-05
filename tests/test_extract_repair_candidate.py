@@ -46,6 +46,7 @@ def _archive(tmp_path: Path, *, candidate: bytes | None = None) -> tuple[Path, d
         "failed_steps": ["encode_apply"],
         "generated_lanes": ["target"],
         **SINGLE_TARGET_MODE_FIELDS,
+        "source_bundle_input": "[]",
         "files": [
             {
                 "path": path,
@@ -114,6 +115,25 @@ def test_extracts_checksum_bound_final_candidate(tmp_path):
     assert result["source_rulespec_ref"] == "d" * 40
     assert (root / result["path"]).read_text() == "format: rulespec/v1\nrules: []\n"
     assert (root / "statutes/42/1437c-1.test.yaml").read_text() == "[]\n"
+
+
+@pytest.mark.parametrize(
+    "atomic_source_input",
+    ["[]", '{"canonical_refresh_bundle":[]}'],
+)
+def test_extracts_new_atomic_source_metadata(tmp_path, atomic_source_input):
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    metadata["atomic_source_input"] = atomic_source_input
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "new-atomic-source.tar",
+        metadata,
+    )
+
+    result = extract_candidate(_args(tmp_path, replacement))
+
+    assert result["source_rulespec_ref"] == "d" * 40
 
 
 def test_rejects_metadata_identity_mismatch(tmp_path):
@@ -217,7 +237,6 @@ def test_rejects_archive_member_flood(tmp_path):
             "second_legacy_exact_dependent_rulespec_path",
             "us/statutes/second.yaml",
         ),
-        ("source_bundle_input", '["us/statute/42/source"]'),
     ],
 )
 def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
@@ -230,6 +249,46 @@ def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
     )
 
     with pytest.raises(ValueError, match=f"single-target run: {field}"):
+        extract_candidate(_args(tmp_path, replacement))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_bundle_input", '["us/statute/42/source"]'),
+        ("canonical_refresh_bundle_input", '[{"citation":"x"}]'),
+        ("atomic_source_input", '["us/statute/42/source"]'),
+        (
+            "atomic_source_input",
+            '{"canonical_refresh_bundle":[{"citation":"x"}]}',
+        ),
+    ],
+)
+def test_rejects_nonempty_atomic_source_metadata(tmp_path, field, value):
+    archive, metadata = _archive(tmp_path)
+    if field == "atomic_source_input":
+        del metadata["source_bundle_input"]
+    metadata[field] = value
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "nonempty-atomic-source.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match=f"single-target run: {field}"):
+        extract_candidate(_args(tmp_path, replacement))
+
+
+def test_rejects_missing_legacy_and_atomic_source_metadata(tmp_path):
+    archive, metadata = _archive(tmp_path)
+    del metadata["source_bundle_input"]
+    replacement = _rewrite_metadata(
+        archive,
+        tmp_path / "missing-source-mode.tar",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match="single-target run: source_bundle_input"):
         extract_candidate(_args(tmp_path, replacement))
 
 
