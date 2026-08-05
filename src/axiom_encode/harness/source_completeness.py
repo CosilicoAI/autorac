@@ -346,7 +346,8 @@ _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
 _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     r"(?:"
     r"\b(?:calculated|computed|determined)\s+as\s+follows|"
-    r"\b(?:using|according\s+to|under|equal\s+to|set\s+forth\s+in)\s+"
+    r"\b(?:using|according\s+to|under|based\s+on|equal\s+to|"
+    r"set\s+forth\s+in)\s+"
     r"(?:the\s+)?following\s+(?:amounts?|percentages?|rates?|values?|"
     r"tables?|schedules?)(?:\s+for\s+(?:the\s+)?following\s+tax\s+years?)?"
     r")\s*:\s*$",
@@ -355,11 +356,12 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
 _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
     r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
-    r"(?<!before it is )\b(?:reduced|deducted|increased|decreased)\s+by\b|"
-    r"\b(?:addition|subtraction|reduction|deduction|increase|decrease|division|"
-    r"multiplication)\s+of\b|"
-    r"\b(?:sum|total|average|mean|median|ratio|quotient|difference|product|"
-    r"remainder)\s+(?:of|between)\b",
+    r"\b(?:is|equals?|shall\s+be|means|constitutes?)\s+(?:the\s+)?(?:"
+    r"min|max|minimum|maximum|least|greatest|lesser|greater|lower|higher|"
+    r"lowest|highest|smallest|largest|smaller|larger|sum|total|average|mean|"
+    r"median|ratio|quotient|difference|product|remainder|addition|subtraction|"
+    r"reduction|deduction|increase|decrease|division|multiplication)\s+"
+    r"(?:amount\s+)?(?:of|between)\b",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
@@ -4938,12 +4940,6 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or re.search(r"\b(?:percentage|percent)\s+of\b", clause, re.IGNORECASE)
         or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(clause)
-        or re.search(
-            r"\b(?:lesser|least|minimum|lower|greater|greatest|maximum|higher)"
-            r"\s+(?:amount\s+)?of\b",
-            clause,
-            re.IGNORECASE,
-        )
     )
 
 

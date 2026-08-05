@@ -1976,6 +1976,50 @@ B. End.
     assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
 
 
+@pytest.mark.parametrize("verb", ("calculated", "computed", "determined"))
+def test_based_on_following_table_heading_delegates_to_computational_children(
+    verb: str,
+):
+    source = f"""\
+A. The credit shall be {verb} based on the following rates:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The Division of Revenue shall administer this section.\nB. End.",
+        "A. The addition of a dependent to the household shall be reported.\nB. End.",
+        "A. An increase of benefits shall take effect next year.\nB. End.",
+    ),
+)
+def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert not source_states_explicit_computation(source)
+    assert formula_branches == ()
+
+
 @pytest.mark.parametrize(
     "source",
     (
