@@ -1141,7 +1141,7 @@ def test_nj_title_54a_citations_are_not_glued_german_sentence_markers():
 @pytest.mark.parametrize("ordinal", ["1ST", "2ND", "3RD", "4TH", "21st"])
 def test_english_ordinals_are_not_glued_german_sentence_markers(ordinal: str):
     branches = recognize_source_structure(
-        f'(2) The amount applies. Acts 1983, {ordinal} EX. SESS., No. 1.'
+        f"(2) The amount applies. Acts 1983, {ordinal} EX. SESS., No. 1."
     )
 
     assert [branch.label for branch in branches if branch.kind == "sentence"] == []
