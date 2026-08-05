@@ -1121,6 +1121,19 @@ _TITLE_SUFFIX_LEGAL_CITATION = re.compile(
     r"\s*\d+[a-z]?)*\s+of\s+this\s+title\b",
     flags=re.IGNORECASE,
 )
+_LOUISIANA_SESSION_LAW_CITATION = re.compile(
+    r"\bActs?\s+\d{4}\s*,?\s*"
+    r"(?:"
+    r"(?:(?:\d+\s*(?:st|nd|rd|th|d)|first|second|third|fourth)\s+)?"
+    r"Ex\.?\s*Sess\.?\s*,?\s*"
+    r")?"
+    r"No\.?\s*\d+(?:-\d+)?\b"
+    r"(?:\s*,?\s*(?:"
+    r"§§\s*\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*"
+    r"|§\s*\d+"
+    r"))?",
+    flags=re.IGNORECASE,
+)
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:"
     r"Artikel(?:s|n)?|Art\.|"
@@ -3872,6 +3885,7 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
     """Remove structural/citation ordinals, never substantive source values."""
 
     cleaned = _strip_terminal_session_law_history(source_text)
+    cleaned = _LOUISIANA_SESSION_LAW_CITATION.sub("", cleaned)
     cleaned = _GERMAN_LEGAL_CITATION.sub("", cleaned)
     cleaned = _TITLE_SUFFIX_LEGAL_CITATION.sub("", cleaned)
     cleaned = _ENGLISH_LEGAL_CITATION.sub("", cleaned)
