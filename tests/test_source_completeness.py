@@ -1786,6 +1786,38 @@ B. End.
 
 
 @pytest.mark.parametrize(
+    "selection",
+    (
+        "lesser of",
+        "greater of",
+        "minimum of",
+        "maximum of",
+        "lesser of the following amounts",
+        "greater of the following amounts",
+    ),
+)
+def test_selection_chapeau_remains_distinct_from_computational_child(
+    selection: str,
+):
+    source = f"""\
+A. The credit shall be computed as the {selection}:
+(1) income * rate.
+(2) the fixed cap.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
     "source",
     (
         "The agency shall report the amount and percent of claims approved.",

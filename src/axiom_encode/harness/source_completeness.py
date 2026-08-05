@@ -343,6 +343,11 @@ _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
     r"\s+percent\s+of\b",
     flags=re.IGNORECASE,
 )
+_FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
+    r"\b(?:as\s+follows|following\s+(?:amounts?|percentages?|rates?|"
+    r"values?|tables?|schedules?|tax\s+years?))\b",
+    flags=re.IGNORECASE,
+)
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
     r"(?=[ivxlcdm]+\Z)m{0,3}(?:cm|cd|d?c{0,3})"
     r"(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})",
@@ -4875,9 +4880,11 @@ def _formula_clause_is_structural_chapeau(
 ) -> bool:
     """Let a colon-ended computation heading delegate to its child rows."""
 
-    if not clause.rstrip().endswith(
-        ":"
-    ) or _formula_clause_states_substantive_operation(clause):
+    if (
+        not clause.rstrip().endswith(":")
+        or _formula_clause_states_substantive_operation(clause)
+        or not _FORMULA_NONOPERATIVE_TABLE_HEADING.search(clause)
+    ):
         return False
     descendants = tuple(
         branch
@@ -4915,6 +4922,12 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         or _formula_operation_kinds(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or re.search(r"\b(?:percentage|percent)\s+of\b", clause, re.IGNORECASE)
+        or re.search(
+            r"\b(?:lesser|least|minimum|lower|greater|greatest|maximum|higher)"
+            r"\s+(?:amount\s+)?of\b",
+            clause,
+            re.IGNORECASE,
+        )
     )
 
 
