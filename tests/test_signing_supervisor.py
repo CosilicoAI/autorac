@@ -1835,6 +1835,23 @@ def test_targeted_signed_reencode_shell_steps_have_valid_syntax(tmp_path: Path) 
             subprocess.run(["bash", "-n", str(script)], check=True)
 
 
+def test_targeted_signed_reencode_only_allows_audited_legacy_index_shrink() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Encode, review, validate, and apply"
+    )
+    command = step["run"]
+
+    assert "authorize-legacy-index-manifest-shrink" in command
+    assert 'args+=(--allow-shrink)' in command
+    assert command.count("--allow-shrink") == 1
+    assert '[ -n "$replacement_path" ] && [ -z "$legacy_source_path" ]' in command
+
+
 def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()

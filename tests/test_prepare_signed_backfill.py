@@ -19,6 +19,7 @@ from scripts.prepare_signed_backfill import (
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
+    authorize_legacy_index_manifest_shrink,
     authorized_changed_paths,
     branch_name,
     parse_canonical_refresh_bundle,
@@ -35,6 +36,121 @@ from scripts.prepare_signed_backfill import (
 from scripts.prepare_signed_backfill import (
     main as prepare_signed_backfill_main,
 )
+
+
+def _legacy_index_shrink_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "rulespec-us"
+    target = repo / "us/statutes/42/1437c-1.yaml"
+    companion = target.with_name("1437c-1.test.yaml")
+    index = repo / ".axiom/index/provisions_to_rules.json"
+    target.parent.mkdir(parents=True)
+    index.parent.mkdir(parents=True)
+    target.write_text("format: rulespec/v1\nrules: []\n")
+    companion.write_text("[]\n")
+    index.write_text('{"generation":2}\n')
+    receipt = repo / ".axiom/legacy-replacements/receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('{"schema":"receipt"}\n')
+
+    target_relative = target.relative_to(repo).as_posix()
+    companion_relative = companion.relative_to(repo).as_posix()
+    target_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    companion_digest = hashlib.sha256(companion.read_bytes()).hexdigest()
+    model_manifest = {
+        "schema_version": "axiom-encode/applied-rulespec/v5",
+        "tool": "axiom-encode encode --apply",
+        "backend": "openai",
+        "applied_files": [
+            {"path": target_relative, "sha256": target_digest},
+            {"path": companion_relative, "sha256": companion_digest},
+        ],
+    }
+    manifest = repo / ".axiom/encoding-manifests/us/statutes/42/1437c-1.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "axiom-encode/applied-rulespec/v5",
+                "tool": (
+                    "axiom-encode encode --apply "
+                    "--replace-legacy-rulespec-path"
+                ),
+                "replacement": {
+                    "legacy_manifest_path": (
+                        ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
+                    ),
+                    "receipt_path": receipt.relative_to(repo).as_posix(),
+                    "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+                },
+                "replacement_manifest": model_manifest,
+                "applied_files": [
+                    {"path": target_relative, "sha256": target_digest},
+                    {"path": companion_relative, "sha256": companion_digest},
+                    {
+                        "path": ".axiom/index/provisions_to_rules.json",
+                        "sha256": hashlib.sha256(b'{"generation":1}\n').hexdigest(),
+                    },
+                    {"path": "us/statutes/42/1437c–1.yaml", "deleted": True},
+                    {
+                        "path": "us/statutes/42/1437c–1.test.yaml",
+                        "deleted": True,
+                    },
+                ],
+            }
+        )
+        + "\n"
+    )
+    return repo, target, manifest
+
+
+def test_authorize_legacy_index_manifest_shrink_accepts_exact_stale_index_claim(
+    tmp_path: Path,
+) -> None:
+    repo, target, _manifest = _legacy_index_shrink_repo(tmp_path)
+
+    assert authorize_legacy_index_manifest_shrink(
+        repo,
+        target.relative_to(repo).as_posix(),
+    )
+
+
+@pytest.mark.parametrize("mutation", ["tool", "extra-live", "current-index"])
+def test_authorize_legacy_index_manifest_shrink_denies_other_manifest_shapes(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo, target, manifest = _legacy_index_shrink_repo(tmp_path)
+    payload = json.loads(manifest.read_text())
+    if mutation == "tool":
+        payload["tool"] = "axiom-encode encode --apply"
+    elif mutation == "extra-live":
+        payload["applied_files"].append(
+            {"path": "us/extra.yaml", "sha256": "a" * 64}
+        )
+    else:
+        index = repo / ".axiom/index/provisions_to_rules.json"
+        payload["applied_files"][2]["sha256"] = hashlib.sha256(
+            index.read_bytes()
+        ).hexdigest()
+    manifest.write_text(json.dumps(payload) + "\n")
+
+    assert not authorize_legacy_index_manifest_shrink(
+        repo,
+        target.relative_to(repo).as_posix(),
+    )
+
+
+def test_authorize_legacy_index_manifest_shrink_rejects_stale_target(
+    tmp_path: Path,
+) -> None:
+    repo, target, _manifest = _legacy_index_shrink_repo(tmp_path)
+    target.write_text("format: rulespec/v1\nrules:\n- changed\n")
+
+    with pytest.raises(ValueError, match="live file is stale"):
+        authorize_legacy_index_manifest_shrink(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
 
 
 def test_split_atomic_source_input_preserves_legacy_source_array() -> None:

@@ -1073,6 +1073,24 @@ jobs:
             if [ -n "$replacement_path" ]; then
               args+=(--replace-rulespec-path "$replacement_path")
             fi
+            if [ -n "$replacement_path" ] && [ -z "$legacy_source_path" ]; then
+              shrink_authorized="$(
+                "$workflow_python" "$backfill_helper" \
+                  authorize-legacy-index-manifest-shrink \
+                  "$RULESPEC_CHECKOUT" "$replacement_path"
+              )"
+              case "$shrink_authorized" in
+                true)
+                  args+=(--allow-shrink)
+                  ;;
+                false)
+                  ;;
+                *)
+                  echo "manifest shrink authorization returned malformed output" >&2
+                  exit 1
+                  ;;
+              esac
+            fi
             if [ -n "$legacy_source_path" ]; then
               args+=(--replace-legacy-rulespec-path "$legacy_source_path")
               if [ -n "$dependent_rulespec_path" ]; then

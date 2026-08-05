@@ -17,6 +17,8 @@ QUEUE_TRACKING_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 MANIFEST_ROOT = PurePosixPath(".axiom/encoding-manifests")
 LEGACY_REPLACEMENT_RECEIPT_ROOT = PurePosixPath(".axiom/legacy-replacements")
 LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec-path"
+APPLIED_MANIFEST_SCHEMA_V5 = "axiom-encode/applied-rulespec/v5"
+PROVISIONS_TO_RULES_INDEX = PurePosixPath(".axiom/index/provisions_to_rules.json")
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
@@ -1022,6 +1024,142 @@ def _validate_rulespec_path(repo: Path, path: PurePosixPath, *, label: str) -> N
 
 def _rulespec_companion_path(primary: PurePosixPath) -> PurePosixPath:
     return primary.with_name(f"{primary.stem}.test.yaml")
+
+
+def authorize_legacy_index_manifest_shrink(
+    repo: Path,
+    target_rulespec_path: str,
+) -> bool:
+    """Authorize replacing one migration manifest that has a stale index claim."""
+
+    target = _safe_relative_path(
+        target_rulespec_path,
+        label="target RuleSpec path",
+    )
+    _validate_rulespec_path(repo, target, label="target RuleSpec path")
+    companion = _rulespec_companion_path(target)
+    manifest_relative = MANIFEST_ROOT / target.with_suffix(".json")
+    manifest_path = repo / manifest_relative
+    try:
+        manifest_path.lstat()
+    except FileNotFoundError:
+        return False
+    payload = json.loads(
+        _read_bounded_regular(
+            repo,
+            manifest_relative,
+            label="existing target apply manifest",
+            max_bytes=8 * 1024 * 1024,
+        ).decode("utf-8")
+    )
+    if not isinstance(payload, dict) or payload.get("tool") != LEGACY_REPLACEMENT_TOOL:
+        return False
+    if payload.get("schema_version") != APPLIED_MANIFEST_SCHEMA_V5:
+        raise ValueError("legacy replacement manifest is not current v5")
+
+    entries = payload.get("applied_files")
+    if not isinstance(entries, list):
+        raise ValueError("legacy replacement manifest has malformed applied_files")
+    live: dict[PurePosixPath, str] = {}
+    deleted: list[PurePosixPath] = []
+    for index, item in enumerate(entries):
+        if not isinstance(item, dict):
+            raise ValueError(f"applied_files[{index}] is not an object")
+        path = _safe_relative_path(
+            item.get("path"),
+            label=f"applied_files[{index}].path",
+        )
+        if item.get("deleted") is True:
+            if set(item) != {"path", "deleted"}:
+                raise ValueError(f"applied_files[{index}] deletion is malformed")
+            deleted.append(path)
+            continue
+        digest = item.get("sha256")
+        if set(item) != {"path", "sha256"} or not isinstance(digest, str):
+            raise ValueError(f"applied_files[{index}] live entry is malformed")
+        if DIGEST_PATTERN.fullmatch(digest) is None or path in live:
+            raise ValueError(f"applied_files[{index}] digest or path is malformed")
+        live[path] = digest
+
+    expected_live = {target, companion, PROVISIONS_TO_RULES_INDEX}
+    if set(live) != expected_live or len(deleted) != 2:
+        return False
+    deleted_primary = next(
+        (path for path in deleted if not path.name.endswith(".test.yaml")),
+        None,
+    )
+    if (
+        deleted_primary is None
+        or deleted_primary == target
+        or set(deleted) != {deleted_primary, _rulespec_companion_path(deleted_primary)}
+    ):
+        return False
+
+    replacement = payload.get("replacement")
+    if not isinstance(replacement, dict):
+        raise ValueError("legacy replacement manifest has no replacement receipt")
+    expected_legacy_manifest = MANIFEST_ROOT / deleted_primary.with_suffix(".json")
+    if replacement.get("legacy_manifest_path") != expected_legacy_manifest.as_posix():
+        return False
+    receipt_path = _safe_relative_path(
+        replacement.get("receipt_path"),
+        label="replacement receipt path",
+    )
+    receipt_digest = replacement.get("receipt_sha256")
+    if (
+        not receipt_path.is_relative_to(LEGACY_REPLACEMENT_RECEIPT_ROOT)
+        or not isinstance(receipt_digest, str)
+        or DIGEST_PATTERN.fullmatch(receipt_digest) is None
+    ):
+        raise ValueError("legacy replacement receipt binding is malformed")
+    receipt_raw = _read_bounded_regular(
+        repo,
+        receipt_path,
+        label="legacy replacement receipt",
+        max_bytes=8 * 1024 * 1024,
+    )
+    if hashlib.sha256(receipt_raw).hexdigest() != receipt_digest:
+        raise ValueError("legacy replacement receipt digest does not match")
+
+    embedded = payload.get("replacement_manifest")
+    if (
+        not isinstance(embedded, dict)
+        or embedded.get("schema_version") != APPLIED_MANIFEST_SCHEMA_V5
+        or embedded.get("tool") != MODEL_APPLY_TOOL
+        or embedded.get("backend") not in MODEL_APPLY_BACKENDS
+    ):
+        raise ValueError("embedded model apply manifest is malformed")
+    embedded_entries = embedded.get("applied_files")
+    if not isinstance(embedded_entries, list):
+        raise ValueError("embedded model apply manifest has malformed applied_files")
+    embedded_live = {
+        PurePosixPath(item["path"]): item["sha256"]
+        for item in embedded_entries
+        if isinstance(item, dict)
+        and set(item) == {"path", "sha256"}
+        and isinstance(item.get("path"), str)
+        and isinstance(item.get("sha256"), str)
+    }
+    expected_model_live = {target: live[target], companion: live[companion]}
+    if embedded_live != expected_model_live or len(embedded_live) != len(embedded_entries):
+        return False
+
+    for path in (target, companion):
+        raw = _read_bounded_regular(
+            repo,
+            path,
+            label=f"legacy replacement live file {path}",
+            max_bytes=32 * 1024 * 1024,
+        )
+        if hashlib.sha256(raw).hexdigest() != live[path]:
+            raise ValueError(f"legacy replacement live file is stale: {path}")
+    current_index = _read_bounded_regular(
+        repo,
+        PROVISIONS_TO_RULES_INDEX,
+        label="provisions-to-rules index",
+        max_bytes=64 * 1024 * 1024,
+    )
+    return hashlib.sha256(current_index).hexdigest() != live[PROVISIONS_TO_RULES_INDEX]
 
 
 def _base_regular_blob(
@@ -2318,6 +2456,9 @@ def main() -> None:
     cascade_parser.add_argument("dependent_citations", nargs="+")
     citation_path_parser = subparsers.add_parser("citation-rulespec-path")
     citation_path_parser.add_argument("citation")
+    shrink_parser = subparsers.add_parser("authorize-legacy-index-manifest-shrink")
+    shrink_parser.add_argument("repo", type=Path)
+    shrink_parser.add_argument("target_rulespec_path")
     source_bundle_parser = subparsers.add_parser(
         "parse-source-bundle",
         help="validate a bounded source bundle and emit one normalized JSON array",
@@ -2438,6 +2579,15 @@ def main() -> None:
             )
         elif args.command == "citation-rulespec-path":
             print(citation_rulespec_path(args.citation))
+        elif args.command == "authorize-legacy-index-manifest-shrink":
+            print(
+                "true"
+                if authorize_legacy_index_manifest_shrink(
+                    args.repo,
+                    args.target_rulespec_path,
+                )
+                else "false"
+            )
         elif args.command == "parse-source-bundle":
             print(
                 json.dumps(
