@@ -11294,14 +11294,8 @@ def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
             "(1) Notwithstanding the filing exemption, each agency shall not "
             "be eligible."
         ),
-        (
-            "(1) Notwithstanding the filing exemption, no agency shall be "
-            "eligible."
-        ),
-        (
-            "(1) Notwithstanding the filing exemption, each agency must be "
-            "ineligible."
-        ),
+        ("(1) Notwithstanding the filing exemption, no agency shall be eligible."),
+        ("(1) Notwithstanding the filing exemption, each agency must be ineligible."),
     ],
 )
 def test_notwithstanding_exemption_does_not_invert_negative_duty(source: str):
