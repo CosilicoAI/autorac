@@ -179,6 +179,54 @@ def test_paused_transition_rejects_manual_completion(tmp_path: Path) -> None:
         verify_paused_transition(current, previous_queue_path=previous)
 
 
+def test_paused_transition_accepts_only_pristine_complete_toolchain_repin(
+    tmp_path: Path,
+) -> None:
+    previous_payload = _queue(active=False)
+    current_payload = copy.deepcopy(previous_payload)
+    current_payload["dispatch"].update(
+        {
+            "corpus_ref": "1" * 40,
+            "rules_engine_ref": "2" * 40,
+            "rulespec_ref": "3" * 40,
+        }
+    )
+    current_payload["release"] = {
+        "content_sha256": "4" * 64,
+        "manifest_sha256": "5" * 64,
+        "name": "replacement-signed-release",
+    }
+    previous = tmp_path / "previous.json"
+    current = tmp_path / "current.json"
+    previous.write_text(json.dumps(previous_payload), encoding="utf-8")
+    current.write_text(json.dumps(current_payload), encoding="utf-8")
+
+    verify_paused_transition(current, previous_queue_path=previous)
+
+    current_payload["items"][0]["attempt"] = 2
+    current.write_text(json.dumps(current_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="requires pristine items"):
+        verify_paused_transition(current, previous_queue_path=previous)
+
+
+def test_paused_transition_rejects_partial_toolchain_repin(tmp_path: Path) -> None:
+    previous_payload = _queue(active=False)
+    current_payload = copy.deepcopy(previous_payload)
+    current_payload["dispatch"]["rules_engine_ref"] = "2" * 40
+    current_payload["release"] = {
+        "content_sha256": "4" * 64,
+        "manifest_sha256": "5" * 64,
+        "name": "replacement-signed-release",
+    }
+    previous = tmp_path / "previous.json"
+    current = tmp_path / "current.json"
+    previous.write_text(json.dumps(previous_payload), encoding="utf-8")
+    current.write_text(json.dumps(current_payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must replace every source pin"):
+        verify_paused_transition(current, previous_queue_path=previous)
+
+
 def test_selectable_snap_queue_returns_history_scan_pool() -> None:
     candidates = selectable_items(_queue())
 

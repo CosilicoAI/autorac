@@ -53,7 +53,7 @@ jobs:
           echo "queue_path=$queue" >> "$GITHUB_OUTPUT"
           python3 scripts/prepare_signed_queue.py validate "$queue"
           previous_queue="$RUNNER_TEMP/previous-snap-queue.json"
-          initial=false
+          authenticate_queue=false
           if git cat-file -e "$BASE_SHA:$queue" 2> /dev/null; then
             git show "$BASE_SHA:$queue" > "$previous_queue"
           elif [ "$(jq -r '.state' "$queue")" != "paused" ] || ! jq -e '
@@ -62,7 +62,7 @@ jobs:
             echo "new queue must start paused with untouched pending items" >&2
             exit 1
           else
-            initial=true
+            authenticate_queue=true
           fi
           queue_id="$(jq -r '.queue_id' "$queue")"
           if [ "$(jq -r '.state' "$queue")" = "active" ]; then
@@ -78,8 +78,20 @@ jobs:
               exit 1
             fi
           fi
-          echo "initial=$initial" >> "$GITHUB_OUTPUT"
-          if [ "$initial" = "true" ]; then
+          if [ "$(jq -r '.state' "$queue")" = "paused" ]; then
+            if [ -f "$previous_queue" ]; then
+              python3 scripts/prepare_signed_queue.py verify-paused-transition \
+                "$queue" --previous-queue "$previous_queue"
+              if jq -e --slurpfile previous "$previous_queue" '
+                .dispatch != $previous[0].dispatch
+                or .release != $previous[0].release
+              ' "$queue" > /dev/null; then
+                authenticate_queue=true
+              fi
+            fi
+          fi
+          echo "initial=$authenticate_queue" >> "$GITHUB_OUTPUT"
+          if [ "$authenticate_queue" = "true" ]; then
             printf 'queue_id=%s\n' "$queue_id" >> "$GITHUB_OUTPUT"
             for field in corpus_ref rules_engine_ref rulespec_ref; do
               printf '%s=%s\n' "$field" \
@@ -92,11 +104,7 @@ jobs:
               "$(jq -r '.release.content_sha256' "$queue")" >> "$GITHUB_OUTPUT"
           fi
           if [ "$(jq -r '.state' "$queue")" = "paused" ]; then
-            if [ -f "$previous_queue" ]; then
-              python3 scripts/prepare_signed_queue.py verify-paused-transition \
-                "$queue" --previous-queue "$previous_queue"
-            fi
-            echo "Queue is paused; no activation evidence is required."
+            echo "Queue is paused; authenticated regeneration runs when required."
             exit 0
           fi
 
@@ -204,6 +212,7 @@ jobs:
         if: ${{ steps.transition.outputs.initial == 'true' }}
         env:
           CORPUS_RELEASE_PUBLIC_KEY: ${{ vars.AXIOM_CORPUS_RELEASE_PUBLIC_KEY }}
+          GH_TOKEN: ${{ github.token }}
           QUEUE_PATH: ${{ steps.transition.outputs.queue_path }}
           RELEASE_NAME: ${{ steps.transition.outputs.release_name }}
           RELEASE_SHA: ${{ steps.transition.outputs.release_sha }}
@@ -219,6 +228,29 @@ jobs:
             "${{ steps.transition.outputs.rulespec_ref }}"
           test "$(git -C initial-axiom-rules-engine rev-parse HEAD)" = \
             "${{ steps.transition.outputs.rules_engine_ref }}"
+          api_version="2026-03-10"
+          test "$(gh api \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: $api_version" \
+            repos/TheAxiomFoundation/rulespec-us/git/ref/heads/hard-cut/canonical-layout-us \
+            --jq '.object.sha')" = "${{ steps.transition.outputs.rulespec_ref }}"
+          git -C initial-axiom-rules-engine merge-base --is-ancestor \
+            "${{ steps.transition.outputs.rules_engine_ref }}" \
+            refs/remotes/origin/main
+          gh api --paginate --slurp \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: $api_version" \
+            "repos/TheAxiomFoundation/axiom-rules-engine/commits/${{ steps.transition.outputs.rules_engine_ref }}/check-runs?per_page=100" \
+            > "$RUNNER_TEMP/rules-engine-check-runs.json"
+          jq -e '
+            [.[].check_runs[]] as $checks
+            | ($checks | length) > 0
+            and all(
+              $checks[];
+              .status == "completed"
+              and (.conclusion | IN("success", "neutral", "skipped"))
+            )
+          ' "$RUNNER_TEMP/rules-engine-check-runs.json" > /dev/null
 
           response="$RUNNER_TEMP/corpus-release-response.json"
           release_object="$RUNNER_TEMP/corpus-release-object.json"

@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CORPUS_REF: 0fd35bfbda98836c406ec539a492c4e661c6695d
-      RELEASE_NAME: us-rulespec-2026-07-24-snap-cms-pit-union
-      RELEASE_SHA: cb275c76c4f07f8ad37470a32296bb1763e5db853d152697524ab07021b6d544
-      RULES_ENGINE_REF: 05eac9d2f89dabe5c6673176260762cef3a58f47
-      RULESPEC_REF: b61918da93fe8a1a29b35b9330aef2085291a5d0
+      CORPUS_REF: d9d6fba0b9069c7e0f0ed4255817b3e78c00dd64
+      RELEASE_NAME: us-rulespec-2026-08-03-ecps-pit-tariff-union
+      RELEASE_SHA: aa034219ef1519a31c0f354149bfd4b873fb5d8f2804b5cfe78c2813ee8af4e5
+      RULES_ENGINE_REF: 4658144031f8ef1b39a971eb7002997fa0880b5a
+      RULESPEC_REF: 38ddc92d4160a0d39af13bfe232a446b554a15c5
       SUPABASE_URL: https://swocpijqqahhuwtuahwc.supabase.co
     steps:
       - name: Checkout immutable encoder main

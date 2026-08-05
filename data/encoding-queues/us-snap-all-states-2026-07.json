@@ -1,13 +1,13 @@
 {
   "description": "All-state SNAP logical source-unit inventory for the 50 states and District of Columbia. Every item requires an encoder disposition.",
   "dispatch": {
-    "corpus_ref": "0fd35bfbda98836c406ec539a492c4e661c6695d",
+    "corpus_ref": "d9d6fba0b9069c7e0f0ed4255817b3e78c00dd64",
     "country": "us",
     "max_batch_size": 4,
     "open_pr": true,
     "pr_base_branch": "hard-cut/canonical-layout-us",
-    "rules_engine_ref": "05eac9d2f89dabe5c6673176260762cef3a58f47",
-    "rulespec_ref": "8f224620540f9e285428ec839d094835396f7d99"
+    "rules_engine_ref": "4658144031f8ef1b39a971eb7002997fa0880b5a",
+    "rulespec_ref": "38ddc92d4160a0d39af13bfe232a446b554a15c5"
   },
   "expected_counts": {
     "total": 17784,
@@ -177914,9 +177914,9 @@
   "pause_reason": "Awaiting a green, independently reviewed exact RuleSpec protected-branch tip.",
   "queue_id": "us-snap-all-states-2026-07",
   "release": {
-    "content_sha256": "cb275c76c4f07f8ad37470a32296bb1763e5db853d152697524ab07021b6d544",
-    "manifest_sha256": "be18ff3f1557f4e30a1520e519e4d14b31c01122534ca1690294729bb7029691",
-    "name": "us-rulespec-2026-07-24-snap-cms-pit-union"
+    "content_sha256": "aa034219ef1519a31c0f354149bfd4b873fb5d8f2804b5cfe78c2813ee8af4e5",
+    "manifest_sha256": "13678b8a4fd05e2d026d9531346f2344bd157bc0f146810244ad9a8a620f7d5a",
+    "name": "us-rulespec-2026-08-03-ecps-pit-tariff-union"
   },
   "schema": "axiom-encode/signed-encoding-queue/v1",
   "state": "paused",

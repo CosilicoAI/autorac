@@ -462,3 +462,45 @@ def test_all_state_preparation_uses_authenticated_release_builder() -> None:
     assert "AXIOM_CORPUS_RELEASE_PUBLIC_KEY" in workflow
     assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in workflow
     assert "--state paused" in workflow
+    assert "d9d6fba0b9069c7e0f0ed4255817b3e78c00dd64" in workflow
+    assert "4658144031f8ef1b39a971eb7002997fa0880b5a" in workflow
+    assert "38ddc92d4160a0d39af13bfe232a446b554a15c5" in workflow
+
+
+def test_all_state_queue_repin_is_regenerated_from_authenticated_inputs() -> None:
+    queue = json.loads(
+        (ROOT / "data/encoding-queues/us-snap-all-states-2026-07.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    workflow = (
+        ROOT / ".github/workflows/validate-snap-queue-activation.yml"
+    ).read_text(encoding="utf-8")
+
+    assert queue["dispatch"] == {
+        "corpus_ref": "d9d6fba0b9069c7e0f0ed4255817b3e78c00dd64",
+        "country": "us",
+        "max_batch_size": 4,
+        "open_pr": True,
+        "pr_base_branch": "hard-cut/canonical-layout-us",
+        "rules_engine_ref": "4658144031f8ef1b39a971eb7002997fa0880b5a",
+        "rulespec_ref": "38ddc92d4160a0d39af13bfe232a446b554a15c5",
+    }
+    assert queue["release"] == {
+        "content_sha256": (
+            "aa034219ef1519a31c0f354149bfd4b873fb5d8f2804b5cfe78c2813ee8af4e5"
+        ),
+        "manifest_sha256": (
+            "13678b8a4fd05e2d026d9531346f2344bd157bc0f146810244ad9a8a620f7d5a"
+        ),
+        "name": "us-rulespec-2026-08-03-ecps-pit-tariff-union",
+    }
+    assert "authenticate_queue=true" in workflow
+    assert ".dispatch != $previous[0].dispatch" in workflow
+    assert ".release != $previous[0].release" in workflow
+    assert "cmp --silent" in workflow
+    assert '"$QUEUE_PATH" "$generated_queue"' in workflow
+    assert "rulespec-us/git/ref/heads/hard-cut/canonical-layout-us" in workflow
+    assert "initial-axiom-rules-engine merge-base --is-ancestor" in workflow
+    assert "rules-engine-check-runs.json" in workflow
+    assert "($checks | length) > 0" in workflow
