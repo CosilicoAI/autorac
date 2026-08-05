@@ -6590,18 +6590,23 @@ def _english_word_number_occurrences(
 ) -> list[NumericOccurrence]:
     """Extract unambiguous compound English cardinal grounding candidates."""
 
-    return [
-        collector.occurrence(
-            view,
-            span,
-            value,
-            is_word_number=True,
+    occurrences: list[NumericOccurrence] = []
+    for span, value in _iter_cardinal_word_number_matches(
+        cleaned,
+        compound_only=True,
+    ):
+        strict_value = _parse_strict_cardinal_number_words(cleaned[slice(*span)])
+        if strict_value is None or not math.isclose(strict_value, value):
+            continue
+        occurrences.append(
+            collector.occurrence(
+                view,
+                span,
+                strict_value,
+                is_word_number=True,
+            )
         )
-        for span, value in _iter_cardinal_word_number_matches(
-            cleaned,
-            compound_only=True,
-        )
-    ]
+    return occurrences
 
 
 def _scalar_recall_numeric_inventory(

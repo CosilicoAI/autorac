@@ -1135,7 +1135,8 @@ _LOUISIANA_SESSION_LAW_CITATION = re.compile(
     flags=re.IGNORECASE,
 )
 _LOUISIANA_NOTWITHSTANDING_RS_REFERENCE_PREFIX = re.compile(
-    r"^\s*notwithstanding\s+(?:the\s+)?provisions?\s+of\s+"
+    r"^\s*notwithstanding\s+"
+    r"(?:(?:the\s+)?provisions?\s+of\s+)?"
     r"R\.S\.\s*\d+[A-Za-z]?:\d+[A-Za-z]?"
     r"(?:-\d+[A-Za-z]?(?:\.\d+)*)?\s*[,;]\s*"
     r"(?P<tail>.+)$",

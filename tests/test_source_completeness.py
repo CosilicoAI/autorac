@@ -5487,14 +5487,26 @@ penalty waived under the voluntary disclosure program.
     ] == [("twenty-five\nthousand", 25000.0)]
 
 
-def test_pure_louisiana_notwithstanding_reference_is_not_toggleable():
-    source = (
-        "Notwithstanding the provisions of R.S. 47:1508, the reporting rule applies."
-    )
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "R.S. 47:1508",
+        "provision of R.S. 47:1508",
+        "the provisions of R.S. 47:1508",
+    ),
+)
+def test_pure_louisiana_notwithstanding_reference_is_not_toggleable(
+    reference: str,
+):
+    source = f"Notwithstanding {reference}, the reporting rule applies."
 
     assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
+@pytest.mark.parametrize(
+    "reference",
+    ("R.S. 47:1508", "the provisions of R.S. 47:1508"),
+)
 @pytest.mark.parametrize(
     "tail",
     (
@@ -5504,11 +5516,38 @@ def test_pure_louisiana_notwithstanding_reference_is_not_toggleable():
     ),
 )
 def test_louisiana_notwithstanding_reference_preserves_runtime_condition(
+    reference: str,
     tail: str,
 ):
-    source = f"Notwithstanding R.S. 47:1508, {tail}."
+    source = f"Notwithstanding {reference}, {tail}."
 
     assert completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "twenty thirty dollars",
+        "one one dollars",
+        "five thousand hundred dollars",
+        "one million thousand dollars",
+    ),
+)
+def test_en_us_compound_word_grounding_rejects_malformed_order(source: str):
+    assert not any(
+        occurrence.is_word_number
+        for occurrence in EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    )
+
+
+def test_en_us_compound_word_grounding_preserves_coordinated_values():
+    assert [
+        (occurrence.raw, occurrence.value)
+        for occurrence in EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(
+            "between five and ten years"
+        )
+        if occurrence.is_word_number
+    ] == [("five", 5.0), ("ten", 10.0)]
 
 
 def test_louisiana_cross_reference_does_not_require_synthetic_case_pair():
