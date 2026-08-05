@@ -8990,6 +8990,11 @@ def _source_exception_effect_requirement(text: str) -> str:
         flags=re.IGNORECASE,
     ):
         return "zero"
+    notwithstanding_requirement = _notwithstanding_exemption_effect_requirement(
+        collapsed
+    )
+    if notwithstanding_requirement is not None:
+        return notwithstanding_requirement
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
     condition = next(
@@ -9080,6 +9085,32 @@ def _source_exception_effect_requirement(text: str) -> str:
     ):
         return "exclude"
     return "change"
+
+
+def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
+    """Recognize the direct certification duty in an exemption override."""
+
+    match = re.search(
+        r"\bnotwithstanding\s+that\s+qualified\s+public\s+housing\s+agencies\s+"
+        r"are\s+exempt\s+under\s+subparagraph\s+\(A\)\s+from\s+the\s+"
+        r"requirement\s+under\s+this\s+section\s+to\s+prepare\s+and\s+submit\s+"
+        r"an\s+annual\s+public\s+housing\s+plan,\s*"
+        r"(?P<effect>[^.;]{0,640})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    if re.match(
+        r"^each\s+qualified\s+public\s+housing\s+agency\s+shall,\s*"
+        r"on\s+an\s+annual\s+basis,\s*make\s+the\s+certification\s+"
+        r"described\s+in\s+paragraph\s+\(16\)\s+of\s+subsection\s+\(d\),\s*"
+        r"except\s+that\b",
+        match.group("effect"),
+        flags=re.IGNORECASE,
+    ):
+        return "enable"
+    return None
 
 
 def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:

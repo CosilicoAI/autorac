@@ -11255,6 +11255,93 @@ def test_enabling_effect_is_independent_of_proposition_order(source: str):
     )
 
 
+def test_notwithstanding_exemption_preserves_affirmative_duty():
+    source = """\
+(b) Qualified public housing agencies
+(A) The requirement under paragraph (1) shall not apply to a qualified agency.
+(B) Notwithstanding that qualified public housing agencies are exempt under
+subparagraph (A) from the requirement under this section to prepare and submit an
+annual public housing plan, each qualified public housing agency shall, on an annual
+basis, make the certification described in paragraph (16) of subsection (d), except
+that the paragraph shall use substitute language.
+"""
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Notwithstanding that qualified public housing agencies are not exempt "
+            "under subparagraph (A) from the requirement under this section to "
+            "prepare and submit an annual public housing plan, each qualified public "
+            "housing agency shall, on an annual basis, make the certification "
+            "described in paragraph (16) of subsection (d), except that it is revised."
+        ),
+        (
+            "Notwithstanding that no exemption applies, each qualified public housing "
+            "agency shall, on an annual basis, make the certification described in "
+            "paragraph (16) of subsection (d), except that it is revised."
+        ),
+        (
+            "Notwithstanding that qualified agencies must certify an exemption, each "
+            "qualified public housing agency shall, on an annual basis, make the "
+            "certification described in paragraph (16) of subsection (d), except that "
+            "it is revised."
+        ),
+        (
+            "Notwithstanding that qualified public housing agencies are exempt under "
+            "subparagraph (A) from the requirement under this section to prepare and "
+            "submit an annual public housing plan, each qualified public housing "
+            "agency must certify."
+        ),
+        (
+            "Notwithstanding that qualified public housing agencies are exempt under "
+            "subparagraph (A) from the requirement under this section to prepare and "
+            "submit an annual public housing plan, each qualified public housing "
+            "agency shall make the certification if requested."
+        ),
+    ],
+)
+def test_notwithstanding_exemption_rejects_near_misses(source: str):
+    assert (
+        completeness_module._notwithstanding_exemption_effect_requirement(source)
+        is None
+    )
+
+
+def test_notwithstanding_exemption_accepts_enabling_companion_pair():
+    source = """\
+(1) Notwithstanding that qualified public housing agencies are exempt under
+subparagraph (A) from the requirement under this section to prepare and submit an
+annual public housing plan, each qualified public housing agency shall, on an annual
+basis, make the certification described in paragraph (16) of subsection (d), except
+that the paragraph shall use substitute language.
+"""
+    content = _exception_control_content(
+        "if qualified_agency: true else: false",
+    )
+    cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"qualified_agency": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "qualified agency certification",
+            "input": {"qualified_agency": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
 def test_preposed_german_negative_condition_enables_positive_result():
     source = """\
 (1) Wenn der Antragsteller nicht berechtigt ist, ist er ausnahmsweise berechtigt.
