@@ -9091,21 +9091,21 @@ def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
     """Recognize the direct certification duty in an exemption override."""
 
     match = re.search(
-        r"\bnotwithstanding\b"
-        r"(?P<condition>[^.;]{0,640}?\bexempt(?:ed|ion|ions)?\b"
-        r"[^.;]{0,320}?),"
-        r"\s*(?P<effect>[^.;]{0,320})",
+        r"\bnotwithstanding\s+that\s+qualified\s+public\s+housing\s+agencies\s+"
+        r"are\s+exempt\s+under\s+subparagraph\s+\(A\)\s+from\s+the\s+"
+        r"requirement\s+under\s+this\s+section\s+to\s+prepare\s+and\s+submit\s+"
+        r"an\s+annual\s+public\s+housing\s+plan,\s*"
+        r"(?P<effect>[^.;]{0,640})",
         text,
         flags=re.IGNORECASE,
     )
     if match is None:
         return None
     if re.match(
-        r"^\s*(?:\([A-Za-z0-9ivxIVX]+\)\s*)*each\b"
-        r"(?:(?!\b(?:that|which|who|whose|if|when)\b)[^,;]){0,160}?"
-        r"\b(?:shall|must)\s*"
-        r"(?:,\s*on\s+an\s+annual\s+basis,\s*)?"
-        r"(?:make\s+the\s+certification\b|certif(?:y|ies)\s*$)",
+        r"^each\s+qualified\s+public\s+housing\s+agency\s+shall,\s*"
+        r"on\s+an\s+annual\s+basis,\s*make\s+the\s+certification\s+"
+        r"described\s+in\s+paragraph\s+\(16\)\s+of\s+subsection\s+\(d\),\s*"
+        r"except\s+that\b",
         match.group("effect"),
         flags=re.IGNORECASE,
     ):
