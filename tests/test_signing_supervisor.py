@@ -2289,7 +2289,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "unset AXIOM_ENCODE_APPLY_SIGNING_KEY" in command
     assert ') > "$guard_json" 2> "$guard_stderr"' in command
     assert 'local guard_status="$?"' in command
-    assert 'jq . "$guard_json" >&2' in command
+    assert 'and keys == ["issues", "passed", "repo"]' in command
+    assert 'and (.issues | type == "array"' in command
+    assert 'if [ "$guard_status" -eq 0 ]; then' in command
     assert 'checkpoint-guard-generated.stdout.log"' in command
     assert '"$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"' in (
         command
@@ -3108,6 +3110,115 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         "passed": False,
         "issues": ["checkpoint manifest mismatch"],
     }
+
+
+def test_targeted_signed_reencode_packages_stderr_only_checkpoint_failure(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    steps = workflow["jobs"]["encode"]["steps"]
+    apply_command = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Encode, review, validate, and apply"
+    )
+    checkpoint = apply_command.split("checkpoint_signed_changes() {", 1)[1].split(
+        '\n}\n\nif [ "$canonical_refresh_enabled"',
+        1,
+    )[0]
+    guard_stub = tmp_path / "guard-stub"
+    guard_stub.write_text(
+        "#!/bin/sh\n"
+        'if [ -n "${AXIOM_ENCODE_APPLY_SIGNING_KEY:-}" ]; then\n'
+        "  echo 'signing key reached direct supervisor invocation' >&2\n"
+        "  exit 91\n"
+        "fi\n"
+        "echo 'private keys are forbidden in the signing supervisor' >&2\n"
+        "exit 7\n"
+    )
+    guard_stub.chmod(0o700)
+    checkpoint_script = (
+        "set -euo pipefail\n"
+        "checkpoint_signed_changes() {"
+        + checkpoint.replace(
+            "/opt/axiom-verification/axiom-encode-signing-supervisor",
+            '"$GUARD_STUB"',
+        )
+        + "\n}\ncheckpoint_signed_changes test\n"
+    )
+    checkpoint_result = subprocess.run(
+        ["bash", "-c", checkpoint_script],
+        env={
+            **os.environ,
+            "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
+            "GITHUB_WORKSPACE": str(tmp_path),
+            "GUARD_STUB": str(guard_stub),
+            "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert checkpoint_result.returncode == 7
+    assert "private keys are forbidden" in checkpoint_result.stderr
+    assert not (tmp_path / "checkpoint-guard-generated.json").exists()
+    assert (tmp_path / "checkpoint-guard-generated.stdout.log").read_bytes() == b""
+    assert (
+        tmp_path / "checkpoint-guard-generated.stderr.log"
+    ).read_text() == "private keys are forbidden in the signing supervisor\n"
+
+    (tmp_path / "generated").mkdir()
+    package_command = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Package failed re-encode diagnostics"
+    ).replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    package_result = subprocess.run(
+        ["bash", "-c", package_command],
+        env={
+            **os.environ,
+            "CITATION": "us-la/statute/47:294",
+            "CORPUS_REF": "corpus-ref",
+            "COUNTRY": "us",
+            "ENCODE_APPLY_CONCLUSION": "failure",
+            "ENCODE_APPLY_OUTCOME": "failure",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "31017990537",
+            "GITHUB_SHA": "encoder-ref",
+            "PROVISION_SIGNING_SUPERVISOR_CONCLUSION": "success",
+            "RULES_ENGINE_REF": "rules-engine-ref",
+            "RULESPEC_REF": "rulespec-ref",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert package_result.returncode == 0, package_result.stderr
+    with tarfile.open(tmp_path / "targeted-reencode-failure.tar", mode="r") as bundle:
+        file_member_names = {
+            member.name.removeprefix("./")
+            for member in bundle.getmembers()
+            if member.isfile()
+        }
+        assert file_member_names == {
+            "guards/checkpoint-guard-generated.stderr.log",
+            "guards/checkpoint-guard-generated.stdout.log",
+            "metadata.json",
+        }
+        metadata_file = bundle.extractfile("./metadata.json")
+        assert metadata_file is not None
+        metadata = json.loads(metadata_file.read())
+    assert [item["path"] for item in metadata["guards"]] == [
+        "guards/checkpoint-guard-generated.stderr.log",
+        "guards/checkpoint-guard-generated.stdout.log",
+    ]
 
 
 def test_targeted_signed_reencode_rejects_symlinked_failure_diagnostics(

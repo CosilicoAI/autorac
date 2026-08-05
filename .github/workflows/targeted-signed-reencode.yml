@@ -1423,12 +1423,23 @@ jobs:
             else
               rm "$guard_stderr"
             fi
-            if [ "$guard_status" -ne 0 ]; then
-              if ! jq . "$guard_json" >&2; then
-                mv "$guard_json" \
-                  "$RUNNER_TEMP/checkpoint-guard-generated.stdout.log"
-                echo "checkpoint provenance guard returned malformed diagnostics" >&2
+            if ! jq -e '
+              select(
+                type == "object"
+                and keys == ["issues", "passed", "repo"]
+                and (.repo | type == "string")
+                and (.passed | type == "boolean")
+                and (.issues | type == "array" and all(.[]; type == "string"))
+              )
+            ' "$guard_json" >&2; then
+              mv "$guard_json" \
+                "$RUNNER_TEMP/checkpoint-guard-generated.stdout.log"
+              echo "checkpoint provenance guard returned malformed diagnostics" >&2
+              if [ "$guard_status" -eq 0 ]; then
+                guard_status=1
               fi
+            fi
+            if [ "$guard_status" -ne 0 ]; then
               return "$guard_status"
             fi
             git -C "$RULESPEC_CHECKOUT" diff --check
