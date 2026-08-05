@@ -1,1 +1,1 @@
-Recognize ordered capital dotted legal subsections such as `A.` and `B.` as complete-source structural boundaries without flattening their nested paragraphs or treating isolated abbreviations as provisions.
+Recognize ordered capital dotted legal subsections such as `A.` and `B.` as complete-source structural boundaries, including attached compound markers such as `B.(1)` and nested numeric, alphabetic, and Roman-numeral chains, without flattening their hierarchy or treating prose and citation abbreviations as provisions.

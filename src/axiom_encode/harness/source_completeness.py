@@ -86,6 +86,16 @@ class SourceStructureBranch:
 
 
 @dataclass(frozen=True)
+class _OutlineMarker:
+    """One resolved marker in a nested parenthesized legal outline."""
+
+    start: int
+    path: tuple[str, ...]
+    kind: str
+    label: str
+
+
+@dataclass(frozen=True)
 class CompleteSourceUnitAnalysis:
     """Deterministic completeness results for one RuleSpec/source pair."""
 
@@ -187,7 +197,7 @@ _PARAGRAPH_MARKER = re.compile(
     flags=re.IGNORECASE,
 )
 _DOTTED_SUBSECTION_MARKER = re.compile(
-    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$))"
+    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$)|(?=\())"
 )
 _JOINED_DOTTED_BOUNDARY_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)"
@@ -199,6 +209,11 @@ _NUMBER_MARKER = re.compile(
 )
 _LETTER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[a-z]{1,2})\))[ \t]+",
+    flags=re.IGNORECASE,
+)
+_PARENTHESIZED_OUTLINE_MARKER = re.compile(
+    r"(?m)^[ \t]*(?:[A-Z]\.)?"
+    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,4})\))+)(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _GLUED_SENTENCE_MARKER = re.compile(
@@ -1294,46 +1309,41 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                         outer_end,
                     )
                 )
-            nested_matches = tuple(
-                _PARAGRAPH_MARKER.finditer(source_text, outer_start, outer_end)
+            nested_markers = _nested_parenthesized_outline_markers(
+                source_text,
+                outer_path=outer_path,
+                start=outer_start,
+                end=outer_end,
             )
-            nested_numeric_matches = tuple(
-                match for match in nested_matches if match.group("label")[0].isdigit()
-            )
-            if not nested_matches:
+            if not nested_markers:
                 paragraph_segments.append(
                     (outer_path, outer_start, outer_end, outer_text)
                 )
                 continue
-            for index, match in enumerate(nested_matches):
-                start = match.start()
-                end = (
-                    nested_matches[index + 1].start()
-                    if index + 1 < len(nested_matches)
-                    else outer_end
-                )
-                label = match.group("label").lower()
-                numeric_parent = next(
+            for marker in nested_markers:
+                end = next(
                     (
-                        parent
-                        for parent in reversed(nested_numeric_matches)
-                        if parent.start() < start
+                        candidate.start
+                        for candidate in nested_markers
+                        if candidate.start > marker.start
+                        and len(candidate.path) <= len(marker.path)
                     ),
-                    None,
+                    outer_end,
                 )
-                path = outer_path
-                if label[0].isalpha() and numeric_parent is not None:
-                    path = (*path, numeric_parent.group("label").lower())
-                path = (*path, label)
-                text = source_text[start:end].strip()
+                text = source_text[marker.start : end].strip()
                 if _is_editorial_omission(text):
                     continue
                 branches.append(
                     SourceStructureBranch(
-                        path, "paragraph", match.group("marker"), text, start, end
+                        marker.path,
+                        marker.kind,
+                        marker.label,
+                        text,
+                        marker.start,
+                        end,
                     )
                 )
-                paragraph_segments.append((path, start, end, text))
+                paragraph_segments.append((marker.path, marker.start, end, text))
     else:
         paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
         for index, match in enumerate(paragraph_matches):
@@ -1463,6 +1473,91 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
         if len(sequence) >= 2:
             return tuple(sequence)
     return ()
+
+
+def _nested_parenthesized_outline_markers(
+    source_text: str,
+    *,
+    outer_path: tuple[str, ...],
+    start: int,
+    end: int,
+) -> tuple[_OutlineMarker, ...]:
+    """Resolve attached and line-leading U.S. subsection marker chains."""
+
+    matches = tuple(_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text, start, end))
+    markers: list[_OutlineMarker] = []
+    active: list[str] = []
+    active_roman = False
+    for index, match in enumerate(matches):
+        labels = tuple(
+            label.lower()
+            for label in re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker"))
+        )
+        if not labels:
+            continue
+        marker_start = match.start("marker")
+        if len(labels) > 1:
+            active = []
+            active_roman = False
+            for label in labels:
+                active.append(label)
+                markers.append(
+                    _OutlineMarker(
+                        marker_start,
+                        (*outer_path, *active),
+                        "paragraph" if label[0].isdigit() else "letter",
+                        f"({label})",
+                    )
+                )
+            continue
+
+        label = labels[0]
+        if label[0].isdigit():
+            active = [label]
+            active_roman = False
+        else:
+            next_labels = (
+                tuple(
+                    item.lower()
+                    for item in re.findall(
+                        r"\(([A-Za-z0-9]+)\)", matches[index + 1].group("marker")
+                    )
+                )
+                if index + 1 < len(matches)
+                else ()
+            )
+            begins_roman_children = (
+                label == "i"
+                and len(active) >= 2
+                and bool(next_labels)
+                and next_labels[0] == "ii"
+            )
+            continues_roman_children = (
+                active_roman and len(active) >= 3 and _is_roman_outline_label(label)
+            )
+            if begins_roman_children or continues_roman_children:
+                active = [*active[:2], label]
+                active_roman = True
+            else:
+                numeric_parent = next(
+                    (item for item in active if item[0].isdigit()),
+                    None,
+                )
+                active = [numeric_parent, label] if numeric_parent else [label]
+                active_roman = False
+        markers.append(
+            _OutlineMarker(
+                marker_start,
+                (*outer_path, *active),
+                "paragraph" if label[0].isdigit() else "letter",
+                f"({label})",
+            )
+        )
+    return tuple(markers)
+
+
+def _is_roman_outline_label(label: str) -> bool:
+    return bool(re.fullmatch(r"[ivxlcdm]+", label, flags=re.IGNORECASE))
 
 
 def _dotted_subsection_boundary_matches(source_text: str) -> tuple[re.Match[str], ...]:
@@ -2040,7 +2135,8 @@ def _strip_source_clause_marker(text: str) -> str:
 
     return re.sub(
         r"^\s*(?:"
-        r"\((?:\d+[a-z]?|[a-z])\)|"
+        r"(?-i:[A-Z])\.(?:\((?:\d+[a-z]?|[a-z]{1,4})\))*|"
+        r"(?:\((?:\d+[a-z]?|[a-z]{1,4})\))+|"
         r"\d+[a-z]?\.|"
         r"[a-z]\)|"
         r"satz\s+\d+[a-z]?\s*:?\s*|"

@@ -1520,6 +1520,71 @@ def test_parenthesized_letters_nest_under_active_numeric_paragraph():
     }
 
 
+def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
+    source = """\
+A. There shall be a child care credit. The credit shall be calculated using the following percentages:
+
+(1)(a) If income is not more than twenty-five thousand dollars, the credit shall be based on the unreduced federal credit and equal the following amounts:
+
+(i) For tax year 2006, twenty-five percent of the unreduced federal credit.
+
+(ii) For tax years after 2006, fifty percent of the unreduced federal credit.
+
+(b) The credit is allowed whether or not the federal credit was claimed.
+
+(2) If income is not more than thirty-five thousand dollars, thirty percent of the claimed federal credit applies.
+
+(3) If income is not more than sixty thousand dollars, ten percent of the claimed federal credit applies.
+
+(4) Otherwise, the credit is the lesser of twenty-five dollars or ten percent of the claimed federal credit.
+
+B.(1) Excess low-income credit is refunded.
+
+(2) Other excess credit may be carried forward for five years.
+"""
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "1", "a"),
+        ("a", "1", "a", "i"),
+        ("a", "1", "a", "ii"),
+        ("a", "1", "b"),
+        ("a", "2"),
+        ("a", "3"),
+        ("a", "4"),
+        ("b",),
+        ("b", "1"),
+        ("b", "2"),
+    ]
+    by_path = {branch.path: branch for branch in branches}
+    assert "B.(1)" not in by_path[("a", "4")].text
+    assert "carried forward" not in by_path[("b", "1")].text
+    assert "(ii)" not in by_path[("a", "1", "a", "i")].text
+    assert "fifty percent" in by_path[("a", "1", "a", "ii")].text
+
+
+def test_parenthesized_i_without_ii_remains_an_alpha_sibling():
+    source = "A. Outer.\n(1)(a) First.\n(i) Ninth alpha.\n(j) Tenth alpha.\nB. End."
+
+    paths = {branch.path for branch in recognize_source_structure(source)}
+
+    assert ("a", "1", "i") in paths
+    assert ("a", "1", "j") in paths
+    assert ("a", "1", "a", "i") not in paths
+
+
+def test_parenthesized_prose_is_not_an_outline_marker():
+    source = "A. First.\n(note) explanatory prose.\nB. Second."
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [("a",), ("b",)]
+    assert "(note) explanatory prose" in branches[0].text
+
+
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
     source = (
         "54A:4-7 New Jersey credit. (2) For the purposes of the calculation of "
