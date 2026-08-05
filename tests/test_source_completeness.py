@@ -2069,6 +2069,12 @@ B. End.
         "computed pursuant to the following schedule",
         "computed as set forth in the following table",
         "calculated pursuant to the following rates",
+        "computed pursuant to the following rates for the following tax years",
+        "calculated pursuant to following amounts for following tax years",
+        "computed pursuant to the table below",
+        "computed as set forth in the table below",
+        "determined in accordance with the following schedule",
+        "calculated from the following rates",
     ),
 )
 def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
@@ -2137,6 +2143,14 @@ B. End.
         "B. End.",
         "A. The assessment is the product of a review and public comment.\nB. End.",
         "A. The distribution is the division of responsibilities by office.\nB. End.",
+        "A. The assessment is the product of a review of income and public comment.\n"
+        "B. End.",
+        "A. The committee's charge is the division of responsibilities by the tax "
+        "office.\nB. End.",
+        "A. The distribution is the division of responsibilities by the benefits "
+        "office.\nB. End.",
+        "A. The committee's charge is the division of responsibilities by office, "
+        "and the tax is administered annually.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2223,6 +2237,25 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The rebates are the sum of refundable credits and payments",
         "The loss is the difference between gross income and deductions",
         "The taxable net worth is the sum of assets and liabilities",
+        "For purposes of this section the credit for an eligible resident is the "
+        "average of the following values",
+        "Pursuant to paragraph (1) the amount determined under this subsection is "
+        "the lesser of the following values",
+        "For taxable years after 2025 the credit is the sum of the base and supplement",
+        "The taxpayer's operating business income is the sum of wages and interest",
+        "The taxpayer's qualifying resident credit is the average of the following "
+        "values",
+        "The tax due hereunder is the sum of the base and surcharge",
+        "The withholding is the sum of state and local payments",
+        "The taxable margin is the difference between gross receipts and deductions",
+        "Under subsection A the credit is the sum of the base and supplement",
+        "After 2025 the credit is the sum of the base and supplement",
+        "Effective for taxable years after 2025 the credit is the sum of the base "
+        "and supplement",
+        "According to paragraph (1) the amount is the lesser of the following values",
+        "The tax now due is the sum of the base and surcharge",
+        "The tax thereon imposed is the sum of the base and surcharge",
+        "The credit hereby allowed shall be the lesser of the following values",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
