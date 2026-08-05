@@ -182,7 +182,10 @@ class _NamedSourceNumber:
 
 
 _PARAGRAPH_MARKER = re.compile(
-    r"(?m)^[ \t]*(?P<marker>\((?P<label>\d+[a-z]?|[a-z])\))(?=\s|bis\b)",
+    r"(?m)^[ \t]*(?P<marker>"
+    r"\((?P<label>\d+[a-z]?|[a-z])\)"
+    r"|(?P<dotted_label>(?-i:[A-Z]{1,2}))\."
+    r")(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _NUMBER_MARKER = re.compile(
@@ -1240,7 +1243,7 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
             if index + 1 < len(paragraph_matches)
             else len(source_text)
         )
-        label = match.group("label").lower()
+        label = (match.group("label") or match.group("dotted_label")).lower()
         text = source_text[start:end].strip()
         if _is_editorial_omission(text):
             continue

@@ -2,6 +2,11 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Recognize line-leading capital dotted legal subsections such as `A.` and `B.`
+  as complete-source structural boundaries. This prevents a preceding
+  parenthesized paragraph from absorbing a later subsection and producing
+  impossible mixed formula obligations.
+
 - Reject source-add dispatches when the primary or bundled canonical RuleSpec
   destination already exists in the pinned checkout. Existing modules must use
   the authenticated canonical-refresh contract, so mode mistakes fail before

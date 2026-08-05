@@ -1170,6 +1170,53 @@ Acts 1983, 2ND EX. SESS., NO. 1, §1.
     ]
 
 
+def test_louisiana_dotted_subsection_ends_line_wrapped_numeric_paragraph():
+    source = """\
+A. A standard deduction shall be allowed. For tax year 2025:
+
+(1) Single Individual and Married-Separate $12,500.00
+
+(2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+Spouse, and Head of Household provided for Single Individuals
+
+B. Beginning January 1, 2026, and thereafter, the standard deduction shall be
+adjusted annually by an amount calculated by multiplying the prior year's deduction
+by the CPI-U increase.
+"""
+
+    branches = recognize_source_structure(source)
+
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("1",), "(1)"),
+        (("2",), "(2)"),
+        (("b",), "B."),
+    ]
+    paragraph_two = next(branch for branch in branches if branch.path == ("2",))
+    assert "200% of the dollar amount" in paragraph_two.text
+    assert "Beginning January 1, 2026" not in paragraph_two.text
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert not any(
+        "200%" in branch.text and "CPI-U" in branch.text for branch in formula_branches
+    )
+    assert any(branch.path == ("b",) for branch in formula_branches)
+
+
+def test_lowercase_dotted_prose_is_not_a_top_level_subsection():
+    branches = recognize_source_structure("a. ordinary prose\n(1) The rule applies.")
+
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("1",), "(1)"),
+    ]
+
+
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
     source = (
         "54A:4-7 New Jersey credit. (2) For the purposes of the calculation of "
