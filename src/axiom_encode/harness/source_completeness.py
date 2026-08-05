@@ -358,8 +358,8 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_RESULT_PREDICATE = (
-    r"(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
-    r"constitutes?)"
+    r"(?:(?:is|are|shall\s+be|must\s+be|may\s+be)\s+equal\s+to|"
+    r"is|are|equals?|shall\s+be|must\s+be|may\s+be|means|constitutes?)"
 )
 _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
@@ -384,7 +384,7 @@ _FORMULA_RESULT_OPERATION_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_PARTICIPIAL_RESULT_LANGUAGE = re.compile(
-    r"\b(?:(?:is|shall\s+be)\s+)?"
+    r"\b(?:(?:is|are|shall\s+be|must\s+be|may\s+be)\s+)?"
     r"(?:reduced|deducted|increased|decreased)\s+by\b",
     flags=re.IGNORECASE,
 )
@@ -396,32 +396,103 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "balance",
         "base",
         "benefit",
+        "bracket",
+        "cap",
+        "ceiling",
+        "charge",
         "count",
         "credit",
+        "decrease",
         "deduction",
+        "deficiency",
+        "distribution",
+        "excess",
+        "exemption",
+        "expense",
         "factor",
+        "fee",
+        "floor",
         "income",
+        "increase",
         "liability",
         "limit",
         "number",
+        "offset",
         "overpayment",
         "payment",
         "percent",
         "percentage",
+        "proceeds",
         "quantity",
         "rate",
+        "reduction",
         "refund",
         "result",
+        "shortfall",
+        "surcharge",
+        "surtax",
         "tax",
         "threshold",
         "total",
         "value",
     }
 )
-_FORMULA_SUBJECT_MODIFIER = re.compile(
+_FORMULA_SUBJECT_PHRASE_BREAK = re.compile(
     r"\b(?:of|for|to|under|by|from|in|on|with|without|that|which|who|whose|"
-    r"determined|imposed|allowed|allowable|provided|described|specified|"
-    r"computed|calculated|adjusted|applicable|responsible|before|after)\b",
+    r"before|after)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
+    {
+        "adjusted",
+        "allowed",
+        "allowable",
+        "applicable",
+        "attributable",
+        "available",
+        "calculated",
+        "computed",
+        "described",
+        "determined",
+        "due",
+        "imposed",
+        "otherwise",
+        "payable",
+        "permitted",
+        "prescribed",
+        "provided",
+        "pursuant",
+        "responsible",
+        "so",
+        "specified",
+        "set",
+        "subject",
+        "forth",
+    }
+)
+_FORMULA_SUBJECT_LEADING_NONHEAD_WORDS = frozenset(
+    {
+        "a",
+        "adjusted",
+        "allowable",
+        "an",
+        "applicable",
+        "earned",
+        "federal",
+        "gross",
+        "imposed",
+        "individual",
+        "operating",
+        "qualified",
+        "resident",
+        "state",
+        "taxable",
+        "the",
+    }
+)
+_FORMULA_SUBJECT_PARENTHETICAL = re.compile(
+    r"(?:as|adjusted|calculated|computed|described|determined|if|provided|"
+    r"specified|subject|when|where)\b",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
@@ -1771,11 +1842,26 @@ def _formula_result_subject_head(prefix: str) -> str:
     """Return the grammatical head of a formula predicate's subject phrase."""
 
     subject = _strip_source_clause_marker(prefix).strip()
-    subject = re.sub(r",[^,\n]{1,160},", " ", subject)
-    if "," in subject:
-        subject = subject.rsplit(",", 1)[-1].strip()
-    subject = _FORMULA_SUBJECT_MODIFIER.split(subject, maxsplit=1)[0]
+    segments = [segment.strip() for segment in subject.split(",")]
+    while segments and not segments[-1]:
+        segments.pop()
+    if subject.rstrip().endswith(","):
+        while len(segments) > 1 and _FORMULA_SUBJECT_PARENTHETICAL.match(segments[-1]):
+            segments.pop()
+    subject = segments[-1] if segments else ""
+    subject = _FORMULA_SUBJECT_PHRASE_BREAK.split(subject, maxsplit=1)[0]
     words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", subject)
+    for index, word in enumerate(words):
+        if not word.lower().endswith("ing"):
+            continue
+        if any(
+            preceding.lower() not in _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS
+            for preceding in words[:index]
+        ):
+            words = words[:index]
+            break
+    while len(words) > 1 and words[-1].lower() in _FORMULA_SUBJECT_TRAILING_MODIFIERS:
+        words.pop()
     return words[-1].lower() if words else ""
 
 

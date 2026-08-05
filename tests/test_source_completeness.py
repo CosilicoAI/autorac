@@ -2100,6 +2100,12 @@ B. End.
         "prior law.\nB. End.",
         "A. The organization that provides the benefit is the product of a merger.\n"
         "B. End.",
+        "A. The agency administering the tax is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The organization providing the benefit is the product of a merger.\n"
+        "B. End.",
+        "A. The office handling the refund is the Division of Revenue by "
+        "designation.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2131,6 +2137,40 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The tax imposed by this section is the sum of the base and the surcharge",
         "The credit allowable under this section shall be reduced by deductions",
         "The number of dwelling units is the sum of occupied units and vacant units",
+        "The applicable credit is the average of the following values",
+        "The adjusted amount is the sum of the base and the bonus",
+        "The amount otherwise allowable under paragraph (1) shall be equal to the "
+        "lesser of the following values",
+        "If income exceeds the limit, the credit for qualified taxpayers is the "
+        "average of the following values",
+        "The amount, determined under paragraph (1), shall be equal to the lesser of "
+        "the following values",
+        "The adjusted gross income is the sum of wages and interest",
+        "The allowable amount shall be equal to the lesser of the following values",
+        "The imposed tax is the addition of the base and surcharge",
+        "The credit available to a resident is the average of the following values",
+        "The amount attributable to this section is the sum of the base and bonus",
+        "The tax otherwise due is the lesser of the following amounts",
+        "The benefit payable to the individual is the sum of the allowance and "
+        "supplement",
+        "If eligible, the credit, determined under paragraph (1), is the average of "
+        "the following values",
+        "If eligible, the credit, if any, shall be equal to the lesser of the "
+        "following values",
+        "For taxable years beginning after December 31, 2025, the credit is the sum "
+        "of the base and the supplement",
+        "Under this section after December 31, 2025, the amount shall be equal to the "
+        "lesser of the following values",
+        "The credits are the sum of the base and the supplement",
+        "The amounts are equal to the lesser of the following values",
+        "The credits are reduced by deductions",
+        "The applicable operating income is the sum of wages and interest",
+        "The credit computed pursuant to this section is the sum of the base and "
+        "the supplement",
+        "The amount set forth in paragraph (1) is the lesser of the following values",
+        "The exemption is the lesser of the following values",
+        "The surtax is the percentage of taxable income set forth below",
+        "The surcharge shall be reduced by the allowable credit",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
