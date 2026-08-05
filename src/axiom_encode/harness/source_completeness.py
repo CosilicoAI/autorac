@@ -186,7 +186,7 @@ _PARAGRAPH_MARKER = re.compile(
     flags=re.IGNORECASE,
 )
 _DOTTED_SUBSECTION_MARKER = re.compile(
-    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)[ \t]+"
+    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$))"
 )
 _NUMBER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>\d+[a-z]?)\.)[ \t]+",

@@ -1327,6 +1327,40 @@ def test_expected_dotted_label_may_begin_with_citation_like_text(source: str):
     ]
 
 
+def test_dotted_subsection_label_may_occupy_its_own_line():
+    source = "A.\namount_a = income * 2\nB.\namount_b = income * 3"
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert any(
+        branch.path == ("a",) and "amount_a = income * 2" in branch.text
+        for branch in formula_branches
+    )
+    assert any(
+        branch.path == ("b",) and "amount_b = income * 3" in branch.text
+        for branch in formula_branches
+    )
+
+
+def test_dotted_subsection_matcher_rejects_joined_citation():
+    source = "A.\nFirst rule.\nB.\nSecond rule.\nC.54A:4-6 controls."
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
 @pytest.mark.parametrize(
     ("source", "expected_path"),
     (
