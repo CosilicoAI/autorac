@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import bisect
 import contextlib
+import heapq
 import math
 import re
 import textwrap
@@ -187,6 +188,10 @@ _PARAGRAPH_MARKER = re.compile(
 )
 _DOTTED_SUBSECTION_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$))"
+)
+_JOINED_DOTTED_BOUNDARY_MARKER = re.compile(
+    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)"
+    r"(?=(?:\d+[A-Z]?(?::|\.\d)|(?i:e)\.[ \t]))"
 )
 _NUMBER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>\d+[a-z]?)\.)[ \t]+",
@@ -1235,7 +1240,7 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
     branches: list[SourceStructureBranch] = []
     paragraph_segments: list[tuple[tuple[str, ...], int, int, str]] = []
     dotted_matches = _qualified_dotted_subsection_matches(source_text)
-    dotted_candidates = tuple(_DOTTED_SUBSECTION_MARKER.finditer(source_text))
+    dotted_candidates = _dotted_subsection_boundary_matches(source_text)
     outer_segments = [
         (
             match,
@@ -1458,6 +1463,18 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
         if len(sequence) >= 2:
             return tuple(sequence)
     return ()
+
+
+def _dotted_subsection_boundary_matches(source_text: str) -> tuple[re.Match[str], ...]:
+    """Return structural and joined rejected markers as ownership boundaries."""
+
+    return tuple(
+        heapq.merge(
+            _DOTTED_SUBSECTION_MARKER.finditer(source_text),
+            _JOINED_DOTTED_BOUNDARY_MARKER.finditer(source_text),
+            key=lambda match: match.start(),
+        )
+    )
 
 
 def _dotted_marker_starts_citation(source_text: str, match: re.Match[str]) -> bool:
