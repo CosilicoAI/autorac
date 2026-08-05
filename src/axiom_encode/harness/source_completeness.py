@@ -8990,8 +8990,11 @@ def _source_exception_effect_requirement(text: str) -> str:
         flags=re.IGNORECASE,
     ):
         return "zero"
-    if _notwithstanding_preserves_positive_obligation(collapsed):
-        return "enable"
+    notwithstanding_requirement = _notwithstanding_exemption_effect_requirement(
+        collapsed
+    )
+    if notwithstanding_requirement is not None:
+        return notwithstanding_requirement
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
     condition = next(
@@ -9084,20 +9087,35 @@ def _source_exception_effect_requirement(text: str) -> str:
     return "change"
 
 
-def _notwithstanding_preserves_positive_obligation(text: str) -> bool:
-    """Recognize an affirmative duty preserved despite an exemption."""
+def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
+    """Classify a duty stated after a notwithstanding exemption."""
 
-    return (
-        re.search(
-            r"\bnotwithstanding\b[^.;]{0,320}\b(?:exempt|excluded|"
-            r"does\s+not\s+apply|shall\s+not\s+apply)\b[^.;]{0,320},"
-            r"[^.;]{0,240}\b(?:shall|must|is\s+required\s+to|"
-            r"are\s+required\s+to)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        is not None
+    match = re.search(
+        r"\bnotwithstanding\b"
+        r"(?P<condition>[^.;]{0,640}?\b(?:exempt(?:ed|ion|ions)?|excluded|"
+        r"does\s+not\s+apply|shall\s+not\s+apply)\b[^.;]{0,320}?),"
+        r"\s*(?P<effect>[^.;]{0,320})",
+        text,
+        flags=re.IGNORECASE,
     )
+    if match is None:
+        return None
+    effect = match.group("effect")
+    if re.search(
+        r"\b(?:shall|must)\s+(?:not\b|be\s+(?:barred|disqualified|"
+        r"excluded|ineligible|prohibited|unqualified)\b)|"
+        r"\bno\b[^.;]{0,80}\b(?:shall|must)\b",
+        effect,
+        flags=re.IGNORECASE,
+    ):
+        return "exclude"
+    if re.search(
+        r"\b(?:shall|must|is\s+required\s+to|are\s+required\s+to)\b",
+        effect,
+        flags=re.IGNORECASE,
+    ):
+        return "enable"
+    return None
 
 
 def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:

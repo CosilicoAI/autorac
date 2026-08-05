@@ -11268,6 +11268,48 @@ from the requirement under paragraph (1), each qualified agency shall certify.
     )
 
 
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "the filing exemption applies",
+        "qualified agencies are exempted from filing",
+    ],
+)
+def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
+    condition: str,
+):
+    source = (
+        f"(1) Notwithstanding that {condition}, each qualified agency shall certify."
+    )
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Notwithstanding the filing exemption, each agency shall not "
+            "be eligible."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, no agency shall be "
+            "eligible."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, each agency must be "
+            "ineligible."
+        ),
+    ],
+)
+def test_notwithstanding_exemption_does_not_invert_negative_duty(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "exclude"
+    )
+
+
 def test_notwithstanding_exemption_accepts_enabling_companion_pair():
     source = """\
 (1) Notwithstanding that qualified agencies are exempt from the filing requirement,
@@ -11292,6 +11334,48 @@ each qualified agency shall certify.
     result = _analyze(content, source, test_cases=cases)
 
     assert not result.issues
+
+
+def test_notwithstanding_exemption_accepts_blocking_companion_pair():
+    source = """\
+(1) Notwithstanding the filing exemption, an exempt agency shall not be eligible.
+"""
+    correct = _exception_control_content(
+        "if filing_exemption: false else: true",
+    )
+    inverted = _exception_control_content(
+        "if filing_exemption: true else: false",
+    )
+    correct_cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"filing_exemption": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "exempt agency",
+            "input": {"filing_exemption": True},
+            "output": {"result": False},
+        },
+    ]
+    inverted_cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"filing_exemption": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "exempt agency",
+            "input": {"filing_exemption": True},
+            "output": {"result": True},
+        },
+    ]
+
+    correct_result = _analyze(correct, source, test_cases=correct_cases)
+    inverted_result = _analyze(inverted, source, test_cases=inverted_cases)
+
+    assert not correct_result.issues
+    assert _has_issue(inverted_result, "exception", "test")
 
 
 def test_preposed_german_negative_condition_enables_positive_result():
