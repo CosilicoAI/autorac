@@ -323,7 +323,7 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"(?:des|der|von)|"
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
-    r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
+    r"twice|half\s+of|"
     r"amount\s+of\s+(?:the\s+)?excess|"
     r"\d+(?:[.,]\d+)?\s+times\b|"
     r"percentage\s+of|in\s+excess\s+of|"
@@ -357,18 +357,33 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     r")\s*:\s*$",
     flags=re.IGNORECASE,
 )
+_FORMULA_RESULT_SUBJECT = (
+    r"(?:credit|amount|tax|rate|percentage|percent|value|result|liability|"
+    r"deduction|income|benefit|payment|refund|overpayment|allowance|limit|"
+    r"threshold|base|balance|total|factor)s?"
+)
+_FORMULA_RESULT_PREDICATE = (
+    r"(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
+    r"constitutes?)"
+)
 _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
     r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
-    r"(?<!before it is )\b(?:reduced|deducted|increased|decreased)\s+by\b|"
-    r"\b(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
-    r"constitutes?)\s+(?:the\s+)?(?:"
+    r"\b(?:sum|product)\s+of\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
+    r"\bdifference\s+between\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
+    rf"\b{_FORMULA_RESULT_SUBJECT}\b"
+    r"(?![^.;:\n]{0,80}\bbefore\s+it\s+is\b)[^.;:\n]{0,80}"
+    r"\b(?:reduced|deducted|increased|decreased)\s+by\b|"
+    rf"\b{_FORMULA_RESULT_SUBJECT}\b[^.;:\n]{{0,80}}"
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
     r"min|max|minimum|maximum|least|greatest|lesser|greater|lower|higher|"
     r"lowest|highest|smallest|largest|smaller|larger|sum|total|average|mean|"
     r"median|ratio|quotient|difference|product|remainder|percentage|percent)\s+"
     r"(?:amount\s+)?(?:of|between)\b|"
-    r"\b(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
-    r"constitutes?)\s+(?:the\s+)?(?:"
+    rf"\b{_FORMULA_RESULT_SUBJECT}\b[^.;:\n]{{0,80}}"
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
     r"addition\s+of\b[^.;:\n]{1,120}\band\b|"
     r"(?:subtraction|deduction)\s+of\b[^.;:\n]{1,120}\bfrom\b|"
     r"(?:reduction|increase|decrease|division|multiplication)\s+of\b"

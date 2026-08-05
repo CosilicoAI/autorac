@@ -2072,6 +2072,15 @@ B. End.
         "A. The responsible agency is the Division of Revenue.\nB. End.",
         "A. The amendment is the addition of a dependent category.\nB. End.",
         "A. The change constitutes the increase of available benefits.\nB. End.",
+        "A. The amendment is the addition of a dependent category and shall "
+        "apply in 2026.\nB. End.",
+        "A. The responsible agency is the Division of Revenue and is represented "
+        "by counsel.\nB. End.",
+        "A. The responsible agency is the Division of Revenue by designation.\nB. End.",
+        "A. The change constitutes the increase of available benefits by the "
+        "department.\nB. End.",
+        "A. The revision is the reduction of paperwork by the agency.\nB. End.",
+        "A. The organization is the product of a merger.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
