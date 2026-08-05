@@ -1351,6 +1351,21 @@ def test_rejected_dotted_candidates_are_scanned_with_bounded_runtime():
     assert elapsed < 1.5
 
 
+def test_accepted_nested_markers_are_closed_with_bounded_runtime():
+    source = (
+        "A. Start.\n"
+        + "".join(f"({index}) Row {index}.\n" for index in range(1, 20_001))
+        + "B. End."
+    )
+
+    started = time.perf_counter()
+    branches = recognize_source_structure(source)
+    elapsed = time.perf_counter() - started
+
+    assert len(branches) == 20_002
+    assert elapsed < 1.5
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -1522,25 +1537,25 @@ def test_parenthesized_letters_nest_under_active_numeric_paragraph():
 
 def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
     source = """\
-A. There shall be a child care credit. The credit shall be calculated using the following percentages:
+A. There shall be a credit from the tax imposed by this Part for child care expenses for which a resident individual is eligible pursuant to the federal income tax credit provided by Internal Revenue Code Section 21 for the same taxable year. The credit shall be calculated using the following percentages :
 
-(1)(a) If income is not more than twenty-five thousand dollars, the credit shall be based on the unreduced federal credit and equal the following amounts:
+(1)(a) If the resident individual's federal adjusted gross income is equal to or less than twenty-five thousand dollars, the credit shall be calculated based on the federal tax credit before it is reduced by the amount of the individual's federal income tax and be equal to the following amounts for the following tax years:
 
-(i) For tax year 2006, twenty-five percent of the unreduced federal credit.
+(i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
 
-(ii) For tax years after 2006, fifty percent of the unreduced federal credit.
+(ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
 
-(b) The credit is allowed whether or not the federal credit was claimed.
+(b) For the individuals provided for by this Paragraph, the Louisiana credit shall be allowed without regard to whether they claimed such federal credit.
 
-(2) If income is not more than thirty-five thousand dollars, thirty percent of the claimed federal credit applies.
+(2) If the resident individual's federal adjusted gross income is greater than twenty-five thousand dollars and less than or equal to thirty-five thousand dollars, the credit shall be equal to thirty percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
 
-(3) If income is not more than sixty thousand dollars, ten percent of the claimed federal credit applies.
+(3) If the resident individual's federal adjusted gross income is greater than thirty-five thousand and less than or equal to sixty thousand dollars, the credit shall be equal to ten percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
 
-(4) Otherwise, the credit is the lesser of twenty-five dollars or ten percent of the claimed federal credit.
+(4) If the resident individual's federal adjusted gross income is greater than sixty thousand dollars, the credit shall be equal to the lesser of twenty-five dollars or ten percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
 
-B.(1) Excess low-income credit is refunded.
+B.(1) If the credit against Louisiana income tax for resident individuals whose federal adjusted gross income is equal to or less than twenty-five thousand dollars exceeds the amount of such individual's tax liability for the taxable year, then such excess tax credit shall constitute an overpayment, as defined in R.S. 47:1621(A), and the secretary shall make a refund of such overpayment from the current collections of the taxes imposed under this Part. The right to a refund of any such overpayment shall not be subject to the requirements of R.S. 47:1621(B).
 
-(2) Other excess credit may be carried forward for five years.
+(2) If the credit against Louisiana income tax for resident individuals whose federal adjusted gross income is greater than twenty-five thousand dollars exceeds the amount of such individual's tax liability for the taxable period, then such excess tax credit may be carried forward as a credit against any subsequent tax liability of such individual imposed by this Part for a period not exceeding five years.
 """
 
     branches = recognize_source_structure(source)
@@ -1565,6 +1580,140 @@ B.(1) Excess low-income credit is refunded.
     assert "(ii)" not in by_path[("a", "1", "a", "i")].text
     assert "fifty percent" in by_path[("a", "1", "a", "ii")].text
 
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert [branch.path for branch in formula_branches] == [
+        ("a", "1", "a", "i"),
+        ("a", "1", "a", "ii"),
+        ("a", "2"),
+        ("a", "3"),
+        ("a", "4"),
+    ]
+    assert all(not branch.text.rstrip().endswith(":") for branch in formula_branches)
+
+    principal_suffixes = (
+        "(A)",
+        "(A)(1)",
+        "(A)(1)(a)",
+        "(A)(1)(b)",
+        "(A)(2)",
+        "(A)(3)",
+        "(A)(4)",
+        "(B)",
+        "(B)(1)",
+        "(B)(2)",
+    )
+    content = yaml.safe_dump(
+        {
+            "format": "rulespec/v1",
+            "module": {
+                "source_verification": {
+                    "corpus_citation_path": "us-la/statute/47:297.4"
+                }
+            },
+            "rules": [
+                *(
+                    {
+                        "name": f"louisiana_child_care_credit_output_{index}",
+                        "kind": "derived",
+                        "source": f"us-la/statute/47:297.4{suffix}",
+                        "versions": [
+                            {
+                                "effective_from": "2006-01-01",
+                                "formula": (
+                                    "low_income_credit_rate * federal_credit"
+                                    if suffix == "(A)(1)(a)"
+                                    else "1"
+                                ),
+                            }
+                        ],
+                    }
+                    for index, suffix in enumerate(principal_suffixes)
+                ),
+                {
+                    "name": "low_income_credit_rate",
+                    "kind": "parameter",
+                    "source": "us-la/statute/47:297.4(A)(1)(a)(i)-(ii)",
+                    "metadata": {
+                        "proof": {
+                            "atoms": [
+                                {
+                                    "path": "versions[0].formula",
+                                    "kind": "parameter",
+                                    "source": {
+                                        "corpus_citation_path": (
+                                            "us-la/statute/47:297.4"
+                                        ),
+                                        "excerpt": (
+                                            "twenty-five percent of the unreduced "
+                                            "federal credit"
+                                        ),
+                                    },
+                                },
+                                {
+                                    "path": "versions[1].formula",
+                                    "kind": "parameter",
+                                    "source": {
+                                        "corpus_citation_path": (
+                                            "us-la/statute/47:297.4"
+                                        ),
+                                        "excerpt": (
+                                            "fifty percent of the unreduced federal "
+                                            "credit"
+                                        ),
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                    "versions": [
+                        {"effective_from": "2006-01-01", "formula": "0.25"},
+                        {"effective_from": "2007-01-01", "formula": "0.50"},
+                    ],
+                },
+            ],
+        }
+    )
+    analysis = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not _has_issue(analysis, "formula-output")
+
+    unbound_payload = yaml.safe_load(content)
+    parent_rule = next(
+        rule
+        for rule in unbound_payload["rules"]
+        if rule.get("source") == "us-la/statute/47:297.4(A)(1)(a)"
+    )
+    parent_rule["versions"][0]["formula"] = "federal_credit"
+    unbound = analyze_complete_source_unit(
+        yaml.safe_dump(unbound_payload),
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert _has_issue(unbound, "formula-output", "(i)")
+    assert _has_issue(unbound, "formula-output", "(ii)")
+
 
 def test_parenthesized_i_without_ii_remains_an_alpha_sibling():
     source = "A. Outer.\n(1)(a) First.\n(i) Ninth alpha.\n(j) Tenth alpha.\nB. End."
@@ -1583,6 +1732,63 @@ def test_parenthesized_prose_is_not_an_outline_marker():
 
     assert [branch.path for branch in branches] == [("a",), ("b",)]
     assert "(note) explanatory prose" in branches[0].text
+    assert (
+        completeness_module._strip_source_clause_marker("(note) amount = income * 2")
+        == "(note) amount = income * 2"
+    )
+
+
+def test_compound_terminal_roman_marker_preserves_following_roman_siblings():
+    source = """\
+A.
+(1)(a)(i) First.
+(ii) Second.
+(iii) Third.
+(b) Fourth.
+B. End.
+"""
+
+    paths = [branch.path for branch in recognize_source_structure(source)]
+
+    assert ("a", "1", "a", "i") in paths
+    assert ("a", "1", "a", "ii") in paths
+    assert ("a", "1", "a", "iii") in paths
+    assert ("a", "1", "ii") not in paths
+    assert ("a", "1", "iii") not in paths
+
+
+def test_long_valid_roman_outline_labels_are_preserved():
+    source = "A.\n(1)(a)(xviii) Eighteenth.\n(xix) Nineteenth.\nB. End."
+
+    paths = {branch.path for branch in recognize_source_structure(source)}
+
+    assert ("a", "1", "a", "xviii") in paths
+    assert ("a", "1", "a", "xix") in paths
+
+
+def test_legacy_children_belong_only_to_most_specific_outline_segment():
+    source = """\
+A.
+(1)(a) Parent.
+Satz 1: amount = income * 2.
+1. Number.
+a) Letter.
+(i) First.
+(ii) Second.
+(b) Next.
+(2) End.
+B. Done.
+"""
+
+    branches = recognize_source_structure(source)
+    paths = [branch.path for branch in branches]
+
+    assert paths.count(("a", "1", "a", "satz-1")) == 1
+    assert paths.count(("a", "1", "a", "1")) == 1
+    assert paths.count(("a", "1", "a", "1", "a")) == 1
+    assert ("a", "1", "satz-1") not in paths
+    assert ("a", "1", "1") not in paths
+    assert ("a", "1", "1", "a") not in paths
 
 
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():

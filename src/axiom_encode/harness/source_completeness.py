@@ -12,6 +12,7 @@ import ast
 import bisect
 import contextlib
 import heapq
+import itertools
 import math
 import re
 import textwrap
@@ -213,7 +214,7 @@ _LETTER_MARKER = re.compile(
 )
 _PARENTHESIZED_OUTLINE_MARKER = re.compile(
     r"(?m)^[ \t]*(?:[A-Z]\.)?"
-    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,4})\))+)(?=\s|bis\b)",
+    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _GLUED_SENTENCE_MARKER = re.compile(
@@ -328,6 +329,22 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"percentage\s+of|in\s+excess\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
+    flags=re.IGNORECASE,
+)
+_ENGLISH_NUMBER_WORD = (
+    r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+    r"thousand|million|billion|trillion|and)"
+)
+_ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
+    rf"\b{_ENGLISH_NUMBER_WORD}(?:[-\s]+{_ENGLISH_NUMBER_WORD})*"
+    r"\s+percent\s+of\b",
+    flags=re.IGNORECASE,
+)
+_VALID_ROMAN_OUTLINE_LABEL = re.compile(
+    r"(?=[ivxlcdm]+\Z)m{0,3}(?:cm|cd|d?c{0,3})"
+    r"(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})",
     flags=re.IGNORECASE,
 )
 _FORMULA_APPLICABILITY_YEAR = r"(?:18|19|20)\d{2}"
@@ -1320,16 +1337,10 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                     (outer_path, outer_start, outer_end, outer_text)
                 )
                 continue
-            for marker in nested_markers:
-                end = next(
-                    (
-                        candidate.start
-                        for candidate in nested_markers
-                        if candidate.start > marker.start
-                        and len(candidate.path) <= len(marker.path)
-                    ),
-                    outer_end,
-                )
+            for marker, end in _nested_outline_marker_spans(
+                nested_markers,
+                outer_end=outer_end,
+            ):
                 text = source_text[marker.start : end].strip()
                 if _is_editorial_omission(text):
                     continue
@@ -1368,9 +1379,24 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
     if not paragraph_segments:
         paragraph_segments = [((), 0, len(source_text), source_text)]
 
+    legacy_marker_offsets = {
+        *(match.start() for match in _NUMBER_MARKER.finditer(source_text)),
+        *(match.start() for match in _LETTER_MARKER.finditer(source_text)),
+        *(match.start() for match in _GLUED_SENTENCE_MARKER.finditer(source_text)),
+        *(match.start() for match in _EXPLICIT_SENTENCE_MARKER.finditer(source_text)),
+    }
+    owner_paths = _most_specific_segment_paths_at_offsets(
+        paragraph_segments,
+        legacy_marker_offsets,
+    )
+
     for paragraph_path, paragraph_start, paragraph_end, _ in paragraph_segments:
         paragraph_text = source_text[paragraph_start:paragraph_end]
-        number_matches = list(_NUMBER_MARKER.finditer(paragraph_text))
+        number_matches = [
+            match
+            for match in _NUMBER_MARKER.finditer(paragraph_text)
+            if owner_paths.get(paragraph_start + match.start()) == paragraph_path
+        ]
         number_segments: list[tuple[tuple[str, ...], int, int]] = []
         for index, match in enumerate(number_matches):
             start = paragraph_start + match.start()
@@ -1396,7 +1422,11 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
         ]
         for container_path, container_start, container_end in letter_containers:
             container_text = source_text[container_start:container_end]
-            letter_matches = list(_LETTER_MARKER.finditer(container_text))
+            letter_matches = [
+                match
+                for match in _LETTER_MARKER.finditer(container_text)
+                if owner_paths.get(container_start + match.start()) == paragraph_path
+            ]
             for index, match in enumerate(letter_matches):
                 start = container_start + match.start()
                 end = (
@@ -1415,13 +1445,17 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                     )
                 )
 
-        sentence_matches = sorted(
-            (
-                *_GLUED_SENTENCE_MARKER.finditer(paragraph_text),
-                *_EXPLICIT_SENTENCE_MARKER.finditer(paragraph_text),
-            ),
-            key=lambda item: item.start(),
-        )
+        sentence_matches = [
+            match
+            for match in sorted(
+                (
+                    *_GLUED_SENTENCE_MARKER.finditer(paragraph_text),
+                    *_EXPLICIT_SENTENCE_MARKER.finditer(paragraph_text),
+                ),
+                key=lambda item: item.start(),
+            )
+            if owner_paths.get(paragraph_start + match.start()) == paragraph_path
+        ]
         for index, match in enumerate(sentence_matches):
             start = paragraph_start + match.start()
             end = (
@@ -1447,6 +1481,31 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
             key=lambda branch: (branch.start, len(branch.path), branch.kind),
         )
     )
+
+
+def _most_specific_segment_paths_at_offsets(
+    segments: Sequence[tuple[tuple[str, ...], int, int, str]],
+    offsets: Iterable[int],
+) -> dict[int, tuple[str, ...]]:
+    """Assign legacy markers to their deepest active structural segment."""
+
+    ordered_segments = sorted(segments, key=lambda item: item[1])
+    active: list[tuple[int, int, int, tuple[str, ...]]] = []
+    owners: dict[int, tuple[str, ...]] = {}
+    segment_index = 0
+    for offset in sorted(set(offsets)):
+        while (
+            segment_index < len(ordered_segments)
+            and ordered_segments[segment_index][1] <= offset
+        ):
+            path, start, end, _text = ordered_segments[segment_index]
+            heapq.heappush(active, (-len(path), -start, end, path))
+            segment_index += 1
+        while active and active[0][2] <= offset:
+            heapq.heappop(active)
+        if active:
+            owners[offset] = active[0][3]
+    return owners
 
 
 def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str], ...]:
@@ -1493,12 +1552,13 @@ def _nested_parenthesized_outline_markers(
             label.lower()
             for label in re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker"))
         )
-        if not labels:
+        if not labels or not all(
+            _is_parenthesized_outline_label(label) for label in labels
+        ):
             continue
         marker_start = match.start("marker")
         if len(labels) > 1:
             active = []
-            active_roman = False
             for label in labels:
                 active.append(label)
                 markers.append(
@@ -1509,6 +1569,7 @@ def _nested_parenthesized_outline_markers(
                         f"({label})",
                     )
                 )
+            active_roman = len(active) >= 3 and _is_roman_outline_label(active[-1])
             continue
 
         label = labels[0]
@@ -1556,8 +1617,36 @@ def _nested_parenthesized_outline_markers(
     return tuple(markers)
 
 
+def _nested_outline_marker_spans(
+    markers: Sequence[_OutlineMarker],
+    *,
+    outer_end: int,
+) -> tuple[tuple[_OutlineMarker, int], ...]:
+    """Close nested marker spans in one forward stack pass."""
+
+    ends: dict[_OutlineMarker, int] = {}
+    active: list[_OutlineMarker] = []
+    for start, grouped in itertools.groupby(markers, key=lambda marker: marker.start):
+        group = tuple(grouped)
+        shallowest_depth = min(len(marker.path) for marker in group)
+        while active and len(active[-1].path) >= shallowest_depth:
+            ends[active.pop()] = start
+        active.extend(group)
+    while active:
+        ends[active.pop()] = outer_end
+    return tuple((marker, ends[marker]) for marker in markers)
+
+
+def _is_parenthesized_outline_label(label: str) -> bool:
+    return bool(
+        re.fullmatch(r"\d+[a-z]?", label, flags=re.IGNORECASE)
+        or re.fullmatch(r"[a-z]", label, flags=re.IGNORECASE)
+        or _is_roman_outline_label(label)
+    )
+
+
 def _is_roman_outline_label(label: str) -> bool:
-    return bool(re.fullmatch(r"[ivxlcdm]+", label, flags=re.IGNORECASE))
+    return bool(_VALID_ROMAN_OUTLINE_LABEL.fullmatch(label))
 
 
 def _dotted_subsection_boundary_matches(source_text: str) -> tuple[re.Match[str], ...]:
@@ -1603,6 +1692,7 @@ def source_states_explicit_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
     )
 
@@ -1816,6 +1906,11 @@ def _analyze_rulespec_payload(
         branches=branches,
         corpus_citation_path=corpus_citation_path,
     )
+    named_rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in payload.get("rules", [])
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
     deferred_paths, imprecise_deferrals = _deferred_coverage(
         payload,
         corpus_citation_path=corpus_citation_path,
@@ -1872,6 +1967,7 @@ def _analyze_rulespec_payload(
         formula_branches,
         principal_rules=principal_rules,
         principal_rule_paths=principal_rule_paths,
+        named_rules=named_rules,
         corpus_citation_path=corpus_citation_path,
     )
     source_has_computation = source_states_explicit_computation(source_text)
@@ -2078,6 +2174,7 @@ def _principal_formula_clause_rules(
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    named_rules: dict[str, dict[str, Any]],
     corpus_citation_path: str,
 ) -> dict[SourceStructureBranch, set[str]]:
     """Bind each computation clause to principal output evidence.
@@ -2096,13 +2193,25 @@ def _principal_formula_clause_rules(
     for clause in formula_branches:
         path_rules = set(_rules_covering_branch(clause, principal_rule_paths))
         if clause_count_by_path[clause.path] == 1:
-            clause_rules[clause] = path_rules
-            continue
+            if path_rules:
+                clause_rules[clause] = path_rules
+                continue
+        candidate_rules = path_rules or {
+            rule_name
+            for rule_name, paths in principal_rule_paths.items()
+            if any(
+                path
+                and len(path) < len(clause.path)
+                and clause.path[: len(path)] == path
+                for path in paths
+            )
+        }
+        uses_ancestor_binding = not path_rules
         clause_text = _normalized_formula_clause_text(clause.text)
         rounding_direction = _rounding_only_direction(clause.text)
         clause_rules[clause] = {
             rule_name
-            for rule_name in path_rules
+            for rule_name in candidate_rules
             if (
                 rounding_direction is not None
                 and _rule_implements_rounding(
@@ -2115,12 +2224,45 @@ def _principal_formula_clause_rules(
                 and excerpt_citation_path.strip("/").lower() == normalized_citation_path
                 and source_states_explicit_computation(excerpt)
                 and (excerpt_text in clause_text or clause_text in excerpt_text)
-                for excerpt_citation_path, excerpt in _rule_formula_source_excerpts(
-                    principal_rules[rule_name]
+                for excerpt_citation_path, excerpt in (
+                    _formula_dependency_source_excerpts(
+                        principal_rules[rule_name],
+                        named_rules=named_rules,
+                    )
+                    if uses_ancestor_binding
+                    else _rule_formula_source_excerpts(principal_rules[rule_name])
                 )
             )
         }
     return clause_rules
+
+
+def _formula_dependency_source_excerpts(
+    rule: dict[str, Any],
+    *,
+    named_rules: dict[str, dict[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    """Include direct parameter evidence consumed by a principal formula."""
+
+    excerpts = list(_rule_formula_source_excerpts(rule))
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return tuple(excerpts)
+    dependency_names = {
+        identifier
+        for version in versions
+        if isinstance(version, dict) and isinstance(version.get("formula"), str)
+        for identifier in _FORMULA_IDENTIFIER.findall(version["formula"])
+    }
+    for dependency_name in dependency_names:
+        dependency = named_rules.get(dependency_name)
+        if (
+            dependency is None
+            or str(dependency.get("kind") or "").lower() != "parameter"
+        ):
+            continue
+        excerpts.extend(_rule_formula_source_excerpts(dependency))
+    return tuple(excerpts)
 
 
 def _normalized_formula_clause_text(text: str) -> str:
@@ -2133,10 +2275,19 @@ def _normalized_formula_clause_text(text: str) -> str:
 def _strip_source_clause_marker(text: str) -> str:
     """Remove a leading paragraph/list/Satz marker, including glued statutes."""
 
+    compound = re.match(
+        r"^\s*(?:(?-i:[A-Z])\.)?"
+        r"(?P<chain>(?:\([A-Za-z0-9]+\))+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if compound is not None:
+        labels = re.findall(r"\(([A-Za-z0-9]+)\)", compound.group("chain"))
+        if labels and all(_is_parenthesized_outline_label(label) for label in labels):
+            return text[compound.end() :].lstrip()
     return re.sub(
         r"^\s*(?:"
-        r"(?-i:[A-Z])\.(?:\((?:\d+[a-z]?|[a-z]{1,4})\))*|"
-        r"(?:\((?:\d+[a-z]?|[a-z]{1,4})\))+|"
+        r"(?-i:[A-Z])\.|"
         r"\d+[a-z]?\.|"
         r"[a-z]\)|"
         r"satz\s+\d+[a-z]?\s*:?\s*|"
@@ -4685,6 +4836,14 @@ def _source_formula_branches(
                 0,
                 len(source_text),
             )
+        if _formula_clause_is_structural_chapeau(
+            clause,
+            end=end,
+            owner=owner,
+            branches=branches,
+            source_text=source_text,
+        ):
+            continue
         obligation = SourceStructureBranch(
             owner.path,
             "formula-clause",
@@ -4701,6 +4860,27 @@ def _source_formula_branches(
             continue
         obligations.append(obligation)
     return tuple(obligations)
+
+
+def _formula_clause_is_structural_chapeau(
+    clause: str,
+    *,
+    end: int,
+    owner: SourceStructureBranch,
+    branches: Sequence[SourceStructureBranch],
+    source_text: str,
+) -> bool:
+    """Let a colon-ended computation heading delegate to its child rows."""
+
+    if not clause.rstrip().endswith(":"):
+        return False
+    return any(
+        len(branch.path) > len(owner.path)
+        and branch.path[: len(owner.path)] == owner.path
+        and branch.start >= end
+        and not source_text[end : branch.start].strip()
+        for branch in branches
+    )
 
 
 def _source_control_branches(
