@@ -1128,8 +1128,10 @@ _LOUISIANA_SESSION_LAW_CITATION = re.compile(
     r"Ex\.?\s*Sess\.?\s*,?\s*"
     r")?"
     r"No\.?\s*\d+(?:-\d+)?\b"
-    r"(?:\s*,?\s*§{1,2}\s*\d+"
-    r"(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*)?",
+    r"(?:\s*,?\s*(?:"
+    r"§§\s*\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*"
+    r"|§\s*\d+"
+    r"))?",
     flags=re.IGNORECASE,
 )
 _STRUCTURAL_REFERENCE = re.compile(

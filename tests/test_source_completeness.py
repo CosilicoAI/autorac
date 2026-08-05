@@ -5643,6 +5643,20 @@ def test_louisiana_session_law_citation_filter_preserves_operative_value(
     assert [(item.value, item.raw) for item in inventory] == [(11.0, "11")]
 
 
+@pytest.mark.parametrize("connector", ("and", "through", "to", "-"))
+def test_louisiana_singular_section_citation_preserves_adjacent_amount(
+    connector: str,
+):
+    source = f"Under Acts 2024, No. 11, §2 {connector} 50 dollars shall be paid."
+
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(source),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(50.0, "50")]
+
+
 @pytest.mark.parametrize(
     "references",
     (
