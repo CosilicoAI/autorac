@@ -2286,8 +2286,11 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "source-bundle replacements cannot include dependent migrations" in command
     assert "Canonicalize signed replacement target before source bundle" in command
     assert "checkpoint_signed_changes()" in command
+    assert "unset AXIOM_ENCODE_APPLY_SIGNING_KEY" in command
+    assert ') > "$guard_json" 2> "$guard_stderr"' in command
     assert 'local guard_status="$?"' in command
-    assert 'jq . "$RUNNER_TEMP/checkpoint-guard-generated.json" >&2' in command
+    assert 'jq . "$guard_json" >&2' in command
+    assert 'checkpoint-guard-generated.stdout.log"' in command
     assert '"$workflow_python" "$backfill_helper" stage "$RULESPEC_CHECKOUT"' in (
         command
     )
@@ -2717,6 +2720,10 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     }
     preflight_guard_raw = json.dumps(preflight_guard_payload) + "\n"
     (tmp_path / "target-preflight-guard-generated.json").write_text(preflight_guard_raw)
+    checkpoint_stderr_raw = "checkpoint supervisor rejected the invocation\n"
+    (tmp_path / "checkpoint-guard-generated.stderr.log").write_text(
+        checkpoint_stderr_raw
+    )
     # A failed resolver can leave the shell redirection target empty. Failure
     # packaging must preserve that resolver failure without parsing partial evidence.
     (tmp_path / "repair-candidate.json").write_text("")
@@ -2758,6 +2765,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "generated/target/model/statutes/54a:4-7.test.yaml",
             "generated/target/model/target.repair.json",
             "guards/guard-generated.json",
+            "guards/checkpoint-guard-generated.stderr.log",
             "guards/target-preflight-guard-generated.json",
             "metadata.json",
         }
@@ -2767,6 +2775,9 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         )
         repair = bundle.extractfile("./generated/target/model/target.repair.json")
         guard = bundle.extractfile("./guards/guard-generated.json")
+        checkpoint_stderr = bundle.extractfile(
+            "./guards/checkpoint-guard-generated.stderr.log"
+        )
         preflight_guard = bundle.extractfile(
             "./guards/target-preflight-guard-generated.json"
         )
@@ -2774,6 +2785,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
         assert target is not None
         assert repair is not None
         assert guard is not None
+        assert checkpoint_stderr is not None
         assert preflight_guard is not None
         assert metadata_file is not None
         assert target.read() == b"format: rulespec/v1\n"
@@ -2783,6 +2795,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
             "passed": False,
             "issues": ["waiver transition requires protected base"],
         }
+        assert checkpoint_stderr.read() == checkpoint_stderr_raw.encode()
         assert json.loads(preflight_guard.read()) == preflight_guard_payload
         metadata = json.loads(metadata_file.read())
     assert metadata["schema"] == "axiom-encode/failed-reencode-diagnostics/v1"
@@ -2792,6 +2805,7 @@ def test_targeted_signed_reencode_packages_bounded_failure_diagnostics(
     guards_by_path = {item["path"]: item for item in metadata["guards"]}
     assert set(guards_by_path) == {
         "guards/guard-generated.json",
+        "guards/checkpoint-guard-generated.stderr.log",
         "guards/target-preflight-guard-generated.json",
     }
     preflight_inventory = guards_by_path["guards/target-preflight-guard-generated.json"]
@@ -2974,6 +2988,62 @@ def test_targeted_signed_reencode_rejects_unsafe_guard_diagnostics(
     assert not (tmp_path / "targeted-reencode-failure.tar").exists()
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("symlink", "Could not safely open"),
+        ("oversize", "safety limit"),
+    ],
+)
+def test_targeted_signed_reencode_rejects_unsafe_raw_guard_diagnostics(
+    tmp_path: Path,
+    mutation: str,
+    expected_error: str,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Package failed re-encode diagnostics"
+    )
+    command = step["run"].replace(
+        "/opt/axiom-verification/python/bin/python",
+        sys.executable,
+    )
+    (tmp_path / "generated").mkdir()
+    guard_log = tmp_path / "checkpoint-guard-generated.stderr.log"
+    if mutation == "symlink":
+        outside = tmp_path / "outside.log"
+        outside.write_text("outside diagnostic\n")
+        guard_log.symlink_to(outside)
+    else:
+        guard_log.write_bytes(b"x" * (1024 * 1024 + 1))
+
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "CITATION": "us/statute/42/1437c-1",
+            "CORPUS_REF": "corpus-ref",
+            "COUNTRY": "us",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "1234",
+            "GITHUB_SHA": "encoder-ref",
+            "RULES_ENGINE_REF": "rules-engine-ref",
+            "RULESPEC_REF": "rulespec-ref",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not (tmp_path / "targeted-reencode-failure.tar").exists()
+
+
 def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
     tmp_path: Path,
 ) -> None:
@@ -2992,9 +3062,14 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
     guard_stub = tmp_path / "guard-stub"
     guard_stub.write_text(
         "#!/bin/sh\n"
+        'if [ -n "${AXIOM_ENCODE_APPLY_SIGNING_KEY:-}" ]; then\n'
+        "  echo 'signing key reached direct supervisor invocation' >&2\n"
+        "  exit 91\n"
+        "fi\n"
         "printf '%s\\n' "
         '\'{"repo":"/runner/rulespec-us","passed":false,'
         '"issues":["checkpoint manifest mismatch"]}\'\n'
+        "echo 'bounded checkpoint failure detail' >&2\n"
         "exit 7\n"
     )
     guard_stub.chmod(0o700)
@@ -3012,6 +3087,7 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
         ["bash", "-c", script],
         env={
             **os.environ,
+            "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
             "GITHUB_WORKSPACE": str(tmp_path),
             "GUARD_STUB": str(guard_stub),
             "RULESPEC_CHECKOUT": str(tmp_path / "rulespec-us"),
@@ -3023,6 +3099,10 @@ def test_targeted_signed_reencode_preserves_checkpoint_guard_failure(
 
     assert completed.returncode == 7
     assert "checkpoint manifest mismatch" in completed.stderr
+    assert "bounded checkpoint failure detail" in completed.stderr
+    assert (
+        tmp_path / "checkpoint-guard-generated.stderr.log"
+    ).read_text() == "bounded checkpoint failure detail\n"
     assert json.loads((tmp_path / "checkpoint-guard-generated.json").read_text()) == {
         "repo": "/runner/rulespec-us",
         "passed": False,
