@@ -1856,6 +1856,63 @@ B. End.
 
 
 @pytest.mark.parametrize(
+    "operation",
+    (
+        "computed by reducing the base by an amount equal to the following amounts",
+        "computed by deducting an amount set forth in the following table",
+        "computed by increasing the base by an amount equal to the following amounts",
+        "computed by decreasing the base by an amount equal to the following amounts",
+    ),
+)
+def test_computed_by_chapeau_cannot_delegate_to_allowlisted_suffix(operation: str):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) the fixed amount.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "program_name",
+    (
+        "higher education tax credit",
+        "product use tax credit",
+        "average-income tax credit",
+    ),
+)
+def test_incidental_operator_word_in_program_name_does_not_block_table_delegation(
+    program_name: str,
+):
+    source = f"""\
+A. The {program_name} shall be computed as follows:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize(
     "source",
     (
         "The agency shall report the amount and percent of claims approved.",

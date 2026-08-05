@@ -353,15 +353,9 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
-    r"\b(?:"
-    r"add(?:ed|ing)?|addition|summ?(?:ed|ing)?|total(?:ed|ing)?|"
-    r"subtract(?:ed|ing)?|subtraction|"
-    r"divid(?:e|ed|ing)|division|"
-    r"multipli(?:ed|es|ying)|multiplication|"
-    r"min|max|minimum|maximum|least|greatest|lesser|greater|"
-    r"lower|higher|lowest|highest|smallest|largest|smaller|larger|"
-    r"average|mean|median|ratio|quotient|difference|product|remainder"
-    r")\b",
+    r"\b(?:calculated|computed|determined)\s+by\b|"
+    r"\b(?:sum|total|average|mean|median|ratio|quotient|difference|product|"
+    r"remainder)\s+(?:of|between)\b",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
