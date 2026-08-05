@@ -310,12 +310,12 @@ _COMPUTATION_LANGUAGE = re.compile(
 _FORMULA_APPLICABILITY_PREFACE = re.compile(
     r"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
     r"beginning\b[^.;]{0,80}?\b(?:18|19|20)\d{2}\b"
-    r"(?:,\s*and\s+thereafter)?|"
-    r"(?:for|during)\b[^,.;]{0,80}?\b"
+    r"(?:,?\s+and\s+thereafter)?|"
+    r"(?:for|during)\b[^.;]{0,80}?\b"
     r"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\b"
-    r"[^,.;]{0,40}?\b(?:18|19|20)\d{2}\b|"
+    r"[^.;]{0,40}?\b(?:18|19|20)\d{2}\b|"
     r"(?:effective(?:\s+(?:on|from))?|starting|as\s+of|on\s+or\s+after)\b"
-    r"[^,.;]{0,80}?\b(?:18|19|20)\d{2}\b"
+    r"[^.;]{0,80}?\b(?:18|19|20)\d{2}\b"
     r")\s*,",
     flags=re.IGNORECASE,
 )

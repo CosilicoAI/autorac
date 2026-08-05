@@ -9457,6 +9457,60 @@ rules:
     assert _has_issue(pre_effective, "formula branch")
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Effective January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
+    ),
+)
+def test_common_formula_applicability_prefaces_are_not_coefficients(source):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: adjusted_amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: >-
+                {source}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: income * rate
+"""
+    case = {
+        "name": "effective formula",
+        "period": "2026",
+        "input": {"income": 100, "rate": 0.05},
+        "output": {"adjusted_amount": 5},
+    }
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[case],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+
+
 def test_temporal_formula_filter_keeps_substantive_multiplier_grounding():
     source = (
         "For tax year 2026, the amount is calculated by multiplying "
