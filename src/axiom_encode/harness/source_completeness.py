@@ -193,7 +193,11 @@ _LETTER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[a-z]{1,2})\))[ \t]+",
     flags=re.IGNORECASE,
 )
-_GLUED_SENTENCE_MARKER = re.compile(r"(?<![\w])(?P<label>[1-9]\d?)(?=[A-ZÄÖÜ](?!:))")
+_GLUED_SENTENCE_MARKER = re.compile(
+    r"(?<![\w])(?P<label>[1-9]\d?)"
+    r"(?!(?i:st|nd|rd|th)\b)"
+    r"(?=[A-ZÄÖÜ](?!:))"
+)
 _EXPLICIT_SENTENCE_MARKER = re.compile(
     r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
     r"(?P<label>[1-9]\d?)(?:[ \t]*:[ \t]*|[ \t]+)(?=[A-ZÄÖÜ])",
