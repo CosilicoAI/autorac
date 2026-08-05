@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import time
 from pathlib import Path
 
 import pytest
@@ -1309,6 +1310,45 @@ def test_ignorable_dotted_candidate_between_a_and_b_preserves_hierarchy(
         interposed
         not in next(branch for branch in branches if branch.path == ("a",)).text
     )
+
+
+def test_formula_after_ignored_dotted_candidate_remains_root_scoped():
+    source = "A. First rule.\nC. 54A:4-6 controls\namount = income * 2\nB. Second rule."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert any(
+        branch.path == () and "amount = income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+def test_ordered_dotted_labels_are_structural_without_semantic_guessing():
+    source = "A. Smith prepared the report.\nB. Jones approved it."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_rejected_dotted_candidates_are_scanned_with_bounded_runtime():
+    source = "A. prose\nQ. prose\n" * 40_000
+
+    started = time.perf_counter()
+    branches = recognize_source_structure(source)
+    elapsed = time.perf_counter() - started
+
+    assert branches == ()
+    assert elapsed < 1.5
 
 
 @pytest.mark.parametrize(

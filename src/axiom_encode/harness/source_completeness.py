@@ -1442,7 +1442,8 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
         if match.group("label") != "A":
             continue
         sequence = [match]
-        for candidate in candidates[start + 1 :]:
+        for candidate_index in range(start + 1, len(candidates)):
+            candidate = candidates[candidate_index]
             expected = chr(ord(sequence[-1].group("label")) + 1)
             if candidate.group("label") == expected:
                 if len(sequence) >= 2 and _dotted_marker_is_ignorable(
