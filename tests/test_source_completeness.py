@@ -9506,6 +9506,75 @@ rules:
     assert _has_issue(result, "formula branch")
 
 
+def test_temporal_formula_operand_remains_required_after_computation_cue():
+    source = (
+        "The amount is calculated by subtracting tax year 2020 from "
+        "the current tax year."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: base_tax_year
+    kind: parameter
+    dtype: Decimal
+    source: us-la/statute/47:294
+    versions:
+      - formula: 2020
+  - name: elapsed_tax_years
+    kind: derived
+    dtype: Decimal
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: >-
+                The amount is calculated by subtracting tax year 2020 from the
+                current tax year.
+    versions:
+      - formula: tax_year - base_tax_year
+"""
+    case = {
+        "name": "elapsed years from the statutory base year",
+        "period": "2026",
+        "input": {"tax_year": 2026},
+        "output": {"elapsed_tax_years": 6},
+    }
+
+    def analyze(candidate_content, candidate_case):
+        return analyze_complete_source_unit(
+            candidate_content,
+            source,
+            corpus_citation_path="us-la/statute/47:294",
+            test_cases=[candidate_case],
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            extract_numeric_grounding_occurrences=(
+                EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+            ),
+            extract_named_scalars=extract_named_scalar_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    correct = analyze(content, case)
+    wrong_content = content.replace(
+        "tax_year - base_tax_year",
+        "tax_year - unrelated_year",
+    )
+    wrong_case = yaml.safe_load(yaml.safe_dump(case))
+    wrong_case["input"]["unrelated_year"] = 2000
+    wrong_case["output"]["elapsed_tax_years"] = 26
+    wrong = analyze(wrong_content, wrong_case)
+
+    assert not correct.issues
+    assert _has_issue(wrong, "formula branch")
+
+
 def test_louisiana_line_wrapped_two_hundred_percent_formula_grounds_factor_two():
     source = """\
 (2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount

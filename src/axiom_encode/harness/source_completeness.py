@@ -5600,7 +5600,10 @@ def _formula_execution_matches_source_branch(
     computation_occurrences = tuple(
         occurrence
         for occurrence in source_occurrences
-        if not occurrence.has_temporal_context
+        if not _temporal_occurrence_is_formula_applicability_preface(
+            occurrence,
+            branch.text,
+        )
         and not any(
             _numeric_occurrences_are_equivalent(occurrence, boundary)
             for boundary in boundaries
@@ -5635,6 +5638,26 @@ def _formula_execution_matches_source_branch(
         )
         for source_occurrence in computation_occurrences
     )
+
+
+def _temporal_occurrence_is_formula_applicability_preface(
+    occurrence: NumericOccurrenceLike,
+    source_text: str,
+) -> bool:
+    """Separate leading temporal applicability from arithmetic operands."""
+
+    if not occurrence.has_temporal_context:
+        return False
+    computation_starts = [
+        match.start()
+        for pattern in (
+            _COMPUTATION_LANGUAGE,
+            _ARITHMETIC_EXPRESSION,
+            _WORDED_ARITHMETIC_EXPRESSION,
+        )
+        if (match := pattern.search(source_text)) is not None
+    ]
+    return bool(computation_starts) and occurrence.end <= min(computation_starts)
 
 
 def _formula_operation_kinds(text: str) -> set[str]:
