@@ -37,6 +37,10 @@ EN_NUMERIC_OCCURRENCE_EXTRACTOR = functools.partial(
     extract_typed_numeric_inventory_occurrences_from_text,
     profile="en-US",
 )
+EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR = functools.partial(
+    extract_typed_numeric_occurrences_from_text,
+    profile="en-US",
+)
 
 
 def _analyze(
@@ -5475,7 +5479,36 @@ penalty waived under the voluntary disclosure program.
     assert [
         completeness_module._source_exception_requires_paired_witness(branch.text)
         for branch in exception_branches
-    ] == [False, True]
+    ] == [True, True]
+    assert [
+        (occurrence.raw, occurrence.value)
+        for occurrence in EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+        if occurrence.is_word_number
+    ] == [("twenty-five\nthousand", 25000.0)]
+
+
+def test_pure_louisiana_notwithstanding_reference_is_not_toggleable():
+    source = (
+        "Notwithstanding the provisions of R.S. 47:1508, the reporting rule applies."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(source)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "if income exceeds 25000 dollars, the credit applies",
+        "when voluntary disclosure is false, oversight applies",
+        "subject to an income limit, the credit applies",
+    ),
+)
+def test_louisiana_notwithstanding_reference_preserves_runtime_condition(
+    tail: str,
+):
+    source = f"Notwithstanding R.S. 47:1508, {tail}."
+
+    assert completeness_module._source_exception_requires_paired_witness(source)
 
 
 def test_louisiana_cross_reference_does_not_require_synthetic_case_pair():
@@ -5540,12 +5573,33 @@ rules:
         corpus_citation_path="us-la/statute/47:295",
         test_cases=cases,
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
         extract_named_scalars=extract_named_scalar_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
 
     assert not _has_issue(result, "exception", "test")
     assert not _has_issue(result, "numeric-recall")
+
+    missing_threshold_pair = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=(cases[0], cases[2]),
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(missing_threshold_pair, "exception", "test")
+    assert any(
+        "exceeding twenty-five" in issue for issue in missing_threshold_pair.issues
+    )
 
 
 def test_en_us_state_code_citation_filter_preserves_real_unit_and_ratio_values():

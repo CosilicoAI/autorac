@@ -6582,6 +6582,28 @@ def _german_word_number_occurrences(
     return grounding, inventory
 
 
+def _english_word_number_occurrences(
+    cleaned: str,
+    *,
+    view: _NumericTextView,
+    collector: _LegacyNumericCollector,
+) -> list[NumericOccurrence]:
+    """Extract unambiguous compound English cardinal grounding candidates."""
+
+    return [
+        collector.occurrence(
+            view,
+            span,
+            value,
+            is_word_number=True,
+        )
+        for span, value in _iter_cardinal_word_number_matches(
+            cleaned,
+            compound_only=True,
+        )
+    ]
+
+
 def _scalar_recall_numeric_inventory(
     occurrences: Iterable[NumericOccurrence],
 ) -> tuple[NumericOccurrence, ...]:
@@ -6683,6 +6705,14 @@ def _tokenize_profiled_numeric_occurrences(
         )
         grounding_occurrences.extend(word_grounding)
         inventory_occurrences.extend(word_inventory)
+    elif profile in {"en-US", "en-GB"}:
+        grounding_occurrences.extend(
+            _english_word_number_occurrences(
+                cleaned,
+                view=view,
+                collector=collector,
+            )
+        )
 
     grounding_occurrences = list(
         _complete_typed_year_occurrences(collector, grounding_occurrences)
@@ -24550,9 +24580,14 @@ class ValidatorPipeline:
         artifact_numeric_values = tuple(
             value for _name, value in artifact_numeric_bindings
         )
+        numeric_profile = _numeric_profile_for_citation_path(corpus_citation_path)
         numeric_occurrence_extractor = functools.partial(
             extract_typed_numeric_inventory_occurrences_from_text,
-            profile=_numeric_profile_for_citation_path(corpus_citation_path),
+            profile=numeric_profile,
+        )
+        numeric_grounding_occurrence_extractor = functools.partial(
+            extract_typed_numeric_occurrences_from_text,
+            profile=numeric_profile,
         )
         completeness = analyze_complete_source_unit(
             content,
@@ -24560,6 +24595,9 @@ class ValidatorPipeline:
             corpus_citation_path=corpus_citation_path,
             test_cases=test_cases,
             extract_numeric_occurrences=numeric_occurrence_extractor,
+            extract_numeric_grounding_occurrences=(
+                numeric_grounding_occurrence_extractor
+            ),
             extract_named_scalars=extract_named_scalar_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
             artifact_numeric_values=artifact_numeric_values,
