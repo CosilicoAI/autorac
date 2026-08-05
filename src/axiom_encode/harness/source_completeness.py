@@ -357,38 +357,71 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     r")\s*:\s*$",
     flags=re.IGNORECASE,
 )
-_FORMULA_RESULT_SUBJECT = (
-    r"(?<!of )(?<!for )(?<!to )(?<!by )(?:credit|amount|tax|rate|"
-    r"percentage|percent|value|result|number|count|quantity|assessment|liability|"
-    r"deduction|income|benefit|payment|refund|overpayment|allowance|limit|"
-    r"threshold|base|balance|total|factor)s?"
-)
 _FORMULA_RESULT_PREDICATE = (
     r"(?:(?:is|shall\s+be)\s+equal\s+to|is|equals?|shall\s+be|means|"
     r"constitutes?)"
 )
-_FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
+_FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+"
     r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
     r"\b(?:sum|product)\s+of\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
     r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
     r"\bdifference\s+between\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
-    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
-    rf"\b{_FORMULA_RESULT_SUBJECT}\b\s+"
-    r"(?:(?:is|shall\s+be)\s+)?"
-    r"(?:reduced|deducted|increased|decreased)\s+by\b|"
-    rf"\b{_FORMULA_RESULT_SUBJECT}\b\s+"
-    rf"{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
+    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_RESULT_OPERATION_LANGUAGE = re.compile(
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
     r"min|max|minimum|maximum|least|greatest|lesser|greater|lower|higher|"
     r"lowest|highest|smallest|largest|smaller|larger|sum|total|average|mean|"
     r"median|ratio|quotient|difference|product|remainder|percentage|percent)\s+"
     r"(?:amount\s+)?(?:of|between)\b|"
-    rf"\b{_FORMULA_RESULT_SUBJECT}\b\s+"
-    rf"{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
     r"addition\s+of\b[^.;:\n]{1,120}\band\b|"
     r"(?:subtraction|deduction)\s+of\b[^.;:\n]{1,120}\bfrom\b|"
     r"(?:reduction|increase|decrease|division|multiplication)\s+of\b"
     r"[^.;:\n]{1,120}\bby\b)",
+    flags=re.IGNORECASE,
+)
+_FORMULA_PARTICIPIAL_RESULT_LANGUAGE = re.compile(
+    r"\b(?:(?:is|shall\s+be)\s+)?"
+    r"(?:reduced|deducted|increased|decreased)\s+by\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_NUMERIC_RESULT_HEADS = frozenset(
+    {
+        "allowance",
+        "amount",
+        "assessment",
+        "balance",
+        "base",
+        "benefit",
+        "count",
+        "credit",
+        "deduction",
+        "factor",
+        "income",
+        "liability",
+        "limit",
+        "number",
+        "overpayment",
+        "payment",
+        "percent",
+        "percentage",
+        "quantity",
+        "rate",
+        "refund",
+        "result",
+        "tax",
+        "threshold",
+        "total",
+        "value",
+    }
+)
+_FORMULA_SUBJECT_MODIFIER = re.compile(
+    r"\b(?:of|for|to|under|by|from|in|on|with|without|that|which|who|whose|"
+    r"determined|imposed|allowed|allowable|provided|described|specified|"
+    r"computed|calculated|adjusted|applicable|responsible|before|after)\b",
     flags=re.IGNORECASE,
 )
 _VALID_ROMAN_OUTLINE_LABEL = re.compile(
@@ -1734,6 +1767,49 @@ def _is_editorial_omission(text: str) -> bool:
     return bool(_EDITORIAL_OMISSION_ONLY.fullmatch(text))
 
 
+def _formula_result_subject_head(prefix: str) -> str:
+    """Return the grammatical head of a formula predicate's subject phrase."""
+
+    subject = _strip_source_clause_marker(prefix).strip()
+    subject = re.sub(r",[^,\n]{1,160},", " ", subject)
+    if "," in subject:
+        subject = subject.rsplit(",", 1)[-1].strip()
+    subject = _FORMULA_SUBJECT_MODIFIER.split(subject, maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", subject)
+    return words[-1].lower() if words else ""
+
+
+def _formula_result_subject_is_numeric(prefix: str) -> bool:
+    head = _formula_result_subject_head(prefix)
+    if head in _FORMULA_NUMERIC_RESULT_HEADS:
+        return True
+    if head.endswith("ies") and head[:-3] + "y" in _FORMULA_NUMERIC_RESULT_HEADS:
+        return True
+    return head.endswith("s") and head[:-1] in _FORMULA_NUMERIC_RESULT_HEADS
+
+
+def _formula_states_contextual_operator(source_text: str) -> bool:
+    """Recognize result operations only when their grammatical subject is numeric."""
+
+    if _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE.search(source_text):
+        return True
+    for pattern in (
+        _FORMULA_RESULT_OPERATION_LANGUAGE,
+        _FORMULA_PARTICIPIAL_RESULT_LANGUAGE,
+    ):
+        for match in pattern.finditer(source_text):
+            prefix = source_text[: match.start()]
+            if pattern is _FORMULA_PARTICIPIAL_RESULT_LANGUAGE and re.search(
+                r"\bbefore(?:\s+\w+){0,3}\s*$",
+                prefix,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            if _formula_result_subject_is_numeric(prefix):
+                return True
+    return False
+
+
 def source_states_explicit_computation(source_text: str) -> bool:
     """Return whether text states a computation rather than only a scalar."""
 
@@ -1742,7 +1818,7 @@ def source_states_explicit_computation(source_text: str) -> bool:
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
-        or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(computation_text)
+        or _formula_states_contextual_operator(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
     )
 
@@ -4974,7 +5050,7 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         _has_substantive_arithmetic_expression(clause)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(clause)
-        or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(clause)
+        or _formula_states_contextual_operator(clause)
     )
 
 

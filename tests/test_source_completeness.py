@@ -2087,6 +2087,19 @@ B. End.
         "B. End.",
         "A. The administrator of benefits is the Division of Revenue and is "
         "represented by counsel.\nB. End.",
+        "A. The administrator of the refund is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The administrator for all benefits is the Division of Revenue and is "
+        "represented by counsel.\nB. End.",
+        "A. The agency responsible for the tax is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The administrator for the benefit is the product of a merger.\nB. End.",
+        "A. The distinction from the amount is the difference between federal and "
+        "state administration.\nB. End.",
+        "A. The limitation on the tax is the difference between current law and "
+        "prior law.\nB. End.",
+        "A. The organization that provides the benefit is the product of a merger.\n"
+        "B. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2112,6 +2125,12 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The count is the sum of dwelling units and vouchers",
         "The quantity is the sum of the base and the bonus",
         "The assessment is the sum of the base and the bonus",
+        "The credit for qualified taxpayers is the average of the following values",
+        "The amount determined under paragraph (1) shall be equal to the lesser of "
+        "the following values",
+        "The tax imposed by this section is the sum of the base and the surcharge",
+        "The credit allowable under this section shall be reduced by deductions",
+        "The number of dwelling units is the sum of occupied units and vacant units",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
