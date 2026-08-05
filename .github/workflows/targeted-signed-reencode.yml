@@ -39,12 +39,7 @@ on:
         required: false
         type: string
       source_bundle_json:
-        description: JSON array of additional same-jurisdiction citations to encode as signed atomic imports
-        required: false
-        default: "[]"
-        type: string
-      canonical_refresh_bundle_json:
-        description: JSON array of {citation,replace_rulespec_path} additions to fresh-encode independently with the primary in one signed transaction
+        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path}]} for an independent refresh transaction
         required: false
         default: "[]"
         type: string
@@ -358,7 +353,7 @@ jobs:
         id: repair_candidate
         if: ${{ inputs.repair_run_id != '' }}
         env:
-          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
+          ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           CITATION: ${{ inputs.citation }}
           CORPUS_REF: ${{ inputs.corpus_ref }}
           COUNTRY: ${{ inputs.country }}
@@ -376,9 +371,17 @@ jobs:
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
-          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
         run: |
           set -euo pipefail
+          atomic_source_payload="$(
+            python \
+              axiom-encode/scripts/prepare_signed_backfill.py \
+              split-atomic-source-input "${ATOMIC_SOURCE_JSON:-[]}"
+          )"
+          source_bundle_json="$(jq -cer '.source_bundle' \
+            <<< "$atomic_source_payload")"
+          canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
+            <<< "$atomic_source_payload")"
           if [[ ! "$REPAIR_RUN_ID" =~ ^[0-9]+$ ]] || \
              [ "$REPAIR_RUN_ID" = "$GITHUB_RUN_ID" ]; then
             echo "repair_run_id must identify a different decimal workflow run" >&2
@@ -392,9 +395,9 @@ jobs:
              [ -n "$SECOND_DEPENDENT_CITATION" ] || \
              [ -n "$QUEUE_ID" ] || \
              ! jq -e 'type == "array" and length == 0' \
-               <<< "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" > /dev/null || \
+               <<< "$canonical_refresh_bundle_json" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
-               <<< "${SOURCE_BUNDLE_JSON:-[]}" > /dev/null || \
+               <<< "$source_bundle_json" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "${EXISTING_SIGNED_IMPORTS_JSON:-[]}" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
@@ -537,7 +540,7 @@ jobs:
 
       - name: Validate atomic source inputs
         env:
-          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
+          ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
@@ -550,13 +553,21 @@ jobs:
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
-          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
         run: |
           set -euo pipefail
+          atomic_source_payload="$(
+            axiom-encode/.venv/bin/python \
+              axiom-encode/scripts/prepare_signed_backfill.py \
+              split-atomic-source-input "${ATOMIC_SOURCE_JSON:-[]}"
+          )"
+          source_bundle_json="$(jq -cer '.source_bundle' \
+            <<< "$atomic_source_payload")"
+          canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
+            <<< "$atomic_source_payload")"
           source_bundle_args=(
             axiom-encode/.venv/bin/python
             axiom-encode/scripts/prepare_signed_backfill.py
-            parse-source-bundle "${SOURCE_BUNDLE_JSON:-[]}"
+            parse-source-bundle "$source_bundle_json"
             --primary-citation "$CITATION"
           )
           if [ -n "$DEPENDENT_CITATION" ]; then
@@ -570,7 +581,7 @@ jobs:
             axiom-encode/.venv/bin/python \
               axiom-encode/scripts/prepare_signed_backfill.py \
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
-              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
           )"
@@ -846,7 +857,7 @@ jobs:
 
       - name: Verify existing signed imports
         env:
-          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
+          ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
@@ -858,14 +869,21 @@ jobs:
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
-          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
         run: |
           set -euo pipefail
           workflow_python=/opt/axiom-verification/python/bin/python
           backfill_helper=axiom-encode/scripts/prepare_signed_backfill.py
+          atomic_source_payload="$(
+            "$workflow_python" -I "$backfill_helper" \
+              split-atomic-source-input "${ATOMIC_SOURCE_JSON:-[]}"
+          )"
+          source_bundle_json="$(jq -cer '.source_bundle' \
+            <<< "$atomic_source_payload")"
+          canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
+            <<< "$atomic_source_payload")"
           source_bundle_args=(
             "$workflow_python" -I "$backfill_helper" parse-source-bundle
-            "${SOURCE_BUNDLE_JSON:-[]}" --primary-citation "$CITATION"
+            "$source_bundle_json" --primary-citation "$CITATION"
           )
           if [ -n "$DEPENDENT_CITATION" ]; then
             source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")
@@ -879,7 +897,7 @@ jobs:
           normalized_canonical_refresh_bundle="$(
             "$workflow_python" -I "$backfill_helper" \
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
-              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
           )"
@@ -978,7 +996,7 @@ jobs:
         id: encode_apply
         env:
           AXIOM_ENCODE_APPLY_SIGNING_KEY: ${{ secrets.AXIOM_ENCODE_APPLY_SIGNING_KEY }}
-          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
+          ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CITATION: ${{ inputs.citation }}
           REVIEW_FINDING: ${{ inputs.review_finding }}
@@ -997,7 +1015,6 @@ jobs:
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_DEPENDENT_REVIEW_FINDING: ${{ inputs.second_dependent_review_finding }}
           EXISTING_SIGNED_IMPORTS_JSON: ${{ inputs.existing_signed_imports_json }}
-          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
@@ -1230,9 +1247,17 @@ jobs:
               citation-rulespec-path "$SECOND_DEPENDENT_CITATION")"
           fi
 
+          atomic_source_payload="$(
+            "$workflow_python" "$backfill_helper" split-atomic-source-input \
+              "${ATOMIC_SOURCE_JSON:-[]}"
+          )"
+          source_bundle_json="$(jq -cer '.source_bundle' \
+            <<< "$atomic_source_payload")"
+          canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
+            <<< "$atomic_source_payload")"
           source_bundle_args=(
             "$workflow_python" "$backfill_helper" parse-source-bundle
-            "${SOURCE_BUNDLE_JSON:-[]}" --primary-citation "$CITATION"
+            "$source_bundle_json" --primary-citation "$CITATION"
           )
           if [ -n "$DEPENDENT_CITATION" ]; then
             source_bundle_args+=(--exclude-citation "$DEPENDENT_CITATION")
@@ -1244,7 +1269,7 @@ jobs:
           normalized_canonical_refresh_bundle="$(
             "$workflow_python" "$backfill_helper" \
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
-              "${CANONICAL_REFRESH_BUNDLE_JSON:-[]}" \
+              "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
           )"
@@ -2884,7 +2909,7 @@ jobs:
         id: package_failed_reencode_diagnostics
         if: ${{ failure() && !cancelled() }}
         env:
-          CANONICAL_REFRESH_BUNDLE_JSON: ${{ inputs.canonical_refresh_bundle_json }}
+          ATOMIC_SOURCE_JSON: ${{ inputs.source_bundle_json }}
           CITATION: ${{ inputs.citation }}
           CORPUS_REF: ${{ inputs.corpus_ref }}
           COUNTRY: ${{ inputs.country }}
@@ -2924,7 +2949,6 @@ jobs:
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
-          SOURCE_BUNDLE_JSON: ${{ inputs.source_bundle_json }}
           UPLOAD_SIGNED_REENCODE_ARTIFACT_CONCLUSION: ${{ steps.upload_signed_reencode_artifact.conclusion }}
           UPLOAD_SIGNED_REENCODE_ARTIFACT_OUTCOME: ${{ steps.upload_signed_reencode_artifact.outcome }}
           VERIFY_EXISTING_SIGNED_IMPORT_INTEGRITY_CONCLUSION: ${{ steps.verify_existing_signed_import_integrity.conclusion }}
@@ -3284,10 +3308,7 @@ jobs:
                   "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH"
               )
               or None,
-              "source_bundle_input": os.environ.get("SOURCE_BUNDLE_JSON", "[]"),
-              "canonical_refresh_bundle_input": os.environ.get(
-                  "CANONICAL_REFRESH_BUNDLE_JSON", "[]"
-              ),
+              "atomic_source_input": os.environ.get("ATOMIC_SOURCE_JSON", "[]"),
               "step_outcomes": step_outcomes,
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],

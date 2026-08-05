@@ -249,6 +249,33 @@ def citation_rulespec_path(citation: str) -> PurePosixPath:
     return PurePosixPath(jurisdiction) / relative
 
 
+def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
+    """Split the bounded dispatch input into exactly one atomic source mode."""
+
+    if not isinstance(atomic_source_json, str):
+        raise ValueError("atomic source JSON must be a string")
+    if len(atomic_source_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
+        raise ValueError("atomic source JSON exceeds the maximum input size")
+    payload = json.loads(atomic_source_json)
+    if isinstance(payload, list):
+        return {
+            "canonical_refresh_bundle": [],
+            "source_bundle": payload,
+        }
+    if not isinstance(payload, dict) or set(payload) != {"canonical_refresh_bundle"}:
+        raise ValueError(
+            "atomic source JSON must be a source citation array or an exact "
+            "canonical_refresh_bundle object"
+        )
+    refresh_bundle = payload["canonical_refresh_bundle"]
+    if not isinstance(refresh_bundle, list):
+        raise ValueError("canonical_refresh_bundle must be an array")
+    return {
+        "canonical_refresh_bundle": refresh_bundle,
+        "source_bundle": [],
+    }
+
+
 def parse_source_bundle(
     source_bundle_json: str,
     *,
@@ -412,10 +439,14 @@ def parse_canonical_refresh_bundle(
             not isinstance(citation, str)
             or not citation
             or citation != citation.strip()
-            or any(ord(character) < 32 or ord(character) == 127 for character in citation)
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in citation
+            )
             or not isinstance(raw_path, str)
             or not raw_path
-            or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in raw_path
+            )
         ):
             raise ValueError(f"{label} fields must be nonempty canonical strings")
         try:
@@ -512,8 +543,7 @@ def _canonical_refresh_target_inventory(
         if (
             len(companion_lines) != 1
             or not companion_lines[0].startswith("100644 ")
-            or companion_lines[0].split("\t", 1)[-1]
-            != companion_path.as_posix()
+            or companion_lines[0].split("\t", 1)[-1] != companion_path.as_posix()
         ):
             raise ValueError(f"{companion_label} must be exactly tracked 100644")
         companion_raw = _read_bounded_regular(
@@ -556,7 +586,9 @@ def _canonical_refresh_target_inventory(
             f"canonical refresh manifest for {citation} is invalid JSON"
         ) from exc
     target_sha256 = hashlib.sha256(raw_by_path[path]).hexdigest()
-    applied_files = manifest.get("applied_files") if isinstance(manifest, dict) else None
+    applied_files = (
+        manifest.get("applied_files") if isinstance(manifest, dict) else None
+    )
     target_entries = [
         item
         for item in applied_files or []
@@ -636,8 +668,7 @@ def verify_canonical_refresh_target(
     if (
         citation_rulespec_path(target["citation"]) != rulespec_path
         or _existing_import_manifest_path(rulespec_path) != manifest_path
-        or rulespec_path.with_name(f"{rulespec_path.stem}.test.yaml")
-        != companion_path
+        or rulespec_path.with_name(f"{rulespec_path.stem}.test.yaml") != companion_path
     ):
         raise ValueError("canonical refresh target inventory paths are inconsistent")
     for path, digest, label, max_bytes in (
@@ -2306,6 +2337,20 @@ def main() -> None:
         default=[],
         help="additional forbidden canonical citation; may be repeated",
     )
+    atomic_source_parser = subparsers.add_parser(
+        "split-atomic-source-input",
+        help=(
+            "split the bounded source input into mutually exclusive source "
+            "composition and canonical refresh payloads"
+        ),
+    )
+    atomic_source_parser.add_argument(
+        "atomic_source_json",
+        help=(
+            "legacy source citation array or exact "
+            '{"canonical_refresh_bundle":[...]} object'
+        ),
+    )
     canonical_refresh_parser = subparsers.add_parser(
         "parse-canonical-refresh-bundle",
         help=(
@@ -2402,6 +2447,14 @@ def main() -> None:
                         excluded_citations=tuple(args.exclude_citation),
                     ),
                     separators=(",", ":"),
+                )
+            )
+        elif args.command == "split-atomic-source-input":
+            print(
+                json.dumps(
+                    split_atomic_source_input(args.atomic_source_json),
+                    separators=(",", ":"),
+                    sort_keys=True,
                 )
             )
         elif args.command == "parse-canonical-refresh-bundle":

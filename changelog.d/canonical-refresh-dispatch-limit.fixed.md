@@ -1,0 +1,1 @@
+Keep the targeted signed re-encode workflow within GitHub's 25-input dispatch limit by using one bounded, mutually exclusive atomic-source input for source composition and canonical refresh transactions, while preserving legacy and new repair-artifact compatibility.
