@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Classify affirmative duties introduced by a `notwithstanding` exemption as
+  enabling exception effects, so complete-source companion tests can prove
+  obligations that remain operative despite a separate filing exemption.
+
 - Add a broker-authenticated `migrate-rulespec-paths` workflow for
   current-v5 model encodings. It permits only deterministic engine-safe path
   normalization and exact durable-reference rewrites, preserves legal corpus

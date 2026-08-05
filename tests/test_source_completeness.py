@@ -11255,6 +11255,45 @@ def test_enabling_effect_is_independent_of_proposition_order(source: str):
     )
 
 
+def test_notwithstanding_exemption_preserves_affirmative_duty():
+    source = """\
+(b) Qualified public housing agencies
+(A) The requirement under paragraph (1) shall not apply to a qualified agency.
+(B) Notwithstanding that qualified agencies are exempt under subparagraph (A)
+from the requirement under paragraph (1), each qualified agency shall certify.
+"""
+
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
+    )
+
+
+def test_notwithstanding_exemption_accepts_enabling_companion_pair():
+    source = """\
+(1) Notwithstanding that qualified agencies are exempt from the filing requirement,
+each qualified agency shall certify.
+"""
+    content = _exception_control_content(
+        "if qualified_agency: true else: false",
+    )
+    cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"qualified_agency": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "qualified agency certification",
+            "input": {"qualified_agency": True},
+            "output": {"result": True},
+        },
+    ]
+
+    result = _analyze(content, source, test_cases=cases)
+
+    assert not result.issues
+
+
 def test_preposed_german_negative_condition_enables_positive_result():
     source = """\
 (1) Wenn der Antragsteller nicht berechtigt ist, ist er ausnahmsweise berechtigt.

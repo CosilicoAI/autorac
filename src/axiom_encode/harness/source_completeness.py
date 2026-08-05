@@ -8990,6 +8990,8 @@ def _source_exception_effect_requirement(text: str) -> str:
         flags=re.IGNORECASE,
     ):
         return "zero"
+    if _notwithstanding_preserves_positive_obligation(collapsed):
+        return "enable"
     if _exception_reverses_negative_proposition(collapsed):
         return "enable"
     condition = next(
@@ -9080,6 +9082,22 @@ def _source_exception_effect_requirement(text: str) -> str:
     ):
         return "exclude"
     return "change"
+
+
+def _notwithstanding_preserves_positive_obligation(text: str) -> bool:
+    """Recognize an affirmative duty preserved despite an exemption."""
+
+    return (
+        re.search(
+            r"\bnotwithstanding\b[^.;]{0,320}\b(?:exempt|excluded|"
+            r"does\s+not\s+apply|shall\s+not\s+apply)\b[^.;]{0,320},"
+            r"[^.;]{0,240}\b(?:shall|must|is\s+required\s+to|"
+            r"are\s+required\s+to)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _source_positive_effect_matches(text: str) -> tuple[re.Match[str], ...]:
