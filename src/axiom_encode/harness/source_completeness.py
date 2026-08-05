@@ -1245,6 +1245,27 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
         )
 
     if outer_segments:
+        prefix_end = outer_segments[0][1]
+        prefix_matches = list(_PARAGRAPH_MARKER.finditer(source_text, 0, prefix_end))
+        for index, match in enumerate(prefix_matches):
+            start = match.start()
+            end = (
+                prefix_matches[index + 1].start()
+                if index + 1 < len(prefix_matches)
+                else prefix_end
+            )
+            label = match.group("label").lower()
+            text = source_text[start:end].strip()
+            if _is_editorial_omission(text):
+                continue
+            path = (label,)
+            branches.append(
+                SourceStructureBranch(
+                    path, "paragraph", match.group("marker"), text, start, end
+                )
+            )
+            paragraph_segments.append((path, start, end, text))
+
         for outer_match, outer_start, outer_end in outer_segments:
             outer_label = outer_match.group("label").lower()
             outer_path = (outer_label,)
@@ -1260,8 +1281,11 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                         outer_end,
                     )
                 )
-            nested_matches = list(
+            nested_matches = tuple(
                 _PARAGRAPH_MARKER.finditer(source_text, outer_start, outer_end)
+            )
+            nested_numeric_matches = tuple(
+                match for match in nested_matches if match.group("label")[0].isdigit()
             )
             if not nested_matches:
                 paragraph_segments.append(
@@ -1276,7 +1300,18 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                     else outer_end
                 )
                 label = match.group("label").lower()
-                path = (*outer_path, label)
+                numeric_parent = next(
+                    (
+                        parent
+                        for parent in reversed(nested_numeric_matches)
+                        if parent.start() < start
+                    ),
+                    None,
+                )
+                path = outer_path
+                if label[0].isalpha() and numeric_parent is not None:
+                    path = (*path, numeric_parent.group("label").lower())
+                path = (*path, label)
                 text = source_text[start:end].strip()
                 if _is_editorial_omission(text):
                     continue
@@ -1395,14 +1430,30 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
     """Return an ordered legal subsection sequence, excluding isolated initials."""
 
     candidates = tuple(_DOTTED_SUBSECTION_MARKER.finditer(source_text))
-    labels = tuple(ord(match.group("label")) for match in candidates)
-    if (
-        len(labels) < 2
-        or any(right <= left for left, right in zip(labels, labels[1:]))
-        or not any(right == left + 1 for left, right in zip(labels, labels[1:]))
-    ):
-        return ()
-    return candidates
+    for start, match in enumerate(candidates):
+        if match.group("label") != "A" or _dotted_marker_starts_citation(
+            source_text, match
+        ):
+            continue
+        sequence = [match]
+        for candidate in candidates[start + 1 :]:
+            expected = chr(ord(sequence[-1].group("label")) + 1)
+            if candidate.group("label") != expected or _dotted_marker_starts_citation(
+                source_text, candidate
+            ):
+                break
+            sequence.append(candidate)
+        if len(sequence) >= 2:
+            return tuple(sequence)
+    return ()
+
+
+def _dotted_marker_starts_citation(source_text: str, match: re.Match[str]) -> bool:
+    line_end = source_text.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(source_text)
+    remainder = source_text[match.end() : line_end].lstrip()
+    return bool(re.match(r"\d+[A-Z]?(?::|\.\d)", remainder, flags=re.IGNORECASE))
 
 
 def _is_editorial_omission(text: str) -> bool:

@@ -1206,6 +1206,10 @@ by the CPI-U increase.
     assert not any(
         "200%" in branch.text and "CPI-U" in branch.text for branch in formula_branches
     )
+    assert any(
+        branch.path == ("a", "2") and "200%" in branch.text
+        for branch in formula_branches
+    )
     assert any(branch.path == ("b",) for branch in formula_branches)
 
 
@@ -1238,6 +1242,67 @@ def test_dotted_subsection_children_match_canonical_source_paths():
         "us-la/statute/47:294(A)(2)",
         corpus_citation_path="us-la/statute/47:294",
     ) == {("a", "2")}
+
+
+def test_dotted_subsections_preserve_parenthesized_preamble():
+    source = "(9) Preamble rule.\nA. First.\n(1) Nested.\nB. Second."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("9",),
+        ("a",),
+        ("a", "1"),
+        ("b",),
+    }
+
+
+def test_dotted_subsection_sequence_ignores_later_citation_marker():
+    source = "A. First.\nB. Second.\nC. 54A:4-6 controls."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_dotted_subsection_sequence_survives_later_duplicate_marker():
+    source = "A. First.\nB. Second.\nB. Smith citation."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_dotted_subsection_sequence_uses_later_valid_a_b_run():
+    source = "A. Isolated citation.\nA. First.\nB. Second."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_skipped_dotted_labels_do_not_form_subsection_hierarchy():
+    assert recognize_source_structure("A. First.\nC. Third.\nD. Fourth.") == ()
+
+
+def test_parenthesized_letters_nest_under_active_numeric_paragraph():
+    source = "A. Outer.\n(1) Numeric.\n(a) First.\n(b) Second.\n(2) Other.\nB. End."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("a",),
+        ("a", "1"),
+        ("a", "1", "a"),
+        ("a", "1", "b"),
+        ("a", "2"),
+        ("b",),
+    }
 
 
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
