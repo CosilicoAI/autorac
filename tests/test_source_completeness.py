@@ -1714,6 +1714,87 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
     assert _has_issue(unbound, "formula-output", "(i)")
     assert _has_issue(unbound, "formula-output", "(ii)")
 
+    quoted_literal_payload = yaml.safe_load(content)
+    quoted_parent_rule = next(
+        rule
+        for rule in quoted_literal_payload["rules"]
+        if rule.get("source") == "us-la/statute/47:297.4(A)(1)(a)"
+    )
+    quoted_parent_rule["versions"][0]["formula"] = (
+        'match filing_status:\n  "married" => federal_credit\n  _ => 0'
+    )
+    quoted_parameter = next(
+        rule
+        for rule in quoted_literal_payload["rules"]
+        if rule.get("name") == "low_income_credit_rate"
+    )
+    quoted_parameter["name"] = "married"
+    quoted_literal = analyze_complete_source_unit(
+        yaml.safe_dump(quoted_literal_payload),
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert _has_issue(quoted_literal, "formula-output", "(i)")
+    assert _has_issue(quoted_literal, "formula-output", "(ii)")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The tax equals income * 2:\n(1) This rule applies to residents.\nB. End.",
+        "A. The tax shall be calculated as twenty-five percent of income:\n"
+        "(1) This rule applies to residents.\nB. End.",
+    ),
+)
+def test_substantive_formula_chapeau_survives_noncomputational_children(source: str):
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+
+
+def test_sum_chapeau_remains_distinct_from_computational_child():
+    source = """\
+A. The credit equals the sum of:
+(1) the base credit.
+(2) bonus equals income * rate.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "2")]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The agency shall report the amount and percent of claims approved.",
+        "The agency shall report the number and percent of applications denied.",
+    ),
+)
+def test_reporting_number_and_percent_is_not_a_computation(source: str):
+    assert not source_states_explicit_computation(source)
+
 
 def test_parenthesized_i_without_ii_remains_an_alpha_sibling():
     source = "A. Outer.\n(1)(a) First.\n(i) Ninth alpha.\n(j) Tenth alpha.\nB. End."

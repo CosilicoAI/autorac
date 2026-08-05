@@ -335,10 +335,11 @@ _ENGLISH_NUMBER_WORD = (
     r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
     r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
     r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
-    r"thousand|million|billion|trillion|and)"
+    r"thousand|million|billion|trillion)"
 )
 _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
-    rf"\b{_ENGLISH_NUMBER_WORD}(?:[-\s]+{_ENGLISH_NUMBER_WORD})*"
+    rf"\b{_ENGLISH_NUMBER_WORD}"
+    rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*"
     r"\s+percent\s+of\b",
     flags=re.IGNORECASE,
 )
@@ -2252,7 +2253,9 @@ def _formula_dependency_source_excerpts(
         identifier
         for version in versions
         if isinstance(version, dict) and isinstance(version.get("formula"), str)
-        for identifier in _FORMULA_IDENTIFIER.findall(version["formula"])
+        for identifier in _FORMULA_IDENTIFIER.findall(
+            _mask_formula_strings(version["formula"])
+        )
     }
     for dependency_name in dependency_names:
         dependency = named_rules.get(dependency_name)
@@ -4872,14 +4875,46 @@ def _formula_clause_is_structural_chapeau(
 ) -> bool:
     """Let a colon-ended computation heading delegate to its child rows."""
 
-    if not clause.rstrip().endswith(":"):
+    if not clause.rstrip().endswith(
+        ":"
+    ) or _formula_clause_states_substantive_operation(clause):
         return False
-    return any(
-        len(branch.path) > len(owner.path)
-        and branch.path[: len(owner.path)] == owner.path
-        and branch.start >= end
-        and not source_text[end : branch.start].strip()
+    descendants = tuple(
+        branch
         for branch in branches
+        if (
+            len(branch.path) > len(owner.path)
+            and branch.path[: len(owner.path)] == owner.path
+            and branch.start >= end
+            and branch.end <= owner.end
+        )
+    )
+    if (
+        not descendants
+        or source_text[end : min(branch.start for branch in descendants)].strip()
+    ):
+        return False
+    non_leaf_paths = {
+        candidate.path[:depth]
+        for candidate in descendants
+        for depth in range(len(owner.path) + 1, len(candidate.path))
+    }
+    leaf_descendants = tuple(
+        branch for branch in descendants if branch.path not in non_leaf_paths
+    )
+    return any(
+        source_states_explicit_computation(branch.text) for branch in leaf_descendants
+    )
+
+
+def _formula_clause_states_substantive_operation(clause: str) -> bool:
+    """Distinguish an operative formula from a non-operative table heading."""
+
+    return bool(
+        _has_substantive_arithmetic_expression(clause)
+        or _formula_operation_kinds(clause)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
+        or re.search(r"\b(?:percentage|percent)\s+of\b", clause, re.IGNORECASE)
     )
 
 
