@@ -756,6 +756,12 @@ def test_workspace_prompt_embeds_latest_retry_candidate_as_untrusted_edit_contex
     assert "TY2000 historical branch case" in prompt
     assert "TY2026 current branch case" in prompt
     assert candidate.rulespec_sha256 in prompt or candidate.rulespec in prompt
+    assert prompt.index("RuleSpec requirements:") < prompt.index(
+        "UNTRUSTED REJECTED CANDIDATE RULESPEC"
+    )
+    assert prompt.index("UNTRUSTED REJECTED CANDIDATE RULESPEC") < prompt.index(
+        "Return exactly this two-file bundle"
+    )
     assert str(tmp_path) not in prompt
 
 

@@ -27465,9 +27465,9 @@ def _run_encode_attempt(
         ),
         validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
         validation_retry_candidate=(
-            _latest_validation_retry_candidate(prior_attempts)
-            if prior_attempts
-            else initial_retry_candidate
+            initial_retry_candidate
+            if initial_retry_candidate is not None
+            else _latest_validation_retry_candidate(prior_attempts)
         ),
         required_import_targets=required_import_targets,
         legacy_replacement=(

@@ -9847,7 +9847,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}{validation_retry_candidate_section}{required_import_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -10645,6 +10645,7 @@ rules:
         formula: snap_member_eligible
 ```
 
+{validation_retry_candidate_section}
 {output_rules}
 Do not respond with summaries, markdown prose, or file-write confirmations.
 """

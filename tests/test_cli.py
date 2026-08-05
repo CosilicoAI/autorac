@@ -13141,6 +13141,48 @@ class TestCmdEncode:
         assert candidate.tests is not None
         assert "preserved-companion" in candidate.tests
 
+    def test_encode_keeps_cross_run_repair_candidate_as_retry_floor(self, tmp_path):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text(
+            "format: rulespec/v1\n# preserved-cross-run-rule\nrules: []\n"
+        )
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("# preserved-cross-run-companion\n[]\n")
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=hashlib.sha256(
+                output_file.read_bytes()
+            ).hexdigest(),
+            repair_candidate_tests_sha256=hashlib.sha256(
+                test_file.read_bytes()
+            ).hexdigest(),
+        )
+
+        _exit_code, _generated, _validated, mock_run, _mock_validate, _mock_apply = (
+            self._run_validator_escalation_case(
+                args,
+                [(False, ["first candidate regressed"]), (True, [])],
+            )
+        )
+
+        retry_candidates = [
+            call.kwargs["validation_retry_candidate"]
+            for call in mock_run.call_args_list
+        ]
+        assert len(retry_candidates) == 2
+        assert retry_candidates[0] == retry_candidates[1]
+        assert "preserved-cross-run-rule" in retry_candidates[1].rulespec
+        assert "rejected-attempt-1" not in retry_candidates[1].rulespec
+
     @pytest.mark.parametrize(
         ("root", "relative_path", "message"),
         [
