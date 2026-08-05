@@ -2075,6 +2075,12 @@ B. End.
         "computed as set forth in the table below",
         "determined in accordance with the following schedule",
         "calculated from the following rates",
+        "computed pursuant to the schedule set forth below",
+        "computed in accordance with the schedule set forth below",
+        "calculated from the rates set forth in the following table",
+        "determined pursuant to the table set forth below",
+        "computed using the table below",
+        "computed according to the table below",
     ),
 )
 def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
@@ -2151,6 +2157,10 @@ B. End.
         "office.\nB. End.",
         "A. The committee's charge is the division of responsibilities by office, "
         "and the tax is administered annually.\nB. End.",
+        "A. For purposes of this section, the administrator of the refund is the "
+        "Division of Revenue.\nB. End.",
+        "A. Pursuant to paragraph (1), the administrator for the benefit is the "
+        "product of a merger.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2256,6 +2266,27 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The tax now due is the sum of the base and surcharge",
         "The tax thereon imposed is the sum of the base and surcharge",
         "The credit hereby allowed shall be the lesser of the following values",
+        "In accordance with paragraph (1) the amount is the lesser of the "
+        "following values",
+        "As provided in subsection A the credit is the sum of the base and supplement",
+        "Except under subsection A the credit is the sum of the base and supplement",
+        "Beginning after 2025 the credit is the sum of the base and supplement",
+        "On or after January 1, 2025 the tax is the sum of the base and surcharge",
+        "Under chapter 1 the credit is the sum of the base and supplement",
+        "The tax currently due is the sum of the base and surcharge",
+        "The assessment is the product of taxable value and assessment ratio",
+        "The charge is the addition of the base fee and administrative surcharge",
+        "The assessment is the sum of gross income, as adjusted, and deductions",
+        "The distribution is the division of proceeds by number of beneficiaries",
+        "The assessment is the difference between fair market value and adjusted basis",
+        "The charge is the product of the number of units and the rate",
+        "The assessment is the sum of $100 and $200",
+        "The assessment is the sum of wages, interest, and dividends",
+        "The assessment is the sum of income from all sources and deductions",
+        "The assessment is the product of the amount determined under paragraph "
+        "(1) and the rate",
+        "The charge is the division of the total tax shown on the return by the "
+        "number of installments",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
