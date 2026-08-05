@@ -353,7 +353,11 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE = re.compile(
-    r"\b(?:calculated|computed|determined)\s+by\b|"
+    r"\b(?:calculated|computed|determined)\s+"
+    r"(?!(?:using|according\s+to|under|as\s+follows|based\s+on)\b)|"
+    r"(?<!before it is )\b(?:reduced|deducted|increased|decreased)\s+by\b|"
+    r"\b(?:addition|subtraction|reduction|deduction|increase|decrease|division|"
+    r"multiplication)\s+of\b|"
     r"\b(?:sum|total|average|mean|median|ratio|quotient|difference|product|"
     r"remainder)\s+(?:of|between)\b",
     flags=re.IGNORECASE,
@@ -1709,6 +1713,7 @@ def source_states_explicit_computation(source_text: str) -> bool:
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
+        or _FORMULA_SUBSTANTIVE_OPERATOR_LANGUAGE.search(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
     )
 

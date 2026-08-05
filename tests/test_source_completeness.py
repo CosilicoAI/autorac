@@ -1884,6 +1884,70 @@ B. End.
 
 
 @pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit shall be determined by decreasing the base by an amount under "
+        "the following schedule",
+        "The credit is the average of the following values",
+        "The credit is the mean of the following values",
+        "The credit is the median of the following values",
+        "The credit is the ratio of the following values",
+        "The credit is the quotient of the following values",
+        "The credit is the remainder of the following values",
+    ),
+)
+def test_contextual_operator_is_an_explicit_formula_obligation(operation: str):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) the fixed amount.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "calculated as income reduced by deductions, using the following rates",
+        "calculated through subtraction of deductions, using the following rates",
+    ),
+)
+def test_operative_prefix_cannot_delegate_through_generic_table_suffix(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
     "program_name",
     (
         "higher education tax credit",
