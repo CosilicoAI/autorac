@@ -1,0 +1,1 @@
+Keep effective-date numbers out of formula coefficient matching, recognize source-stated `multiplying`, and ground percentages above 100% as decimal factors only when the source occurrence has local rate context.
