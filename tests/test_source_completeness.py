@@ -11273,6 +11273,12 @@ from the requirement under paragraph (1), each qualified agency shall certify.
     [
         "the filing exemption applies",
         "qualified agencies are exempted from filing",
+        "the filing exclusion applies",
+        "qualified agencies are excluded from filing",
+        "the filing waiver applies",
+        "qualified agencies are waived from filing",
+        "qualified agencies are excepted from filing",
+        "the filing exception applies",
     ],
 )
 def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
@@ -11296,11 +11302,43 @@ def test_notwithstanding_exemption_word_forms_preserve_affirmative_duty(
         ),
         ("(1) Notwithstanding the filing exemption, no agency shall be eligible."),
         ("(1) Notwithstanding the filing exemption, each agency must be ineligible."),
+        (
+            "(1) Notwithstanding the filing exemption, each agency shall remain "
+            "ineligible."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, each agency shall continue "
+            "to be ineligible."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, each agency must remain "
+            "disqualified."
+        ),
     ],
 )
 def test_notwithstanding_exemption_does_not_invert_negative_duty(source: str):
     assert completeness_module._source_exception_effect_requirement(source) == (
         "exclude"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "(1) Notwithstanding the filing exemption, each agency shall not be "
+            "ineligible."
+        ),
+        (
+            "(1) Notwithstanding the filing exemption, each agency must not be "
+            "disqualified."
+        ),
+        ("(1) Notwithstanding the filing exemption, no agency shall be ineligible."),
+    ],
+)
+def test_notwithstanding_exemption_double_negative_enables(source: str):
+    assert completeness_module._source_exception_effect_requirement(source) == (
+        "enable"
     )
 
 
@@ -11362,6 +11400,48 @@ def test_notwithstanding_exemption_accepts_blocking_companion_pair():
             "name": "exempt agency",
             "input": {"filing_exemption": True},
             "output": {"result": True},
+        },
+    ]
+
+    correct_result = _analyze(correct, source, test_cases=correct_cases)
+    inverted_result = _analyze(inverted, source, test_cases=inverted_cases)
+
+    assert not correct_result.issues
+    assert _has_issue(inverted_result, "exception", "test")
+
+
+def test_notwithstanding_exemption_double_negative_accepts_enabling_pair():
+    source = """\
+(1) Notwithstanding the filing exclusion, an agency shall not remain ineligible.
+"""
+    correct = _exception_control_content(
+        "if filing_exclusion: true else: false",
+    )
+    inverted = _exception_control_content(
+        "if filing_exclusion: false else: true",
+    )
+    correct_cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"filing_exclusion": False},
+            "output": {"result": False},
+        },
+        {
+            "name": "excluded agency",
+            "input": {"filing_exclusion": True},
+            "output": {"result": True},
+        },
+    ]
+    inverted_cases = [
+        {
+            "name": "ordinary agency",
+            "input": {"filing_exclusion": False},
+            "output": {"result": True},
+        },
+        {
+            "name": "excluded agency",
+            "input": {"filing_exclusion": True},
+            "output": {"result": False},
         },
     ]
 

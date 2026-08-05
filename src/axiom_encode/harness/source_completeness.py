@@ -9092,7 +9092,9 @@ def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
 
     match = re.search(
         r"\bnotwithstanding\b"
-        r"(?P<condition>[^.;]{0,640}?\b(?:exempt(?:ed|ion|ions)?|excluded|"
+        r"(?P<condition>[^.;]{0,640}?\b(?:exempt(?:ed|ion|ions)?|"
+        r"excluded|exclus(?:ion|ions)|waiv(?:ed|er|ers)|"
+        r"except(?:ed|ion|ions)|"
         r"does\s+not\s+apply|shall\s+not\s+apply)\b[^.;]{0,320}?),"
         r"\s*(?P<effect>[^.;]{0,320})",
         text,
@@ -9101,20 +9103,41 @@ def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
     if match is None:
         return None
     effect = match.group("effect")
+
+    modal = re.search(r"\b(?:shall|must)\b", effect, flags=re.IGNORECASE)
+    if modal is not None:
+        before_modal = effect[: modal.start()]
+        after_modal = effect[modal.end() :]
+        negative_subject = re.search(
+            r"\bno\b[^.;]{0,80}$", before_modal, flags=re.IGNORECASE
+        )
+        negative_modal = re.match(r"\s+not\b", after_modal, flags=re.IGNORECASE)
+        negative_status = re.search(
+            r"\b(?:barred|disqualified|excluded|ineligible|prohibited|"
+            r"unqualified)\b",
+            after_modal[:120],
+            flags=re.IGNORECASE,
+        )
+        negative_count = sum(
+            marker is not None
+            for marker in (negative_subject, negative_modal, negative_status)
+        )
+        return "exclude" if negative_count % 2 else "enable"
+
     if re.search(
-        r"\b(?:shall|must)\s+(?:not\b|be\s+(?:barred|disqualified|"
-        r"excluded|ineligible|prohibited|unqualified)\b)|"
-        r"\bno\b[^.;]{0,80}\b(?:shall|must)\b",
+        r"\b(?:is|are)\s+(?:not\s+)?required\s+to\b",
         effect,
         flags=re.IGNORECASE,
     ):
-        return "exclude"
-    if re.search(
-        r"\b(?:shall|must|is\s+required\s+to|are\s+required\s+to)\b",
-        effect,
-        flags=re.IGNORECASE,
-    ):
-        return "enable"
+        return (
+            "exclude"
+            if re.search(
+                r"\b(?:is|are)\s+not\s+required\s+to\b",
+                effect,
+                flags=re.IGNORECASE,
+            )
+            else "enable"
+        )
     return None
 
 
