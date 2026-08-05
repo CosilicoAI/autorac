@@ -2081,6 +2081,12 @@ B. End.
         "department.\nB. End.",
         "A. The revision is the reduction of paperwork by the agency.\nB. End.",
         "A. The organization is the product of a merger.\nB. End.",
+        "A. The amendment to the tax code is the addition of a dependent category "
+        "and shall apply in 2026.\nB. End.",
+        "A. The refund administrator is the Division of Revenue by designation.\n"
+        "B. End.",
+        "A. The administrator of benefits is the Division of Revenue and is "
+        "represented by counsel.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2102,6 +2108,10 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
     (
         "The credit is the addition of the base and the bonus",
         "The credit shall be the division of income by the divisor",
+        "The number is the sum of dwelling units and vouchers",
+        "The count is the sum of dwelling units and vouchers",
+        "The quantity is the sum of the base and the bonus",
+        "The assessment is the sum of the base and the bonus",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
