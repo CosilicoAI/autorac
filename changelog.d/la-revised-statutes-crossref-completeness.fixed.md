@@ -1,0 +1,1 @@
+Treat Louisiana Revised Statutes cross-references as structural citations during numeric recall, keep line-wrapped `R.S. 47:...` references in one source clause, and preserve real numeric or runtime conditions that follow the citation for paired-case validation.

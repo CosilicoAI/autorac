@@ -1134,6 +1134,14 @@ _LOUISIANA_SESSION_LAW_CITATION = re.compile(
     r"))?",
     flags=re.IGNORECASE,
 )
+_LOUISIANA_NOTWITHSTANDING_RS_REFERENCE_PREFIX = re.compile(
+    r"^\s*notwithstanding\s+"
+    r"(?:(?:the\s+)?provisions?\s+of\s+)?"
+    r"R\.S\.\s*\d+[A-Za-z]?:\d+[A-Za-z]?"
+    r"(?:-\d+[A-Za-z]?(?:\.\d+)*)?\s*[,;]\s*"
+    r"(?P<tail>.+)$",
+    flags=re.IGNORECASE,
+)
 _STRUCTURAL_REFERENCE = re.compile(
     r"\b(?:"
     r"Artikel(?:s|n)?|Art\.|"
@@ -1463,6 +1471,7 @@ def analyze_complete_source_unit(
     corpus_citation_path: str,
     test_cases: Sequence[object] | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    extract_numeric_grounding_occurrences: NumericOccurrenceExtractor | None = None,
     extract_named_scalars: NamedScalarExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None = None,
@@ -1489,6 +1498,9 @@ def analyze_complete_source_unit(
                 corpus_citation_path=corpus_citation_path,
                 test_cases=test_cases,
                 extract_numeric_occurrences=extract_numeric_occurrences,
+                extract_numeric_grounding_occurrences=(
+                    extract_numeric_grounding_occurrences or extract_numeric_occurrences
+                ),
                 extract_named_scalars=extract_named_scalars,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 artifact_numeric_values=artifact_numeric_values,
@@ -1506,6 +1518,7 @@ def _analyze_rulespec_payload(
     corpus_citation_path: str,
     test_cases: Sequence[object] | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
+    extract_numeric_grounding_occurrences: NumericOccurrenceExtractor,
     extract_named_scalars: NamedScalarExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None,
@@ -1673,7 +1686,7 @@ def _analyze_rulespec_payload(
                 corpus_citation_path=corpus_citation_path,
                 deferred_paths=deferred_paths,
                 test_cases=test_cases,
-                extract_numeric_occurrences=extract_numeric_occurrences,
+                extract_numeric_occurrences=extract_numeric_grounding_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 formula_environment=formula_environment,
             )
@@ -4536,10 +4549,15 @@ def _source_clause_spans(
         r";|[.!?](?=(?:[ \t]+[A-ZÄÖÜ(]|\s*$))",
         flags=re.MULTILINE,
     )
+    boundary_matches = (
+        match
+        for match in boundary.finditer(source_text)
+        if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+    )
     split_points = {
         0,
         len(source_text),
-        *(match.end() for match in boundary.finditer(source_text)),
+        *(match.end() for match in boundary_matches),
         *(branch.start for branch in branches),
     }
     for start, end in zip(sorted(split_points), sorted(split_points)[1:]):
@@ -4552,6 +4570,22 @@ def _source_clause_spans(
                 start + right_trimmed,
                 raw[left_trimmed:right_trimmed],
             )
+
+
+def _source_clause_boundary_splits_state_code_citation(
+    source_text: str,
+    boundary: re.Match[str],
+) -> bool:
+    """Keep a line-wrapped ``R.S. 47:...`` citation in one legal clause."""
+
+    return bool(
+        boundary.group(0) == "."
+        and re.search(r"\bR\.S\.$", source_text[: boundary.end()], re.IGNORECASE)
+        and re.match(
+            r"\s*\d+[A-Za-z]?:\d+[A-Za-z]?",
+            source_text[boundary.end() :],
+        )
+    )
 
 
 def _span_is_deferred(
@@ -8081,7 +8115,8 @@ def _formula_interval_from_text(
         r"nicht\s+mehr\s+als|über|unter))|"
         r"from|unter|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
-        r"at\s+most|über|more\s+than|above|ab|at\s+least|mindestens)\b",
+        r"at\s+most|über|more\s+than|greater\s+than|"
+        r"exceeds?|exceeding|above|ab|at\s+least|mindestens)\b",
         lowered,
     )
     if keyword is None:
@@ -8139,7 +8174,8 @@ def _formula_interval_from_text(
     ):
         return _NumericInterval(None, False, occurrences[0], True)
     if re.match(
-        r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|above)\b",
+        r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|greater\s+than|"
+        r"exceeds?|exceeding|above)\b",
         lowered_range,
     ):
         return _NumericInterval(occurrences[0], False, None, False)
@@ -8450,6 +8486,11 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
     """
 
     collapsed = _collapse_text(text)
+    notwithstanding_tail = _louisiana_notwithstanding_reference_tail(collapsed)
+    if notwithstanding_tail is not None:
+        return _notwithstanding_reference_tail_requires_paired_witness(
+            notwithstanding_tail
+        )
     if re.search(
         r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
         collapsed,
@@ -8465,6 +8506,56 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
     ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
+
+
+def _louisiana_notwithstanding_reference_tail(text: str) -> str | None:
+    """Return the rule tail after a leading Louisiana R.S. override reference."""
+
+    match = _LOUISIANA_NOTWITHSTANDING_RS_REFERENCE_PREFIX.match(
+        _strip_source_clause_marker(_collapse_text(text))
+    )
+    return match.group("tail").strip() if match is not None else None
+
+
+def _notwithstanding_reference_tail_requires_paired_witness(text: str) -> bool:
+    """Keep locally testable conditions after a non-toggleable override citation."""
+
+    for match in _source_exception_or_applicability_matches(text):
+        if _subject_to_is_administrative_effect(text, match):
+            continue
+        return True
+    return bool(
+        re.search(
+            r"\b(?:exceeds?|exceeding|greater\s+than|less\s+than|more\s+than|"
+            r"at\s+least|at\s+most|above|below)\b|[<>]=?",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _subject_to_is_administrative_effect(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Distinguish an oversight result from a ``subject to`` condition."""
+
+    if match.group(0).strip().lower() != "subject to":
+        return False
+    prefix = text[max(0, match.start() - 32) : match.start()]
+    suffix = text[match.end() : match.end() + 32]
+    return bool(
+        re.search(
+            r"\b(?:(?:shall|must|will|may)\s+be|is|are|was|were)\s+$",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        and re.match(
+            r"\s+(?:oversight|review|approval|audit|reporting)\b",
+            suffix,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _source_has_formal_cross_reference(text: str) -> bool:
@@ -8908,6 +8999,10 @@ def _exception_witnesses_for_branch(
     }
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
+    numeric_interval = _formula_interval_from_text(
+        authoritative_numeric_recall_text(branch.text),
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
     return {
         witness
         for witness in toggled_exception_selectors
@@ -8920,7 +9015,8 @@ def _exception_witnesses_for_branch(
             )
             if witness.numeric_transition is not None
             else (
-                witness.active_value
+                numeric_interval is None
+                and witness.active_value
                 == _source_exception_selector_active_value(
                     condition_text,
                     witness.selector_name,
@@ -8939,6 +9035,9 @@ def _source_exception_condition_text(text: str) -> str:
     """Return the condition region without the ordinary claim subject."""
 
     clause = _strip_source_clause_marker(text)
+    notwithstanding_tail = _louisiana_notwithstanding_reference_tail(clause)
+    if notwithstanding_tail is not None:
+        return notwithstanding_tail
     marker = next(iter(_source_exception_or_applicability_matches(clause)), None)
     if marker is None:
         return clause
@@ -9251,6 +9350,7 @@ def _source_selector_concept_matches(
         "condition": r"\b(?:condition|voraussetzung)\w*",
         "eligible": r"\b(?:eligible|berechtig|anspruch)\w*",
         "income": r"\b(?:income|einkommen)\w*",
+        "penalty": r"\b(?:penalt(?:y|ies))\b",
         "qualified": r"\b(?:qualified|berechtig|anspruch)\w*",
         "exempt": r"\b(?:exempt|befrei)\w*",
         "exception": r"\b(?:exception|ausnahme|abweich|befrei)\w*",
