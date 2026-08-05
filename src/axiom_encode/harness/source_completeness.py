@@ -363,6 +363,17 @@ _FORMULA_GENERIC_TABLE_REFERENCE = (
     r"from|by\s+reference\s+to)\s+"
     rf"{_FORMULA_GENERIC_TABLE_TARGET}"
 )
+_FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
+    rf"(?:\b(?:calculated|computed|determined)\s+(?:"
+    r"as\s+follows|"
+    rf"{_FORMULA_GENERIC_TABLE_REFERENCE}|"
+    rf"(?:using|according\s+to|based\s+on|by|in\s+the\s+manner\s+shown\s+in)\s+"
+    rf"{_FORMULA_GENERIC_TABLE_TARGET}"
+    rf")|\b(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET})"
+    r"(?:\s+for\s+(?:taxable|tax|calendar|fiscal)\s+year\s+\d{4})?"
+    r"\s*:\s*$",
+    flags=re.IGNORECASE,
+)
 _FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+(?:"
     r"(?:by|through)\s+(?:adding|addition|subtracting|subtraction|dividing|"
@@ -492,10 +503,12 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "paid",
         "payable",
         "permitted",
+        "properly",
         "prescribed",
         "provided",
         "pursuant",
         "received",
+        "reported",
         "responsible",
         "shown",
         "so",
@@ -507,6 +520,9 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "thereon",
         "previously",
         "below",
+        "duly",
+        "legally",
+        "worked",
     }
 )
 _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS = frozenset(
@@ -539,7 +555,8 @@ _FORMULA_LEGAL_PROVISION_REFERENCE = (
     r"(?:(?:this|the)\s+)?(?:section|subsection|paragraph|chapter|part|title|"
     r"article|subdivision)"
     r"(?:\s+(?:(?:\([^)]+\))+|[A-Z]+|[IVXLCDM]+|\d+(?:\.\d+)*))?|"
-    r"R\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*)"
+    r"R\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*|"
+    r"§+\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*)"
 )
 _FORMULA_SUBJECT_PREAMBLE_PREFIX = re.compile(
     rf"(?:"
@@ -548,7 +565,7 @@ _FORMULA_SUBJECT_PREAMBLE_PREFIX = re.compile(
     rf"\s+{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
     rf"subject\s+to\s+(?:(?:the\s+)?(?:limitations?|provisions?|requirements?)"
     rf"\s+of\s+)?{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
-    rf"(?:except\s+)?as\s+(?:otherwise\s+)?provided\s+in\s+"
+    rf"(?:except\s+)?as\s+(?:otherwise\s+)?provided\s+(?:in|by)\s+"
     rf"{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
     r"for\s+(?:taxable|tax|calendar|fiscal)\s+years?[^,.;:\n]*?"
     r"(?:18|19|20)\d{2}|"
@@ -575,6 +592,7 @@ _FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
         "deduction",
         "dividend",
         "divisor",
+        "denominator",
         "expense",
         "factor",
         "fee",
@@ -586,6 +604,8 @@ _FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
         "limit",
         "loss",
         "margin",
+        "month",
+        "numerator",
         "number",
         "offset",
         "payment",
@@ -2033,6 +2053,15 @@ def _formula_result_subject_head(prefix: str) -> str:
 def _formula_operand_is_numeric(operand: str) -> bool:
     if _FORMULA_NUMERIC_OPERAND_LITERAL.fullmatch(operand):
         return True
+    if re.match(
+        r"\s*(?:the\s+)?(?:addition|average|difference|greater|greatest|higher|"
+        r"highest|larger|largest|least|lesser|lower|lowest|max|maximum|mean|"
+        r"median|min|minimum|product|quotient|ratio|remainder|smaller|smallest|"
+        r"sum|total)\s+(?:of|between)\b",
+        operand,
+        flags=re.IGNORECASE,
+    ):
+        return _formula_operation_has_numeric_operands(operand)
     head = _formula_subject_segment_head(operand)
     if head in _FORMULA_NUMERIC_OPERAND_HEADS:
         return True
@@ -2048,13 +2077,13 @@ def _formula_operand_is_numeric(operand: str) -> bool:
 
 def _formula_aggregate_operands_are_numeric(operands: str) -> bool:
     comma_parts = [
-        re.sub(r"^and\s+", "", part.strip(), flags=re.IGNORECASE)
+        re.sub(r"^(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
         for part in re.split(r"\s*,\s*", operands)
         if part.strip()
     ]
     if len(comma_parts) >= 2:
         return all(_formula_operand_is_numeric(part) for part in comma_parts)
-    conjunctions = list(re.finditer(r"\s+and\s+", operands, flags=re.IGNORECASE))
+    conjunctions = list(re.finditer(r"\s+(?:and|or)\s+", operands, flags=re.IGNORECASE))
     for conjunction in conjunctions:
         left = operands[: conjunction.start()]
         right = operands[conjunction.end() :]
@@ -2078,14 +2107,19 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
 
     clause = re.split(r"[.;:\n]", text, maxsplit=1)[0]
     clause = re.sub(
-        r",\s*(?:as\s+[^,]+|if\s+any|net\s+of\s+[^,]+|"
+        r",\s*(?:(?:as|adjusted|calculated|computed|described|determined|"
+        r"provided|subject)\s+[^,]+|if\s+[^,]+|net\s+of\s+[^,]+|"
         r"including\s+[^,]+|excluding\s+[^,]+)\s*,",
         " ",
         clause,
         flags=re.IGNORECASE,
     )
     if re.search(
-        r"\bfollowing\s+(?:amounts?|percentages?|rates?|values?)\b",
+        r"\b(?:addition|average|difference|greater|greatest|higher|highest|"
+        r"larger|largest|least|lesser|lower|lowest|max|maximum|mean|median|min|"
+        r"minimum|product|quotient|ratio|remainder|smaller|smallest|sum|total)"
+        r"\s+(?:of|between)\s+(?:the\s+)?following\s+"
+        r"(?:amounts?|percentages?|rates?|values?)\s*$",
         clause,
         flags=re.IGNORECASE,
     ):
@@ -2099,8 +2133,18 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
         flags=re.IGNORECASE,
     ):
         return True
+    remainder = re.search(
+        r"\bremainder\s+of\s+(?P<left>.+?)\s+after\s+(?P<right>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if remainder is not None:
+        return _formula_operand_is_numeric(
+            remainder.group("left")
+        ) and _formula_operand_is_numeric(remainder.group("right"))
+
     aggregate = re.search(
-        r"\b(?:addition|average|greater|greatest|higher|highest|largest|least|"
+        r"\b(?P<operation>addition|average|greater|greatest|higher|highest|largest|least|"
         r"larger|lesser|lower|lowest|max|maximum|mean|median|min|minimum|product|"
         r"remainder|smaller|smallest|sum|total|difference)\s+of\s+"
         r"(?P<operands>.+)$",
@@ -2108,7 +2152,15 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
         flags=re.IGNORECASE,
     )
     if aggregate is not None:
-        return _formula_aggregate_operands_are_numeric(aggregate.group("operands"))
+        operands = aggregate.group("operands")
+        if _formula_aggregate_operands_are_numeric(operands):
+            return True
+        return aggregate.group("operation").lower() in {
+            "average",
+            "mean",
+            "median",
+            "total",
+        } and _formula_operand_is_numeric(operands)
 
     patterns = (
         r"\bdifference\s+between\s+(?P<left>.+?)\s+and\s+(?P<right>.+)$",
@@ -5368,9 +5420,11 @@ def _formula_clause_is_structural_chapeau(
 ) -> bool:
     """Let a colon-ended computation heading delegate to its child rows."""
 
-    if not clause.rstrip().endswith(
-        ":"
-    ) or _formula_clause_states_substantive_operation(clause):
+    if (
+        not clause.rstrip().endswith(":")
+        or not _FORMULA_NONOPERATIVE_TABLE_HEADING.search(clause)
+        or _formula_clause_states_substantive_operation(clause)
+    ):
         return False
     descendants = tuple(
         branch

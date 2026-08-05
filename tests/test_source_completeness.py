@@ -1885,6 +1885,45 @@ B. End.
 @pytest.mark.parametrize(
     "operation",
     (
+        "The credit shall be computed by applying the rate to income",
+        "The credit shall be computed as income multiplied by the applicable rate",
+        "The credit shall be determined by applying the ratio to income",
+        "The credit shall be calculated through application of the rate to the base",
+        "The credit shall be computed by combining the base and supplement",
+        "The credit equals twice the base",
+        "The credit is half of income",
+        "The credit is calculated by doubling the base",
+        "The credit is calculated by taking the lesser of income and the limit",
+    ),
+)
+def test_unrecognized_operative_chapeau_cannot_delegate_to_formula_children(
+    operation: str,
+):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
         "reduced by deductions, using the following rates",
         "deducted by offsets, using the following rates",
         "increased by bonuses, using the following rates",
@@ -2180,6 +2219,11 @@ B. End.
         "B. End.",
         "A. The margin is the difference between the printed text and the page "
         "edge.\nB. End.",
+        "A. The benefit is the product of a collective bargaining agreement and "
+        "employer policy reflecting the following values: fairness, consistency, "
+        "and transparency.\nB. End.",
+        "A. The withholding is the product of a court order and agency action "
+        "concerning the following amounts of paperwork.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2350,6 +2394,24 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The assessment is the difference between $100 and ($20)",
         "The assessment is the total of wages and interest",
         "The assessment is the smaller of taxable value and adjusted basis",
+        "The credit is the lesser of the base or the cap",
+        "The credit is the greater of the federal amount or the state amount",
+        "The assessment is the average of monthly wages",
+        "The charge is the average of hours worked during the month",
+        "The assessment is the ratio of the numerator to the denominator",
+        "The charge is the quotient of total receipts by twelve months",
+        "The assessment is the median of reported values",
+        "The distribution is the remainder of proceeds after deductions",
+        "The assessment is the sum of wages, if applicable, and interest",
+        "The assessment is the sum of wages, determined under paragraph (1), and interest",
+        "The assessment is the sum of taxable value and the greater of $100 or $200",
+        "The income properly derived from sources in this state is the sum of wages "
+        "and interest",
+        "The credit duly allowed shall equal the lesser of the base or the cap",
+        "The tax legally imposed is the sum of the base and surcharge",
+        "Pursuant to § 47:297.4 the credit is the sum of the base and supplement",
+        "Except as otherwise provided by subsection A the credit is the sum of the "
+        "base and supplement",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
