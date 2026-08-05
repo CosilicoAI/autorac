@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import time
 from pathlib import Path
 
 import pytest
@@ -1168,6 +1169,355 @@ Acts 1983, 2ND EX. SESS., NO. 1, §1.
         (("1",), "paragraph"),
         (("2",), "paragraph"),
     ]
+
+
+def test_louisiana_dotted_subsection_ends_line_wrapped_numeric_paragraph():
+    source = """\
+A. A standard deduction shall be allowed. For tax year 2025:
+
+(1) Single Individual and Married-Separate $12,500.00
+
+(2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+Spouse, and Head of Household provided for Single Individuals
+
+B. Beginning January 1, 2026, and thereafter, the standard deduction shall be
+adjusted annually by an amount calculated by multiplying the prior year's deduction
+by the CPI-U increase.
+"""
+
+    branches = recognize_source_structure(source)
+
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("a", "1"), "(1)"),
+        (("a", "2"), "(2)"),
+        (("b",), "B."),
+    ]
+    paragraph_two = next(branch for branch in branches if branch.path == ("a", "2"))
+    assert "200% of the dollar amount" in paragraph_two.text
+    assert "Beginning January 1, 2026" not in paragraph_two.text
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert not any(
+        "200%" in branch.text and "CPI-U" in branch.text for branch in formula_branches
+    )
+    assert any(
+        branch.path == ("a", "2") and "200%" in branch.text
+        for branch in formula_branches
+    )
+    assert any(branch.path == ("b",) for branch in formula_branches)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "a. ordinary prose\n(1) The rule applies.",
+        "(2) Prior paragraph.\nNO. 1, section 1.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nEX. SESS., No. 1.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nOK. This sentence is prose.\nB. Beginning rule.",
+        "(2) Prior paragraph.\nC. 54A:4-6 controls.\nB. Beginning rule.",
+    ),
+)
+def test_nonsequential_dotted_prose_is_not_a_top_level_subsection(source: str):
+    branches = recognize_source_structure(source)
+
+    assert all(
+        branch.label not in {"NO.", "EX.", "OK.", "C.", "B."} for branch in branches
+    )
+
+
+def test_dotted_subsection_children_match_canonical_source_paths():
+    source = "A. Chapeau.\n(1) First.\n(2) Second.\nB. Other."
+    branches = recognize_source_structure(source)
+    paths = {branch.path for branch in branches}
+
+    assert ("a", "1") in paths
+    assert ("a", "2") in paths
+    assert completeness_module._paths_from_source_reference(
+        "us-la/statute/47:294(A)(2)",
+        corpus_citation_path="us-la/statute/47:294",
+    ) == {("a", "2")}
+
+
+def test_dotted_subsections_preserve_parenthesized_preamble():
+    source = "(9) Preamble rule.\nA. First.\n(1) Nested.\nB. Second."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("9",),
+        ("a",),
+        ("a", "1"),
+        ("b",),
+    }
+
+
+def test_dotted_subsection_sequence_ignores_later_citation_marker():
+    source = "A. First.\nB. Second.\nC. 54A:4-6 controls."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    subsection_b = next(
+        branch for branch in recognize_source_structure(source) if branch.path == ("b",)
+    )
+    assert "54A:4-6" not in subsection_b.text
+
+
+def test_dotted_subsection_sequence_survives_later_duplicate_marker():
+    source = "A. First.\nB. Second.\nB. Smith formula amount = 999."
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    subsection_b = next(branch for branch in branches if branch.path == ("b",))
+    assert "999" not in subsection_b.text
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert not any(
+        branch.path == ("b",) and "999" in branch.text for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize(
+    "interposed",
+    ("C. 54A:4-6 controls.", "I. e. explanatory prose."),
+)
+def test_ignorable_dotted_candidate_between_a_and_b_preserves_hierarchy(
+    interposed: str,
+):
+    source = f"A. First.\n{interposed}\nB. Second."
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    assert (
+        interposed
+        not in next(branch for branch in branches if branch.path == ("a",)).text
+    )
+
+
+def test_formula_after_ignored_dotted_candidate_remains_root_scoped():
+    source = "A. First rule.\nC. 54A:4-6 controls\namount = income * 2\nB. Second rule."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert any(
+        branch.path == () and "amount = income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+def test_ordered_dotted_labels_are_structural_without_semantic_guessing():
+    source = "A. Smith prepared the report.\nB. Jones approved it."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_rejected_dotted_candidates_are_scanned_with_bounded_runtime():
+    source = "A. prose\nQ. prose\n" * 40_000
+
+    started = time.perf_counter()
+    branches = recognize_source_structure(source)
+    elapsed = time.perf_counter() - started
+
+    assert branches == ()
+    assert elapsed < 1.5
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. First.\nB. 54A:4-6 controls.",
+        "A. 12.34 controls.\nB. Second.",
+    ),
+)
+def test_expected_dotted_label_may_begin_with_citation_like_text(source: str):
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_dotted_subsection_label_may_occupy_its_own_line():
+    source = "A.\namount_a = income * 2\nB.\namount_b = income * 3"
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert any(
+        branch.path == ("a",) and "amount_a = income * 2" in branch.text
+        for branch in formula_branches
+    )
+    assert any(
+        branch.path == ("b",) and "amount_b = income * 3" in branch.text
+        for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize(
+    ("rejected_marker", "placement", "newline"),
+    (
+        ("C.54A:4-6 controls", "interposed", "\n"),
+        ("C.54A:4-6 controls", "trailing", "\n"),
+        ("I.e. explanatory prose", "interposed", "\n"),
+        ("I.e. explanatory prose", "trailing", "\n"),
+        ("I.e.", "interposed", "\n"),
+        ("I.e.", "trailing", "\n"),
+        ("I.e.", "interposed", "\r\n"),
+        ("I.e.", "trailing", "\r\n"),
+    ),
+)
+def test_joined_rejected_marker_is_a_fail_closed_boundary(
+    rejected_marker: str,
+    placement: str,
+    newline: str,
+):
+    if placement == "interposed":
+        source = (
+            f"A. First rule.{newline}{rejected_marker}{newline}"
+            f"amount = income * 2{newline}B. Second rule."
+        )
+    else:
+        source = (
+            f"A. First rule.{newline}B. Second rule.{newline}"
+            f"{rejected_marker}{newline}amount = income * 2"
+        )
+
+    branches = recognize_source_structure(source)
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert any(
+        branch.path == () and "amount = income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+def test_standalone_spaced_i_e_is_a_fail_closed_boundary(newline: str):
+    source = (
+        f"A. First rule.{newline}I. e.{newline}amount = income * 2{newline}"
+        "B. Second rule."
+    )
+    branches = recognize_source_structure(source)
+
+    assert [(branch.path, branch.label) for branch in branches] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert any(
+        branch.path == () and "amount = income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_path"),
+    (
+        (
+            "A. First.\nB. amount = income * 2\nC. 54A:4-6 controls.",
+            ("b",),
+        ),
+        (
+            "A. amount = income * 2\nC. 54A:4-6 controls.\nB. Second.",
+            ("a",),
+        ),
+    ),
+)
+def test_unpunctuated_formula_keeps_owner_before_ignored_dotted_candidate(
+    source: str,
+    expected_path: tuple[str, ...],
+):
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert any(
+        branch.path == expected_path and "income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
+def test_dotted_subsection_sequence_uses_later_valid_a_b_run():
+    source = "A. Isolated citation.\nA. First.\nB. Second."
+
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+def test_skipped_dotted_labels_do_not_form_subsection_hierarchy():
+    assert recognize_source_structure("A. First.\nC. Third.\nD. Fourth.") == ()
+
+
+def test_parenthesized_letters_nest_under_active_numeric_paragraph():
+    source = "A. Outer.\n(1) Numeric.\n(a) First.\n(b) Second.\n(2) Other.\nB. End."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("a",),
+        ("a", "1"),
+        ("a", "1", "a"),
+        ("a", "1", "b"),
+        ("a", "2"),
+        ("b",),
+    }
 
 
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
