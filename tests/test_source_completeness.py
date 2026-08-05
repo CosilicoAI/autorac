@@ -1311,6 +1311,53 @@ def test_ignorable_dotted_candidate_between_a_and_b_preserves_hierarchy(
     )
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. First.\nB. 54A:4-6 controls.",
+        "A. 12.34 controls.\nB. Second.",
+    ),
+)
+def test_expected_dotted_label_may_begin_with_citation_like_text(source: str):
+    assert [
+        (branch.path, branch.label) for branch in recognize_source_structure(source)
+    ] == [
+        (("a",), "A."),
+        (("b",), "B."),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_path"),
+    (
+        (
+            "A. First.\nB. amount = income * 2\nC. 54A:4-6 controls.",
+            ("b",),
+        ),
+        (
+            "A. amount = income * 2\nC. 54A:4-6 controls.\nB. Second.",
+            ("a",),
+        ),
+    ),
+)
+def test_unpunctuated_formula_keeps_owner_before_ignored_dotted_candidate(
+    source: str,
+    expected_path: tuple[str, ...],
+):
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert any(
+        branch.path == expected_path and "income * 2" in branch.text
+        for branch in formula_branches
+    )
+
+
 def test_dotted_subsection_sequence_uses_later_valid_a_b_run():
     source = "A. Isolated citation.\nA. First.\nB. Second."
 

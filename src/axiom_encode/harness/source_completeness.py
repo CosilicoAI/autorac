@@ -1439,18 +1439,21 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
 
     candidates = tuple(_DOTTED_SUBSECTION_MARKER.finditer(source_text))
     for start, match in enumerate(candidates):
-        if match.group("label") != "A" or _dotted_marker_starts_citation(
-            source_text, match
-        ):
+        if match.group("label") != "A":
             continue
         sequence = [match]
         for candidate in candidates[start + 1 :]:
+            expected = chr(ord(sequence[-1].group("label")) + 1)
+            if candidate.group("label") == expected:
+                if len(sequence) >= 2 and _dotted_marker_is_ignorable(
+                    source_text, candidate
+                ):
+                    continue
+                sequence.append(candidate)
+                continue
             if _dotted_marker_is_ignorable(source_text, candidate):
                 continue
-            expected = chr(ord(sequence[-1].group("label")) + 1)
-            if candidate.group("label") != expected:
-                break
-            sequence.append(candidate)
+            break
         if len(sequence) >= 2:
             return tuple(sequence)
     return ()
@@ -4723,6 +4726,7 @@ def _source_clause_spans(
         len(source_text),
         *(match.end() for match in boundary_matches),
         *(branch.start for branch in branches),
+        *(branch.end for branch in branches),
     }
     for start, end in zip(sorted(split_points), sorted(split_points)[1:]):
         raw = source_text[start:end]
