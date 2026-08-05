@@ -1132,16 +1132,26 @@ def authorize_legacy_index_manifest_shrink(
     embedded_entries = embedded.get("applied_files")
     if not isinstance(embedded_entries, list):
         raise ValueError("embedded model apply manifest has malformed applied_files")
-    embedded_live = {
-        PurePosixPath(item["path"]): item["sha256"]
-        for item in embedded_entries
-        if isinstance(item, dict)
-        and set(item) == {"path", "sha256"}
-        and isinstance(item.get("path"), str)
-        and isinstance(item.get("sha256"), str)
-    }
+    embedded_live: dict[PurePosixPath, str] = {}
+    for index, item in enumerate(embedded_entries):
+        if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+            raise ValueError(f"embedded applied_files[{index}] is malformed")
+        path = _safe_relative_path(
+            item.get("path"),
+            label=f"embedded applied_files[{index}].path",
+        )
+        digest = item.get("sha256")
+        if (
+            not isinstance(digest, str)
+            or DIGEST_PATTERN.fullmatch(digest) is None
+            or path in embedded_live
+        ):
+            raise ValueError(
+                f"embedded applied_files[{index}] digest or path is malformed"
+            )
+        embedded_live[path] = digest
     expected_model_live = {target: live[target], companion: live[companion]}
-    if embedded_live != expected_model_live or len(embedded_live) != len(embedded_entries):
+    if embedded_live != expected_model_live:
         return False
 
     for path in (target, companion):

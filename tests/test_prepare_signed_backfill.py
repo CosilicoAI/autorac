@@ -153,6 +153,29 @@ def test_authorize_legacy_index_manifest_shrink_rejects_stale_target(
         )
 
 
+@pytest.mark.parametrize(
+    "malformed_path",
+    [
+        "us//statutes/42/1437c-1.yaml",
+        "us/statutes/42/./1437c-1.yaml",
+    ],
+)
+def test_authorize_legacy_index_manifest_shrink_rejects_malformed_embedded_path(
+    tmp_path: Path,
+    malformed_path: str,
+) -> None:
+    repo, target, manifest = _legacy_index_shrink_repo(tmp_path)
+    payload = json.loads(manifest.read_text())
+    payload["replacement_manifest"]["applied_files"][0]["path"] = malformed_path
+    manifest.write_text(json.dumps(payload) + "\n")
+
+    with pytest.raises(ValueError, match="not a safe repository-relative path"):
+        authorize_legacy_index_manifest_shrink(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
 def test_split_atomic_source_input_preserves_legacy_source_array() -> None:
     assert split_atomic_source_input('["us-ri/statute/44-30-1"]') == {
         "canonical_refresh_bundle": [],
