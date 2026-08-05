@@ -71,10 +71,7 @@ def _legacy_index_shrink_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
         json.dumps(
             {
                 "schema_version": "axiom-encode/applied-rulespec/v5",
-                "tool": (
-                    "axiom-encode encode --apply "
-                    "--replace-legacy-rulespec-path"
-                ),
+                "tool": ("axiom-encode encode --apply --replace-legacy-rulespec-path"),
                 "replacement": {
                     "legacy_manifest_path": (
                         ".axiom/encoding-manifests/us/statutes/42/1437c–1.json"
@@ -124,9 +121,7 @@ def test_authorize_legacy_index_manifest_shrink_denies_other_manifest_shapes(
     if mutation == "tool":
         payload["tool"] = "axiom-encode encode --apply"
     elif mutation == "extra-live":
-        payload["applied_files"].append(
-            {"path": "us/extra.yaml", "sha256": "a" * 64}
-        )
+        payload["applied_files"].append({"path": "us/extra.yaml", "sha256": "a" * 64})
     else:
         index = repo / ".axiom/index/provisions_to_rules.json"
         payload["applied_files"][2]["sha256"] = hashlib.sha256(

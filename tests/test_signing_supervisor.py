@@ -1847,7 +1847,7 @@ def test_targeted_signed_reencode_only_allows_audited_legacy_index_shrink() -> N
     command = step["run"]
 
     assert "authorize-legacy-index-manifest-shrink" in command
-    assert 'args+=(--allow-shrink)' in command
+    assert "args+=(--allow-shrink)" in command
     assert command.count("--allow-shrink") == 1
     assert '[ -n "$replacement_path" ] && [ -z "$legacy_source_path" ]' in command
 
