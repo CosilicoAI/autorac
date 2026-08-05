@@ -1138,6 +1138,34 @@ def test_nj_title_54a_citations_are_not_glued_german_sentence_markers():
     ]
 
 
+@pytest.mark.parametrize("ordinal", ["1ST", "2ND", "3RD", "4TH", "21st"])
+def test_english_ordinals_are_not_glued_german_sentence_markers(ordinal: str):
+    branches = recognize_source_structure(
+        f'(2) The amount applies. Acts 1983, {ordinal} EX. SESS., No. 1.'
+    )
+
+    assert [branch.label for branch in branches if branch.kind == "sentence"] == []
+
+
+def test_louisiana_session_law_ordinal_does_not_invent_source_branch():
+    source = """\
+(1) Single Individual and Married-Separate $12,500.00
+
+(2) Married-Joint Return, a Qualified Surviving 200% of the dollar amount
+
+Spouse, and Head of Household provided for Single Individuals
+
+Acts 1983, 2ND EX. SESS., NO. 1, §1.
+"""
+
+    branches = recognize_source_structure(source)
+
+    assert [(branch.path, branch.kind) for branch in branches] == [
+        (("1",), "paragraph"),
+        (("2",), "paragraph"),
+    ]
+
+
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():
     source = (
         "54A:4-7 New Jersey credit. (2) For the purposes of the calculation of "
