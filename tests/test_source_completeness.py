@@ -1894,6 +1894,12 @@ B. End.
         "The credit is half of income",
         "The credit is calculated by doubling the base",
         "The credit is calculated by taking the lesser of income and the limit",
+        "The credit equals twice the base, with the base computed using Table 1 below",
+        "The credit is half of income, with the rate determined according to Schedule A below",
+        "The credit shall be computed by applying the applicable rate to income, and "
+        "the applicable rate shall be equal to the following percentages",
+        "The credit shall be computed as income multiplied by the applicable rate, "
+        "and the applicable rate shall be equal to the following percentages",
     ),
 )
 def test_unrecognized_operative_chapeau_cannot_delegate_to_formula_children(
@@ -2133,6 +2139,12 @@ B. End.
         "determined by the following schedule",
         "computed by reference to the table below",
         "computed in the manner shown in the table below",
+        "computed under the following schedule",
+        "calculated as shown in the table below",
+        "calculated as provided in the following table",
+        "computed under the following table",
+        "computed in the following table",
+        "determined with the following schedule",
     ),
 )
 def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
@@ -2224,6 +2236,8 @@ B. End.
         "and transparency.\nB. End.",
         "A. The withholding is the product of a court order and agency action "
         "concerning the following amounts of paperwork.\nB. End.",
+        "A. The benefit is the product of the following values: fairness and "
+        "transparency.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2412,6 +2426,23 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "Pursuant to § 47:297.4 the credit is the sum of the base and supplement",
         "Except as otherwise provided by subsection A the credit is the sum of the "
         "base and supplement",
+        "The credit is the lesser of taxable income or the statutory limit, whichever "
+        "is less",
+        "The assessment is the greater of taxable value and adjusted basis, as applicable",
+        "The assessment is the sum of monthly wages",
+        "The distribution is the sum of partnership earnings and capital gains",
+        "The assessment is the sum of wages, whether paid or accrued, and interest",
+        "The assessment is the ratio between taxable value and adjusted basis",
+        "The income allocable to this state is the sum of wages and interest",
+        "The credit authorized by this section is the lesser of the base or the cap",
+        "The tax levied under this section is the sum of the base and surcharge",
+        "The tax assessed under this section is the sum of the base and surcharge",
+        "Pursuant to R.S. 47:297.4(A) the credit is the sum of the base and supplement",
+        "The assessment is the ratio of gains recognized during the year to losses "
+        "incurred during the year",
+        "The assessment is the sum of income earned and expenses incurred",
+        "The assessment is the sum of wages, as defined in R.S. 47:1, and interest",
+        "The assessment is the sum of wages, as defined in § 47:1, and interest",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
