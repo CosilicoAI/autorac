@@ -16,6 +16,9 @@ def _mock_client():
 def _configured_env(monkeypatch):
     monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", "secret")
+    # These tests exercise the enabled path with a mocked client; lift the
+    # pytest guard that would otherwise force telemetry off.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
 
 class TestRunnerIdentity:
@@ -30,6 +33,20 @@ class TestLiveRunTelemetry:
     def test_noop_without_credentials(self, monkeypatch):
         monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_URL", raising=False)
         monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", raising=False)
+        with patch("axiom_encode.supabase_sync.get_supabase_client") as mock_get:
+            with LiveRunTelemetry(
+                citation="us/statute/26/32",
+                backend="codex",
+                model="gpt-5.5",
+                encoder_version="0.0.0",
+            ) as live:
+                assert live._client is None
+        mock_get.assert_not_called()
+
+    def test_noop_under_pytest_even_with_credentials(self, monkeypatch):
+        monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", "secret")
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_x.py::test_y")
         with patch("axiom_encode.supabase_sync.get_supabase_client") as mock_get:
             with LiveRunTelemetry(
                 citation="us/statute/26/32",

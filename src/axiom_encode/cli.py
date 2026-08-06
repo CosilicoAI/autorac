@@ -55720,6 +55720,10 @@ def _eval_repair_manifest_path(result) -> Path | None:
 def _sync_run_to_supabase_if_configured(
     run: EncodingRun, *, db_path: Path = DEFAULT_DB
 ) -> dict[str, bool]:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # Developer machines carry write credentials in their shell env; a
+        # pytest fixture run must never reach the real dashboard.
+        return {"configured": False, "run": False, "session": False}
     if not (
         os.environ.get("AXIOM_ENCODE_SUPABASE_URL")
         and os.environ.get("AXIOM_ENCODE_SUPABASE_SECRET_KEY")
