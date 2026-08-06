@@ -484,7 +484,7 @@ _FORMULA_FOLLOWING_OPERAND_PROVISO = re.compile(
 _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:shall|must|may)\s+)?(?:"
     r"(?:(?:in\s+(?:no\s+event|no\s+case)\s+|never\s+)?"
-    r"(?:not\s+)?(?:be\s+)?(?:(?:less|lower)\s+than|below|"
+    r"(?:(?:not\s+)?(?:be\s+)?|be\s+not\s+)(?:(?:less|lower)\s+than|below|"
     r"no\s+less\s+than|at\s+least|greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?))|"
     r"not\s+(?:be\s+negative|fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
@@ -2522,14 +2522,24 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
     if named_match is not None:
         identifier_tail = named_match.group("tail").strip()
         if identifier_tail:
-            code_like = re.fullmatch(
+            administrative_title = re.search(
+                r"\b(?:administration|guides?|guidelines|manuals?|methodolog(?:y|ies)|"
+                r"operations?|polic(?:y|ies)|publications?|requirements?|rules?)\b",
+                identifier_tail,
+                flags=re.IGNORECASE,
+            )
+            code_like = administrative_title is None and re.fullmatch(
                 r"[A-Z0-9]+(?:-[A-Z0-9]+)*",
                 identifier_tail,
             )
             targeted_coefficient_name = (
-                named_match.group("head").lower() == "coefficient"
+                administrative_title is None
+                and named_match.group("head").lower() == "coefficient"
                 and target_match is not None
-                and re.fullmatch(r"[A-Z][A-Za-z0-9]*", identifier_tail)
+                and re.fullmatch(
+                    r"[A-Z][A-Za-z0-9]*(?:-[A-Z][A-Za-z0-9]*)*",
+                    identifier_tail,
+                )
             )
             if not (code_like or targeted_coefficient_name):
                 return False
@@ -2562,6 +2572,12 @@ def _without_unproven_applied_operations(text: str) -> str:
 def _formula_numeric_noun_phrase_head(phrase: str) -> str:
     """Return the normalized numeric result head of a bounded noun phrase."""
 
+    phrase = re.sub(
+        r"^(?:that|this|such)\s+",
+        "the ",
+        phrase.strip(),
+        flags=re.IGNORECASE,
+    )
     return _normalize_formula_result_head(_formula_subject_segment_head(phrase))
 
 
@@ -2571,15 +2587,17 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
     gerund = re.search(
         r"\b(?:after|before|once|upon|when)\s+"
         r"(?:calculating|computing|determining)\s+"
-        r"(?P<noun_phrase>[^,.;:\n]{1,80})\s*,",
+        r"(?P<noun_phrase>[^,.;:\n]{1,80}?)"
+        r"(?:\s*,|\s+(?=(?:the\s+)?(?:agency|authority|department)\b))",
         prefix,
         flags=re.IGNORECASE,
     )
     passive = re.search(
         r"\b(?:after|before|once|upon|when)\s+"
         r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s+"
-        r"(?:(?:is|are)\s+|(?:has|have)\s+been\s+)"
-        r"(?:calculated|computed|determined)\s*,",
+        r"(?:(?:is|are)\s+|(?:has|have|had)\s+been\s+)"
+        r"(?:calculated|computed|determined)"
+        r"(?:\s*,|\s+(?=(?:the\s+)?(?:agency|authority|department)\b))",
         prefix,
         flags=re.IGNORECASE,
     )
@@ -2666,7 +2684,15 @@ def _rounding_language_is_computational(text: str) -> bool:
             coordinated_directive = re.search(
                 r"\b(?:can|may|must|shall|should|will)\s+"
                 r"(?:calculate|compute|determine)\s+"
-                r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s+and\s*$",
+                r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s*,?\s+and"
+                r"(?:\s+(?:then|\w+ly))*\s*$",
+                active_prefix,
+                flags=re.IGNORECASE,
+            )
+            shared_object_directive = re.search(
+                r"\b(?:can|may|must|shall|should|will)\s+"
+                r"(?:calculate|compute|determine)\s*,?\s+and"
+                r"(?:\s+(?:then|\w+ly))*\s*$",
                 active_prefix,
                 flags=re.IGNORECASE,
             )
@@ -2675,6 +2701,7 @@ def _rounding_language_is_computational(text: str) -> bool:
                 or to_directive
                 or conditional_directive
                 or coordinated_directive
+                or shared_object_directive
             ):
                 continue
             target_match = re.match(
@@ -10104,12 +10131,14 @@ def _formula_conjoined_upper_bound(
         r"(?:(?:dollars?|usd|euros?|eur) )?(?:, )?"
         r"(?:and|but|und) "
         r"(?P<comparison>"
-        r"(?:is )?less than or equal to|(?:is )?less than|"
-        r"(?:is )?below|(?:is )?at most|(?:is )?(?:not|no) more than|"
-        r"(?:is )?not greater than|does not exceed|not exceeding|"
-        r"not to exceed|(?:is )?not exceeding|up to|"
-        r"(?:shall |must )?not exceed|"
-        r"(?:shall |must )?not be greater than|"
+        r"(?:(?:shall|must|may|will) )?(?:is |be )?(?:"
+        r"less than or equal to|less than|below|at most|"
+        r"(?:not|no) more than|(?:not|no) greater than|"
+        r"up to(?: and including)?|<=|≤)|"
+        r"(?:(?:shall|must|may|will) )?not (?:be )?(?:more|greater) than|"
+        r"(?:(?:shall|must|may|will) )?not exceed|"
+        r"(?:can not|cannot|does not) exceed|not exceeding|"
+        r"not to exceed|(?:is )?not exceeding|"
         r"weniger als oder gleich|weniger als|höchstens"
         r")",
         normalized_upper_gap,

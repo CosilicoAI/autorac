@@ -1852,8 +1852,17 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
         ("and", "not more than", True),
         ("and", "does not exceed", True),
         ("and", "up to", True),
+        ("and", "up to and including", True),
         ("but", "shall not exceed", True),
         ("but", "must not exceed", True),
+        ("but", "shall be no more than", True),
+        ("but", "shall not be more than", True),
+        ("but", "must be at most", True),
+        ("but", "no greater than", True),
+        ("but", "may not exceed", True),
+        ("but", "will not exceed", True),
+        ("but", "cannot exceed", True),
+        ("but", "must be <=", True),
         (", and", "is less than or equal to", True),
     ),
 )
@@ -1892,10 +1901,14 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
         ("at least", True, "and", "less than", False),
         ("at least", True, "but", "not more than", True),
         ("at least", True, "and", "up to", True),
+        ("at least", True, "and", "up to and including", True),
         ("no less than", True, "and", "less than", False),
         ("not less than", True, "and", "less than", False),
         ("greater than", False, "but", "shall not exceed", True),
         ("greater than", False, "but", "must not exceed", True),
+        ("greater than", False, "but", "shall be no more than", True),
+        ("greater than", False, "but", "shall not be more than", True),
+        ("greater than", False, "but", "no greater than", True),
     ),
 )
 def test_formula_interval_composes_lower_and_upper_comparator_families(
@@ -2192,6 +2205,7 @@ B. End.
         "The amount shall be determined by applying coefficient ABCDE to income",
         "The amount shall be determined by applying coefficient Alpha to income",
         "The amount shall be determined by applying Coefficient Omega to income",
+        "The amount shall be determined by applying Coefficient Alpha-Beta to income",
         "The tax shall be determined by applying the rate to every $1 of taxable income",
         "The tax shall be determined by applying the rate to $10,000 of taxable income",
         "The tax shall be determined by applying the rate to the first $10,000 of taxable income",
@@ -2811,9 +2825,14 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The amount is determined by applying Formula Manual to income.",
         "The amount is determined by applying Formula Guide to income.",
         "The amount is determined by applying Formula Guidelines to income.",
+        "The amount is determined by applying Formula MANUAL to income.",
+        "The amount is determined by applying Formula GUIDE to income.",
+        "The amount is determined by applying Formula POLICY.",
         "The amount is determined by applying Index Publication to income.",
+        "The amount is determined by applying Index PUBLICATION to income.",
         "The amount is determined by applying the Tax Formula Manual to income.",
         "The amount is determined by applying Coefficient Policy.",
+        "The amount is determined by applying Coefficient Policy to income.",
         "The amount is determined by applying Formula Administration Manual to income.",
         "The amount is determined by applying the Tax Index Methodology Guide.",
         "The amount is determined by applying the Benefit Formula Administration Manual.",
@@ -2850,6 +2869,42 @@ rules: []
     )
 
     assert _has_issue(result, "formula-output")
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    (
+        "Formula MANUAL to income",
+        "Formula GUIDE to income",
+        "Formula POLICY",
+        "Index PUBLICATION to income",
+        "Coefficient Policy to income",
+    ),
+)
+def test_administrative_named_document_does_not_require_formula_output(
+    identifier: str,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        f"A. The amount is determined by applying {identifier}.",
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -3001,13 +3056,19 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "After determining the amounts, the department shall round them down.",
         "After determining the taxable amounts, the department shall round them down.",
         "After determining the applicable amounts, the department shall round them down.",
+        "After determining the amount the department shall round it down.",
         "After calculating the credits, the department shall round them down.",
         "After calculating each credit, the department shall round it down.",
         "Once the amounts are determined, the department shall round them down.",
         "Once amounts have been determined, the department shall round them down.",
+        "After the amount had been determined, the department shall round it down.",
         "After the amount is determined, the department shall round it down.",
         "After tax amount is determined, the department shall round it down.",
         "The department shall calculate the amount and round it down.",
+        "The department shall calculate the amount and then round it down.",
+        "The department shall calculate the amount, and round it down.",
+        "The department shall calculate the amount and promptly round it down.",
+        "The department shall calculate and round the amount down.",
         "Round the weighted average to the nearest whole number.",
         "Round the amount down.",
         "Round the amount to the nearest whole number.",
@@ -3044,13 +3105,19 @@ def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
         "After determining the amounts, the department shall round them down.",
         "After determining the taxable amounts, the department shall round them down.",
         "After determining the applicable amounts, the department shall round them down.",
+        "After determining the amount the department shall round it down.",
         "After calculating the credits, the department shall round them down.",
         "After calculating each credit, the department shall round it down.",
         "Once the amounts are determined, the department shall round them down.",
         "Once amounts have been determined, the department shall round them down.",
+        "After the amount had been determined, the department shall round it down.",
         "After the amount is determined, the department shall round it down.",
         "After tax amount is determined, the department shall round it down.",
         "The department shall calculate the amount and round it down.",
+        "The department shall calculate the amount and then round it down.",
+        "The department shall calculate the amount, and round it down.",
+        "The department shall calculate the amount and promptly round it down.",
+        "The department shall calculate and round the amount down.",
     ),
 )
 def test_strong_rounding_pronoun_antecedent_requires_formula_output(directive: str):
@@ -3435,6 +3502,8 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The amount is the difference of income and deduction, but it shall not be negative",
         "The amount is the difference of income and deduction, but the amount shall not be negative",
         "The amount is the difference of income and deduction, but it shall not fall below zero",
+        "The benefit is the difference of income and deduction, but that benefit shall not result in a negative amount",
+        "The amount is the difference of income and deduction and shall be not less than zero",
         "The tax is the difference of income and deduction and the tax shall be no less than zero",
         "The tax amount is the difference of income and deduction and the tax amount shall be no less than zero",
         "The total is the difference of income and deduction and the total shall be no less than zero",
@@ -3471,6 +3540,8 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
         "A. The amount is the difference of income and deduction, but it shall not be negative.",
         "A. The amount is the difference of income and deduction, but the amount shall not be negative.",
         "A. The amount is the difference of income and deduction, but it shall not fall below zero.",
+        "A. The benefit is the difference of income and deduction, but that benefit shall not result in a negative amount.",
+        "A. The amount is the difference of income and deduction and shall be not less than zero.",
         "A. The tax is the difference of income and deduction and the tax shall be no less than zero.",
         "A. The tax amount is the difference of income and deduction and the tax amount shall be no less than zero.",
         "A. The total is the difference of income and deduction and the total shall be no less than zero.",
