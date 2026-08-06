@@ -1871,6 +1871,7 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
         ("but", "shall in no event exceed", True),
         ("but", "in no event shall it exceed", True),
         ("but", "the amount shall in no event exceed", True),
+        ("but", "the taxable income shall in no event exceed", True),
         ("but", "in no event shall it be greater than", True),
         ("but", "in no event shall taxable income exceed", True),
         ("but", "cannot be greater than", True),
@@ -1878,15 +1879,19 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
         ("but", "at or below", True),
         ("but", "not over", True),
         ("but", "shall remain below", False),
+        ("but", "shall never remain above", True),
         ("but", "up to, and including", True),
         ("but", "up to and including,", True),
         ("but", "up to, and including,", True),
         ("but", "up to but not including", False),
+        ("but", "up to but excluding", False),
         ("but", "not in excess of", True),
         ("but", "shall not exceed an amount of", True),
         ("but", "shall not exceed an amount equal to", True),
         ("but", "shall not exceed the statutory threshold of", True),
+        ("but", "shall not exceed the annual statutory threshold of", True),
         ("but", "shall not exceed an aggregate amount of", True),
+        ("but", "shall not exceed:", True),
         ("but", "<", False),
         ("but", "must be <=", True),
         (", and", "is less than or equal to", True),
@@ -1944,6 +1949,7 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
         ("at least", True, "but", "shall in no event exceed", True),
         ("at least", True, "but", "in no event shall it exceed", True),
         ("at least", True, "but", "the amount shall in no event exceed", True),
+        ("at least", True, "but", "the taxable income shall in no event exceed", True),
         ("at least", True, "but", "in no event shall it be greater than", True),
         ("at least", True, "but", "in no event shall taxable income exceed", True),
         ("at least", True, "but", "cannot be greater than", True),
@@ -1951,15 +1957,25 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
         ("at least", True, "but", "at or below", True),
         ("at least", True, "but", "not over", True),
         ("at least", True, "but", "shall remain below", False),
+        ("at least", True, "but", "shall never remain above", True),
         ("at least", True, "but", "up to, and including", True),
         ("at least", True, "but", "up to and including,", True),
         ("at least", True, "but", "up to, and including,", True),
         ("at least", True, "but", "up to but not including", False),
+        ("at least", True, "but", "up to but excluding", False),
         ("at least", True, "but", "not in excess of", True),
         ("at least", True, "but", "shall not exceed an amount of", True),
         ("at least", True, "but", "shall not exceed an amount equal to", True),
         ("at least", True, "but", "shall not exceed the statutory threshold of", True),
+        (
+            "at least",
+            True,
+            "but",
+            "shall not exceed the annual statutory threshold of",
+            True,
+        ),
         ("at least", True, "but", "shall not exceed an aggregate amount of", True),
+        ("at least", True, "but", "shall not exceed:", True),
         ("at least", True, "but", "<", False),
     ),
 )
@@ -1993,6 +2009,22 @@ def test_formula_interval_does_not_treat_affirmative_exceed_as_an_upper_bound(
 
     assert interval is not None
     assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.upper is None
+
+
+@pytest.mark.parametrize(
+    "comparison",
+    ("shall never be below", "in no event under"),
+)
+def test_formula_interval_does_not_invert_controlled_lower_comparison(
+    comparison: str,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is at least 25000 but {comparison} 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
     assert interval.upper is None
 
 
@@ -2902,6 +2934,8 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The amount is determined by applying Formula WORKSHEET to income.",
         "The amount is determined by applying Formula STATUTE to income.",
         "The amount is determined by applying Formula ORDINANCE to income.",
+        "The amount is determined by applying Formula BYLAW to income.",
+        "The amount is determined by applying Formula POLICY-MANUAL to income.",
         "The amount is determined by applying Formula WORKPAPER to income.",
         "The amount is determined by applying Formula DECISION to income.",
         "The amount is determined by applying Index LEGISLATION to income.",
@@ -2919,6 +2953,7 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The amount is determined by applying Coefficient AMENDMENT to income.",
         "The amount is determined by applying Coefficient Specification to income.",
         "The amount is determined by applying Coefficient Workpaper to income.",
+        "The amount is determined by applying Coefficient POLICY-MANUAL to income.",
         "The amount is determined by applying Coefficient DECISION to income.",
         "The amount is determined by applying Coefficient MEMO to income.",
         "The amount is determined by applying Index RULING to income.",
@@ -2985,6 +3020,8 @@ rules: []
         "Formula WORKSHEET to income",
         "Formula STATUTE to income",
         "Formula ORDINANCE to income",
+        "Formula BYLAW to income",
+        "Formula POLICY-MANUAL to income",
         "Formula WORKPAPER to income",
         "Formula DECISION to income",
         "Index LEGISLATION to income",
@@ -2999,6 +3036,7 @@ rules: []
         "Coefficient AMENDMENT to income",
         "Coefficient Specification to income",
         "Coefficient Workpaper to income",
+        "Coefficient POLICY-MANUAL to income",
         "Coefficient DECISION to income",
         "Coefficient MEMO to income",
         "Index RULING to income",
@@ -3190,6 +3228,7 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "After determining the amount the program administrator shall round it down.",
         "After determining the amount Program Administrator shall round it down.",
         "After determining the amount program administrator shall round it down.",
+        "After determining the amount the policy director shall round it down.",
         "After determining the amount for the taxable year the commissioner shall round it down.",
         "After determining the amount due the commissioner shall round it down.",
         "After determining the amount payable the commissioner shall round it down.",
@@ -3245,6 +3284,7 @@ def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
         "After calculating the benefit policy the commissioner shall round it down.",
         "After determining the amount the Benefit Policy shall round it down.",
         "After determining the amount the worksheet shall round it down.",
+        "After determining the amount the bylaw shall round it down.",
         "After determining the filing status the board shall round it down.",
         "The department shall review the policy and shall round it down.",
     ):
@@ -3268,6 +3308,7 @@ def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
         "After determining the amount the program administrator shall round it down.",
         "After determining the amount Program Administrator shall round it down.",
         "After determining the amount program administrator shall round it down.",
+        "After determining the amount the policy director shall round it down.",
         "After determining the amount for the taxable year the commissioner shall round it down.",
         "After determining the amount due the commissioner shall round it down.",
         "After determining the amount payable the commissioner shall round it down.",
@@ -3686,6 +3727,7 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The amount is the difference of income and deduction, which is nonnegative",
         "The amount is the difference of income and deduction, which must remain nonnegative",
         "The amount is the difference of income and deduction, which remains nonnegative",
+        "The amount is the difference of income and deduction, which shall remain at least zero",
         "The amount is the difference of income and deduction, which must always remain nonnegative",
         "The amount is the difference of income and deduction, which will not be negative",
         "The amount is the difference of income and deduction, but in no case shall it be negative",
@@ -3693,6 +3735,7 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The amount is the difference of income and deduction, but in no case may the amount be negative",
         "The amount is the difference of income and deduction, but in no case shall this amount be negative",
         "The amount is the difference of income and deduction, but in no case may the amount fall below zero",
+        "The amount is the difference of income and deduction, but under no circumstances can the amount be less than zero",
         "The amount is the difference of income and deduction and shall be zero whenever negative",
         "The amount is the difference of income and deduction and shall be zero whenever it is negative",
         "The tax is the difference of income and deduction and the tax shall be no less than zero",
@@ -3741,6 +3784,7 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
         "A. The amount is the difference of income and deduction, which is nonnegative.",
         "A. The amount is the difference of income and deduction, which must remain nonnegative.",
         "A. The amount is the difference of income and deduction, which remains nonnegative.",
+        "A. The amount is the difference of income and deduction, which shall remain at least zero.",
         "A. The amount is the difference of income and deduction, which must always remain nonnegative.",
         "A. The amount is the difference of income and deduction, which will not be negative.",
         "A. The amount is the difference of income and deduction, but in no case shall it be negative.",
@@ -3748,6 +3792,7 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
         "A. The amount is the difference of income and deduction, but in no case may the amount be negative.",
         "A. The amount is the difference of income and deduction, but in no case shall this amount be negative.",
         "A. The amount is the difference of income and deduction, but in no case may the amount fall below zero.",
+        "A. The amount is the difference of income and deduction, but under no circumstances can the amount be less than zero.",
         "A. The amount is the difference of income and deduction and shall be zero whenever negative.",
         "A. The amount is the difference of income and deduction and shall be zero whenever it is negative.",
         "A. The tax is the difference of income and deduction and the tax shall be no less than zero.",

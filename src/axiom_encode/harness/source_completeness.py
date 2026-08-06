@@ -489,6 +489,9 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"no\s+(?:less|lower)\s+than|at\s+least|"
     r"greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?))|"
+    r"remains?\s+(?:at\s+least|no\s+(?:less|lower)\s+than|"
+    r"greater\s+than\s+or\s+equal\s+to)\s+"
+    r"(?:zero|\$?\s*0(?:\.0+)?)|"
     r"not\s+(?:be\s+negative|fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
     r"(?:always\s+)?(?:(?:be|remains?)\s+)?"
@@ -502,12 +505,14 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:it|they)\s+|(?:(?:the|this|that|such)\s+)?"
     r"(?:amounts?|benefits?|credits?|deductions?|liabilit(?:y|ies)|results?|"
     r"taxes?|totals?|values?)\s+)?(?:be\s+negative|"
+    r"be\s+(?:less|lower)\s+than\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
     r"cannot\s+be\s+negative|can\s+not\s+be\s+negative)"
 )
 _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     r"\b(?:agreements?|administration|amendments?|appendices|appendix|bulletins?|"
+    r"bylaws?|"
     r"chapters?|circulars?|contracts?|criteria|directives?|documents?|"
     r"decisions?|exhibits?|forms?|guidance|guides?|guidelines|handbooks?|"
     r"instructions?|letters?|"
@@ -2560,10 +2565,19 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
             # administrative document.  Accept the complete bounded uppercase
             # code grammar, then reject semantic document-title heads above.
             bounded_code = re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier_tail)
+            code_segments = identifier_tail.split("-")
+            hyphenated_code_has_non_title_atom = len(code_segments) > 1 and any(
+                not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(segment)
+                and (
+                    len(segment) <= 4
+                    or any(character.isdigit() for character in segment)
+                )
+                for segment in code_segments
+            )
             code_like = bounded_code is not None and (
                 administrative_title is None
                 or any(character.isdigit() for character in identifier_tail)
-                or "-" in identifier_tail
+                or hyphenated_code_has_non_title_atom
             )
             targeted_coefficient_name = (
                 administrative_title is None
@@ -2668,11 +2682,12 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
             flags=re.IGNORECASE,
         )
         proper_actor = re.fullmatch(
-            r"[A-Z][A-Za-z'-]*(?:\s+(?:(?:of|for|and)\s+)?"
+            r"[A-Z][A-Za-z'-]*(?:\s+(?:(?:of|for)\s+(?:the\s+)?|and\s+)?"
             r"[A-Z][A-Za-z'-]*){0,5}",
             actor,
         )
         bare_actor = re.fullmatch(
+            r"(?!.*\b(?:a|an|any|each|every|that|the|this)\b)"
             r"[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,5}",
             actor,
         )
@@ -2686,15 +2701,13 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
         actor_starts_with_role = bool(
             _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.match(actor_core)
         )
-        program_actor = re.fullmatch(
-            r"(?:[A-Za-z][A-Za-z'-]*\s+){0,2}program\s+"
-            r"(?:administrator|director|officer)",
-            actor_core,
-            flags=re.IGNORECASE,
+        actor_last_word = actor_core.rsplit(maxsplit=1)[-1]
+        actor_ends_with_role = bool(
+            _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.fullmatch(actor_last_word)
         )
         actor_is_semantic_role = bool(
             actor_starts_with_role
-            or program_actor
+            or actor_ends_with_role
             or not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.search(actor)
         )
         if (
@@ -10249,14 +10262,14 @@ def _formula_conjoined_upper_bound(
     if gap_match is None:
         return None
     comparison = gap_match.group("body").lower().strip()
-    comparison = re.sub(r"\s+,\s*$", "", comparison)
+    comparison = re.sub(r"\s*[,;:]\s*$", "", comparison)
     comparison = comparison.replace("up to , and including", "up to and including")
     comparison = comparison.replace(
         "up to , but not including", "up to but not including"
     )
     comparison = re.sub(
         r"\s+(?:an?|the)\s+"
-        r"(?:(?:aggregate|applicable|maximum|relevant|statutory|specified)\s+){0,3}"
+        r"(?:(?:aggregate|annual|applicable|maximum|relevant|statutory|specified)\s+){0,3}"
         r"(?:amount|income|limit|threshold|total|value)"
         r"(?:\s+(?:of|equal\s+to))?\s*$",
         "",
@@ -10267,7 +10280,9 @@ def _formula_conjoined_upper_bound(
     control = r"(?:in\s+no\s+(?:event|case)|under\s+no\s+circumstances|never)"
     has_negative_control = False
     subject = (
-        r"(?:it|(?:the|this|that|such)\s+(?:amount|income|limit|total|value)|"
+        r"(?:it|(?:the|this|that|such)\s+"
+        r"(?:(?:adjusted|gross|net|taxable|total)\s+){0,3}"
+        r"(?:amount|income|limit|total|value)|"
         r"(?:(?:adjusted|gross|net|taxable|total)\s+){0,3}"
         r"(?:amount|income|limit|total|value))"
     )
@@ -10296,6 +10311,7 @@ def _formula_conjoined_upper_bound(
         "remain below",
         "under",
         "up to but not including",
+        "up to but excluding",
         "weniger als",
     }
     inclusive_comparisons = {
@@ -10339,6 +10355,14 @@ def _formula_conjoined_upper_bound(
         "not exceeding",
         "not to exceed",
     }
+    if has_negative_control and copula_stripped in {
+        "<",
+        "below",
+        "less than",
+        "remain below",
+        "under",
+    }:
+        return None
     if copula_stripped in exclusive_comparisons:
         return occurrences[1], False
     if (
@@ -10355,6 +10379,7 @@ def _formula_conjoined_upper_bound(
                 "higher than",
                 "larger than",
                 "more than",
+                "remain above",
             }
         )
     ):
@@ -10400,9 +10425,14 @@ def _formula_interval_from_text(
         flags=re.IGNORECASE,
     ):
         return None
+    occurrence_text = re.sub(
+        r"(?i)(?<=\bexceed):(?=\s)",
+        " ",
+        text,
+    )
     occurrences = tuple(
         occurrence
-        for occurrence in extract_numeric_occurrences(text)
+        for occurrence in extract_numeric_occurrences(occurrence_text)
         if occurrence.start >= keyword.start()
     )
     if not occurrences:
