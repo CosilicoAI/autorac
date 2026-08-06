@@ -6107,6 +6107,393 @@ def test_state_runtime_gap_retry_names_exact_canonical_branch():
     assert "`us-la/statute/47:295(c)`" in issue
 
 
+def test_root_state_deferral_retry_rejects_explicit_computation_runtime_gap():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+  deferred_outputs:
+    - output: us-la:statutes/47/294#standard_deduction_under_subsection_a
+      reason: >-
+        La. R.S. 47:294(A), specifically the taxpayer-specific standard deduction
+        determined by the filing-status amounts in La. R.S. 47:294(A)(1) and the
+        joint-return rule in La. R.S. 47:294(A)(2), cannot be encoded because the
+        runtime lacks an executable federal filing-status classification.
+rules:
+  - name: annual_adjustment
+    kind: derived
+    dtype: Money
+    unit: USD
+    period: Year
+    source: La. R.S. 47:294(B)
+    versions:
+      - formula: prior_year_standard_deduction * cpi_u_percentage_increase
+"""
+    source = """\
+A. A standard deduction shall be allowed based on the filing status used on the
+taxpayer's federal income tax return. The single amount is $12,500, and the joint
+amount is twice the single amount.
+
+B. The prior year's standard deduction shall be multiplied by the CPI-U percentage
+increase.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue
+        for issue in result.issues
+        if "module.deferred_outputs[0]" in issue and "explicit computation" in issue
+    )
+    assert "cannot be deferred as a runtime gap" in issue
+    assert "local RuleSpec inputs" in issue
+    assert "principal derived output" in issue
+    assert "us-la:statutes/47/294/a#" not in issue
+
+
+def test_precise_root_state_deferral_retry_preserves_branch_in_output_path():
+    content, source = _louisiana_state_runtime_gap_fixture("R.S. 47:295(C)")
+    content = content.replace(
+        "us-la:statutes/47/295/c#federal_return_copy_becomes_part_of_state_return",
+        "us-la:statutes/47/295#federal_return_copy_becomes_part_of_state_return",
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue for issue in result.issues if "module.deferred_outputs[0].output" in issue
+    )
+    assert "otherwise precise reason" in issue
+    assert (
+        "`us-la:statutes/47/295/c#federal_return_copy_becomes_part_of_state_return`"
+        in issue
+    )
+    assert "`us-la/statute/47:295(c)`" in issue
+
+
+def test_root_deferral_retry_preserves_uppercase_federal_subparagraph():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1396a/a/10
+  deferred_outputs:
+    - output: us:statutes/42/1396a/a/10#hearing_process
+      reason: >-
+        42 U.S.C. 1396a(a)(10)(A) cannot be encoded because the runtime lacks
+        hearing-event and notice-record capabilities.
+rules: []
+"""
+    source = "(A) The State agency shall conduct a hearing and provide notice."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1396a/a/10",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue for issue in result.issues if "module.deferred_outputs[0].output" in issue
+    )
+    assert "`us:statutes/42/1396a/a/10/A#hearing_process`" in issue
+    assert "`42 U.S.C. 1396a(a)(10)(A)`" in issue
+    assert "us:statutes/42/1396a/a/10/a#hearing_process" not in issue
+
+
+def test_root_explicit_computation_feedback_preserves_exact_external_blocker():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1234
+  deferred_outputs:
+    - output: us:statutes/42/1234#benefit
+      blocked_by:
+        - us:statutes/26#taxable_income
+      reason: >-
+        42 USC 1234(a) cannot be computed because the runtime input taxable
+        income under section 26 is missing.
+rules: []
+"""
+    source = (
+        "(a) The benefit shall equal taxable income under section 26 plus 5 dollars."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1234",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue for issue in result.issues if "module.deferred_outputs[0].output" in issue
+    )
+    assert "`us:statutes/42/1234/a#benefit`" in issue
+    assert "explicit computation" not in issue
+
+
+def test_root_explicit_computation_feedback_ignores_uncited_sibling_formula():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1234
+  deferred_outputs:
+    - output: us:statutes/42/1234#filing_record
+      reason: >-
+        42 USC 1234(a), specifically 42 USC 1234(a)(1), cannot be encoded because
+        the runtime lacks an agency annual filing-record capability.
+rules: []
+"""
+    source = "(a) General requirements with filing and benefit branches."
+    payload = yaml.safe_load(content)
+    branch_specs = (
+        (
+            ("a",),
+            "(a) General requirements. (1) The agency shall file an annual "
+            "record. (2) The benefit equals twice the base amount.",
+        ),
+        (("a", "1"), "(1) The agency shall file an annual record."),
+        (("a", "2"), "(2) The benefit equals twice the base amount."),
+    )
+    branches = tuple(
+        completeness_module.SourceStructureBranch(
+            path=branch_path,
+            kind="outline",
+            label=branch_path[-1],
+            text=branch_text,
+            start=index,
+            end=index + 1,
+        )
+        for index, (branch_path, branch_text) in enumerate(branch_specs)
+    )
+
+    _covered, issues = completeness_module._deferred_coverage(
+        payload,
+        corpus_citation_path="us/statute/42/1234",
+        source_text=source,
+        branches=branches,
+    )
+
+    issue = next(
+        issue for issue in issues if "module.deferred_outputs[0].output" in issue
+    )
+    assert "`us:statutes/42/1234/a/1#filing_record`" in issue
+    assert "explicit computation" not in issue
+
+
+def test_nested_federal_root_deferral_retry_uses_exact_deep_branch():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1437c-1
+  deferred_outputs:
+    - output: us:statutes/42/1437c-1#agency_report_submission
+      reason: >-
+        42 USC 1437c-1(a)(2) cannot be encoded because the runtime lacks an
+        agency report document-submission capability.
+rules: []
+"""
+    source = "The agency plan shall contain a statement and submit a report copy."
+    payload = yaml.safe_load(content)
+    branch_specs = (
+        (("a",), "The agency plan shall contain:"),
+        (("a", "1"), "A statement of needs."),
+        (("a", "2"), "The agency shall submit a copy of the report."),
+    )
+    branches = tuple(
+        completeness_module.SourceStructureBranch(
+            path=path,
+            kind="outline",
+            label=path[-1],
+            text=text,
+            start=index,
+            end=index + 1,
+        )
+        for index, (path, text) in enumerate(branch_specs)
+    )
+
+    _covered, issues = completeness_module._deferred_coverage(
+        payload,
+        corpus_citation_path="us/statute/42/1437c-1",
+        source_text=source,
+        branches=branches,
+    )
+
+    issue = next(
+        issue for issue in issues if "module.deferred_outputs[0].output" in issue
+    )
+    assert "`us:statutes/42/1437c-1/a/2#agency_report_submission`" in issue
+    assert "`42 U.S.C. 1437c-1(a)(2)`" in issue
+    assert "`us:statutes/42/1437c-1/a#agency_report_submission`" not in issue
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    (
+        (("a",), "42 USC 1234(a)junk"),
+        (("a",), "42 USC 1234(a)_junk"),
+        (("a", "1"), "42 USC 1234(a)(1)junk"),
+        (("a", "1"), "42 USC 1234(a)(1)_junk"),
+    ),
+)
+def test_strict_federal_branch_match_rejects_attached_token_junk(
+    path: tuple[str, ...],
+    reason: str,
+):
+    assert not completeness_module._reason_cites_exact_current_statute_branch(
+        reason,
+        corpus_citation_path="us/statute/42/1234",
+        path=path,
+        strict_terminal=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    (
+        (
+            "(a) The agency shall file an annual report.",
+            "42 USC 1234(a)junk cannot be encoded because the runtime lacks an "
+            "annual-report filing capability.",
+        ),
+        (
+            "(a)(1) The agency shall file an annual report.",
+            "42 USC 1234(a)(1)_junk cannot be encoded because the runtime lacks an "
+            "annual-report filing capability.",
+        ),
+    ),
+)
+def test_root_branch_retry_rejects_federal_citation_token_junk(
+    source: str,
+    reason: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/1234
+  deferred_outputs:
+    - output: us:statutes/42/1234#annual_report
+      reason: >-
+        {reason}
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/1234",
+        test_cases=[],
+    )
+
+    assert not any(
+        "Preserve that branch in the output path" in issue for issue in result.issues
+    )
+    assert _has_issue(result, "deferral", "missing dependency", "runtime capability")
+
+
+def test_root_branch_citation_without_precise_reason_keeps_reason_diagnostic():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295#federal_return_copy
+      reason: See R.S. 47:295(C).
+rules: []
+"""
+    source = """\
+A. The secretary shall file an annual administration report.
+C. The secretary may require a copy of the federal return to be filed.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert not any(
+        "Preserve that branch in the output path" in issue for issue in result.issues
+    )
+    assert _has_issue(result, "deferral", "missing dependency", "runtime capability")
+
+
+def test_root_deferral_retry_does_not_choose_between_incomparable_branches():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295#administrative_documents
+      reason: >-
+        R.S. 47:295(A) and R.S. 47:295(C) cannot be encoded because the runtime
+        lacks annual-report filing and federal-return attachment capabilities.
+rules: []
+"""
+    source = """\
+A. The secretary shall file an annual administration report.
+C. The secretary may require a copy of the federal return to be filed.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert not any(
+        "Preserve that branch in the output path" in issue for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "us-la:statutes/47/295",
+        "us-la:statutes/47/295#",
+        "us-la:statutes/47/295#federal_return_copy#junk",
+        "us-la:statutes/47/295#not-a-symbol",
+    ),
+)
+def test_root_branch_retry_does_not_suggest_invalid_output_fragment(output: str):
+    content, source = _louisiana_state_runtime_gap_fixture("R.S. 47:295(C)")
+    content = content.replace(
+        "us-la:statutes/47/295/c#federal_return_copy_becomes_part_of_state_return",
+        output,
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert not any(
+        "Preserve that branch in the output path" in issue for issue in result.issues
+    )
+
+
 @pytest.mark.parametrize(
     ("corpus_citation_path", "path", "reason", "expected"),
     (
