@@ -2001,7 +2001,12 @@ B. End.
         "The tax shall be determined by applying Schedule X to taxable income",
         "The amount shall be determined by applying coefficient A to income",
         "The amount shall be determined by applying coefficient AB to income",
+        "The amount shall be determined by applying coefficient ALPHA to income",
+        "The amount shall be determined by applying coefficient ABCDE to income",
         "The tax shall be determined by applying the rate to every $1 of taxable income",
+        "The tax shall be determined by applying the rate to $10,000 of taxable income",
+        "The tax shall be determined by applying the rate to the first $10,000 of taxable income",
+        "The tax shall be determined by applying the rate to the next $10,000 of taxable income",
         "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
@@ -2377,7 +2382,9 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "provided, further, that the credit shall",
         "provided, nevertheless, that the credit shall",
         "provided always that the credit shall",
+        "provided, in any event, that the credit shall",
         "on condition that the credit shall",
+        "upon condition that the credit shall",
         "if the taxpayer is eligible, the department shall",
         "only if the taxpayer is eligible, the department shall",
         "when the taxpayer is eligible, the department shall",
@@ -2386,11 +2393,14 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "as long as the taxpayer is eligible, the department shall",
         "in which case the department shall",
         "in the event that the taxpayer is eligible, the department shall",
+        "in the event the taxpayer is eligible, the department shall",
         "to the extent that the taxpayer is eligible, the department shall",
+        "except to the extent that the taxpayer is ineligible, the department shall",
         "except if the taxpayer is ineligible, the department shall",
         "except when the taxpayer is ineligible, the department shall",
         "except where the taxpayer is ineligible, the department shall",
         "except in cases where the taxpayer is ineligible, the department shall",
+        "except in the case of an ineligible taxpayer, the department shall",
         "the credit shall",
     ),
 )
@@ -2549,6 +2559,16 @@ def test_delegated_determinations_are_not_computations(source: str):
         "while the credit equals income plus the supplement.",
         "The eligibility is determined by applying the requirements of section 5 "
         "or the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "yet the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "whereas the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "although the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "nor the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "then the credit equals income plus the supplement.",
     ),
 )
 def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
@@ -2594,10 +2614,17 @@ def test_rounding_policy_noun_is_not_a_computation():
     )
 
 
-def test_directional_rounding_policy_noun_is_not_a_computation():
-    assert not source_states_explicit_computation(
-        "The amount rounding down policy shall be published."
-    )
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount rounding down policy shall be published.",
+        "The department shall decide whether to round the amount.",
+        "The authority to round the amount shall be documented.",
+        "Guidance on how to round the amount shall be published.",
+    ),
+)
+def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
+    assert not source_states_explicit_computation(source)
 
 
 @pytest.mark.parametrize(
@@ -2618,6 +2645,13 @@ def test_directional_rounding_policy_noun_is_not_a_computation():
         "The department shall round downward the amount.",
         "The department shall round off the amount.",
         "The department shall round the amount to a whole dollar.",
+        "The department shall annually round the amount.",
+        "The department shall promptly round down the amount.",
+        "The department shall, when necessary, round the amount.",
+        "The department must then round the result down.",
+        "The department will annually round the balance down.",
+        "For each return, round the amount down.",
+        "If necessary, round the amount down.",
         "Round the weighted average to the nearest whole number.",
         "Round the amount down.",
         "Round the amount to the nearest whole number.",
@@ -2961,6 +2995,9 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but shall be no less than zero",
         "The credit is the lesser of the base or the cap, but shall be at least zero",
         "The credit is the lesser of the base or the cap, but shall in no event be less than zero",
+        "The credit is the lesser of the base or the cap, but shall not be lower than zero",
+        "The credit is the lesser of the base or the cap, but shall be greater than or equal to zero",
+        "The credit is the lesser of the base or the cap, but shall never be less than zero",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -6755,6 +6792,12 @@ def test_common_german_formula_language_is_computation(source: str):
         "The warning sounds for one third of any hour.",
         "The employee worked a quarter of each month.",
         "The employee worked a quarter of every month.",
+        "The employee worked a quarter of this month.",
+        "The employee worked a quarter of the current month.",
+        "The employee worked a quarter of each calendar month.",
+        "The employee worked a quarter of every taxable month.",
+        "The employee worked one third of every work hour.",
+        "The employee worked one half of each month.",
     ),
 )
 def test_ordinary_duration_is_not_an_english_fraction(statement: str):
@@ -11399,6 +11442,15 @@ rules:
         "For taxable years commencing on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "For taxable years starting on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "For taxable years that begin on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For the taxable year that begins on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years that commence on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For the taxable year that commences on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years which begin on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning no earlier than January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning no later than January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending after December 31, 2025 but before January 1, 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after 2025, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or after 2026, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending on or before December 31, 2006, the amount is calculated by multiplying income by the rate.",
     ),
 )
@@ -11496,21 +11548,50 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
         "percent of income.",
         "For taxable years that begin on or after January 1, 2026, twenty-five "
         "percent of income.",
+        "For the taxable year that begins on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years that commence on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years which begin on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years beginning no earlier than January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years ending after December 31, 2025 but before January 1, 2027, "
+        "twenty-five percent of income.",
+        "For taxable years beginning after 2025, twenty-five percent of income.",
+        "For taxable years beginning on or after 2026, twenty-five percent of income.",
         "For tax years beginning after December 31, 2005 and ending on or before "
         "December 31, 2006, twenty-five percent of income.",
     ),
 )
 def test_inclusive_tax_year_range_dates_are_entirely_preface(source: str):
     occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
-    temporal = [item for item in occurrences if item.has_temporal_context]
-
-    assert temporal
-    assert all(
-        completeness_module._temporal_occurrence_is_formula_applicability_preface(
+    preface_occurrences = [
+        item
+        for item in occurrences
+        if completeness_module._temporal_occurrence_is_formula_applicability_preface(
             item, source
         )
-        for item in temporal
+    ]
+
+    assert preface_occurrences
+
+
+def test_year_only_applicability_prefaces_are_recognized_in_later_branches():
+    source = (
+        "A. For taxable years beginning after 2025, twenty-five percent of income.\n"
+        "B. For taxable years beginning on or after 2026, fifty percent of income."
     )
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    applicability_years = [
+        item.value
+        for item in occurrences
+        if completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+    ]
+
+    assert applicability_years == [2025, 2026]
 
 
 def test_tax_year_range_prefaces_allow_distinct_temporal_rate_witnesses():
