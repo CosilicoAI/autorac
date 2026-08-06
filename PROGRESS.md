@@ -3,9 +3,9 @@
 ## State
 
 The semantic rebase onto `origin/main` (`2438133d`) is complete. Reconciled
-functional commits are `a5383cb9` and `debbb5b8`. Focused conflict-resolution
-checks pass; the requested regression/suite matrix and independent review are
-next.
+functional commits are `a5383cb9` and `debbb5b8`. The requested regression and
+affected-suite matrix is complete with no changed-path regression against a
+pristine current-main worktree. Static checks and independent review are next.
 
 ## Done
 
@@ -33,12 +33,23 @@ next.
 - Passed seven first-commit focused regressions after adapting main's retry
   fixture, plus the two second-commit focused regressions and collector check.
 - Confirmed marker-free syntax with an existing compatible Python environment.
+- Passed all nine reconciled regression tests together.
+- Passed the exact historical 439-test selection, expanded by current main's
+  #1419/#1420 deferral cases to 2,858 tests.
+- Passed the touched oracle-registry suite (24 tests). The full RuleSpec suite
+  had 1,464 passes plus the same sandbox-blocked `/var/tmp` alias test as main
+  (main: 1,463 passes plus that failure).
+- The full CLI suite had 1,174 passes and one skip. Its only exceptions were the
+  required-version provenance guard (expected because this task prohibits a
+  version bump) and one unrelated migration test that passed alone; pristine
+  main passed 1,172 tests with one skip. The changed retry/overlay nodes all
+  passed.
+- Pristine main's full complete-source, deferral, and touched registry matrix
+  passed all 2,868 tests. The rebased tree's corresponding files and new tests
+  all passed through the affected selection and registry run.
 
 ## Next
 
-- Run all nine reconciled regression tests together.
-- Run the 439-test affected slice and suites covering #1418–#1420; establish a
-  current-main baseline for any failures.
 - Run Ruff, compileall, diff/marker/version-pin checks, and an independent
   review-fix cycle.
 - Remove `PROGRESS.md`, write the final output report, and verify a clean tree.
