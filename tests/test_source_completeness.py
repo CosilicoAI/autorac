@@ -1997,6 +1997,9 @@ B. End.
         "The amount shall be determined by applying the index to income",
         "The amount shall be determined by applying the fraction to income",
         "The amount shall be determined by applying the tax table to income",
+        "The tax shall be determined by applying Table A to taxable income",
+        "The tax shall be determined by applying Schedule X to taxable income",
+        "The amount shall be determined by applying coefficient A to income",
         "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
@@ -2370,11 +2373,16 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "provided further that the credit shall",
         "and provided that the credit shall",
         "provided, further, that the credit shall",
+        "provided, nevertheless, that the credit shall",
         "on condition that the credit shall",
         "if the taxpayer is eligible, the department shall",
+        "only if the taxpayer is eligible, the department shall",
+        "when the taxpayer is eligible, the department shall",
+        "where the taxpayer is eligible, the department shall",
         "so long as the taxpayer is eligible, the department shall",
         "in which case the department shall",
         "except when the taxpayer is ineligible, the department shall",
+        "except where the taxpayer is ineligible, the department shall",
         "the credit shall",
     ),
 )
@@ -2522,6 +2530,11 @@ def test_delegated_determinations_are_not_computations(source: str):
         "and the credit equals income plus the supplement.",
         "The status is determined by applying statutory criteria, and the credit "
         "is the sum of income and tax.",
+        "The status is determined by applying statutory criteria and the credit "
+        "is the sum of income and tax.",
+        "The eligibility is determined by applying the requirements of section 5, "
+        "and the very substantial refundable individual income tax credit available "
+        "for qualified resident taxpayers equals income plus the supplement.",
     ),
 )
 def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
@@ -2567,6 +2580,12 @@ def test_rounding_policy_noun_is_not_a_computation():
     )
 
 
+def test_directional_rounding_policy_noun_is_not_a_computation():
+    assert not source_states_explicit_computation(
+        "The amount rounding down policy shall be published."
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -2580,8 +2599,13 @@ def test_rounding_policy_noun_is_not_a_computation():
         "The average shall be rounded down.",
         "The sum shall be rounded to the nearest whole number.",
         "The department shall round the amount down.",
+        "The department shall round the quotient down.",
+        "Round the weighted average to the nearest whole number.",
         "Round the amount down.",
         "Round the amount to the nearest whole number.",
+        "The department shall round down the amount.",
+        "The department shall round up the credit.",
+        "Round down the amount.",
     ),
 )
 def test_numeric_rounding_directive_is_a_computation(source: str):
@@ -2871,6 +2895,7 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The allocation equals one twenty-fourth of annual income",
         "The allocation equals a third of annual income",
         "The allocation equals a fifth of annual income",
+        "The credit equals one second of taxable income",
         "The tax equals one-half per cent of taxable income",
         "The tax equals one-half percent of taxable income",
         "The tax equals two and one-half percent of taxable income",
@@ -2904,6 +2929,9 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but not less than $0",
         "The credit is the lesser of the base or the cap, in no case less than zero",
         "The credit is the lesser of the base or the cap, subject to a floor of zero",
+        "The credit is the lesser of the base or the cap, but shall not be less than zero",
+        "The credit is the lesser of the base or the cap, but no less than zero",
+        "The credit is the lesser of the base or the cap, but at least zero",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -6686,8 +6714,17 @@ def test_common_german_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
 
 
-def test_ordinary_duration_is_not_an_english_fraction():
-    source = "A. The recording shall include one second of silence.\nB. End."
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "The recording shall include one second of silence.",
+        "The term lasts a quarter of an hour.",
+        "The recording shall include a third of a second of silence.",
+        "The delay shall be one third of a second.",
+    ),
+)
+def test_ordinary_duration_is_not_an_english_fraction(statement: str):
+    source = f"A. {statement}\nB. End."
     branches = recognize_source_structure(source)
 
     assert not source_states_explicit_computation(source)
@@ -11318,6 +11355,11 @@ rules:
         "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending before January 1, 2007, the amount is calculated by multiplying income by the rate.",
         "For taxable years beginning on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on and after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning before January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or before January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "Effective for taxable years beginning on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending on or before January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending on or before December 31, 2006, the amount is calculated by multiplying income by the rate.",
     ),
 )
@@ -11398,6 +11440,12 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
     "source",
     (
         "For taxable years beginning on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years beginning on or before January 1, 2026, twenty-five "
+        "percent of income.",
+        "Effective for taxable years beginning on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years ending on or before January 1, 2026, twenty-five "
         "percent of income.",
         "For tax years beginning after December 31, 2005 and ending on or before "
         "December 31, 2006, twenty-five percent of income.",
