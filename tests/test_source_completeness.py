@@ -1757,6 +1757,148 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
 
 
 @pytest.mark.parametrize(
+    ("comparison", "upper_inclusive"),
+    (
+        ("less than or equal to", True),
+        ("less than", False),
+    ),
+)
+def test_formula_interval_recognizes_conjoined_upper_bound(
+    comparison: str,
+    upper_inclusive: bool,
+):
+    source = (
+        "(2) If income is greater than twenty-five thousand dollars and "
+        f"{comparison} thirty-five thousand dollars, the credit equals "
+        "thirty percent of the federal credit."
+    )
+    branch = recognize_source_structure(source)[0]
+
+    interval = completeness_module._formula_branch_interval(
+        branch,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None
+    assert interval.lower.value == 25000
+    assert not interval.lower_inclusive
+    assert interval.upper is not None
+    assert interval.upper.value == 35000
+    assert interval.upper_inclusive is upper_inclusive
+
+
+def test_formula_interval_rejects_long_nonmatching_upper_gap_with_bounded_runtime():
+    source = "income greater than 1" + (" " * 10_000) + "x 2"
+
+    started = time.perf_counter()
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert interval is not None
+    assert interval.lower is not None
+    assert interval.lower.value == 1
+    assert interval.upper is None
+    assert elapsed < 0.5
+
+
+def test_conjoined_income_range_formula_has_executed_companion_witness():
+    source = """\
+(2) If the resident individual's federal adjusted gross income is greater than twenty-five thousand dollars and less than or equal to thirty-five thousand dollars, the credit shall be equal to thirty percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
+"""
+    content = yaml.safe_dump(
+        {
+            "format": "rulespec/v1",
+            "module": {
+                "source_verification": {
+                    "corpus_citation_path": "us-la/statute/47:297.4"
+                }
+            },
+            "rules": [
+                {
+                    "name": "middle_income_lower_bound",
+                    "kind": "parameter",
+                    "versions": [{"formula": "25000"}],
+                },
+                {
+                    "name": "middle_income_limit",
+                    "kind": "parameter",
+                    "versions": [{"formula": "35000"}],
+                },
+                {
+                    "name": "middle_income_rate",
+                    "kind": "parameter",
+                    "versions": [{"formula": "0.30"}],
+                },
+                {
+                    "name": "middle_income_credit",
+                    "kind": "derived",
+                    "source": "us-la/statute/47:297.4(2)",
+                    "metadata": {
+                        "proof": {
+                            "atoms": [
+                                {
+                                    "path": "versions[0].formula",
+                                    "kind": "formula",
+                                    "source": {
+                                        "corpus_citation_path": (
+                                            "us-la/statute/47:297.4"
+                                        ),
+                                        "excerpt": source.strip(),
+                                    },
+                                }
+                            ]
+                        }
+                    },
+                    "versions": [
+                        {
+                            "formula": (
+                                "if federal_adjusted_gross_income > "
+                                "middle_income_lower_bound and "
+                                "federal_adjusted_gross_income <= "
+                                "middle_income_limit: middle_income_rate * "
+                                "federal_credit else: 0"
+                            )
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    cases = [
+        {
+            "name": "inside_middle_income_range",
+            "period": "2024",
+            "input": {
+                "federal_adjusted_gross_income": 25001,
+                "federal_credit": 600,
+            },
+            "output": {
+                "us-la:statutes/47/297/4#middle_income_credit": 180,
+            },
+        }
+    ]
+
+    analysis = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not _has_issue(analysis, "formula branch (2)")
+
+
+@pytest.mark.parametrize(
     "source",
     (
         "A. The tax equals income * 2:\n(1) This rule applies to residents.\nB. End.",
