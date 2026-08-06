@@ -420,8 +420,8 @@ _FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_INDEPENDENT_COORDINATE = (
-    r"(?:,\s*(?:(?:although|and|but|nor|or|then|whereas|while|yet)\s+)?|"
-    r"\s+(?:although|and|but|nor|or|then|whereas|while|yet)\s+)"
+    r"(?:,\s*(?:(?:although|and|but|nor|or|then|though|whereas|while|yet)\s+)?|"
+    r"\s+(?:although|and|but|nor|or|then|though|whereas|while|yet)\s+)"
     r"(?:the\s+)?"
     r"[^,.;:\n]*?\b(?:shall|must|may|is|are|equals?)\b"
 )
@@ -457,12 +457,14 @@ _FORMULA_ROUNDED_OPERATION_LANGUAGE = re.compile(
 )
 _FORMULA_FOLLOWING_OPERAND_PROVISO = re.compile(
     r"\s*(?:(?:and\s+)?provided"
-    r"(?:\s*,?\s*(?:always|however|further|in\s+any\s+event|"
-    r"nevertheless|nonetheless)\s*,?)?\s+that|"
-    r"(?:on|upon)\s+condition\s+that|(?:only\s+)?if|when|where|"
+    r"(?:\s*,?\s*(?:always|further|however|in\s+any\s+event|"
+    r"nevertheless|nonetheless|only)\s*,?)*\s+that|"
+    r"(?:on|upon)\s+(?:the\s+)?condition\s+that|(?:only\s+)?if|when|where|"
     r"(?:so|as)\s+long\s+as|in\s+which\s+case|in\s+the\s+event(?:\s+that)?|"
-    r"to\s+the\s+extent\s+that|except\s+(?:that|if|when|where|"
-    r"to\s+the\s+extent\s+that|in\s+(?:the\s+)?cases?\s+(?:of|where))|"
+    r"in\s+cases?(?:\s+where)?|to\s+the\s+extent\s+that|"
+    r"except\s+(?:that|if|when|where|"
+    r"to\s+the\s+extent\s+that|in\s+(?:(?:the|any)\s+)?cases?\s+"
+    r"(?:of|where))|"
     r"however|but|unless|subject\s+to|"
     r"notwithstanding|(?:the|such|a|an)\s+(?:\w+\s+){0,8}"
     r"(?:shall|must|may|is|are|equals?))\b",
@@ -811,7 +813,8 @@ _FORMULA_APPLICABILITY_DATE = (
     rf"{_FORMULA_APPLICABILITY_YEAR}|{_FORMULA_APPLICABILITY_YEAR})"
 )
 _FORMULA_APPLICABILITY_BOUNDARY = (
-    r"(?:after|before|no\s+(?:earlier|later)\s+than|"
+    r"(?:after|before|(?:no|not)\s+(?:earlier|later)\s+than|"
+    r"prior\s+to|subsequent\s+to|"
     r"on(?:\s+(?:or|and)\s+(?:after|before))?)"
 )
 _FORMULA_APPLICABILITY_START = (
@@ -819,14 +822,16 @@ _FORMULA_APPLICABILITY_START = (
     r"(?:begin|begins|commence|commences|start|starts))"
 )
 _FORMULA_APPLICABILITY_RANGE_END = (
-    rf"(?:,?\s*(?:and|but)\s+(?:ending\s+)?"
-    rf"{_FORMULA_APPLICABILITY_BOUNDARY}\s+{_FORMULA_APPLICABILITY_DATE})"
+    rf"(?:,?\s*(?:(?:and|but)\s+(?:ending\s+)?"
+    rf"{_FORMULA_APPLICABILITY_BOUNDARY}|through|to)\s+"
+    rf"{_FORMULA_APPLICABILITY_DATE})"
 )
 _FORMULA_APPLICABILITY_PREFACE = re.compile(
-    rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
+    rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)*(?:"
     rf"(?:effective\s+)?(?:for|during)\s+(?:the\s+)?"
     rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
-    rf"{_FORMULA_APPLICABILITY_START}\s+{_FORMULA_APPLICABILITY_BOUNDARY}\s+"
+    rf"{_FORMULA_APPLICABILITY_START}\s+"
+    rf"(?:(?:{_FORMULA_APPLICABILITY_BOUNDARY}|in)\s+)?"
     rf"{_FORMULA_APPLICABILITY_DATE}"
     rf"(?:{_FORMULA_APPLICABILITY_RANGE_END})?\s*,?|(?:"
     rf"(?:effective\s+)?(?:for|during)\s+(?:the\s+)?"
@@ -841,6 +846,10 @@ _FORMULA_APPLICABILITY_PREFACE = re.compile(
     rf"(?:for|during)\s+(?:the\s+)?"
     rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
     rf"{_FORMULA_APPLICABILITY_YEAR}|"
+    rf"(?:for|during)\s+(?:the\s+)?"
+    rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
+    rf"{_FORMULA_APPLICABILITY_BOUNDARY}\s+{_FORMULA_APPLICABILITY_DATE}"
+    rf"(?:{_FORMULA_APPLICABILITY_RANGE_END})?|"
     rf"(?:effective(?:\s+(?:on|from))?|starting(?:\s+(?:on|from))?|"
     rf"as\s+of|on\s+or\s+after)\s+{_FORMULA_APPLICABILITY_DATE}"
     rf")\s*,)",
@@ -2282,6 +2291,27 @@ def _formula_operand_is_numeric(operand: str) -> bool:
     if literal_operand is not None:
         base = literal_operand.group("base")
         return base is None or _formula_operand_is_numeric(base)
+    bracket_base = re.fullmatch(
+        r"\s*(?:(?:the|that)\s+portion\s+of\s+(?P<portion>.+?)\s+"
+        r"(?:over|above|exceeding)\s+(?P<portion_limit>.+)|"
+        r"so\s+much\s+of\s+(?P<much>.+?)\s+as\s+exceeds\s+"
+        r"(?P<much_limit>.+)|(?:the\s+)?excess\s+of\s+(?P<excess>.+?)\s+"
+        r"over\s+(?P<excess_limit>.+))\s*",
+        operand,
+        flags=re.IGNORECASE,
+    )
+    if bracket_base is not None:
+        base = next(
+            bracket_base.group(name)
+            for name in ("portion", "much", "excess")
+            if bracket_base.group(name) is not None
+        )
+        limit = next(
+            bracket_base.group(name)
+            for name in ("portion_limit", "much_limit", "excess_limit")
+            if bracket_base.group(name) is not None
+        )
+        return _formula_operand_is_numeric(base) and _formula_operand_is_numeric(limit)
     if re.fullmatch(
         rf"\s*(?:the\s+)?{_FORMULA_TABLE_NAME}\s*",
         operand,
@@ -2310,7 +2340,8 @@ def _formula_operand_is_numeric(operand: str) -> bool:
             candidate.lower().endswith(("ed", "en"))
             or candidate.lower().endswith("ly")
             or candidate.lower() in _FORMULA_OPERAND_IRREGULAR_POSTMODIFIERS
-            or re.fullmatch(r"(?:[A-Z][A-Z0-9]*|\d+|[IVXLCDM]+)", candidate) is not None
+            or re.fullmatch(r"(?:[A-Z][A-Za-z0-9]*|\d+|[IVXLCDM]+)", candidate)
+            is not None
             for candidate in trailing
         ):
             return True
@@ -2473,7 +2504,9 @@ def _rounding_language_is_computational(text: str) -> bool:
             ).strip()
             modal_directive = re.search(
                 r"\b(?:can|may|must|shall|should|will)\b"
-                r"(?:(?:\s+(?:then|\w+ly))|(?:\s*,\s*[^,]{1,80},))*\s*$",
+                r"(?:(?:\s+(?:and\s+)?(?:then|\w+ly))|"
+                r"(?:\s+(?:as\s+necessary|from\s+time\s+to\s+time|"
+                r"without\s+delay))|(?:\s*,\s*[^,]{1,80},))*\s*$",
                 active_prefix,
                 flags=re.IGNORECASE,
             )
@@ -2484,7 +2517,8 @@ def _rounding_language_is_computational(text: str) -> bool:
             )
             conditional_directive = re.fullmatch(
                 r"(?:after|before|for|if|once|unless|upon|when|where)\b"
-                r"[^.;:\n]{0,120},\s*",
+                r"[^.;:\n]{0,120},\s*"
+                r"(?:(?:and\s+)?(?:then|\w+ly)\s*)*",
                 active_prefix,
                 flags=re.IGNORECASE,
             )
@@ -2493,7 +2527,8 @@ def _rounding_language_is_computational(text: str) -> bool:
             ):
                 continue
             target_match = re.match(
-                r"\s+(?P<target>[^.;\n]{1,120}?)(?=[.;\n]|$)",
+                r"\s*(?:,\s*[^,]{1,80},\s*)?"
+                r"(?P<target>[^.;\n]{1,120}?)(?=[.;\n]|$)",
                 text[match.end() :],
                 flags=re.IGNORECASE,
             )
@@ -2519,13 +2554,19 @@ def _rounding_language_is_computational(text: str) -> bool:
             )
         if re.match(r"\s+out\b", text[match.end() :], flags=re.IGNORECASE):
             continue
-        if active_target is not None and (
-            _formula_operand_is_numeric(active_target)
-            or _normalize_formula_result_head(
-                _formula_subject_segment_head(active_target)
-            )
-        ):
-            return True
+        if active_target is not None:
+            if _formula_operand_is_numeric(active_target) or (
+                _normalize_formula_result_head(
+                    _formula_subject_segment_head(active_target)
+                )
+            ):
+                return True
+            if re.fullmatch(r"(?:it|them)", active_target, flags=re.IGNORECASE) and any(
+                _normalize_formula_result_head(word)
+                or _normalize_formula_operand_head(word)
+                for word in re.findall(r"[A-Za-z]+", active_prefix)
+            ):
+                return True
         clause_start = max(
             text.rfind(".", 0, match.start()),
             text.rfind(";", 0, match.start()),
@@ -2539,7 +2580,8 @@ def _rounding_language_is_computational(text: str) -> bool:
         )
         clause = text[clause_start + 1 : clause_end]
         prefix = re.sub(
-            r"\b(?:(?:shall|must|may)\s+be|is|are)\s*$",
+            r"\b(?:(?:shall|must|may|should|will)\s+be|"
+            r"(?:is|are)(?:\s+required)?\s+to\s+be|is|are)\s*$",
             "",
             text[clause_start + 1 : match.start()],
             flags=re.IGNORECASE,
@@ -2602,10 +2644,11 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
     clause = re.sub(
         r",\s*(?:whichever[^,]{0,80}\b(?:is|shall\s+be|may\s+be|would\s+be)\s+[^,]+|as\s+applicable|"
         r"if\s+applicable|but\s+(?:(?:shall|must|may)\s+)?"
-        r"(?:in\s+(?:no\s+event|no\s+case)\s+|never\s+)?"
+        r"(?:(?:in\s+(?:no\s+event|no\s+case)\s+|never\s+)?"
         r"(?:not\s+)?(?:be\s+)?(?:(?:less|lower)\s+than|below|"
         r"no\s+less\s+than|at\s+least|greater\s+than\s+or\s+equal\s+to)\s+"
-        r"(?:zero|\$?\s*0(?:\.0+)?)|"
+        r"(?:zero|\$?\s*0(?:\.0+)?)|not\s+(?:be\s+negative|fall\s+below\s+"
+        r"(?:zero|\$?\s*0(?:\.0+)?))|be\s+nonnegative)|"
         r"(?:in\s+)?no\s+case\s+(?:less\s+than|below)\s+"
         r"(?:zero|\$?\s*0(?:\.0+)?)|except\s+that\s+it\s+"
         r"(?:shall|must|may)\s+not\s+be\s+less\s+than\s+"
@@ -2717,6 +2760,23 @@ def _formula_states_contextual_operator(
     return False
 
 
+def _english_fraction_target_is_duration(target: str) -> bool:
+    """Recognize a short duration noun phrase without swallowing its later base."""
+
+    duration = re.match(
+        r"^\s*(?:(?!(?:as|for|from|in|of|over|under)\b)"
+        r"[A-Za-z0-9$€£'’.-]+\s+){0,8}"
+        r"(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b"
+        r"(?P<tail>.*)$",
+        target,
+        flags=re.IGNORECASE,
+    )
+    if duration is None:
+        return False
+    tail = duration.group("tail").strip()
+    return not tail or re.match(r"^of\b", tail, flags=re.IGNORECASE) is not None
+
+
 def _english_fraction_of_is_computational(source_text: str) -> bool:
     """Require a numeric target and reject ordinary fractional durations."""
 
@@ -2728,14 +2788,7 @@ def _english_fraction_of_is_computational(source_text: str) -> bool:
             flags=re.IGNORECASE,
         )[0]
         target = target.split(",", maxsplit=1)[0].strip()
-        if re.match(
-            r"(?:an?|the|this|that|each|every|any)\s+"
-            r"(?:(?:calendar|current|fiscal|following|next|preceding|prior|"
-            r"taxable|work)\s+){0,3}"
-            r"(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b",
-            target,
-            flags=re.IGNORECASE,
-        ):
+        if _english_fraction_target_is_duration(target):
             continue
         if _formula_operand_is_numeric(target):
             return True
