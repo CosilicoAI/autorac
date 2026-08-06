@@ -485,12 +485,14 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:shall|must|may)\s+)?(?:"
     r"(?:(?:in\s+(?:no\s+event|no\s+case)\s+|never\s+)?"
     r"(?:(?:not\s+)?(?:be\s+)?|be\s+not\s+)(?:(?:less|lower)\s+than|below|"
-    r"no\s+less\s+than|at\s+least|greater\s+than\s+or\s+equal\s+to)\s+"
+    r"no\s+(?:less|lower)\s+than|at\s+least|"
+    r"greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?))|"
     r"not\s+(?:be\s+negative|fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
-    r"be\s+nonnegative|"
-    r"(?:in\s+no\s+event|never|under\s+no\s+circumstances)\s+be\s+negative|"
+    r"be\s+(?:not\s+negative|nonnegative)|"
+    r"(?:in\s+no\s+(?:event|case)|never|under\s+no\s+circumstances)\s+"
+    r"be\s+negative|"
     r"be\s+(?:(?:treated\s+as|deemed)\s+)?zero\s+(?:if|when)\s+negative|"
     r"cannot\s+be\s+negative|can\s+not\s+be\s+negative)"
 )
@@ -2523,25 +2525,55 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
         identifier_tail = named_match.group("tail").strip()
         if identifier_tail:
             administrative_title = re.search(
-                r"\b(?:administration|guides?|guidelines|manuals?|methodolog(?:y|ies)|"
-                r"operations?|polic(?:y|ies)|publications?|requirements?|rules?)\b",
+                r"\b(?:administration|bulletins?|circulars?|criteria|directives?|"
+                r"guidance|guides?|guidelines|handbooks?|instructions?|manuals?|"
+                r"methodolog(?:y|ies)|notices?|operations?|polic(?:y|ies)|"
+                r"procedures?|processes?|protocols?|publications?|requirements?|"
+                r"rules?|standards?|workflows?)\b",
                 identifier_tail,
                 flags=re.IGNORECASE,
             )
-            code_like = administrative_title is None and re.fullmatch(
-                r"[A-Z0-9]+(?:-[A-Z0-9]+)*",
+            # Uppercase prose is not, by itself, evidence of a code.  Require a
+            # bounded structural signal: a single label, a short acronym, a
+            # digit-bearing identifier, or an uppercase hyphenated code.  The
+            # semantic title guard remains useful for short administrative
+            # words such as RULE that otherwise resemble acronyms.
+            code_like = administrative_title is None and bool(
+                re.fullmatch(r"[A-Z]", identifier_tail)
+                or re.fullmatch(r"[A-Z]{2,4}", identifier_tail)
+                or (
+                    re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier_tail)
+                    and (
+                        any(character.isdigit() for character in identifier_tail)
+                        or "-" in identifier_tail
+                    )
+                )
+            )
+            greek_coefficient_name = re.fullmatch(
+                r"(?:Alpha|Beta|Gamma|Delta|Epsilon|Zeta|Eta|Theta|Iota|Kappa|"
+                r"Lambda|Mu|Nu|Xi|Omicron|Pi|Rho|Sigma|Tau|Upsilon|Phi|Chi|"
+                r"Psi|Omega)(?:-(?:Alpha|Beta|Gamma|Delta|Epsilon|Zeta|Eta|"
+                r"Theta|Iota|Kappa|Lambda|Mu|Nu|Xi|Omicron|Pi|Rho|Sigma|Tau|"
+                r"Upsilon|Phi|Chi|Psi|Omega))*",
                 identifier_tail,
             )
             targeted_coefficient_name = (
                 administrative_title is None
                 and named_match.group("head").lower() == "coefficient"
                 and target_match is not None
+                and greek_coefficient_name is not None
+            )
+            uppercase_coefficient_code = (
+                administrative_title is None
+                and named_match.group("head").lower() == "coefficient"
                 and re.fullmatch(
-                    r"[A-Z][A-Za-z0-9]*(?:-[A-Z][A-Za-z0-9]*)*",
+                    r"[A-Z0-9]+(?:-[A-Z0-9]+)*",
                     identifier_tail,
                 )
             )
-            if not (code_like or targeted_coefficient_name):
+            if not (
+                code_like or targeted_coefficient_name or uppercase_coefficient_code
+            ):
                 return False
             named_reference_is_numeric = True
     return (named_reference_is_numeric or _formula_operand_is_numeric(applied)) and (
@@ -2587,8 +2619,7 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
     gerund = re.search(
         r"\b(?:after|before|once|upon|when)\s+"
         r"(?:calculating|computing|determining)\s+"
-        r"(?P<noun_phrase>[^,.;:\n]{1,80}?)"
-        r"(?:\s*,|\s+(?=(?:the\s+)?(?:agency|authority|department)\b))",
+        r"(?P<body>[^.;:\n]{1,120})$",
         prefix,
         flags=re.IGNORECASE,
     )
@@ -2597,22 +2628,46 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
         r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s+"
         r"(?:(?:is|are)\s+|(?:has|have|had)\s+been\s+)"
         r"(?:calculated|computed|determined)"
-        r"(?:\s*,|\s+(?=(?:the\s+)?(?:agency|authority|department)\b))",
+        r"(?P<actor>\s*,?\s*[^,.;:\n]{0,60})$",
         prefix,
         flags=re.IGNORECASE,
     )
-    return any(
-        candidate is not None
-        and bool(_formula_numeric_noun_phrase_head(candidate.group("noun_phrase")))
-        for candidate in (gerund, passive)
-    )
+    if passive is not None and _formula_numeric_noun_phrase_head(
+        passive.group("noun_phrase")
+    ):
+        return True
+    if gerund is None:
+        return False
+    body = gerund.group("body").strip()
+    if "," in body:
+        body = body.split(",", maxsplit=1)[0].strip()
+        return bool(_formula_numeric_noun_phrase_head(body))
+    # Without punctuation, find a numeric result phrase followed by any
+    # bounded finite-clause actor.  This avoids hard-coding agency titles such
+    # as department, commissioner, secretary, or board.
+    words = body.split()
+    for split_at in range(len(words) - 1, 0, -1):
+        noun_phrase = " ".join(words[:split_at])
+        actor = " ".join(words[split_at:])
+        if re.fullmatch(
+            r"(?:the|a|an)\s+[A-Za-z][A-Za-z'-]*"
+            r"(?:\s+(?:of\s+the\s+)?[A-Za-z][A-Za-z'-]*){0,5}",
+            actor,
+            flags=re.IGNORECASE,
+        ) and _formula_numeric_noun_phrase_head(noun_phrase):
+            return True
+    return False
 
 
 def _formula_nonnegative_floor_tail_start(clause: str) -> int | None:
     """Return the final coordinated zero-floor start for a numeric result."""
 
     connectors = tuple(
-        re.finditer(r"(?:,\s*)?\bbut\b|\s+\band\b", clause, flags=re.IGNORECASE)
+        re.finditer(
+            r"(?:,\s*)?\bbut\b|\s+\band\b|,\s*\bwhich\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
     )
     for connector in reversed(connectors):
         tail = clause[connector.end() :].strip()
@@ -2683,16 +2738,20 @@ def _rounding_language_is_computational(text: str) -> bool:
             )
             coordinated_directive = re.search(
                 r"\b(?:can|may|must|shall|should|will)\s+"
+                r"(?:(?:then|[A-Za-z]+ly|first|next)\s+)*"
                 r"(?:calculate|compute|determine)\s+"
                 r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s*,?\s+and"
-                r"(?:\s+(?:then|\w+ly))*\s*$",
+                r"(?:\s+(?:then|[A-Za-z]+ly|first|next))*"
+                r"(?:\s+(?:can|may|must|shall|should|will))?\s*$",
                 active_prefix,
                 flags=re.IGNORECASE,
             )
             shared_object_directive = re.search(
                 r"\b(?:can|may|must|shall|should|will)\s+"
+                r"(?:(?:then|[A-Za-z]+ly|first|next)\s+)*"
                 r"(?:calculate|compute|determine)\s*,?\s+and"
-                r"(?:\s+(?:then|\w+ly))*\s*$",
+                r"(?:\s+(?:then|[A-Za-z]+ly|first|next))*"
+                r"(?:\s+(?:can|may|must|shall|should|will))?\s*$",
                 active_prefix,
                 flags=re.IGNORECASE,
             )
@@ -10131,13 +10190,17 @@ def _formula_conjoined_upper_bound(
         r"(?:(?:dollars?|usd|euros?|eur) )?(?:, )?"
         r"(?:and|but|und) "
         r"(?P<comparison>"
-        r"(?:(?:shall|must|may|will) )?(?:is |be )?(?:"
+        r"(?:(?:can|could|may|might|must|shall|should|will|would) )?"
+        r"(?:is |be )?(?:"
         r"less than or equal to|less than|below|at most|"
-        r"(?:not|no) more than|(?:not|no) greater than|"
-        r"up to(?: and including)?|<=|≤)|"
-        r"(?:(?:shall|must|may|will) )?not (?:be )?(?:more|greater) than|"
-        r"(?:(?:shall|must|may|will) )?not exceed|"
-        r"(?:can not|cannot|does not) exceed|not exceeding|"
+        r"(?:not|no) (?:more|greater|higher) than|"
+        r"up to(?: and including)?|<=|≤|<)|"
+        r"(?:(?:can|could|may|might|must|shall|should|will|would) )?"
+        r"not (?:be )?(?:more|greater|higher) than|"
+        r"(?:(?:can|could|may|might|must|shall|should|will|would) )?"
+        r"not exceed|"
+        r"(?:can not|cannot|does not|do not|did not) (?:exceed|be (?:more|greater|higher) than)|"
+        r"not exceeding|"
         r"not to exceed|(?:is )?not exceeding|"
         r"weniger als oder gleich|weniger als|höchstens"
         r")",
@@ -10150,6 +10213,7 @@ def _formula_conjoined_upper_bound(
     inclusive = not (
         comparison.endswith("less than")
         or comparison.endswith("below")
+        or comparison == "<"
         or comparison == "weniger als"
     )
     return occurrences[1], inclusive
