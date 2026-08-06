@@ -2,6 +2,10 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Interpret formula-range numeric evidence in source order across numeric
+  extraction profiles, so a percentage yielded before word-number thresholds
+  cannot hide a valid conjoined lower and upper income interval.
+
 - Reject source-add dispatches when the primary or bundled canonical RuleSpec
   destination already exists in the pinned checkout. Existing modules must use
   the authenticated canonical-refresh contract, so mode mistakes fail before
