@@ -5759,9 +5759,7 @@ def _formula_clause_has_nonnumeric_inline_following_operands(
         _formula_inline_operands_are_numeric(_strip_source_clause_marker(branch.text))
         for branch in leaves
     )
-    return bool(leaves) and not (
-        any(leaf_computations) or all(leaf_numeric_operands)
-    )
+    return bool(leaves) and not (any(leaf_computations) or all(leaf_numeric_operands))
 
 
 def _formula_clause_is_structural_chapeau(
@@ -5991,9 +5989,7 @@ def _source_clause_spans(
                 source_text[max(0, match.start() - 300) : match.start()]
             )
             and ":" in source_text[max(0, match.start() - 300) : match.start()]
-            and not _FORMULA_FOLLOWING_OPERAND_PROVISO.match(
-                source_text[match.end() :]
-            )
+            and not _FORMULA_FOLLOWING_OPERAND_PROVISO.match(source_text[match.end() :])
         )
     )
     split_points = {
