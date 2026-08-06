@@ -2128,6 +2128,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert '--source-ref "$repair_source_rulespec_ref"' in repair_command
     assert '--current-ref "$RULESPEC_REF"' in repair_command
     assert '--candidate-path "$repair_candidate_path"' in repair_command
+    assert '--rulespec-path "$REPLACE_RULESPEC_PATH"' in repair_command
     assert 'echo "runner=$(jq -r' in repair_command
     assert 'echo "source_rulespec_ref=$repair_source_rulespec_ref"' in repair_command
 
