@@ -493,10 +493,11 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?))|"
     r"(?:(?:always|at\s+all\s+times)\s+)?remain(?:s|ed)?\s+"
-    r"(?:at\s+least|at\s+or\s+above|no\s+(?:less|lower)\s+than|"
+    r"(?:(?:at\s+least|at\s+or\s+above|no\s+(?:less|lower)\s+than|"
     r"greater\s+than\s+or\s+equal\s+to)\s+"
-    r"(?:zero|\$?\s*0(?:\.0+)?)|"
-    r"not\s+(?:be\s+negative|(?:become|turn)\s+negative|"
+    r"(?:zero|\$?\s*0(?:\.0+)?)|zero\s+or\s+greater)|"
+    r"not\s+(?:be\s+(?:an?\s+)?negative(?:\s+amount)?|"
+    r"(?:become|turn)\s+negative|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
     r"never\s+(?:(?:be|become|remain(?:s|ed)?|turn)\s+)?negative|"
@@ -504,19 +505,22 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:be|remain(?:s|ed)?)\s+)?"
     r"(?:not\s+negative|non-?negative)|"
     r"(?:does?|do)\s+not\s+(?:become|turn)\s+negative|"
-    r"(?:in\s+no\s+(?:event|case)|never|under\s+no\s+circumstances)\s+"
-    r"be\s+negative|"
+    r"(?:at\s+no\s+time|in\s+no\s+(?:event|case)|never|"
+    r"under\s+no\s+circumstances)\s+(?:be|become|turn)\s+negative|"
+    r"(?:be\s+)?maintained\s+at\s+no\s+(?:less|lower)\s+than\s+"
+    r"(?:zero|\$?\s*0(?:\.0+)?)|"
     r"be\s+(?:(?:treated\s+as|deemed)\s+)?zero\s+"
     r"(?:if|when|whenever)\s+(?:(?:(?:it|they)|(?:the\s+)?"
     r"(?:amounts?|benefits?|credits?|incomes?|results?|taxes?|totals?|values?))"
     r"\s+(?:is|are)\s+)?negative|"
-    r"(?:in\s+no\s+(?:event|case)|under\s+no\s+circumstances|never)\s+"
+    r"(?:at\s+no\s+time|in\s+no\s+(?:event|case)|"
+    r"under\s+no\s+circumstances|never)\s+"
     r"(?:(?:can|could|may|might|must|shall|should|will|would|is|are)\s+)?"
     r"(?:(?:it|they)\s+|(?:(?:a|an|any|each|every|the|this|that|such)\s+)?"
     r"(?:[A-Za-z][A-Za-z-]*\s+){0,5}"
     r"(?:amounts?|benefits?|credits?|deductions?|incomes?|"
     r"liabilit(?:y|ies)|payments?|results?|taxes?|totals?|values?)\s+)?"
-    r"(?:be\s+negative|"
+    r"(?:(?:be|become|turn)\s+negative|"
     r"be\s+(?:less|lower)\s+than\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
@@ -539,6 +543,10 @@ _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     r"websites?|"
     r"papers?|resolutions?|schedules?|sections?|specifications?|standards?|"
     r"statutes?|tax|work|workbooks?|workpapers?|worksheets?|workflows?)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE = re.compile(
+    r"\b(?:contents?|copies|copy|drafts?|final|revs?|revisions?|texts?|versions?)\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE = re.compile(
@@ -2585,15 +2593,56 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
             # code grammar, then reject semantic document-title heads above.
             bounded_code = re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier_tail)
             code_segments = identifier_tail.split("-")
-            structured_code_has_payload = len(
-                code_segments
-            ) > 1 and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
-                code_segments[-1]
+            title_segments = [
+                segment
+                for segment in code_segments
+                if _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(segment)
+            ]
+            namespace_payload = bool(
+                len(code_segments) == 2
+                and code_segments[0] in {"RULE", "SCHEDULE", "SECTION"}
+                and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
+                    code_segments[-1]
+                )
+                and not _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE.fullmatch(
+                    code_segments[-1]
+                )
+            )
+            rule_namespace_payload = bool(
+                "RULE" in code_segments[:-1]
+                and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
+                    code_segments[-1]
+                )
+                and not _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE.fullmatch(
+                    code_segments[-1]
+                )
+            )
+            strong_code_signal = bool(
+                any(character.isdigit() for character in identifier_tail)
+                or len(code_segments[0]) == 1
+                or code_segments[0] in {"AGI", "CPI", "GDP", "PCE", "RPI", "TAX"}
+                or namespace_payload
+                or rule_namespace_payload
+                or (
+                    len(code_segments) > 1
+                    and code_segments[-1].lower()
+                    in {
+                        "adjustment",
+                        "coefficient",
+                        "factor",
+                        "index",
+                        "multiplier",
+                        "ratio",
+                        "rate",
+                        "scale",
+                        "weight",
+                    }
+                )
             )
             code_like = bounded_code is not None and (
                 administrative_title is None
-                or any(character.isdigit() for character in identifier_tail)
-                or structured_code_has_payload
+                or rule_namespace_payload
+                or (strong_code_signal and len(title_segments) <= 1)
             )
             coefficient_tail_is_numeric = code_segments[-1].lower() in {
                 "adjustment",
@@ -2712,6 +2761,19 @@ def _formula_rounding_actor_is_bounded(actor: str) -> bool:
         actor,
         flags=re.IGNORECASE,
     )
+    administrative_titles = tuple(
+        _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.finditer(actor_core)
+    )
+    if administrative_titles:
+        qualifier_tail = actor_core[administrative_titles[-1].end() :].strip()
+        if qualifier_tail and re.fullmatch(
+            r"(?:contents?|copies|copy|drafts?|final|revs?|revisions?|"
+            r"texts?|versions?)(?:\s+(?:contents?|copies|copy|drafts?|final|"
+            r"revs?|revisions?|texts?|versions?))*",
+            qualifier_tail,
+            flags=re.IGNORECASE,
+        ):
+            return False
     actor_starts_with_role = bool(
         _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.match(actor_core)
     )
@@ -2751,6 +2813,12 @@ def _formula_passive_rounding_actor(tail: str) -> str | None:
     if "," in tail:
         modifier, actor = tail.rsplit(",", maxsplit=1)
         modifier = modifier.strip()
+        adverbial_by_actor = re.fullmatch(
+            r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*\s+by\s+"
+            r"(?P<actor>[^,.;:\n]{1,60})",
+            modifier,
+            flags=re.IGNORECASE,
+        )
         if modifier and not (
             re.fullmatch(
                 r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*",
@@ -2758,16 +2826,26 @@ def _formula_passive_rounding_actor(tail: str) -> str | None:
                 flags=re.IGNORECASE,
             )
             or (
+                adverbial_by_actor is not None
+                and _formula_rounding_actor_is_bounded(
+                    adverbial_by_actor.group("actor")
+                )
+            )
+            or (
                 modifier.lower().startswith("by ")
                 and _formula_rounding_actor_is_bounded(modifier[3:])
             )
             or re.fullmatch(
-                r"as\s+(?:required|provided|specified)",
+                r"as\s+(?:otherwise\s+)?(?:required|provided|specified|prescribed)"
+                r"(?:\s+(?:by|in|under)\s+"
+                r"(?:(?:the|this|that|such)\s+)?"
+                r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60})?",
                 modifier,
                 flags=re.IGNORECASE,
             )
             or re.fullmatch(
-                r"(?:according\s+to|in\s+accordance\s+with|under|pursuant\s+to)\s+"
+                r"(?:according\s+to|consistent\s+with|in\s+accordance\s+with|"
+                r"subject\s+to|under|pursuant\s+to)\s+"
                 r"(?:(?:the|this|that|such)\s+)?"
                 r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60}",
                 modifier,
@@ -10375,7 +10453,19 @@ def _formula_conjoined_bound(
     )
     if gap_match is None:
         return None
-    comparison = gap_match.group("body").lower().strip()
+    return _formula_bound_from_comparison(
+        gap_match.group("body"),
+        occurrences[1],
+    )
+
+
+def _formula_bound_from_comparison(
+    comparison: str,
+    occurrence: NumericOccurrenceLike,
+) -> tuple[NumericOccurrenceLike, bool, str] | None:
+    """Parse one comparison while preserving modal and negative control."""
+
+    comparison = comparison.lower().strip()
     comparison = re.sub(r"\s*,\s*", " ", comparison)
     comparison = re.sub(r"\s*[;:]\s*$", "", comparison)
     comparison = re.sub(
@@ -10417,21 +10507,28 @@ def _formula_conjoined_bound(
         comparison[copula_match.end() :] if copula_match is not None else comparison
     )
 
-    exclusive_comparisons = {
+    upper_exclusive_comparisons = {
         "<",
         "below",
         "cannot equal or exceed",
         "cannot equal or be greater than",
+        "cannot be at least",
+        "cannot be greater than or equal to",
         "less than",
         "not equal or exceed",
         "not equal or be greater than",
+        "not at least",
+        "not be at least",
+        "not be greater than or equal to",
+        "not greater than or equal to",
         "remain below",
         "under",
         "up to but not including",
         "up to but excluding",
+        "von weniger als",
         "weniger als",
     }
-    inclusive_comparisons = {
+    upper_inclusive_comparisons = {
         "<=",
         "≤",
         "at or below",
@@ -10461,6 +10558,9 @@ def _formula_conjoined_bound(
         "not in excess of",
         "not larger than",
         "not more than",
+        "bis",
+        "höchstens",
+        "nicht mehr als",
         "up to",
         "up to and including",
         "weniger als oder gleich",
@@ -10475,20 +10575,33 @@ def _formula_conjoined_bound(
         "not exceeding",
         "not to exceed",
     }
-    affirmative_lower_comparisons = {
+    lower_exclusive_comparisons = {
         ">",
         "above",
+        "cannot be at most",
+        "cannot be less than or equal to",
         "exceed",
+        "exceeds",
+        "exceeding",
         "greater than",
         "higher than",
         "larger than",
         "more than",
+        "not equal or be less than",
+        "not equal or less than",
+        "not at most",
+        "not be at most",
+        "not be less than or equal to",
+        "not less than or equal to",
         "over",
         "remain above",
+        "von mehr als",
+        "über",
     }
-    inclusive_lower_comparisons = {
+    lower_inclusive_comparisons = {
         ">=",
         "≥",
+        "ab",
         "at or above",
         "at or over",
         "at least",
@@ -10497,6 +10610,9 @@ def _formula_conjoined_bound(
         "cannot be lower than",
         "cannot be under",
         "cannot fall below",
+        "did not fall below",
+        "do not fall below",
+        "does not fall below",
         "equal to or greater than",
         "equal or exceed",
         "equal or be greater than",
@@ -10514,48 +10630,71 @@ def _formula_conjoined_bound(
         "not under",
         "remain at or above",
         "remain at least",
+        "from",
+        "mindestens",
+        "von",
     }
-    if has_negative_control and copula_stripped in exclusive_comparisons:
-        return occurrences[1], True, "lower"
-    if has_negative_control and copula_stripped in inclusive_comparisons:
-        return occurrences[1], False, "lower"
-    if has_negative_control and copula_stripped in inclusive_lower_comparisons:
-        return occurrences[1], False, "upper"
+    if has_negative_control and copula_stripped in upper_exclusive_comparisons:
+        return occurrence, True, "lower"
+    if has_negative_control and copula_stripped in upper_inclusive_comparisons:
+        return occurrence, False, "lower"
+    if has_negative_control and copula_stripped in lower_exclusive_comparisons:
+        return occurrence, True, "upper"
+    if has_negative_control and copula_stripped in lower_inclusive_comparisons:
+        return occurrence, False, "upper"
     permissive_modal = modal_seen in {"can", "could", "may", "might", "would"}
     prohibitive_comparison = bool(
         re.match(r"^(?:can\s+not|cannot|no|not)\b", copula_stripped)
         or comparison in negative_exceed_comparisons
         or copula_stripped in negative_exceed_comparisons
     )
-    if copula_stripped in exclusive_comparisons:
-        if permissive_modal and not prohibitive_comparison:
-            return None
-        return occurrences[1], False, "upper"
+    recognized_comparison = bool(
+        copula_stripped
+        in (
+            upper_exclusive_comparisons
+            | upper_inclusive_comparisons
+            | negative_exceed_comparisons
+            | lower_exclusive_comparisons
+            | lower_inclusive_comparisons
+        )
+        or comparison in negative_exceed_comparisons
+    )
+    if permissive_modal and not prohibitive_comparison and recognized_comparison:
+        # A sentinel prevents a later suffix retry from hardening the optional
+        # comparison after its permissive modal has been discarded.
+        return occurrence, False, "permissive"
+    if copula_stripped in upper_exclusive_comparisons:
+        return occurrence, False, "upper"
     if (
-        copula_stripped in inclusive_comparisons
+        copula_stripped in upper_inclusive_comparisons
         or comparison in negative_exceed_comparisons
         or copula_stripped in negative_exceed_comparisons
-        or (has_negative_control and copula_stripped in affirmative_lower_comparisons)
     ):
-        if permissive_modal and not prohibitive_comparison:
-            return None
-        return occurrences[1], True, "upper"
-    if (
-        not has_negative_control
-        and (
-            modal_seen in {"must", "shall", "should", "will"}
-            or (modal_seen is None and copula_match is not None)
-            or (modal_seen is None and copula_stripped in affirmative_lower_comparisons)
-        )
-        and copula_stripped in affirmative_lower_comparisons
-    ):
-        return occurrences[1], False, "lower"
-    if (
-        not has_negative_control
-        and (not permissive_modal or prohibitive_comparison)
-        and copula_stripped in inclusive_lower_comparisons
-    ):
-        return occurrences[1], True, "lower"
+        return occurrence, True, "upper"
+    if copula_stripped in lower_exclusive_comparisons:
+        return occurrence, False, "lower"
+    if copula_stripped in lower_inclusive_comparisons:
+        return occurrence, True, "lower"
+    return None
+
+
+def _formula_first_bound(
+    text: str,
+    occurrence: NumericOccurrenceLike,
+) -> tuple[NumericOccurrenceLike, bool, str] | None:
+    """Parse the first threshold without dropping its modal prefix."""
+
+    clause_start = max(
+        text.rfind(".", 0, occurrence.start),
+        text.rfind(";", 0, occurrence.start),
+        text.rfind("\n", 0, occurrence.start),
+    )
+    prefix = _strip_source_clause_marker(text[clause_start + 1 : occurrence.start])
+    starts = [match.start() for match in re.finditer(r"(?<![\w-])(?=\S)", prefix)]
+    for start in starts[-18:]:
+        bound = _formula_bound_from_comparison(prefix[start:], occurrence)
+        if bound is not None:
+            return bound
     return None
 
 
@@ -10564,7 +10703,7 @@ def _formula_interval_with_conjoined_bound(
     first_inclusive: bool,
     first_kind: str,
     bound: tuple[NumericOccurrenceLike, bool, str] | None,
-) -> _NumericInterval:
+) -> _NumericInterval | None:
     """Compose either first threshold with an optional second constraint."""
 
     lower = first if first_kind == "lower" else None
@@ -10579,11 +10718,17 @@ def _formula_interval_with_conjoined_bound(
                 lower_inclusive = inclusive
             elif math.isclose(float(occurrence.value), float(lower.value)):
                 lower_inclusive = lower_inclusive and inclusive
-        elif upper is None or float(occurrence.value) < float(upper.value):
+        elif kind == "upper" and (
+            upper is None or float(occurrence.value) < float(upper.value)
+        ):
             upper = occurrence
             upper_inclusive = inclusive
-        elif math.isclose(float(occurrence.value), float(upper.value)):
+        elif kind == "upper" and math.isclose(
+            float(occurrence.value), float(upper.value)
+        ):
             upper_inclusive = upper_inclusive and inclusive
+    if lower is None and upper is None:
+        return None
     return _NumericInterval(lower, lower_inclusive, upper, upper_inclusive)
 
 
@@ -10669,6 +10814,15 @@ def _formula_interval_from_text(
         if len(occurrences) < 2:
             return None
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
+    first_bound = _formula_first_bound(text, occurrences[0])
+    if first_bound is not None:
+        first, first_inclusive, first_kind = first_bound
+        return _formula_interval_with_conjoined_bound(
+            first,
+            first_inclusive,
+            first_kind,
+            _formula_conjoined_bound(text, occurrences),
+        )
     if re.match(
         r"(?:unter|less\s+than(?!\s+or\s+equal\s+to)|below|"
         r"(?:von\s+)?weniger\s+als)\b",
