@@ -4281,38 +4281,158 @@ def _deferred_coverage(
             source_text=source_text,
             branches=branches,
         )
-        if "blocked_by" in record:
-            precise = (
-                exact_blockers
-                and bool(_MISSING_DEPENDENCY_LANGUAGE.search(reason))
-                and all(
-                    _reason_identifies_blocker(
-                        reason,
-                        blocker,
-                        corpus_citation_path=corpus_citation_path,
+
+        def reason_is_precise_for(
+            candidate_scope_text: str,
+            candidate_path: tuple[str, ...],
+        ) -> bool:
+            if "blocked_by" in record:
+                return (
+                    exact_blockers
+                    and bool(_MISSING_DEPENDENCY_LANGUAGE.search(reason))
+                    and all(
+                        _reason_identifies_blocker(
+                            reason,
+                            blocker,
+                            corpus_citation_path=corpus_citation_path,
+                        )
+                        for blocker in blocker_targets
                     )
-                    for blocker in blocker_targets
-                )
-                and all(
-                    _source_scope_identifies_blocker(
-                        source_scope_text,
-                        blocker,
-                        corpus_citation_path=corpus_citation_path,
+                    and all(
+                        _source_scope_identifies_blocker(
+                            candidate_scope_text,
+                            blocker,
+                            corpus_citation_path=corpus_citation_path,
+                        )
+                        for blocker in blocker_targets
                     )
-                    for blocker in blocker_targets
                 )
-            )
-        else:
-            precise = _reason_dependency_is_source_bound(
+            return _reason_dependency_is_source_bound(
                 reason,
-                source_scope_text,
+                candidate_scope_text,
                 corpus_citation_path=corpus_citation_path,
             ) or _reason_names_source_bound_runtime_gap(
                 reason,
-                source_scope_text,
-                path=path,
+                candidate_scope_text,
+                path=candidate_path,
                 corpus_citation_path=corpus_citation_path,
             )
+
+        valid_root_symbol = (
+            not path
+            and output.count("#") == 1
+            and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", output.partition("#")[2]))
+        )
+        if valid_root_symbol:
+            cited_branches = {
+                branch.path
+                for branch in branches
+                if branch.path
+                and _reason_cites_exact_current_statute_branch(
+                    reason,
+                    corpus_citation_path=corpus_citation_path,
+                    path=branch.path,
+                    strict_terminal=True,
+                )
+            }
+            most_specific_cited_branches = {
+                candidate
+                for candidate in cited_branches
+                if not any(
+                    len(other) > len(candidate) and other[: len(candidate)] == candidate
+                    for other in cited_branches
+                )
+            }
+            most_specific_source_scopes = {
+                candidate: _deferred_source_scope_text(
+                    candidate,
+                    source_text=source_text,
+                    branches=branches,
+                )
+                for candidate in most_specific_cited_branches
+            }
+            attempted_runtime_gap = bool(
+                _MISSING_DEPENDENCY_LANGUAGE.search(reason)
+                and _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE.search(reason)
+            )
+            common_cited_branches = {
+                candidate
+                for candidate in cited_branches
+                if all(other[: len(candidate)] == candidate for other in cited_branches)
+            }
+            precise_external_dependency = any(
+                (
+                    "blocked_by" in record
+                    and reason_is_precise_for(candidate_scope_text, candidate)
+                )
+                or _reason_dependency_is_source_bound(
+                    reason,
+                    candidate_scope_text,
+                    corpus_citation_path=corpus_citation_path,
+                )
+                for candidate, candidate_scope_text in most_specific_source_scopes.items()
+            )
+            cited_scope_states_explicit_computation = any(
+                source_states_explicit_computation(candidate_scope_text)
+                for candidate_scope_text in most_specific_source_scopes.values()
+            )
+            if (
+                attempted_runtime_gap
+                and not precise_external_dependency
+                and cited_scope_states_explicit_computation
+                and common_cited_branches
+            ):
+                explicit_computation_branch = max(common_cited_branches, key=len)
+                rendered_branch = "/".join(
+                    _deferred_branch_display_path(
+                        explicit_computation_branch,
+                        corpus_citation_path=corpus_citation_path,
+                        branches=branches,
+                    )
+                )
+                issues.append(
+                    "[complete-source-unit:deferral] "
+                    f"`module.deferred_outputs[{index}]` cites exact source branch "
+                    f"(`{rendered_branch}`), but that branch states an explicit "
+                    "computation and cannot be deferred as a runtime gap. Declare "
+                    "the source-stated operative facts as local RuleSpec inputs and "
+                    "encode the principal derived output."
+                )
+                continue
+            cited_branch = (
+                next(iter(most_specific_cited_branches))
+                if len(most_specific_cited_branches) == 1
+                else None
+            )
+            if cited_branch is not None:
+                cited_source_scope_text = _deferred_source_scope_text(
+                    cited_branch,
+                    source_text=source_text,
+                    branches=branches,
+                )
+                display_cited_branch = _deferred_branch_display_path(
+                    cited_branch,
+                    corpus_citation_path=corpus_citation_path,
+                    branches=branches,
+                )
+                rendered_branch = "/".join(display_cited_branch)
+                if reason_is_precise_for(cited_source_scope_text, cited_branch):
+                    fragment = output.partition("#")[2]
+                    corrected_output = f"{base_target}/{rendered_branch}#{fragment}"
+                    retry_shape = _imprecise_deferral_retry_shape(
+                        corpus_citation_path=corpus_citation_path,
+                        path=display_cited_branch,
+                    )
+                    issues.append(
+                        "[complete-source-unit:deferral] "
+                        f"`module.deferred_outputs[{index}].output` is rooted at the "
+                        f"source unit (`{output}`), but its otherwise precise reason "
+                        f"cites exact source branch (`{rendered_branch}`). Preserve "
+                        f"that branch in the output path, for example "
+                        f"`{corrected_output}`.\n{retry_shape}"
+                    )
+                    continue
+        precise = reason_is_precise_for(source_scope_text, path)
         if precise:
             covered.add(path)
         else:
@@ -4342,6 +4462,43 @@ def _deferred_source_scope_text(
         return source_text
     candidates = [branch.text for branch in branches if branch.path == path]
     return max(candidates, key=len, default="")
+
+
+def _deferred_branch_display_path(
+    path: tuple[str, ...],
+    *,
+    corpus_citation_path: str,
+    branches: Sequence[SourceStructureBranch],
+) -> tuple[str, ...]:
+    """Restore source-marker case for federal branch-path retry advice."""
+
+    if not corpus_citation_path.startswith("us/statute/"):
+        return path
+    display_path: list[str] = []
+    for depth, segment in enumerate(path, start=1):
+        prefix = path[:depth]
+        candidate_texts = (branch.text for branch in branches if branch.path == prefix)
+        source_scope_text = max(candidate_texts, key=len, default="")
+        marker_match = re.match(
+            r"\s*(?P<markers>(?:\(\s*[A-Za-z0-9]+\s*\)\s*)+)",
+            source_scope_text,
+        )
+        if marker_match is None:
+            display_path.append(segment)
+            continue
+        marker_labels = re.findall(
+            r"\(\s*([A-Za-z0-9]+)\s*\)",
+            marker_match.group("markers"),
+        )
+        display_segment = segment
+        for width in range(min(len(prefix), len(marker_labels)), 0, -1):
+            if tuple(label.lower() for label in marker_labels[:width]) == tuple(
+                part.lower() for part in prefix[-width:]
+            ):
+                display_segment = marker_labels[width - 1]
+                break
+        display_path.append(display_segment)
+    return tuple(display_path)
 
 
 def _reason_identifies_blocker(
@@ -5893,6 +6050,7 @@ def _reason_cites_exact_current_statute_branch(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...],
+    strict_terminal: bool = False,
 ) -> bool:
     """Bind a runtime-gap reason to one complete current-source branch."""
 
@@ -5925,7 +6083,11 @@ def _reason_cites_exact_current_statute_branch(
             rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
             for part in complete_usc_branch
         )
-        usc_descendant_guard = r"(?!\s*\()" if len(complete_usc_branch) > 1 else ""
+        usc_terminal_guard = (
+            state_branch_terminal_guard
+            if strict_terminal
+            else (r"(?!\s*\()" if len(complete_usc_branch) > 1 else "")
+        )
         section_pattern = literal_pattern(
             normalize_rulespec_path_segment(citation.section)
         )
@@ -5933,7 +6095,7 @@ def _reason_cites_exact_current_statute_branch(
             re.search(
                 rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
                 rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{usc_branch_pattern}"
-                rf"{usc_descendant_guard}",
+                rf"{usc_terminal_guard}",
                 reason,
                 flags=re.IGNORECASE,
             )
