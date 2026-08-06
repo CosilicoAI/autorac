@@ -530,8 +530,10 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"never\s+(?:carry|have|show)\s+(?:an?\s+)?negative\s+"
     r"(?:amount|balance|value)|"
     r"be\s+(?:zero|\$?\s*0(?:\.0+)?)\s+or\s+(?:above|greater|higher|more)|"
-    r"(?:have|has|had)\s+(?:a\s+)?(?:floor|minimum(?:\s+value)?)\s+of\s+"
-    r"(?:zero|\$?\s*0(?:\.0+)?)|"
+    r"(?:have|has|had)\s+(?:(?:a\s+)?(?:floor|lower\s+bound|"
+    r"minimum(?:\s+value)?)\s+of\s+(?:zero|\$?\s*0(?:\.0+)?)|"
+    r"(?:a\s+)?(?:zero|\$?\s*0(?:\.0+)?)\s+lower\s+bound)|"
+    r"be\s+bounded\s+below\s+by\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"(?:cannot|can\s+not)\s+(?:(?:be|become|turn)\s+negative|"
     r"(?:drop|fall|go)\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"(?:carry|have|show)\s+(?:an?\s+)?negative\s+"
@@ -543,17 +545,20 @@ _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     r"archives?|books?|brochures?|catalogs?|chapters?|circulars?|codes?|"
     r"contracts?|criteria|decrees?|directives?|documents?|"
     r"dashboards?|databases?|decisions?|documentation|exhibits?|factsheets?|"
-    r"faqs?|files?|forms?|guidance|"
+    r"faqs?|files?|flyers?|forms?|guidance|infographics?|"
     r"guides?|guidelines|handbooks?|"
     r"instructions?|letters?|"
     r"laws?|legislation|manuals?|memos?|memorand(?:a|ums?)|methodolog(?:y|ies)|"
-    r"newsletters?|notes?|notices?|operations?|opinions?|orders?|ordinances?|"
+    r"news|newsletters?|notes?|notices?|operations?|opinions?|orders?|"
+    r"ordinances?|pamphlets?|primers?|"
     r"plans?|polic(?:y|ies)|procedures?|processes?|programs?|protocols?|"
     r"overviews?|portals?|press|publications?|records?|registers?|regulations?|"
     r"references?|releases?|"
     r"reports?|repositories?|requirements?|rules?|rulings?|sites?|summaries?|"
+    r"tutorials?|"
     r"websites?|"
-    r"papers?|resolutions?|schedules?|sections?|specifications?|standards?|"
+    r"advisor(?:y|ies)|articles?|papers?|resolutions?|schedules?|sections?|"
+    r"specifications?|standards?|"
     r"statutes?|stud(?:y|ies)|tax|whitepapers?|work|workbooks?|workpapers?|"
     r"worksheets?|workflows?)\b",
     flags=re.IGNORECASE,
@@ -570,12 +575,14 @@ _FORMULA_CODE_NAMESPACE_TITLE_LANGUAGE = re.compile(
 _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE = re.compile(
     r"\b(?:administrators?|agenc(?:y|ies)|authorit(?:y|ies)|boards?|bureaus?|"
     r"accountants?|advisers?|advisors?|agents?|analysts?|assessors?|attorneys?|"
-    r"auditors?|clerks?|collectors?|consultants?|"
+    r"auditors?|clerks?|collectors?|consultants?|contractors?|inspectors?|"
+    r"judges?|liaisons?|preparers?|"
     r"commissions?|commissioners?|committees?|"
     r"councils?|"
     r"chairs?|coordinators?|counsels?|custodians?|departments?|directors?|"
     r"divisions?|employees?|examiners?|leads?|managers?|officers?|offices?|"
-    r"representatives?|secretar(?:y|ies)|services?|supervisors?|trustees?)\b",
+    r"representatives?|secretar(?:y|ies)|services?|specialists?|supervisors?|"
+    r"trustees?)\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_RESULT_OPERATION_LANGUAGE = re.compile(
@@ -622,9 +629,11 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "credit",
         "decrease",
         "deduction",
+        "denominator",
         "deficiency",
         "distribution",
         "difference",
+        "divisor",
         "excess",
         "exemption",
         "expense",
@@ -642,6 +651,7 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "median",
         "networth",
         "number",
+        "numerator",
         "offset",
         "overpayment",
         "payment",
@@ -2806,14 +2816,20 @@ def _formula_passive_rounding_modifier_is_bounded(modifier: str) -> bool:
     )
     return bool(
         re.fullmatch(
-            rf"as\s+(?:otherwise\s+)?(?:described|directed|mandated|required|"
-            rf"provided|specified|prescribed)"
+            rf"as\s+(?:otherwise\s+)?(?:authorized|described|directed|"
+            rf"established|mandated|outlined|required|provided|specified|"
+            rf"prescribed|stipulated)"
             rf"(?:\s+(?:by|in|under|{legal_connector})\s+{legal_reference})?",
             modifier,
             flags=re.IGNORECASE,
         )
         or re.fullmatch(
             rf"as\s+set\s+forth\s+in\s+{legal_reference}",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            rf"as\s+provided\s+for(?:\s+in\s+{legal_reference})?",
             modifier,
             flags=re.IGNORECASE,
         )
@@ -2826,6 +2842,11 @@ def _formula_passive_rounding_modifier_is_bounded(modifier: str) -> bool:
             rf"in\s+(?:the\s+)?manner\s+(?:mandated|provided|required|specified|"
             rf"prescribed)\s+by\s+"
             rf"{legal_reference}",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            rf"in\s+(?:the\s+)?manner\s+set\s+forth\s+in\s+{legal_reference}",
             modifier,
             flags=re.IGNORECASE,
         )
@@ -10506,7 +10527,8 @@ def _formula_bound_from_comparison(
             comparison = comparison[modal_match.end() :]
             comparison = re.sub(
                 r"^(?:(?:always|at\s+all\s+times|in\s+(?:all|each)\s+cases?|"
-                r"in\s+every\s+case|without\s+exception|[a-z]+ly)\s+){1,3}",
+                r"in\s+every\s+(?:case|instance)|under\s+all\s+circumstances|"
+                r"without\s+exception|[a-z]+ly)\s+){1,3}",
                 "",
                 comparison,
                 flags=re.IGNORECASE,
@@ -10527,8 +10549,8 @@ def _formula_bound_from_comparison(
             continue
         prohibited_match = re.match(
             r"(?:is|are|be)\s+(?:[a-z]+ly\s+){0,2}"
-            r"(?:not\s+(?:allowed|permitted)\s+to|"
-            r"(?:barred|forbidden|prohibited)"
+            r"(?:not\s+(?:allowed|authorized|permitted)\s+to|"
+            r"(?:barred|disallowed|forbidden|precluded|prohibited)"
             r"(?:\s+(?:ever|[a-z]+ly)){0,2}\s+(?:from|to))\s+",
             comparison,
         )
@@ -10548,6 +10570,8 @@ def _formula_bound_from_comparison(
         required_predicate_match = re.match(
             r"(?:is|are|be)\s+(?:[a-z]+ly\s+){0,2}"
             r"(?:compelled|directed|mandated|obliged|ordered|required)\s+"
+            r"(?:under\s+(?:(?:this|that|the)\s+)?"
+            r"[a-z][a-z0-9 .():§'-]{0,50}?\s+)?"
             r"(?P<negative>not\s+)?to\s+",
             comparison,
         )
@@ -10558,9 +10582,11 @@ def _formula_bound_from_comparison(
                 comparison = f"not {comparison}"
             continue
         descriptive_predicate_match = re.match(
-            r"(?:(?:is|are|be)\s+(?:apt\s+to|capable\s+of|designed\s+to|"
-            r"expected\s+to|free\s+to|likely\s+to|supposed\s+to)|"
-            r"(?:appears?|tends?)\s+to)\s+",
+            r"(?:(?:is|are|be)\s+(?:anticipated\s+to|apt\s+to|capable\s+of|"
+            r"designed\s+to|estimated\s+to|expected\s+to|forecast\s+to|"
+            r"free\s+to|liable\s+to|likely\s+to|presumed\s+to|prone\s+to|"
+            r"projected\s+to|supposed\s+to|unlikely\s+to)|"
+            r"(?:appears?|seems?|tends?)\s+to)\s+",
             comparison,
         )
         if descriptive_predicate_match is not None:
@@ -10788,17 +10814,19 @@ def _formula_first_bound(
         if bound is not None:
             discarded_prefix = prefix[:start]
             if re.search(
-                r"\b(?:allowed|appears?|apt|authorized|can|capable|could|"
-                r"designed|expected|free|likely|may|might|need|occasionally|"
-                r"permitted|possibly|rarely|supposed|tends?|typically|would)\b",
+                r"\b(?:allowed|anticipated|appears?|apt|authorized|can|capable|"
+                r"could|designed|estimated|expected|forecast|free|liable|likely|"
+                r"may|might|need|occasionally|permitted|possibly|presumed|prone|"
+                r"projected|rarely|seems?|supposed|tends?|typically|unlikely|"
+                r"would)\b",
                 discarded_prefix,
                 flags=re.IGNORECASE,
             ):
                 return occurrence, False, "permissive"
             if re.search(
-                r"\b(?:barred|cannot|compelled|directed|forbidden|mandated|must|"
-                r"never|not|obliged|ordered|prohibited|required|shall|should|"
-                r"will)\b",
+                r"\b(?:barred|cannot|compelled|directed|disallowed|forbidden|"
+                r"mandated|must|never|not|obliged|ordered|precluded|prohibited|"
+                r"required|shall|should|will)\b",
                 discarded_prefix,
                 flags=re.IGNORECASE,
             ):
@@ -10838,6 +10866,14 @@ def _formula_interval_with_conjoined_bound(
             upper_inclusive = upper_inclusive and inclusive
     if lower is None and upper is None:
         return None
+    if lower is not None and upper is not None:
+        lower_value = float(lower.value)
+        upper_value = float(upper.value)
+        if lower_value > upper_value or (
+            math.isclose(lower_value, upper_value)
+            and not (lower_inclusive and upper_inclusive)
+        ):
+            return None
     return _NumericInterval(lower, lower_inclusive, upper, upper_inclusive)
 
 
@@ -10898,12 +10934,18 @@ def _formula_interval_from_text(
                 lowered.rfind(":", 0, candidate.start()),
                 lowered.rfind("\n", 0, candidate.start()),
             )
-            candidate_prefix = lowered[clause_start + 1 : candidate.start()]
-            if re.search(
-                r"\b(?:deduct(?:s|ed|ing)?|decreas(?:e|ed|es|ing)|"
-                r"increas(?:e|ed|es|ing)|reduc(?:e|ed|es|ing)|"
-                r"subtract(?:s|ed|ing)?)\b[^.;:\n]{0,100}$",
+            candidate_prefix = _strip_source_clause_marker(
+                lowered[clause_start + 1 : candidate.start()]
+            ).strip()
+            if candidate_prefix and not re.fullmatch(
+                r"(?:(?:for|if|when|where)\s+)?"
+                r"(?:(?:a|an|that|the|this)\s+)?"
+                r"(?:(?:adjusted|aggregate|annual|applicable|combined|federal|"
+                r"gross|household|individual|resident|state|taxable)\s+){0,8}"
+                r"(?:amount|income|limit|threshold|total|value)"
+                r"(?:\s+(?:are|be|is|must\s+be|ranges?|shall\s+be))?",
                 candidate_prefix,
+                flags=re.IGNORECASE,
             ):
                 continue
         candidate_occurrences = tuple(
@@ -10973,11 +11015,12 @@ def _formula_interval_from_text(
     )
     unparsed_prefix = lowered[clause_start + 1 : keyword.start()]
     if re.search(
-        r"\b(?:allowed|appears?|apt|authorized|barred|can|cannot|capable|"
-        r"compelled|could|designed|directed|expected|forbidden|free|likely|"
-        r"mandated|may|might|must|need|never|not|obliged|ordered|permitted|"
-        r"possibly|prohibited|rarely|required|shall|should|supposed|tends?|"
-        r"typically|will|would)\b",
+        r"\b(?:allowed|anticipated|appears?|apt|authorized|barred|can|cannot|"
+        r"capable|compelled|could|designed|directed|disallowed|estimated|"
+        r"expected|forbidden|forecast|free|liable|likely|mandated|may|might|"
+        r"must|need|never|not|obliged|ordered|permitted|possibly|precluded|"
+        r"presumed|prone|prohibited|projected|rarely|required|seems?|shall|"
+        r"should|supposed|tends?|typically|unlikely|will|would)\b",
         unparsed_prefix,
         flags=re.IGNORECASE,
     ):
