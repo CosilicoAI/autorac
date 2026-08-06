@@ -2015,8 +2015,10 @@ B. End.
         "The tax shall be determined by applying the rate to the excess of taxable income over $10,000",
         "The tax shall be determined by applying the rate to that portion of taxable income in excess of the threshold",
         "The tax shall be determined by applying the rate to the portion of taxable income which exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income that exceeds $10,000",
         "The tax shall be determined by applying the rate to the excess of taxable income above $10,000",
         "The tax shall be determined by applying the rate to so much of taxable income as is in excess of $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as exceeds or equals $10,000",
         "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
@@ -2420,6 +2422,11 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "except in the case of an ineligible taxpayer, the department shall",
         "except in any case where the taxpayer is ineligible, the department shall",
         "except as otherwise provided in section 5, the department shall",
+        "except as required by section 5, the department shall",
+        "except as otherwise specified, the department shall",
+        "in any case where the taxpayer is eligible, the department shall",
+        "in a case where the taxpayer is eligible, the department shall",
+        "save where the taxpayer is eligible, the department shall",
         "the credit shall",
     ),
 )
@@ -2556,6 +2563,10 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The classification is computed by application of agency policy.",
         "The benefit is determined by applying Benefit Policy.",
         "The benefit is determined by applying Benefit Rules.",
+        "The benefit is determined by applying Formula Policy.",
+        "The benefit is determined by applying Formula Policy Guide.",
+        "The amount is determined by applying Formula Guidelines.",
+        "The benefit is determined by applying Index Requirements.",
         "The credit is determined by applying Credit Requirements.",
         "The credit is determined by applying CREDIT REQUIREMENTS.",
         "The amount is determined by applying Amount Guidelines.",
@@ -2601,6 +2612,12 @@ def test_delegated_determinations_are_not_computations(source: str):
         "since the credit equals income plus the supplement.",
         "The eligibility is determined by applying the requirements of section 5 "
         "notwithstanding that the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "as the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "given that the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "inasmuch as the credit equals income plus the supplement.",
     ),
 )
 def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
@@ -2653,6 +2670,10 @@ def test_rounding_policy_noun_is_not_a_computation():
         "The department shall decide whether to round the amount.",
         "The authority to round the amount shall be documented.",
         "Guidance on how to round the amount shall be published.",
+        "The department shall in guidance explain how to round the amount.",
+        "The authority shall in regulations permit the department to round the amount.",
+        "The department shall in no event round the amount.",
+        "The department shall under no circumstances round the amount.",
     ),
 )
 def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
@@ -2689,6 +2710,9 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "The department shall in all cases round the amount.",
         "The department shall round, when necessary, the amount.",
         "The department shall round the amount, when necessary.",
+        "The department shall round the amount when necessary.",
+        "The department shall round the amount as necessary.",
+        "The department shall round the amount if required.",
         "For each return, round the amount down.",
         "If necessary, round the amount down.",
         "For each return, promptly round the amount.",
@@ -3052,6 +3076,13 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but shall not fall below zero",
         "The credit is the lesser of the base or the cap, but shall be nonnegative",
         "The amount is the difference of income and the deduction, but shall not result in a negative amount",
+        "The amount is the difference of income and the deduction, but shall not result in negative amount",
+        "The amount is the difference of income and the deduction, but shall not result in a negative balance",
+        "The amount is the difference of income and the deduction, but shall not result in a negative value",
+        "The credit is the lesser of the base or the cap, but shall never be negative",
+        "The credit is the lesser of the base or the cap, but shall in no event be negative",
+        "The credit is the lesser of the base or the cap, but cannot be negative",
+        "The credit is the lesser of the base or the cap, but shall be zero if negative",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -6854,6 +6885,8 @@ def test_common_german_formula_language_is_computation(source: str):
         "The employee worked one half of each month.",
         "The employee worked one half of 1 hour.",
         "The employee worked one quarter of two hours.",
+        "The employee worked one half of the hours of the workday.",
+        "The benefit is described, and the employee worked one half of the hours of the workday.",
         "The employee worked a quarter of her work hours.",
         "The employee worked a quarter of each benefit month.",
         "The employee worked a quarter of the entire month.",
@@ -11527,6 +11560,9 @@ rules:
         "For taxable years ending in 2026, the amount is calculated by multiplying income by the rate.",
         "For taxable years 2025 through 2027, the amount is calculated by multiplying income by the rate.",
         "For taxable years 2025 and 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025, 2026, and 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025-2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025 or 2026, the amount is calculated by multiplying income by the rate.",
         "For taxable years beginning after 2025 up to and including 2027, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending on or before December 31, 2006, the amount is calculated by multiplying income by the rate.",
     ),
@@ -11651,6 +11687,9 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
         "For taxable years ending in 2026, twenty-five percent of income.",
         "For taxable years 2025 through 2027, twenty-five percent of income.",
         "For taxable years 2025 and 2026, twenty-five percent of income.",
+        "For taxable years 2025, 2026, and 2027, twenty-five percent of income.",
+        "For taxable years 2025-2027, twenty-five percent of income.",
+        "For taxable years 2025 or 2026, twenty-five percent of income.",
         "For taxable years beginning after 2025 up to and including 2027, "
         "twenty-five percent of income.",
         "For tax years beginning after December 31, 2005 and ending on or before "
@@ -11718,6 +11757,56 @@ rules:
         test_cases=[
             {
                 "name": "year-only applicability",
+                "period": "2026",
+                "input": {},
+                "output": {"amount": 10},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+    assert result.source_numeric_occurrence_count == 1
+    assert result.covered_source_numeric_occurrence_count == 1
+    assert result.missing_source_numeric_occurrence_count == 0
+
+
+def test_comma_year_list_applicability_is_fully_excluded_from_numeric_recall():
+    source = "For taxable years 2025, 2026, and 2027, amount equals 10 dollars."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: amount equals 10 dollars
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '10'
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[
+            {
+                "name": "comma year applicability",
                 "period": "2026",
                 "input": {},
                 "output": {"amount": 10},
