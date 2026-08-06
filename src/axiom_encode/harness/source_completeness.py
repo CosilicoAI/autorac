@@ -11242,7 +11242,18 @@ def _formula_interval_from_text(
         " ",
         text,
     )
-    numeric_occurrences = tuple(extract_numeric_occurrences(occurrence_text))
+    extracted_occurrences = tuple(extract_numeric_occurrences(occurrence_text))
+    numeric_occurrences_list: list[NumericOccurrenceLike] = []
+    # Stable source ordering retains the extractor's preferred interpretation
+    # when one numeric phrase emits multiple overlapping candidates.
+    for occurrence in sorted(extracted_occurrences, key=lambda item: item.start):
+        if (
+            numeric_occurrences_list
+            and occurrence.start < numeric_occurrences_list[-1].end
+        ):
+            continue
+        numeric_occurrences_list.append(occurrence)
+    numeric_occurrences = tuple(numeric_occurrences_list)
     keyword = None
     occurrences: tuple[NumericOccurrenceLike, ...] = ()
     for candidate in sorted(

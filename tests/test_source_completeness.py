@@ -42,6 +42,10 @@ EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR = functools.partial(
     extract_typed_numeric_occurrences_from_text,
     profile="en-US",
 )
+LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR = functools.partial(
+    extract_typed_numeric_occurrences_from_text,
+    profile="legacy",
+)
 
 
 def _analyze(
@@ -1918,10 +1922,18 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
         (", and", "is less than or equal to", True),
     ),
 )
+@pytest.mark.parametrize(
+    "numeric_extractor",
+    (
+        EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+        LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    ),
+)
 def test_formula_interval_recognizes_conjoined_upper_bound(
     connector: str,
     comparison: str,
     upper_inclusive: bool,
+    numeric_extractor,
 ):
     source = (
         "(2) If income is greater than twenty-five thousand dollars "
@@ -1933,7 +1945,7 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
 
     interval = completeness_module._formula_branch_interval(
         branch,
-        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+        extract_numeric_occurrences=numeric_extractor,
     )
 
     assert interval is not None
@@ -2883,7 +2895,47 @@ def test_formula_interval_preserves_narrow_high_value_range():
     assert not interval.upper_inclusive
 
 
-def test_conjoined_income_range_formula_has_executed_companion_witness():
+@pytest.mark.parametrize(
+    ("source", "lower", "upper"),
+    (
+        ("income is between 1 million and 2 million", 1_000_000, 2_000_000),
+        (
+            "income is greater than 1 million and less than 2 million",
+            1_000_000,
+            2_000_000,
+        ),
+        (
+            "rate is greater than 25 percent and less than 35 percent",
+            0.25,
+            0.35,
+        ),
+    ),
+)
+def test_formula_interval_prefers_legacy_semantic_occurrence_per_source_span(
+    source: str,
+    lower: float,
+    upper: float,
+):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == lower
+    assert interval.upper is not None and interval.upper.value == upper
+
+
+@pytest.mark.parametrize(
+    "numeric_extractor",
+    (
+        EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+        LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    ),
+)
+def test_conjoined_income_range_formula_has_executed_companion_witness(
+    numeric_extractor,
+):
     source = """\
 (2) If the resident individual's federal adjusted gross income is greater than twenty-five thousand dollars and less than or equal to thirty-five thousand dollars, the credit shall be equal to thirty percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
 """
@@ -2966,9 +3018,7 @@ def test_conjoined_income_range_formula_has_executed_companion_witness():
         corpus_citation_path="us-la/statute/47:297.4",
         test_cases=cases,
         extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
-        extract_numeric_grounding_occurrences=(
-            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
-        ),
+        extract_numeric_grounding_occurrences=numeric_extractor,
         extract_named_scalars=extract_named_scalar_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
