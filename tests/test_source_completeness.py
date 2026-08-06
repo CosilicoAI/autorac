@@ -2567,6 +2567,41 @@ def test_formula_interval_recognizes_first_lower_comparator_polarity(
             35000,
             False,
         ),
+        (
+            "income is required by law not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is bound not to exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is unauthorized to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is prevented from exceeding 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least $25000 but less than $35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
     ),
 )
 def test_formula_interval_preserves_modal_polarity_on_either_bound(
@@ -2771,6 +2806,44 @@ def test_formula_interval_rejects_reversed_conjoined_bounds():
     )
 
     assert interval is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "income shall range from 25000 to 35000",
+        "For taxpayers with taxable income from 25000 to 35000, the credit is 100.",
+        "The credit applies if income is from 25000 to 35000.",
+        "The credit ranges from 25000 to 35000.",
+        "The tax ranges from 25000 to 35000.",
+        "The liability ranges from 25000 to 35000.",
+        "income from $25000 to $35000",
+    ),
+)
+def test_formula_interval_accepts_bounded_range_subject_grammar(source: str):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert interval.upper_inclusive
+
+
+def test_formula_interval_preserves_narrow_high_value_range():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 1,000,000,000.00 but less than 1,000,000,000.50",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 1_000_000_000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 1_000_000_000.5
+    assert not interval.upper_inclusive
 
 
 def test_conjoined_income_range_formula_has_executed_companion_witness():
@@ -4109,6 +4182,10 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "After the amount had been determined as stipulated by law, the department shall round it down.",
         "After the amount had been determined as provided for in this section, the department shall round it down.",
         "After the amount had been determined as authorized, the department shall round it down.",
+        "After the amount had been determined in the manner authorized by law, the department shall round it down.",
+        "After the amount had been determined in the manner established by law, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated by law, the department shall round it down.",
+        "After the amount had been determined in the manner outlined by law, the department shall round it down.",
         "After the amount is determined, the department shall round it down.",
         "After tax amount is determined, the department shall round it down.",
         "The department shall calculate the amount and round it down.",
@@ -4186,6 +4263,10 @@ def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
 @pytest.mark.parametrize(
     "directive",
     (
+        "After the amount had been determined in the manner authorized by law, the department shall round it down.",
+        "After the amount had been determined in the manner established by law, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated by law, the department shall round it down.",
+        "After the amount had been determined in the manner outlined by law, the department shall round it down.",
         "After determining the amount the tax preparer shall round it down.",
         "After determining the amount the tax inspector shall round it down.",
         "After determining the amount the program specialist shall round it down.",
@@ -4686,6 +4767,8 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but shall have a lower bound of zero",
         "The credit is the lesser of the base or the cap, but shall be bounded below by zero",
         "The credit is the lesser of the base or the cap, but shall have a zero lower bound",
+        "The credit is the lesser of the base or the cap, but shall be bounded from below by zero",
+        "The credit is the lesser of the base or the cap, but shall have zero as a lower bound",
         "The credit is the lesser of the base or the cap, but shall be treated as zero if negative",
         "The credit is the lesser of the base or the cap, but shall be deemed zero when negative",
         "The amount is the difference of income and deduction and shall not be negative",
@@ -4834,6 +4917,8 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
         "A. The amount is the difference of income and deduction, but shall have a lower bound of zero.",
         "A. The amount is the difference of income and deduction, but shall be bounded below by zero.",
         "A. The amount is the difference of income and deduction, but shall have a zero lower bound.",
+        "A. The amount is the difference of income and deduction, but shall be bounded from below by zero.",
+        "A. The amount is the difference of income and deduction, but shall have zero as a lower bound.",
         "A. The amount is the difference of income and deduction, but in no case shall the income be negative.",
         "A. The amount is the difference of income and deduction, but in no event can taxable income be less than zero.",
         "A. The amount is the difference of income and deduction, but in no event can state adjusted taxable income be less than zero.",
