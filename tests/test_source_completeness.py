@@ -1548,6 +1548,93 @@ def test_parenthesized_numeric_items_nest_under_active_letter_parent():
     }
 
 
+def test_alternating_letter_numeric_letter_outline_keeps_each_depth():
+    source = """\
+A. Outer.
+(a) Letter.
+(1) First.
+(a) Inner.
+(b) Inner next.
+(2) Second.
+(b) Next.
+B. End.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "1", "a"),
+        ("a", "a", "1", "b"),
+        ("a", "a", "2"),
+        ("a", "b"),
+        ("b",),
+    ]
+
+
+def test_repeated_numeric_marker_replaces_deepest_numeric_sibling():
+    source = """\
+A.(1)(a)(1) amount = income * rate.
+(2) amount = base * factor.
+B. End.
+"""
+
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a", "1", "a", "1"),
+        ("a", "1", "a", "2"),
+    ]
+
+
+def test_arbitrarily_alternating_outline_depth_preserves_each_sibling_level():
+    source = """\
+A. Outer.
+(a) L1.
+(1) N1.
+(a) L2.
+(1) N2.
+(2) N2 sibling.
+(b) L2 sibling.
+(2) N1 sibling.
+(b) L1 sibling.
+B. End.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "1", "a"),
+        ("a", "a", "1", "a", "1"),
+        ("a", "a", "1", "a", "2"),
+        ("a", "a", "1", "b"),
+        ("a", "a", "2"),
+        ("a", "b"),
+        ("b",),
+    ]
+
+
+def test_deep_roman_outline_children_preserve_alternating_ancestors():
+    source = "A. Outer.\n(a) L1.\n(1) N1.\n(a) L2.\n(i) R1.\n(ii) R2.\nB. End."
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "1", "a"),
+        ("a", "a", "1", "a", "i"),
+        ("a", "a", "1", "a", "ii"),
+        ("b",),
+    ]
+
+
 def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
     source = """\
 A. There shall be a credit from the tax imposed by this Part for child care expenses for which a resident individual is eligible pursuant to the federal income tax credit provided by Internal Revenue Code Section 21 for the same taxable year. The credit shall be calculated using the following percentages :
@@ -1757,18 +1844,88 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
 
 
 @pytest.mark.parametrize(
-    ("comparison", "upper_inclusive"),
+    ("connector", "comparison", "upper_inclusive"),
     (
-        ("less than or equal to", True),
-        ("less than", False),
+        ("and", "less than or equal to", True),
+        ("and", "less than", False),
+        ("but", "less than", False),
+        ("and", "not more than", True),
+        ("and", "does not exceed", True),
+        ("and", "up to", True),
+        ("and", "up to and including", True),
+        ("but", "shall not exceed", True),
+        ("but", "shall not equal or exceed", False),
+        ("but", "must not exceed", True),
+        ("but", "shall be no more than", True),
+        ("but", "shall not be more than", True),
+        ("but", "must be at most", True),
+        ("but", "no greater than", True),
+        ("but", "may not exceed", True),
+        ("but", "will not exceed", True),
+        ("but", "cannot exceed", True),
+        ("but", "should not exceed", True),
+        ("but", "can not be greater than", True),
+        ("but", "no higher than", True),
+        ("but", "not above", True),
+        ("but", "no larger than", True),
+        ("but", "shall not be above", True),
+        ("but", "shall in no event exceed", True),
+        ("but", "in no event shall it exceed", True),
+        ("but", "the amount shall in no event exceed", True),
+        ("but", "the taxable income shall in no event exceed", True),
+        ("but", "in no event shall it be greater than", True),
+        ("but", "in no event shall taxable income exceed", True),
+        ("but", "cannot be greater than", True),
+        ("but", "under", False),
+        ("but", "at or below", True),
+        ("but", "not over", True),
+        ("but", "shall remain below", False),
+        ("but", "shall never remain above", True),
+        ("but", "in no event shall household income exceed", True),
+        ("but", "in no event shall state taxable income exceed", True),
+        ("but", "federal adjusted gross income shall not exceed", True),
+        ("but", "must, in no event, exceed", True),
+        (
+            "but",
+            "shall not exceed the inflation-adjusted statutory threshold of",
+            True,
+        ),
+        (
+            "but",
+            "shall not exceed the cost-of-living-adjusted statutory threshold of",
+            True,
+        ),
+        ("but", "in no event shall the applicable taxable income exceed", True),
+        ("but", "shall not exceed an applicable threshold amount of", True),
+        ("but", "equal to or less than", True),
+        ("but", "at or under", True),
+        ("but", "cannot ever exceed", True),
+        ("but", "up to, and including", True),
+        ("but", "up to and including,", True),
+        ("but", "up to, and including,", True),
+        ("but", "up to but not including", False),
+        ("but", "up to but excluding", False),
+        ("but", "up to, but excluding,", False),
+        ("but", "not in excess of", True),
+        ("but", "shall not exceed an amount of", True),
+        ("but", "shall not exceed an amount equal to", True),
+        ("but", "shall not exceed the statutory threshold of", True),
+        ("but", "shall not exceed the annual statutory threshold of", True),
+        ("but", "shall not exceed an aggregate amount of", True),
+        ("but", "shall not exceed:", True),
+        ("but", "<", False),
+        ("but", "must be <=", True),
+        (", and", "is less than or equal to", True),
     ),
 )
 def test_formula_interval_recognizes_conjoined_upper_bound(
+    connector: str,
     comparison: str,
     upper_inclusive: bool,
 ):
     source = (
-        "(2) If income is greater than twenty-five thousand dollars and "
+        "(2) If income is greater than twenty-five thousand dollars "
+        f"{connector} "
         f"{comparison} thirty-five thousand dollars, the credit equals "
         "thirty percent of the federal credit."
     )
@@ -1788,6 +1945,826 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
     assert interval.upper_inclusive is upper_inclusive
 
 
+@pytest.mark.parametrize(
+    ("lower", "lower_inclusive", "connector", "upper", "upper_inclusive"),
+    (
+        ("greater than", False, "but", "not exceeding", True),
+        ("greater than", False, "but", "not to exceed", True),
+        ("at least", True, "and", "less than", False),
+        ("at least", True, "but", "not more than", True),
+        ("at least", True, "and", "up to", True),
+        ("at least", True, "and", "up to and including", True),
+        ("no less than", True, "and", "less than", False),
+        ("not less than", True, "and", "less than", False),
+        ("greater than", False, "but", "shall not exceed", True),
+        ("greater than", False, "but", "must not exceed", True),
+        ("greater than", False, "but", "shall be no more than", True),
+        ("greater than", False, "but", "shall not be more than", True),
+        ("greater than", False, "but", "no greater than", True),
+        ("at least", True, "but", "should not exceed", True),
+        ("at least", True, "but", "can not be greater than", True),
+        ("at least", True, "but", "no higher than", True),
+        ("at least", True, "but", "not above", True),
+        ("at least", True, "but", "no larger than", True),
+        ("at least", True, "but", "shall not be above", True),
+        ("at least", True, "but", "shall in no event exceed", True),
+        ("at least", True, "but", "in no event shall it exceed", True),
+        ("at least", True, "but", "the amount shall in no event exceed", True),
+        ("at least", True, "but", "the taxable income shall in no event exceed", True),
+        ("at least", True, "but", "in no event shall it be greater than", True),
+        ("at least", True, "but", "in no event shall taxable income exceed", True),
+        ("at least", True, "but", "cannot be greater than", True),
+        ("at least", True, "but", "under", False),
+        ("at least", True, "but", "at or below", True),
+        ("at least", True, "but", "not over", True),
+        ("at least", True, "but", "shall remain below", False),
+        ("at least", True, "but", "shall never remain above", True),
+        ("at least", True, "but", "up to, and including", True),
+        ("at least", True, "but", "up to and including,", True),
+        ("at least", True, "but", "up to, and including,", True),
+        ("at least", True, "but", "up to but not including", False),
+        ("at least", True, "but", "up to but excluding", False),
+        ("at least", True, "but", "not in excess of", True),
+        ("at least", True, "but", "shall not exceed an amount of", True),
+        ("at least", True, "but", "shall not exceed an amount equal to", True),
+        ("at least", True, "but", "shall not exceed the statutory threshold of", True),
+        (
+            "at least",
+            True,
+            "but",
+            "shall not exceed the annual statutory threshold of",
+            True,
+        ),
+        ("at least", True, "but", "shall not exceed an aggregate amount of", True),
+        ("at least", True, "but", "shall not exceed:", True),
+        ("at least", True, "but", "<", False),
+    ),
+)
+def test_formula_interval_composes_lower_and_upper_comparator_families(
+    lower: str,
+    lower_inclusive: bool,
+    connector: str,
+    upper: str,
+    upper_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is {lower} 25000 {connector} {upper} 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive is lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert interval.upper_inclusive is upper_inclusive
+
+
+@pytest.mark.parametrize(
+    ("first", "upper_inclusive"),
+    (
+        ("less than", False),
+        ("no more than", True),
+        ("less than or equal to", True),
+        ("at or below", True),
+    ),
+)
+def test_formula_interval_composes_first_upper_with_second_lower_constraint(
+    first: str,
+    upper_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is {first} 35000 but at least 25000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert interval.upper_inclusive is upper_inclusive
+
+
+@pytest.mark.parametrize(
+    ("first", "lower_inclusive"),
+    (
+        ("greater than", False),
+        ("greater than or equal to", True),
+        ("at or above", True),
+    ),
+)
+def test_formula_interval_recognizes_first_lower_comparator_polarity(
+    first: str,
+    lower_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is {first} 25000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive is lower_inclusive
+    assert interval.upper is None
+
+
+@pytest.mark.parametrize(
+    ("source", "lower", "lower_inclusive", "upper", "upper_inclusive"),
+    (
+        ("income shall not exceed 35000", None, False, 35000, True),
+        ("income does not exceed 35000", None, False, 35000, True),
+        ("income shall never exceed 35000", None, False, 35000, True),
+        ("income shall not fall below 25000", 25000, True, None, False),
+        ("income does not fall below 25000", 25000, True, None, False),
+        ("income shall not be less than 25000", 25000, True, None, False),
+        (
+            "income shall not be less than or equal to 25000",
+            25000,
+            False,
+            None,
+            False,
+        ),
+        (
+            "income shall not exceed 35000 but must be at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income may not be below 25000 but is less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income may be less than 35000 but must be at least 25000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income may exceed 25000 but shall not exceed 35000",
+            None,
+            False,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but shall not equal or be less than 35000",
+            35000,
+            False,
+            None,
+            False,
+        ),
+        (
+            "income is at least 25000 but cannot be at most 35000",
+            35000,
+            False,
+            None,
+            False,
+        ),
+        (
+            "income is at least 25000 but shall not be greater than or equal to 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but cannot be greater than or equal to 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but shall not be at least 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is not over 35000 but at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is not in excess of 35000 but at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        ("income is < 35000 but >= 25000", 25000, True, 35000, False),
+        (
+            "income may be no more than 35000 but must be at least 25000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income may be no less than 25000 but must be less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income may sometimes exceed 25000 but shall not exceed 35000",
+            None,
+            False,
+            35000,
+            True,
+        ),
+        (
+            "income could potentially be below 35000 but shall be at least 25000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income need not exceed 25000 but shall not exceed 35000",
+            None,
+            False,
+            35000,
+            True,
+        ),
+        ("income shall at no time exceed 35000", None, False, 35000, True),
+        ("income shall under no condition exceed 35000", None, False, 35000, True),
+        ("income shall not ever exceed 35000", None, False, 35000, True),
+        ("income is not permitted to exceed 35000", None, False, 35000, True),
+        ("income cannot possibly exceed 35000", None, False, 35000, True),
+        (
+            "income is allowed to exceed 25000 but shall not exceed 35000",
+            None,
+            False,
+            35000,
+            True,
+        ),
+        ("income is required to exceed 25000", 25000, False, None, False),
+        ("income is forbidden to exceed 35000", None, False, 35000, True),
+        (
+            "income is at least 25000 but shall at no time exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is prohibited from exceeding 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is not permitted to exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is permitted to exceed 35000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income shall in all cases be less than 35000 but must be at least 25000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income shall at all times not exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income must without exception not exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is required not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is obliged not to be below 25000 but is less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is prohibited from exceeding 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is not > 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is not > 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is expected to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income typically exceeds 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is capable of exceeding 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is free to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but shall in each case be less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is expressly required not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is legally required not to exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is strictly prohibited from exceeding 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is barred from exceeding 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is mandated to be less than 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but is directed to be less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is likely to be less than 35000 but must be at least 25000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income tends to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income occasionally exceeds 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income appears to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is compelled to be less than 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but is ordered to be less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is forbidden ever to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is apt to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is supposed to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is designed to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income rarely exceeds 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income possibly exceeds 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is required under this section not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but must under all circumstances not exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income shall in every instance be less than 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is not authorized to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is disallowed from exceeding 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is precluded from exceeding 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is projected to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is forecast to be less than 35000 but must be at least 25000",
+            25000,
+            True,
+            None,
+            False,
+        ),
+        (
+            "income is anticipated to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is unlikely to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income seems to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but shall in every instance not exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is estimated to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is presumed to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is liable to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is prone to exceed 25000 but is less than 35000",
+            None,
+            False,
+            35000,
+            False,
+        ),
+        (
+            "income is required by law not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is bound by law not to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is bound by law not to exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is bound to be less than 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but is duty-bound to be less than 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least 25000 but is bound not to exceed 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is unauthorized to exceed 35000 but is at least 25000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least 25000 but is prevented from exceeding 35000",
+            25000,
+            True,
+            35000,
+            True,
+        ),
+        (
+            "income is at least $25000 but less than $35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+        (
+            "income is at least USD 25000 but less than USD 35000",
+            25000,
+            True,
+            35000,
+            False,
+        ),
+    ),
+)
+def test_formula_interval_preserves_modal_polarity_on_either_bound(
+    source: str,
+    lower: int | None,
+    lower_inclusive: bool,
+    upper: int | None,
+    upper_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert (interval.lower.value if interval.lower is not None else None) == lower
+    assert interval.lower_inclusive is lower_inclusive
+    assert (interval.upper.value if interval.upper is not None else None) == upper
+    assert interval.upper_inclusive is upper_inclusive
+
+
+def test_formula_interval_uses_required_affirmative_exceed_as_stronger_lower_bound():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 25000 but shall exceed 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 35000
+    assert not interval.lower_inclusive
+    assert interval.upper is None
+
+
+@pytest.mark.parametrize(
+    ("comparison", "lower_inclusive"),
+    (
+        ("is greater than", False),
+        ("greater than", False),
+        ("must be at least", True),
+        ("must equal or exceed", True),
+        ("no less than", True),
+        ("cannot be below", True),
+        ("shall not be below", True),
+        ("may not be below", True),
+        ("equal to or greater than", True),
+        ("at or above", True),
+        ("remain at or above", True),
+        (">", False),
+        ("≥", True),
+    ),
+)
+def test_formula_interval_uses_declarative_second_lower_constraint(
+    comparison: str,
+    lower_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is at least 25000 but {comparison} 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 35000
+    assert interval.lower_inclusive is lower_inclusive
+    assert interval.upper is None
+
+
+def test_formula_interval_does_not_treat_permissive_exceed_as_a_bound():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 25000 but may exceed 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is None
+
+
+def test_formula_interval_does_not_treat_permissive_upper_as_a_hard_bound():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 25000 but may be less than 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is None
+
+
+def test_formula_interval_inverts_controlled_inclusive_lower_to_exclusive_upper():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 25000 but shall never be at least 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert not interval.upper_inclusive
+
+
+@pytest.mark.parametrize(
+    ("comparison", "lower_inclusive"),
+    (
+        ("shall never be below", True),
+        ("in no event under", True),
+        ("shall never be less than or equal to", False),
+        ("shall never be at most", False),
+        ("shall never be <=", False),
+    ),
+)
+def test_formula_interval_uses_controlled_comparison_as_stronger_lower_bound(
+    comparison: str,
+    lower_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is at least 25000 but {comparison} 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 35000
+    assert interval.lower_inclusive is lower_inclusive
+    assert interval.upper is None
+
+
 def test_formula_interval_rejects_long_nonmatching_upper_gap_with_bounded_runtime():
     source = "income greater than 1" + (" " * 10_000) + "x 2"
 
@@ -1803,6 +2780,107 @@ def test_formula_interval_rejects_long_nonmatching_upper_gap_with_bounded_runtim
     assert interval.lower.value == 1
     assert interval.upper is None
     assert elapsed < 0.5
+
+
+def test_formula_interval_skips_arithmetic_from_before_real_comparator():
+    interval = completeness_module._formula_interval_from_text(
+        "The amount is calculated by subtracting the deduction from 35000 "
+        "and shall be at least 25000.",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is None
+
+
+def test_formula_interval_rejects_change_from_as_a_range():
+    interval = completeness_module._formula_interval_from_text(
+        "The amount decreases from 35000 to 25000.",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount changes from 25000 to 35000.",
+        "The amount rises from 25000 to 35000.",
+        "The amount moves from 25000 to 35000.",
+        "The amount shifts from 25000 to 35000.",
+        "The amount grows from 25000 to 35000.",
+        "The amount drops from 25000 to 35000.",
+        "The amount falls from 25000 to 35000.",
+        "The amount climbs from 25000 to 35000.",
+        "The deductible amount is taken from 35000 and shall be at least 25000.",
+        "The amount is obtained by taking the deduction from 35000 and shall be at least 25000.",
+    ),
+)
+def test_formula_interval_rejects_non_range_from_roles(source: str):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    if "at least" in source:
+        assert interval is not None
+        assert interval.lower is not None and interval.lower.value == 25000
+        assert interval.lower_inclusive
+        assert interval.upper is None
+    else:
+        assert interval is None
+
+
+def test_formula_interval_rejects_reversed_conjoined_bounds():
+    interval = completeness_module._formula_interval_from_text(
+        "Income is at least 35000 but is less than 25000.",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "income shall range from 25000 to 35000",
+        "income must range from 25000 to 35000",
+        "For taxpayers with taxable income from 25000 to 35000, the credit is 100.",
+        "The credit applies if income is from 25000 to 35000.",
+        "The credit ranges from 25000 to 35000.",
+        "The tax ranges from 25000 to 35000.",
+        "The liability ranges from 25000 to 35000.",
+        "income from $25000 to $35000",
+        "income from USD 25000 to USD 35000",
+    ),
+)
+def test_formula_interval_accepts_bounded_range_subject_grammar(source: str):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert interval.upper_inclusive
+
+
+def test_formula_interval_preserves_narrow_high_value_range():
+    interval = completeness_module._formula_interval_from_text(
+        "income is at least 1,000,000,000.00 but less than 1,000,000,000.50",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 1_000_000_000
+    assert interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 1_000_000_000.5
+    assert not interval.upper_inclusive
 
 
 def test_conjoined_income_range_formula_has_executed_companion_witness():
@@ -2044,6 +3122,49 @@ B. End.
         "The credit shall be computed as income multiplied by the applicable rate",
         "The credit shall be determined by applying the ratio to income",
         "The credit shall be calculated through application of the rate to the base",
+        "The credit shall be determined by application of the rate to income",
+        "The credit shall be determined through applying the rate to income",
+        "The amount shall be determined by applying the statutory formula to income",
+        "The amount shall be determined by applying Formula A",
+        "The amount shall be determined by applying Index A",
+        "The amount shall be determined by applying Index CPI-U",
+        "The amount shall be determined by applying the multiplier to income",
+        "The amount shall be determined by applying the coefficient to income",
+        "The amount shall be determined by applying the index to income",
+        "The amount shall be determined by applying the fraction to income",
+        "The amount shall be determined by applying the tax table to income",
+        "The tax shall be determined by applying Table A to taxable income",
+        "The tax shall be determined by applying Schedule X to taxable income",
+        "The amount shall be determined by applying coefficient A to income",
+        "The amount shall be determined by applying coefficient AB to income",
+        "The amount shall be determined by applying coefficient ALPHA to income",
+        "The amount shall be determined by applying coefficient ABCDE to income",
+        "The amount shall be determined by applying coefficient Alpha to income",
+        "The amount shall be determined by applying Coefficient Omega to income",
+        "The amount shall be determined by applying Coefficient Alpha-Beta to income",
+        "The amount shall be determined by applying Coefficient Wage-Adjustment to income",
+        "The tax shall be determined by applying the rate to every $1 of taxable income",
+        "The tax shall be determined by applying the rate to $10,000 of taxable income",
+        "The tax shall be determined by applying the rate to the first $10,000 of taxable income",
+        "The tax shall be determined by applying the rate to the next $10,000 of taxable income",
+        "The tax shall be determined by applying the rate to the portion of taxable income over $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income exceeding $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as exceeds $10,000",
+        "The tax shall be determined by applying the rate to the excess of taxable income over $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income in excess of the threshold",
+        "The tax shall be determined by applying the rate to the portion of taxable income which exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income that exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income which is greater than $10,000",
+        "The tax shall be determined by applying the rate to that part of taxable income which exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income not exceeding $10,000",
+        "The tax shall be determined by applying the rate to that part of taxable income not exceeding $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income which does not exceed $10,000",
+        "The tax shall be determined by applying the rate to the excess of taxable income above $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as is in excess of $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as exceeds or equals $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as is greater than $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as does not exceed $10,000",
+        "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
         "The credit is half of income",
@@ -2086,6 +3207,47 @@ B. End.
         ("a", "1"),
         ("a", "2"),
     ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The tax is determined by applying the rate to that part of taxable income which exceeds $10,000.",
+        "A. The tax is determined by applying the rate to that portion of taxable income which does not exceed $10,000.",
+        "A. The tax is determined by applying the rate to so much of taxable income as does not exceed $10,000.",
+        "A. The tax is determined by applying the rate to that portion of taxable income not exceeding $10,000.",
+        "A. The tax is determined by applying the rate to that part of taxable income not exceeding $10,000.",
+    ),
+)
+def test_bracket_computation_cannot_be_encoded_as_parameter_only(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: bracket_threshold
+    kind: parameter
+    dtype: Money
+    source: us-la/statute/47:294(A)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '10000'
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -2308,6 +3470,15 @@ B. End.
         "determined with the following schedule",
         "computed using the table below for taxable years 2025 and 2026",
         "computed from Table 1",
+        "computed using Table 1 for taxable years 2025, 2026, and 2027",
+        "computed using Table 1 for taxable years 2025, 2026, or 2027",
+        "computed using Table 1 for taxable years 2025-2027",
+        "computed using Table 1 for taxable years 2025 or 2026",
+        "computed using Table IV-B",
+        "computed using Table 1-A",
+        "computed using Table V-A",
+        "computed using Schedule A-1",
+        "computed using the table below for taxable years beginning after December 31, 2025",
         "computed pursuant to paragraph (1) and shall be equal to the following amounts",
         "computed under R.S. 47:1 and shall be equal to the following amounts",
         "computed using the method prescribed in paragraph (1) and shall be equal "
@@ -2331,6 +3502,137 @@ B. End.
     )
 
     assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+def test_external_reference_equals_following_table_delegates_to_children():
+    source = """\
+A. The credit is computed pursuant to paragraph (1) and equals the following amounts:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+def test_structured_following_amounts_stop_before_outer_subsection():
+    source = """\
+A. The assessment is the sum of the following amounts:
+(1) wages.
+(2) interest.
+B. End.
+"""
+
+    assert source_states_explicit_computation(source)
+
+
+def test_structured_following_amounts_stop_before_parenthesized_sibling():
+    source = """\
+A. Outer.
+(1) The assessment is the sum of the following amounts:
+(a) wages.
+(b) interest.
+(2) End.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert source_states_explicit_computation(source)
+    assert [branch.path for branch in formula_branches] == [("a", "1")]
+
+
+def test_semicolon_following_operands_remain_one_complete_formula_clause():
+    source = "A. The assessment is the sum of the following amounts: wages; interest.\nB. End."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+    assert "wages; interest." in formula_branches[0].text
+
+
+@pytest.mark.parametrize(
+    "terminator",
+    (
+        "provided that the credit shall",
+        "provided, however, that the credit shall",
+        "provided further that the credit shall",
+        "and provided that the credit shall",
+        "provided, further, that the credit shall",
+        "provided, nevertheless, that the credit shall",
+        "provided always that the credit shall",
+        "provided, in any event, that the credit shall",
+        "provided only that the credit shall",
+        "provided further, however, that the credit shall",
+        "on condition that the credit shall",
+        "on the condition that the credit shall",
+        "upon condition that the credit shall",
+        "if the taxpayer is eligible, the department shall",
+        "only if the taxpayer is eligible, the department shall",
+        "when the taxpayer is eligible, the department shall",
+        "where the taxpayer is eligible, the department shall",
+        "so long as the taxpayer is eligible, the department shall",
+        "as long as the taxpayer is eligible, the department shall",
+        "in which case the department shall",
+        "in the event that the taxpayer is eligible, the department shall",
+        "in the event the taxpayer is eligible, the department shall",
+        "in case the taxpayer is eligible, the department shall",
+        "in cases where the taxpayer is eligible, the department shall",
+        "in the case where the taxpayer is eligible, the department shall",
+        "save that the credit shall",
+        "to the extent that the taxpayer is eligible, the department shall",
+        "except to the extent that the taxpayer is ineligible, the department shall",
+        "except if the taxpayer is ineligible, the department shall",
+        "except when the taxpayer is ineligible, the department shall",
+        "except where the taxpayer is ineligible, the department shall",
+        "except in cases where the taxpayer is ineligible, the department shall",
+        "except in the case of an ineligible taxpayer, the department shall",
+        "except in any case where the taxpayer is ineligible, the department shall",
+        "except as otherwise provided in section 5, the department shall",
+        "except as required by section 5, the department shall",
+        "except as prescribed by section 5, the department shall",
+        "except as otherwise specified, the department shall",
+        "in any case where the taxpayer is eligible, the department shall",
+        "in a case where the taxpayer is eligible, the department shall",
+        "save where the taxpayer is eligible, the department shall",
+        "subject however to section 5, the department shall",
+        "the credit shall",
+    ),
+)
+def test_semicolon_following_operands_stop_before_proviso_control(terminator: str):
+    source = (
+        "A. The assessment is the sum of the following amounts: wages; interest; "
+        f"{terminator} not exceed the cap.\nB. End."
+    )
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert source_states_explicit_computation(source)
+    assert [branch.path for branch in formula_branches] == [("a",)]
 
 
 @pytest.mark.parametrize(
@@ -2409,6 +3711,8 @@ B. End.
         "transparency.\nB. End.",
         "A. The benefit is the product of the following values:\n(1) fairness.\n"
         "(2) transparency.\nB. End.",
+        "A. The benefit is the product of the following values:\n(1) fairness.\n"
+        "(2) transparency.\n(3) community benefit.\nB. End.",
     ),
 )
 def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
@@ -2438,16 +3742,703 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The award is determined on a per-capita basis.",
         "The amount is determined at the time the return is filed.",
         "The credit is determined separately for each spouse.",
+        "The eligibility is determined by applying the requirements of section 5.",
+        "The status is determined through application of the governing law.",
+        "The classification is determined by application of agency policy.",
+        "The award is determined by applying the statutory criteria.",
+        "The eligibility is computed by applying the requirements of section 5.",
+        "The status is calculated through application of the governing law.",
+        "The classification is computed by application of agency policy.",
+        "The benefit is determined by applying Benefit Policy.",
+        "The benefit is determined by applying Benefit Rules.",
+        "The benefit is determined by applying Formula Policy.",
+        "The benefit is determined by applying Formula Policy Guide.",
+        "The benefit is determined by applying Formula Administration Manual.",
+        "The benefit is determined by applying Formula Operations Manual.",
+        "The amount is determined by applying Formula Guidelines.",
+        "The benefit is determined by applying Index Requirements.",
+        "The amount is determined by applying Index Methodology Guide.",
+        "The amount is determined by applying Index Publication.",
+        "The amount is determined by applying Formula Manual to income.",
+        "The amount is determined by applying Formula Guide to income.",
+        "The amount is determined by applying Formula Guidelines to income.",
+        "The amount is determined by applying Formula MANUAL to income.",
+        "The amount is determined by applying Formula GUIDE to income.",
+        "The amount is determined by applying Formula POLICY.",
+        "The amount is determined by applying Formula PROCEDURE to income.",
+        "The amount is determined by applying Formula STANDARD to income.",
+        "The amount is determined by applying Formula HANDBOOK.",
+        "The amount is determined by applying Formula MEMORANDUM to income.",
+        "The amount is determined by applying Formula WORKSHEET to income.",
+        "The amount is determined by applying Formula STATUTE to income.",
+        "The amount is determined by applying Formula ORDINANCE to income.",
+        "The amount is determined by applying Formula BYLAW to income.",
+        "The amount is determined by applying Formula DECREE to income.",
+        "The amount is determined by applying Formula CATALOG to income.",
+        "The amount is determined by applying Formula USER-GUIDE to income.",
+        "The amount is determined by applying Formula USER-GUIDE-REV to income.",
+        "The amount is determined by applying Formula FEDERAL-TAX-MANUAL to income.",
+        "The amount is determined by applying Formula WEBSITE to income.",
+        "The amount is determined by applying Index PORTAL to income.",
+        "The amount is determined by applying Formula WORK-PAPER to income.",
+        "The amount is determined by applying Formula TAX-POLICY-MANUAL to income.",
+        "The amount is determined by applying Formula POLICY-MANUAL to income.",
+        "The amount is determined by applying Formula POLICY-MANUAL-DRAFT to income.",
+        "The amount is determined by applying Formula POLICY-REPORT-FINAL to income.",
+        "The amount is determined by applying Formula SECTION-USER-GUIDE-X to income.",
+        "The amount is determined by applying Formula RULE-USER-GUIDE-X to income.",
+        "The amount is determined by applying Formula POLICY-RULE-MANUAL-X to income.",
+        "The amount is determined by applying Formula A-MANUAL to income.",
+        "The amount is determined by applying Formula REPORT-2026 to income.",
+        "The amount is determined by applying Formula WEBSITE-V2 to income.",
+        "The amount is determined by applying Formula CPI-MANUAL to income.",
+        "The amount is determined by applying Formula AGI-TECHNICAL-MANUAL to income.",
+        "The amount is determined by applying Formula WORKPAPER to income.",
+        "The amount is determined by applying Formula DECISION to income.",
+        "The amount is determined by applying Index LEGISLATION to income.",
+        "The amount is determined by applying Index LETTER to income.",
+        "The amount is determined by applying Index Publication to income.",
+        "The amount is determined by applying Index PUBLICATION to income.",
+        "The amount is determined by applying Index PROCEDURES to income.",
+        "The amount is determined by applying the Tax Formula Manual to income.",
+        "The amount is determined by applying Coefficient Policy.",
+        "The amount is determined by applying Coefficient Policy to income.",
+        "The amount is determined by applying Coefficient Handbook to income.",
+        "The amount is determined by applying Coefficient MEMORANDUM to income.",
+        "The amount is determined by applying Coefficient SCHEDULE to income.",
+        "The amount is determined by applying Coefficient EXHIBIT to income.",
+        "The amount is determined by applying Coefficient AMENDMENT to income.",
+        "The amount is determined by applying Coefficient Specification to income.",
+        "The amount is determined by applying Coefficient Workpaper to income.",
+        "The amount is determined by applying Coefficient POLICY-MANUAL to income.",
+        "The amount is determined by applying Coefficient DECISION to income.",
+        "The amount is determined by applying Coefficient MEMO to income.",
+        "The amount is determined by applying Index RULING to income.",
+        "The amount is determined by applying Formula Administration Manual to income.",
+        "The amount is determined by applying the Tax Index Methodology Guide.",
+        "The amount is determined by applying the Benefit Formula Administration Manual.",
+        "The credit is determined by applying Credit Requirements.",
+        "The credit is determined by applying CREDIT REQUIREMENTS.",
+        "The amount is determined by applying Amount Guidelines.",
     ),
 )
 def test_delegated_determinations_are_not_computations(source: str):
     assert not source_states_explicit_computation(source)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    (
+        "Formula A",
+        "Formula ABCDE",
+        "Formula B2",
+        "Formula POLICY-1",
+        "Formula RULE-A",
+        "Formula RULE-ABCDE",
+        "Formula SECTION-ABCDE",
+        "Formula SCHEDULE-Z",
+        "Formula POLICY-RULE-A",
+        "Formula TAX-RATE",
+        "Formula A-RULE",
+        "Index CPI-TAX",
+        "Formula ABC-RULE",
+        "Index XYZ-TAX",
+        "Formula POLICY-SCHEDULE-A",
+        "Formula FINAL-RATE to income",
+        "Formula FINAL-PERCENT to income",
+        "Formula FINAL-TOTAL to income",
+        "Formula FINAL-DIVISOR to income",
+        "Formula FINAL-NUMERATOR to income",
+        "Formula FINAL-DENOMINATOR to income",
+        "Index TAX-X",
+        "Coefficient Work-Factor to income",
+        "Index A",
+        "Index CPI-U",
+        "Index RULE-7",
+    ),
+)
+def test_code_like_formula_identifier_requires_derived_output(identifier: str):
+    source = f"A. The amount is determined by applying {identifier}."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    (
+        "Formula MANUAL to income",
+        "Formula GUIDE to income",
+        "Formula POLICY",
+        "Formula PROCEDURE to income",
+        "Formula STANDARD to income",
+        "Formula HANDBOOK",
+        "Formula MEMORANDUM to income",
+        "Formula WORKSHEET to income",
+        "Formula STATUTE to income",
+        "Formula ORDINANCE to income",
+        "Formula BYLAW to income",
+        "Formula DECREE to income",
+        "Formula CATALOG to income",
+        "Formula USER-GUIDE to income",
+        "Formula FEDERAL-TAX-MANUAL to income",
+        "Formula SECTION-USER-GUIDE to income",
+        "Formula SECTION-USER-GUIDE-X to income",
+        "Formula USER-GUIDE-REV to income",
+        "Formula WEBSITE to income",
+        "Index PORTAL to income",
+        "Formula WORK-PAPER to income",
+        "Formula TAX-POLICY-MANUAL to income",
+        "Formula POLICY-MANUAL to income",
+        "Formula POLICY-MANUAL-DRAFT to income",
+        "Formula POLICY-REPORT-FINAL to income",
+        "Formula RULE-USER-GUIDE-X to income",
+        "Formula POLICY-RULE-MANUAL-X to income",
+        "Formula A-MANUAL to income",
+        "Formula A-REPORT to income",
+        "Formula REPORT-2026 to income",
+        "Formula WEBSITE-V2 to income",
+        "Formula CPI-MANUAL to income",
+        "Formula CPI-USER-GUIDE to income",
+        "Formula AGI-TECHNICAL-MANUAL to income",
+        "Formula RULE-USER-GUIDE-ARCHIVED to income",
+        "Formula POLICY-BRIEF-2026 to income",
+        "Formula FISCAL-NOTE-2026 to income",
+        "Formula PRESS-RELEASE-2026 to income",
+        "Formula FAQ-2026 to income",
+        "Formula LAW-2026 to income",
+        "Formula ACT-2026 to income",
+        "Formula POLICY-FACTSHEET-2026 to income",
+        "Formula NEWSLETTER-2026 to income",
+        "Formula POLICY-WHITEPAPER-2026 to income",
+        "Formula USER-DOCUMENTATION to income",
+        "Formula TECHNICAL-REFERENCE to income",
+        "Formula INFOGRAPHIC-2026 to income",
+        "Formula FLYER-2026 to income",
+        "Formula PAMPHLET-2026 to income",
+        "Formula PRIMER-2026 to income",
+        "Formula POLICY-NEWS-ARTICLE to income",
+        "Formula USER-TUTORIAL to income",
+        "Formula TECHNICAL-ADVISORY to income",
+        "Formula WORKPAPER to income",
+        "Formula DECISION to income",
+        "Index LEGISLATION to income",
+        "Index LETTER to income",
+        "Index PUBLICATION to income",
+        "Index PROCEDURES to income",
+        "Coefficient Policy to income",
+        "Coefficient Handbook to income",
+        "Coefficient MEMORANDUM to income",
+        "Coefficient SCHEDULE to income",
+        "Coefficient EXHIBIT to income",
+        "Coefficient AMENDMENT to income",
+        "Coefficient Specification to income",
+        "Coefficient Workpaper to income",
+        "Coefficient POLICY-MANUAL to income",
+        "Coefficient USER-GUIDE to income",
+        "Coefficient DECISION to income",
+        "Coefficient MEMO to income",
+        "Index RULING to income",
+    ),
+)
+def test_administrative_named_document_does_not_require_formula_output(
+    identifier: str,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        f"A. The amount is determined by applying {identifier}.",
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not _has_issue(result, "formula-output")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The eligibility is determined by applying the requirements of section 5, "
+        "and the credit equals income plus the supplement.",
+        "The status is determined by applying statutory criteria, and the credit "
+        "is the sum of income and tax.",
+        "The status is determined by applying statutory criteria and the credit "
+        "is the sum of income and tax.",
+        "The eligibility is determined by applying the requirements of section 5, "
+        "and the very substantial refundable individual income tax credit available "
+        "for qualified resident taxpayers equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "but the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "while the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "or the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "yet the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "whereas the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "although the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "nor the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "then the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "though the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "because the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "since the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "notwithstanding that the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "as the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "given that the credit equals income plus the supplement.",
+        "The eligibility is determined by applying the requirements of section 5 "
+        "inasmuch as the credit equals income plus the supplement.",
+        "considering that the credit equals income plus the supplement.",
+        "seeing that the credit equals income plus the supplement.",
+        "provided the credit equals income plus the supplement.",
+    ),
+)
+def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
+    assert source_states_explicit_computation(source)
+    branches = recognize_source_structure(f"A. {source}\nB. End.")
+    formula_branches = completeness_module._source_formula_branches(
+        f"A. {source}\nB. End.",
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+
+
 def test_determined_by_arithmetic_remains_a_computation():
     assert source_states_explicit_computation(
         "The credit is determined by adding the base and the supplement."
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The product of the negotiations and agreement shall be rounded out by the department.",
+        "The sum of public comments and agency responses shall be rounded out by the agency.",
+        "The difference between policy and practice shall be rounded out by rule.",
+    ),
+)
+def test_rounded_out_administrative_prose_is_not_a_computation(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+def test_bare_round_noun_is_not_a_computation():
+    assert not source_states_explicit_computation(
+        "The credit round is administered annually by the department."
+    )
+
+
+def test_rounding_policy_noun_is_not_a_computation():
+    assert not source_states_explicit_computation(
+        "The credit rounding policy shall be published."
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount rounding down policy shall be published.",
+        "The department shall decide whether to round the amount.",
+        "The authority to round the amount shall be documented.",
+        "Guidance on how to round the amount shall be published.",
+        "The department shall in guidance explain how to round the amount.",
+        "The authority shall in regulations permit the department to round the amount.",
+        "The department shall in no event round the amount.",
+        "The department shall under no circumstances round the amount.",
+    ),
+)
+def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount shall be rounded down.",
+        "The credit is rounded up.",
+        "The result shall be rounded to four decimal places.",
+        "Any fraction shall be rounded to the nearest whole number.",
+        "The count must be rounded to the nearest whole number.",
+        "The quotient shall be rounded downward.",
+        "The ratio shall be rounded to four decimal places.",
+        "The average shall be rounded down.",
+        "The sum shall be rounded to the nearest whole number.",
+        "The department shall round the amount down.",
+        "The department shall round the quotient down.",
+        "The department shall round the amount.",
+        "The department shall round downward the amount.",
+        "The department shall round off the amount.",
+        "The department shall round the amount to a whole dollar.",
+        "The department shall annually round the amount.",
+        "The department shall promptly round down the amount.",
+        "The department shall, when necessary, round the amount.",
+        "The department must then round the result down.",
+        "The department will annually round the balance down.",
+        "The department shall consistently and promptly round the amount.",
+        "The department shall from time to time round the amount.",
+        "The department shall as necessary round the amount.",
+        "The department shall without delay round the amount.",
+        "The department shall in all cases round the amount.",
+        "The department shall round, when necessary, the amount.",
+        "The department shall round the amount, when necessary.",
+        "The department shall round the amount when necessary.",
+        "The department shall round the amount as necessary.",
+        "The department shall round the amount if required.",
+        "The department shall round the amount whenever necessary.",
+        "For each return, round the amount down.",
+        "If necessary, round the amount down.",
+        "For each return, promptly round the amount.",
+        "If necessary, then round the amount.",
+        "After determining the amount, the department shall round it down.",
+        "After determining the amounts, the department shall round them down.",
+        "After determining the taxable amounts, the department shall round them down.",
+        "After determining the applicable amounts, the department shall round them down.",
+        "After determining the amount the department shall round it down.",
+        "After determining the amount the commissioner shall round it down.",
+        "After determining the amount the secretary shall round it down.",
+        "After determining the amount each commissioner shall round it down.",
+        "After determining the amount Commissioner Smith shall round it down.",
+        "After determining the amount Revenue Services shall round it down.",
+        "After determining the amount Department of Revenue shall round it down.",
+        "After determining the amount the Department of Administration shall round it down.",
+        "After determining the amount the program administrator shall round it down.",
+        "After determining the amount Program Administrator shall round it down.",
+        "After determining the amount program administrator shall round it down.",
+        "After determining the amount the policy director shall round it down.",
+        "After determining the amount the policy analyst shall round it down.",
+        "After determining the amount the policy auditor shall round it down.",
+        "After determining the amount the policy manager shall round it down.",
+        "After determining the amount the program supervisor shall round it down.",
+        "After determining the amount the policy examiner shall round it down.",
+        "After determining the amount the program coordinator shall round it down.",
+        "After determining the amount the program chair shall round it down.",
+        "After determining the amount the policy lead shall round it down.",
+        "After determining the amount the records custodian shall round it down.",
+        "After determining the amount Tax Policy Counsel shall round it down.",
+        "After determining the amount Revenue Policy Counsel shall round it down.",
+        "After determining the amount the program trustee shall round it down.",
+        "After determining the amount the tax assessor shall round it down.",
+        "After determining the amount Tax Policy Advisor shall round it down.",
+        "After determining the amount Revenue Policy Attorney shall round it down.",
+        "After determining the amount the tax collector shall round it down.",
+        "After determining the amount the program employee shall round it down.",
+        "After determining the amount the program representative shall round it down.",
+        "After determining the amount the program agent shall round it down.",
+        "After determining the amount the policy consultant shall round it down.",
+        "After determining the amount Tax Policy Accountant shall round it down.",
+        "After determining the amount Revenue Policy Agent shall round it down.",
+        "After determining the amount the tax preparer shall round it down.",
+        "After determining the amount the tax inspector shall round it down.",
+        "After determining the amount the program specialist shall round it down.",
+        "After determining the amount the program contractor shall round it down.",
+        "After determining the amount the program liaison shall round it down.",
+        "After determining the amount Tax Policy Specialist shall round it down.",
+        "After determining the amount Revenue Policy Judge shall round it down.",
+        "After determining the amount for the taxable year the commissioner shall round it down.",
+        "After determining the amount due the commissioner shall round it down.",
+        "After determining the amount payable the commissioner shall round it down.",
+        "After calculating the credits, the department shall round them down.",
+        "After calculating each credit, the department shall round it down.",
+        "Once the amounts are determined, the department shall round them down.",
+        "Once amounts have been determined, the department shall round them down.",
+        "After the amount had been determined, the department shall round it down.",
+        "After the amount had been determined the commissioner shall round it down.",
+        "After the amount had been determined correctly, the department shall round it down.",
+        "After the amount had been determined by the department, it shall round it down.",
+        "After the amount had been determined as required, the department shall round it down.",
+        "After the amount had been determined as otherwise required, the department shall round it down.",
+        "After the amount had been determined as prescribed by law, the department shall round it down.",
+        "After the amount had been determined as provided in this section, the department shall round it down.",
+        "After the amount had been determined jointly by the department, it shall round it down.",
+        "After the amount had been determined subject to this section, the department shall round it down.",
+        "After the amount had been determined consistent with this section, the department shall round it down.",
+        "After the amount had been determined as set forth in this section, the department shall round it down.",
+        "After the amount had been determined as the law requires, the department shall round it down.",
+        "After the amount had been determined as required pursuant to this section, the department shall round it down.",
+        "After the amount had been determined in conformity with this section, the department shall round it down.",
+        "After the amount had been determined for purposes of this section, the department shall round it down.",
+        "After the amount had been determined in the manner prescribed by law, the department shall round it down.",
+        "After the amount had been determined under this section, the department shall round it down.",
+        "After the amount had been determined pursuant to the statute, the department shall round it down.",
+        "After the amount had been determined pursuant to this section, the department shall round it down.",
+        "After the amount had been determined in accordance with law, the department shall round it down.",
+        "After the amount had been determined as this section requires, the department shall round it down.",
+        "After the amount had been determined in the manner required by law, the department shall round it down.",
+        "After the amount had been determined as mandated by law, the department shall round it down.",
+        "After the amount had been determined in compliance with this section, the department shall round it down.",
+        "After the amount had been determined as described in this section, the department shall round it down.",
+        "After the amount had been determined per this section, the department shall round it down.",
+        "After the amount had been determined as directed by this section, the department shall round it down.",
+        "After the amount had been determined in the manner specified by law, the department shall round it down.",
+        "After the amount had been determined in the manner provided by law, the department shall round it down.",
+        "After the amount is determined under this section, it shall be rounded down.",
+        "After the amount had been determined in the manner set forth in this section, the department shall round it down.",
+        "After the amount had been determined as established in this section, the department shall round it down.",
+        "After the amount had been determined as outlined, the department shall round it down.",
+        "After the amount had been determined as stipulated by law, the department shall round it down.",
+        "After the amount had been determined as provided for in this section, the department shall round it down.",
+        "After the amount had been determined as authorized, the department shall round it down.",
+        "After the amount had been determined in the manner authorized by law, the department shall round it down.",
+        "After the amount had been determined in the manner authorized in this section, the department shall round it down.",
+        "After the amount had been determined in the manner established by law, the department shall round it down.",
+        "After the amount had been determined in the manner established under this section, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated by law, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated in this section, the department shall round it down.",
+        "After the amount had been determined in the manner outlined by law, the department shall round it down.",
+        "After the amount had been determined in the manner outlined in this section, the department shall round it down.",
+        "After the amount is determined, the department shall round it down.",
+        "After tax amount is determined, the department shall round it down.",
+        "The department shall calculate the amount and round it down.",
+        "The department shall calculate the amount and then round it down.",
+        "The department shall calculate the amount, and round it down.",
+        "The department shall calculate the amount and promptly round it down.",
+        "The department shall calculate the amount and shall round it down.",
+        "The department shall calculate the amount and shall then round it down.",
+        "The department shall calculate the amount and shall promptly round it down.",
+        "The department shall calculate the amount and thereafter round it down.",
+        "The department shall calculate the amount and shall thereafter round it down.",
+        "The department shall calculate the amount and shall, thereafter, round it down.",
+        "The department shall first calculate the amount and then round it down.",
+        "The department shall calculate the amount first and then round it down.",
+        "The department shall calculate and round the amount down.",
+        "Round the weighted average to the nearest whole number.",
+        "Round the amount down.",
+        "Round the amount to the nearest whole number.",
+        "The department shall round down the amount.",
+        "The department shall round up the credit.",
+        "Round down the amount.",
+        "Round the result down.",
+        "Round the count down.",
+        "Round the balance down.",
+        "Round the assessment down.",
+        "Round the amount.",
+        "Rounding down the amount is required.",
+        "The amount is to be rounded.",
+        "The amount is required to be rounded.",
+        "The amount should be rounded.",
+        "The amount will be rounded.",
+    ),
+)
+def test_numeric_rounding_directive_is_a_computation(source: str):
+    assert source_states_explicit_computation(source)
+
+
+def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
+    for source in (
+        "After reviewing the Benefit Policy, the department shall round it down.",
+        "After calculating the Benefit Policy, the department shall round it down.",
+        "After calculating the Benefit Policy the commissioner shall round it down.",
+        "After calculating the Benefit Policy Commissioner Smith shall round it down.",
+        "After calculating the benefit policy the commissioner shall round it down.",
+        "After determining the amount the Benefit Policy shall round it down.",
+        "After determining the amount the worksheet shall round it down.",
+        "After determining the amount the bylaw shall round it down.",
+        "After determining the amount the decree shall round it down.",
+        "After determining the amount the catalog shall round it down.",
+        "After determining the amount the Analyst Report shall round it down.",
+        "After determining the amount the Analyst Report Draft shall round it down.",
+        "After determining the amount the Director Manual Copy shall round it down.",
+        "After determining the amount the policy document text shall round it down.",
+        "After determining the amount the website content shall round it down.",
+        "After determining the amount the Analyst Report Attachment shall round it down.",
+        "After determining the amount the Policy Manual Supplement shall round it down.",
+        "After determining the amount the policy document page shall round it down.",
+        "After determining the amount the policy document excerpt shall round it down.",
+        "After determining the amount the website page shall round it down.",
+        "After determining the amount the website data shall round it down.",
+        "After determining the amount FAQ shall round it down.",
+        "After determining the amount Case Study shall round it down.",
+        "After determining the amount User Documentation shall round it down.",
+        "After determining the amount User Tutorial shall round it down.",
+        "After determining the amount Technical Advisory shall round it down.",
+        "After determining the amount the Manager Report shall round it down.",
+        "After the amount had been determined the bylaw shall round it down.",
+        "After the amount had been determined the Director Manual shall round it down.",
+        "After determining the filing status the board shall round it down.",
+        "The department shall review the policy and shall round it down.",
+    ):
+        assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "After the amount had been determined in the manner authorized by law, the department shall round it down.",
+        "After the amount had been determined in the manner authorized in this section, the department shall round it down.",
+        "After the amount had been determined in the manner established by law, the department shall round it down.",
+        "After the amount had been determined in the manner established under this section, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated by law, the department shall round it down.",
+        "After the amount had been determined in the manner stipulated in this section, the department shall round it down.",
+        "After the amount had been determined in the manner outlined by law, the department shall round it down.",
+        "After the amount had been determined in the manner outlined in this section, the department shall round it down.",
+        "After determining the amount the tax preparer shall round it down.",
+        "After determining the amount the tax inspector shall round it down.",
+        "After determining the amount the program specialist shall round it down.",
+        "After determining the amount the program contractor shall round it down.",
+        "After determining the amount the program liaison shall round it down.",
+        "After determining the amount Tax Policy Specialist shall round it down.",
+        "After determining the amount Revenue Policy Judge shall round it down.",
+        "After the amount had been determined in the manner set forth in this section, the department shall round it down.",
+        "After the amount had been determined as established in this section, the department shall round it down.",
+        "After the amount had been determined as outlined, the department shall round it down.",
+        "After the amount had been determined as stipulated by law, the department shall round it down.",
+        "After the amount had been determined as provided for in this section, the department shall round it down.",
+        "After the amount had been determined as authorized, the department shall round it down.",
+        "After determining the amount the tax collector shall round it down.",
+        "After determining the amount the program employee shall round it down.",
+        "After determining the amount the program representative shall round it down.",
+        "After determining the amount the program agent shall round it down.",
+        "After determining the amount the policy consultant shall round it down.",
+        "After determining the amount Tax Policy Accountant shall round it down.",
+        "After determining the amount Revenue Policy Agent shall round it down.",
+        "After the amount had been determined as directed by this section, the department shall round it down.",
+        "After the amount had been determined in the manner specified by law, the department shall round it down.",
+        "After the amount had been determined in the manner provided by law, the department shall round it down.",
+        "After the amount is determined under this section, it shall be rounded down.",
+        "After determining the amount the program trustee shall round it down.",
+        "After determining the amount the tax assessor shall round it down.",
+        "After determining the amount Tax Policy Advisor shall round it down.",
+        "After determining the amount Revenue Policy Attorney shall round it down.",
+        "After the amount had been determined as this section requires, the department shall round it down.",
+        "After the amount had been determined in the manner required by law, the department shall round it down.",
+        "After the amount had been determined as mandated by law, the department shall round it down.",
+        "After the amount had been determined in compliance with this section, the department shall round it down.",
+        "After the amount had been determined as described in this section, the department shall round it down.",
+        "After the amount had been determined per this section, the department shall round it down.",
+        "After determining the amounts, the department shall round them down.",
+        "After determining the taxable amounts, the department shall round them down.",
+        "After determining the applicable amounts, the department shall round them down.",
+        "After determining the amount the department shall round it down.",
+        "After determining the amount the commissioner shall round it down.",
+        "After determining the amount the secretary shall round it down.",
+        "After determining the amount each commissioner shall round it down.",
+        "After determining the amount Commissioner Smith shall round it down.",
+        "After determining the amount Revenue Services shall round it down.",
+        "After determining the amount Department of Revenue shall round it down.",
+        "After determining the amount the Department of Administration shall round it down.",
+        "After determining the amount the program administrator shall round it down.",
+        "After determining the amount Program Administrator shall round it down.",
+        "After determining the amount program administrator shall round it down.",
+        "After determining the amount the policy director shall round it down.",
+        "After determining the amount the policy analyst shall round it down.",
+        "After determining the amount the policy auditor shall round it down.",
+        "After determining the amount the policy manager shall round it down.",
+        "After determining the amount the program supervisor shall round it down.",
+        "After determining the amount the policy examiner shall round it down.",
+        "After determining the amount the program coordinator shall round it down.",
+        "After determining the amount the program chair shall round it down.",
+        "After determining the amount the policy lead shall round it down.",
+        "After determining the amount the records custodian shall round it down.",
+        "After determining the amount Tax Policy Counsel shall round it down.",
+        "After determining the amount Revenue Policy Counsel shall round it down.",
+        "After determining the amount for the taxable year the commissioner shall round it down.",
+        "After determining the amount due the commissioner shall round it down.",
+        "After determining the amount payable the commissioner shall round it down.",
+        "After calculating the credits, the department shall round them down.",
+        "After calculating each credit, the department shall round it down.",
+        "Once the amounts are determined, the department shall round them down.",
+        "Once amounts have been determined, the department shall round them down.",
+        "After the amount had been determined, the department shall round it down.",
+        "After the amount had been determined the commissioner shall round it down.",
+        "After the amount had been determined correctly, the department shall round it down.",
+        "After the amount had been determined by the department, it shall round it down.",
+        "After the amount had been determined as required, the department shall round it down.",
+        "After the amount had been determined as otherwise required, the department shall round it down.",
+        "After the amount had been determined as prescribed by law, the department shall round it down.",
+        "After the amount had been determined as provided in this section, the department shall round it down.",
+        "After the amount had been determined jointly by the department, it shall round it down.",
+        "After the amount had been determined subject to this section, the department shall round it down.",
+        "After the amount had been determined consistent with this section, the department shall round it down.",
+        "After the amount had been determined as set forth in this section, the department shall round it down.",
+        "After the amount had been determined as the law requires, the department shall round it down.",
+        "After the amount had been determined as required pursuant to this section, the department shall round it down.",
+        "After the amount had been determined in conformity with this section, the department shall round it down.",
+        "After the amount had been determined for purposes of this section, the department shall round it down.",
+        "After the amount had been determined in the manner prescribed by law, the department shall round it down.",
+        "After the amount had been determined under this section, the department shall round it down.",
+        "After the amount had been determined pursuant to the statute, the department shall round it down.",
+        "After the amount had been determined pursuant to this section, the department shall round it down.",
+        "After the amount had been determined in accordance with law, the department shall round it down.",
+        "After the amount is determined, the department shall round it down.",
+        "After tax amount is determined, the department shall round it down.",
+        "The department shall calculate the amount and round it down.",
+        "The department shall calculate the amount and then round it down.",
+        "The department shall calculate the amount, and round it down.",
+        "The department shall calculate the amount and promptly round it down.",
+        "The department shall calculate the amount and shall round it down.",
+        "The department shall calculate the amount and shall then round it down.",
+        "The department shall calculate the amount and shall promptly round it down.",
+        "The department shall calculate the amount and thereafter round it down.",
+        "The department shall calculate the amount and shall thereafter round it down.",
+        "The department shall calculate the amount and shall, thereafter, round it down.",
+        "The department shall first calculate the amount and then round it down.",
+        "The department shall calculate the amount first and then round it down.",
+        "The department shall calculate and round the amount down.",
+    ),
+)
+def test_strong_rounding_pronoun_antecedent_requires_formula_output(directive: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        f"A. {directive}",
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 def test_rounding_only_detection_preserves_contextual_arithmetic():
@@ -2720,6 +4711,171 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The assessment is the sum of the following amounts: monthly wages",
         "The assessment is the average of the following values: monthly wages",
         "The assessment is the sum of the following amounts: wages; interest",
+        "The credit equals one-fifth of taxable income",
+        "The credit equals three-eighths of taxable income",
+        "The credit equals one tenth of taxable income",
+        "The credit is 75 per cent of taxable income",
+        "The credit is seventy-five per cent of taxable income",
+        "The monthly amount equals one-twelfth of the annual amount",
+        "The allocation equals five-twelfths of annual income",
+        "The allocation equals one-eleventh of annual income",
+        "The allocation equals two-sixths of annual income",
+        "The allocation equals one-sixteenth of annual income",
+        "The allocation equals one twenty-fourth of annual income",
+        "The allocation equals a third of annual income",
+        "The allocation equals a fifth of annual income",
+        "The credit equals one second of taxable income",
+        "The credit equals two quarters of taxable income",
+        "The credit equals three quarters of taxable income",
+        "The credit equals one half of the prior year's income",
+        "The credit equals one half of the current month amount",
+        "The credit equals one half of the months of eligibility",
+        "The allowance equals one half of the hours of service",
+        "The service requirement equals one half of the hours of service",
+        "The benefit period equals one half of the months of eligibility",
+        "The tax equals one-half per cent of taxable income",
+        "The tax equals one-half percent of taxable income",
+        "The tax equals two and one-half percent of taxable income",
+        "The tax equals one and one-quarter percent of taxable income",
+        "The deductible amount is the sum of contributions made by the employer and "
+        "contributions made by the employee",
+        "The assessment is the sum of amounts withheld from wages and credits claimed "
+        "on the return",
+        "The assessment is the sum of expenses borne by the taxpayer and contributions "
+        "paid by the employer",
+        "The assessment is the difference between taxes held in escrow and credits "
+        "allowed under this section",
+        "The assessment is the sum of income set aside and gains won during the year",
+        "The assessment is the sum of amounts held in escrow and interest received "
+        "during the year",
+        "The assessment is the difference between tax borne and expenses spent",
+        "The assessment is the sum of income exempt and credits allowed",
+        "The credit is the lesser of the base or the cap, whichever of the two is less",
+        "The credit is the lesser of the base or the cap, whichever of such amounts is "
+        "less",
+        "The credit is the lesser of the base or the cap, whichever shall be less",
+        "The credit is the lesser of the base or the cap, whichever may be less",
+        "The credit is the lesser of the base or the cap, whichever would be less",
+        "The credit is the lesser of the base or the cap, but not less than zero",
+        "The credit is the lesser of the base or the cap, but in no event less than zero",
+        "The credit is the lesser of the base or the cap, but not below zero",
+        "The credit is the lesser of the base or the cap, except that it shall not be "
+        "less than zero",
+        "The credit is the lesser of the base or the cap, with a minimum of zero",
+        "The credit is the lesser of the base or the cap, but not less than 0",
+        "The credit is the lesser of the base or the cap, but not less than $0",
+        "The credit is the lesser of the base or the cap, in no case less than zero",
+        "The credit is the lesser of the base or the cap, subject to a floor of zero",
+        "The credit is the lesser of the base or the cap, but shall not be less than zero",
+        "The credit is the lesser of the base or the cap, but no less than zero",
+        "The credit is the lesser of the base or the cap, but at least zero",
+        "The credit is the lesser of the base or the cap, but shall be no less than zero",
+        "The credit is the lesser of the base or the cap, but shall be at least zero",
+        "The credit is the lesser of the base or the cap, but shall in no event be less than zero",
+        "The credit is the lesser of the base or the cap, but shall not be lower than zero",
+        "The credit is the lesser of the base or the cap, but shall be greater than or equal to zero",
+        "The credit is the lesser of the base or the cap, but shall never be less than zero",
+        "The credit is the lesser of the base or the cap, but shall not be negative",
+        "The credit is the lesser of the base or the cap, but shall not fall below zero",
+        "The credit is the lesser of the base or the cap, but shall be nonnegative",
+        "The amount is the difference of income and the deduction, but shall not result in a negative amount",
+        "The amount is the difference of income and the deduction, but shall not result in negative amount",
+        "The amount is the difference of income and the deduction, but shall not result in a negative balance",
+        "The amount is the difference of income and the deduction, but shall not result in a negative value",
+        "The credit is the lesser of the base or the cap, but shall never be negative",
+        "The credit is the lesser of the base or the cap, but shall in no event be negative",
+        "The credit is the lesser of the base or the cap, but cannot be negative",
+        "The credit is the lesser of the base or the cap, but shall be zero if negative",
+        "The credit is the lesser of the base or the cap, but shall under no circumstances be negative",
+        "The credit is the lesser of the base or the cap, but shall under no circumstances become negative",
+        "The credit is the lesser of the base or the cap, but shall at no time be negative",
+        "The credit is the lesser of the base or the cap, but shall not be a negative amount",
+        "The credit is the lesser of the base or the cap, but shall remain zero or greater",
+        "The credit is the lesser of the base or the cap, but shall be maintained at no less than zero",
+        "The credit is the lesser of the base or the cap, but shall be nonnegative at all times",
+        "The credit is the lesser of the base or the cap, but shall be zero or greater",
+        "The credit is the lesser of the base or the cap, but shall never have a negative value",
+        "The credit is the lesser of the base or the cap, but shall not go below zero",
+        "The credit is the lesser of the base or the cap, but shall not drop below zero",
+        "The credit is the lesser of the base or the cap, but shall remain zero or more",
+        "The credit is the lesser of the base or the cap, but shall be set to zero if negative",
+        "The credit is the lesser of the base or the cap, but shall remain zero or higher",
+        "The credit is the lesser of the base or the cap, but shall stay nonnegative",
+        "The credit is the lesser of the base or the cap, but shall be set at zero if negative",
+        "The credit is the lesser of the base or the cap, but shall be equal to or greater than zero",
+        "The credit is the lesser of the base or the cap, but shall have a minimum value of zero",
+        "The credit is the lesser of the base or the cap, but shall be nonnegative throughout",
+        "The credit is the lesser of the base or the cap, but shall remain at zero or above",
+        "The credit is the lesser of the base or the cap, but shall not sink below zero",
+        "The credit is the lesser of the base or the cap, but shall have a minimum of zero",
+        "The credit is the lesser of the base or the cap, but shall have a floor of zero",
+        "The credit is the lesser of the base or the cap, but shall have a floor at zero",
+        "The credit is the lesser of the base or the cap, but shall have a lower bound of zero",
+        "The credit is the lesser of the base or the cap, but shall have a lower bound at zero",
+        "The credit is the lesser of the base or the cap, but shall be bounded below by zero",
+        "The credit is the lesser of the base or the cap, but shall be bounded below at zero",
+        "The credit is the lesser of the base or the cap, but shall have a zero lower bound",
+        "The credit is the lesser of the base or the cap, but shall be bounded from below by zero",
+        "The credit is the lesser of the base or the cap, but shall have zero as a lower bound",
+        "The credit is the lesser of the base or the cap, but shall be treated as zero if negative",
+        "The credit is the lesser of the base or the cap, but shall be deemed zero when negative",
+        "The amount is the difference of income and deduction and shall not be negative",
+        "The amount is the difference between income and deduction and shall not be negative",
+        "The amount is the difference of income and deduction and shall not result in a negative amount",
+        "The amount is the difference of income and deduction and shall not fall below zero",
+        "The amount is the difference of income and deduction and shall be at least zero",
+        "The amount is the difference of income and deduction and shall be no less than zero",
+        "The amount is the difference of income and deduction and shall be greater than or equal to zero",
+        "The amount is the difference of income and deduction, but it shall not be negative",
+        "The amount is the difference of income and deduction, but the amount shall not be negative",
+        "The amount is the difference of income and deduction, but it shall not fall below zero",
+        "The benefit is the difference of income and deduction, but that benefit shall not result in a negative amount",
+        "The amount is the difference of income and deduction and shall be not less than zero",
+        "The amount is the difference of income and deduction and shall be not negative",
+        "The amount is the difference of income and deduction and shall be non-negative",
+        "The amount is the difference of income and deduction and shall be no lower than zero",
+        "The amount is the difference of income and deduction and shall in no case be negative",
+        "The amount is the difference of income and deduction, which amount shall not be negative",
+        "The amount is the difference of income and deduction, which is nonnegative",
+        "The amount is the difference of income and deduction, which must remain nonnegative",
+        "The amount is the difference of income and deduction, which remains nonnegative",
+        "The amount is the difference of income and deduction, which shall remain at least zero",
+        "The amount is the difference of income and deduction, which shall always remain at least zero",
+        "The amount is the difference of income and deduction, which is to remain nonnegative",
+        "The amount is the difference of income and deduction, which is required to remain nonnegative",
+        "The amount is the difference of income and deduction, which is expected to remain nonnegative",
+        "The amount is the difference of income and deduction, which has remained nonnegative",
+        "The amount is the difference of income and deduction, which has always remained nonnegative",
+        "The amount is the difference of income and deduction, which does not become negative",
+        "The amount is the difference of income and deduction, which shall not become negative",
+        "The amount is the difference of income and deduction, which can never turn negative",
+        "The amount is the difference of income and deduction, which shall at all times remain nonnegative",
+        "The amount is the difference of income and deduction, which shall in all cases remain nonnegative",
+        "The amount is the difference of income and deduction, which must at all times remain nonnegative",
+        "The amount is the difference of income and deduction, which shall remain at or above zero",
+        "The amount is the difference of income and deduction, which is never negative",
+        "The amount is the difference of income and deduction, which must always remain nonnegative",
+        "The amount is the difference of income and deduction, which will not be negative",
+        "The amount is the difference of income and deduction, but in no case shall it be negative",
+        "The amount is the difference of income and deduction, but in no case shall the amount be negative",
+        "The amount is the difference of income and deduction, but in no case may the amount be negative",
+        "The amount is the difference of income and deduction, but in no case shall this amount be negative",
+        "The amount is the difference of income and deduction, but in no case may the amount fall below zero",
+        "The amount is the difference of income and deduction, but under no circumstances can the amount be less than zero",
+        "The amount is the difference of income and deduction, but under no circumstances shall any amount be negative",
+        "The amount is the difference of income and deduction, but in no case shall the income be negative",
+        "The amount is the difference of income and deduction, but in no event can taxable income be less than zero",
+        "The amount is the difference of income and deduction, but in no event can state adjusted taxable income be less than zero",
+        "The payment is the difference of income and deduction, but in no case shall the payment be negative",
+        "The amount is the difference of income and deduction and shall be zero whenever negative",
+        "The amount is the difference of income and deduction and shall be zero whenever it is negative",
+        "The amount is the difference of income and deduction and shall be zero whenever the amount is negative",
+        "The tax is the difference of income and deduction and the tax shall be no less than zero",
+        "The tax amount is the difference of income and deduction and the tax amount shall be no less than zero",
+        "The total is the difference of income and deduction and the total shall be no less than zero",
+        "The income taxable in this state is the sum of wages and interest",
+        "The assessment is the difference between income taxable in this state and "
+        "deductions allowable under this section",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
@@ -2735,6 +4891,119 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
 
     assert source_states_explicit_computation(source)
     assert [branch.path for branch in formula_branches] == [("a",)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The amount is the difference of income and deduction and shall not be negative.",
+        "A. The amount is the difference between income and deduction and shall not be negative.",
+        "A. The amount is the difference of income and deduction and shall not result in a negative amount.",
+        "A. The amount is the difference of income and deduction and shall not fall below zero.",
+        "A. The amount is the difference of income and deduction and shall be at least zero.",
+        "A. The amount is the difference of income and deduction and shall be no less than zero.",
+        "A. The amount is the difference of income and deduction and shall be greater than or equal to zero.",
+        "A. The amount is the difference of income and deduction, but it shall not be negative.",
+        "A. The amount is the difference of income and deduction, but the amount shall not be negative.",
+        "A. The amount is the difference of income and deduction, but it shall not fall below zero.",
+        "A. The benefit is the difference of income and deduction, but that benefit shall not result in a negative amount.",
+        "A. The amount is the difference of income and deduction and shall be not less than zero.",
+        "A. The amount is the difference of income and deduction and shall be not negative.",
+        "A. The amount is the difference of income and deduction and shall be non-negative.",
+        "A. The amount is the difference of income and deduction and shall be no lower than zero.",
+        "A. The amount is the difference of income and deduction and shall in no case be negative.",
+        "A. The amount is the difference of income and deduction, which amount shall not be negative.",
+        "A. The amount is the difference of income and deduction, which is nonnegative.",
+        "A. The amount is the difference of income and deduction, which must remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which remains nonnegative.",
+        "A. The amount is the difference of income and deduction, which shall remain at least zero.",
+        "A. The amount is the difference of income and deduction, which shall always remain at least zero.",
+        "A. The amount is the difference of income and deduction, which is to remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which is required to remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which is expected to remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which has remained nonnegative.",
+        "A. The amount is the difference of income and deduction, which has always remained nonnegative.",
+        "A. The amount is the difference of income and deduction, which does not become negative.",
+        "A. The amount is the difference of income and deduction, which shall not become negative.",
+        "A. The amount is the difference of income and deduction, which can never turn negative.",
+        "A. The amount is the difference of income and deduction, which shall at all times remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which shall in all cases remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which must at all times remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which shall remain at or above zero.",
+        "A. The amount is the difference of income and deduction, which is never negative.",
+        "A. The amount is the difference of income and deduction, which must always remain nonnegative.",
+        "A. The amount is the difference of income and deduction, which will not be negative.",
+        "A. The amount is the difference of income and deduction, but in no case shall it be negative.",
+        "A. The amount is the difference of income and deduction, but in no case shall the amount be negative.",
+        "A. The amount is the difference of income and deduction, but in no case may the amount be negative.",
+        "A. The amount is the difference of income and deduction, but in no case shall this amount be negative.",
+        "A. The amount is the difference of income and deduction, but in no case may the amount fall below zero.",
+        "A. The amount is the difference of income and deduction, but under no circumstances can the amount be less than zero.",
+        "A. The amount is the difference of income and deduction, but under no circumstances shall any amount be negative.",
+        "A. The amount is the difference of income and deduction, but shall under no circumstances become negative.",
+        "A. The amount is the difference of income and deduction, but shall at no time be negative.",
+        "A. The amount is the difference of income and deduction, but shall not be a negative amount.",
+        "A. The amount is the difference of income and deduction, but shall remain zero or greater.",
+        "A. The amount is the difference of income and deduction, but shall be maintained at no less than zero.",
+        "A. The amount is the difference of income and deduction, but shall be nonnegative at all times.",
+        "A. The amount is the difference of income and deduction, but shall be zero or greater.",
+        "A. The amount is the difference of income and deduction, but shall never have a negative value.",
+        "A. The amount is the difference of income and deduction, but shall not go below zero.",
+        "A. The amount is the difference of income and deduction, but shall not drop below zero.",
+        "A. The amount is the difference of income and deduction, but shall remain zero or more.",
+        "A. The amount is the difference of income and deduction, but shall be set to zero if negative.",
+        "A. The amount is the difference of income and deduction, but shall remain zero or higher.",
+        "A. The amount is the difference of income and deduction, but shall stay nonnegative.",
+        "A. The amount is the difference of income and deduction, but shall be set at zero if negative.",
+        "A. The amount is the difference of income and deduction, but shall be equal to or greater than zero.",
+        "A. The amount is the difference of income and deduction, but shall have a minimum value of zero.",
+        "A. The amount is the difference of income and deduction, but shall be nonnegative throughout.",
+        "A. The amount is the difference of income and deduction, but shall remain at zero or above.",
+        "A. The amount is the difference of income and deduction, but shall not sink below zero.",
+        "A. The amount is the difference of income and deduction, but shall have a minimum of zero.",
+        "A. The amount is the difference of income and deduction, but shall have a floor of zero.",
+        "A. The amount is the difference of income and deduction, but shall have a floor at zero.",
+        "A. The amount is the difference of income and deduction, but shall have a lower bound of zero.",
+        "A. The amount is the difference of income and deduction, but shall have a lower bound at zero.",
+        "A. The amount is the difference of income and deduction, but shall be bounded below by zero.",
+        "A. The amount is the difference of income and deduction, but shall be bounded below at zero.",
+        "A. The amount is the difference of income and deduction, but shall have a zero lower bound.",
+        "A. The amount is the difference of income and deduction, but shall be bounded from below by zero.",
+        "A. The amount is the difference of income and deduction, but shall have zero as a lower bound.",
+        "A. The amount is the difference of income and deduction, but in no case shall the income be negative.",
+        "A. The amount is the difference of income and deduction, but in no event can taxable income be less than zero.",
+        "A. The amount is the difference of income and deduction, but in no event can state adjusted taxable income be less than zero.",
+        "A. The payment is the difference of income and deduction, but in no case shall the payment be negative.",
+        "A. The amount is the difference of income and deduction and shall be zero whenever negative.",
+        "A. The amount is the difference of income and deduction and shall be zero whenever it is negative.",
+        "A. The amount is the difference of income and deduction and shall be zero whenever the amount is negative.",
+        "A. The tax is the difference of income and deduction and the tax shall be no less than zero.",
+        "A. The tax amount is the difference of income and deduction and the tax amount shall be no less than zero.",
+        "A. The total is the difference of income and deduction and the total shall be no less than zero.",
+    ),
+)
+def test_coordinated_nonnegative_floor_still_requires_formula_output(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -6497,6 +8766,49 @@ rules: []
 )
 def test_common_german_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "The recording shall include one second of silence.",
+        "The term lasts a quarter of an hour.",
+        "The recording shall include a third of a second of silence.",
+        "The delay shall be one third of a second.",
+        "The warning sounds for one third of each hour.",
+        "The warning sounds for one third of every hour.",
+        "The warning sounds for one third of any hour.",
+        "The employee worked a quarter of each month.",
+        "The employee worked a quarter of every month.",
+        "The employee worked a quarter of this month.",
+        "The employee worked a quarter of the current month.",
+        "The employee worked a quarter of each calendar month.",
+        "The employee worked a quarter of every taxable month.",
+        "The employee worked one third of every work hour.",
+        "The employee worked one half of each month.",
+        "The employee worked one half of 1 hour.",
+        "The employee worked one quarter of two hours.",
+        "The employee worked one half of the hours of the workday.",
+        "The benefit is described, and the employee worked one half of the hours of the workday.",
+        "The employee worked a quarter of her work hours.",
+        "The employee worked a quarter of each benefit month.",
+        "The employee worked a quarter of the entire month.",
+        "The employee worked a quarter of one month.",
+        "The employee worked one quarter of each full calendar month.",
+        "The employee worked one third of every consecutive month.",
+    ),
+)
+def test_ordinary_duration_is_not_an_english_fraction(statement: str):
+    source = f"A. {statement}\nB. End."
+    branches = recognize_source_structure(source)
+
+    assert not source_states_explicit_computation(source)
+    assert not completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -11117,6 +13429,45 @@ rules:
         "Effective January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending before January 1, 2007, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on and after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning before January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or before January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "Effective for taxable years beginning on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending on or before January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after December 31, 2025 and before January 1, 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after December 31, 2005, but before January 1, 2007, the amount is calculated by multiplying income by the rate.",
+        "For taxable years commencing on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years starting on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years that begin on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For the taxable year that begins on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years that commence on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For the taxable year that commences on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years which begin on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning no earlier than January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning no later than January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending after December 31, 2025 but before January 1, 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after 2025, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or after 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years commencing January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years starting January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning in 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning subsequent to 2025, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning prior to 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years after 2025 and before 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after 2025 through 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years commencing after 2025 and ending prior to 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning not earlier than 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years ending in 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025 through 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025 and 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025, 2026, and 2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025-2027, the amount is calculated by multiplying income by the rate.",
+        "For taxable years 2025 or 2026, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning after 2025 up to and including 2027, the amount is calculated by multiplying income by the rate.",
+        "For tax years beginning after December 31, 2005 and ending on or before December 31, 2006, the amount is calculated by multiplying income by the rate.",
     ),
 )
 def test_common_formula_applicability_prefaces_are_not_coefficients(source):
@@ -11190,6 +13541,198 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
         )
         for item in substantive
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "For taxable years beginning on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years beginning on or before January 1, 2026, twenty-five "
+        "percent of income.",
+        "Effective for taxable years beginning on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years ending on or before January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years beginning after December 31, 2025 and before "
+        "January 1, 2027, twenty-five percent of income.",
+        "For taxable years beginning after December 31, 2005, but before "
+        "January 1, 2007, twenty-five percent of income.",
+        "For taxable years commencing on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years starting on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years that begin on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For the taxable year that begins on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years that commence on or after January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years which begin on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For taxable years beginning no earlier than January 1, 2026, "
+        "twenty-five percent of income.",
+        "For taxable years ending after December 31, 2025 but before January 1, 2027, "
+        "twenty-five percent of income.",
+        "For taxable years beginning after 2025, twenty-five percent of income.",
+        "For taxable years beginning on or after 2026, twenty-five percent of income.",
+        "For taxable years beginning January 1, 2026, twenty-five percent of income.",
+        "For taxable years commencing January 1, 2026, twenty-five percent of income.",
+        "For taxable years starting January 1, 2026, twenty-five percent of income.",
+        "For taxable years beginning in 2026, twenty-five percent of income.",
+        "For taxable years beginning subsequent to 2025, twenty-five percent of income.",
+        "For taxable years beginning prior to 2027, twenty-five percent of income.",
+        "For taxable years after 2025 and before 2027, twenty-five percent of income.",
+        "For taxable years beginning after 2025 through 2027, twenty-five percent of income.",
+        "For taxable years commencing after 2025 and ending prior to 2027, twenty-five percent of income.",
+        "For taxable years beginning not earlier than 2026, twenty-five percent of income.",
+        "For taxable years ending 2026, twenty-five percent of income.",
+        "For taxable years ending in 2026, twenty-five percent of income.",
+        "For taxable years 2025 through 2027, twenty-five percent of income.",
+        "For taxable years 2025 through 2027 inclusive, twenty-five percent of income.",
+        "For taxable years from 2025 through 2027, twenty-five percent of income.",
+        "For taxable years 2025, 2026, and thereafter, twenty-five percent of income.",
+        "For taxable year 2025 and thereafter, twenty-five percent of income.",
+        "For taxable years 2025 and later, twenty-five percent of income.",
+        "For taxable years 2025 and onward, twenty-five percent of income.",
+        "For taxable years 2025 and 2026, twenty-five percent of income.",
+        "For taxable years 2025, 2026, and 2027, twenty-five percent of income.",
+        "For taxable years 2025-2027, twenty-five percent of income.",
+        "For taxable years 2025 or 2026, twenty-five percent of income.",
+        "For taxable years beginning after 2025 up to and including 2027, "
+        "twenty-five percent of income.",
+        "For tax years beginning after December 31, 2005 and ending on or before "
+        "December 31, 2006, twenty-five percent of income.",
+    ),
+)
+def test_inclusive_tax_year_range_dates_are_entirely_preface(source: str):
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    preface_occurrences = [
+        item
+        for item in occurrences
+        if completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+    ]
+
+    assert preface_occurrences
+
+
+def test_year_only_applicability_prefaces_are_recognized_in_later_branches():
+    source = (
+        "A.(1) For taxable years beginning after 2025, twenty-five percent of income.\n"
+        "B.(1)(a) For taxable years beginning on or after 2026, fifty percent of income."
+    )
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    applicability_years = [
+        item.value
+        for item in occurrences
+        if completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+    ]
+
+    assert applicability_years == [2025, 2026]
+
+
+def test_compound_marker_year_only_applicability_is_excluded_from_numeric_recall():
+    source = "A.(1) For taxable years beginning after 2025, amount equals 10 dollars."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294(A)(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: amount equals 10 dollars
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '10'
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[
+            {
+                "name": "year-only applicability",
+                "period": "2026",
+                "input": {},
+                "output": {"amount": 10},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+    assert result.source_numeric_occurrence_count == 1
+    assert result.covered_source_numeric_occurrence_count == 1
+    assert result.missing_source_numeric_occurrence_count == 0
+
+
+def test_comma_year_list_applicability_is_fully_excluded_from_numeric_recall():
+    source = "For taxable years 2025, 2026, and 2027, amount equals 10 dollars."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: amount
+    kind: derived
+    dtype: Money
+    source: us-la/statute/47:294
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:294
+              excerpt: amount equals 10 dollars
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '10'
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[
+            {
+                "name": "comma year applicability",
+                "period": "2026",
+                "input": {},
+                "output": {"amount": 10},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not result.issues
+    assert result.source_numeric_occurrence_count == 1
+    assert result.covered_source_numeric_occurrence_count == 1
+    assert result.missing_source_numeric_occurrence_count == 0
 
 
 def test_tax_year_range_prefaces_allow_distinct_temporal_rate_witnesses():
