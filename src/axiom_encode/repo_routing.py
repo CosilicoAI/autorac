@@ -10,6 +10,10 @@ merely contains a matching checkout, or a checkout alias inferred from Git
 origin is not a RuleSpec content root.  Callers must authorize the exact
 country checkout (for dependencies) or its direct jurisdiction child (for the
 active content root).
+
+Git identity probes use a production timeout of at least 10 seconds. Loaded
+hosts may raise it with ``AXIOM_ENCODE_GIT_PROBE_TIMEOUT_SECONDS``; invalid or
+smaller values retain the safe production default.
 """
 
 from __future__ import annotations
@@ -34,6 +38,19 @@ from .constants import (
     RULESPEC_FILESYSTEM_ROOTS,
     RULESPEC_TEST_FILE_SUFFIX,
 )
+
+# ``manual`` is a legacy placement for tracked ``rulespec/v1`` modules in
+# jurisdiction trees.  It remains outside the canonical generation-root
+# contract, but strict whole-checkout scans must admit and protect its atomic
+# modules just like modules beneath the four current roots.
+RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS = frozenset(
+    {*RULESPEC_ATOMIC_MODULE_ROOTS, "manual"}
+)
+_RULESPEC_PROTECTED_FILESYSTEM_ROOTS = frozenset(
+    {*RULESPEC_FILESYSTEM_ROOTS, "manual"}
+)
+_GIT_PROBE_TIMEOUT_ENV = "AXIOM_ENCODE_GIT_PROBE_TIMEOUT_SECONDS"
+_DEFAULT_GIT_PROBE_TIMEOUT_SECONDS = 10
 
 
 class _GitProbeError(RuntimeError):
@@ -743,7 +760,9 @@ def atomic_rulespec_module_paths(
             "RuleSpec module scan requires an exact canonical rulespec-<country> "
             f"checkout ({inspection.rejection}): {checkout}"
         )
-    flat_roots = [checkout / root for root in sorted(RULESPEC_ATOMIC_MODULE_ROOTS)]
+    flat_roots = [
+        checkout / root for root in sorted(RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS)
+    ]
     invalid_flat_roots = [
         path for path in flat_roots if path.exists() or path.is_symlink()
     ]
@@ -769,7 +788,7 @@ def atomic_rulespec_module_paths(
             )
         root_markers = [
             content_root / root_name
-            for root_name in sorted(RULESPEC_FILESYSTEM_ROOTS)
+            for root_name in sorted(_RULESPEC_PROTECTED_FILESYSTEM_ROOTS)
             if (content_root / root_name).exists()
             or (content_root / root_name).is_symlink()
         ]
@@ -793,7 +812,8 @@ def atomic_rulespec_module_paths(
                 if (
                     allow_symlinks_outside_atomic_roots
                     and relative.parts
-                    and relative.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS
+                    and relative.parts[0]
+                    not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
                 ):
                     continue
                 raise ValueError(
@@ -808,12 +828,16 @@ def atomic_rulespec_module_paths(
                 )
             if candidate.suffix != RULESPEC_FILE_SUFFIX:
                 continue
-            if not relative.parts or relative.parts[0] not in RULESPEC_FILESYSTEM_ROOTS:
+            if (
+                not relative.parts
+                or relative.parts[0] not in _RULESPEC_PROTECTED_FILESYSTEM_ROOTS
+            ):
                 raise ValueError(
-                    "RuleSpec YAML must be beneath exactly one canonical filesystem "
-                    f"root {sorted(RULESPEC_FILESYSTEM_ROOTS)}: {candidate}"
+                    "RuleSpec YAML must be beneath exactly one admitted jurisdiction "
+                    "filesystem root "
+                    f"{sorted(_RULESPEC_PROTECTED_FILESYSTEM_ROOTS)}: {candidate}"
                 )
-            if relative.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS:
+            if relative.parts[0] not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS:
                 continue
             if candidate.name.endswith(RULESPEC_TEST_FILE_SUFFIX):
                 continue
@@ -855,6 +879,19 @@ def _nearest_git_boundary(path: Path) -> Path | None:
     return None
 
 
+def _git_probe_timeout_seconds() -> int:
+    """Return the bounded Git-probe timeout, allowing only safer increases."""
+
+    configured = os.getenv(_GIT_PROBE_TIMEOUT_ENV)
+    if configured is None:
+        return _DEFAULT_GIT_PROBE_TIMEOUT_SECONDS
+    try:
+        seconds = int(configured)
+    except ValueError:
+        return _DEFAULT_GIT_PROBE_TIMEOUT_SECONDS
+    return max(_DEFAULT_GIT_PROBE_TIMEOUT_SECONDS, seconds)
+
+
 def _git_top_level(root: str) -> Path | None:
     """Return the exact Git worktree root containing ``root``, when present."""
 
@@ -864,7 +901,7 @@ def _git_top_level(root: str) -> Path | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_git_probe_timeout_seconds(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _GitProbeError(
@@ -887,7 +924,7 @@ def _git_origin_repo_name(root: str) -> str | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_git_probe_timeout_seconds(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _GitProbeError(
@@ -936,7 +973,7 @@ def _git_config_input_paths(root: str) -> tuple[Path, ...]:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_git_probe_timeout_seconds(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _GitProbeError(
@@ -1006,7 +1043,7 @@ def _git_system_config_input_paths(root: str) -> tuple[Path, ...]:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=_git_probe_timeout_seconds(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _GitProbeError(

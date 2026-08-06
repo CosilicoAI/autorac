@@ -328,6 +328,48 @@ def test_validator_subprocess_cleanup_error_cannot_mask_timeout():
     assert cleanup_failures[0].endswith("/stdout.log")
 
 
+def test_policyengine_oracle_uses_documented_wall_and_idle_timeouts(tmp_path):
+    class RuntimeStub:
+        root = tmp_path
+        unchanged_checks = 0
+
+        def assert_unchanged(self):
+            self.unchanged_checks += 1
+
+        def oracle_command(self, script):
+            assert script == "oracle script"
+            return ["policyengine-oracle"]
+
+    runtime = RuntimeStub()
+    pipeline = object.__new__(_ValidatorPipeline)
+
+    def idle_timeout(command, **kwargs):
+        assert command == ["policyengine-oracle"]
+        assert kwargs["timeout"] == 300
+        assert kwargs["idle_timeout"] == 45
+        assert kwargs["cwd"] == tmp_path
+        raise subprocess.TimeoutExpired(command, kwargs["idle_timeout"])
+
+    with (
+        patch.object(
+            _ValidatorPipeline,
+            "_required_policyengine_runtime",
+            return_value=runtime,
+        ),
+        patch.object(
+            validator_pipeline,
+            "_run_subprocess_with_idle_timeout",
+            side_effect=idle_timeout,
+        ),
+    ):
+        result = pipeline._run_pe_subprocess_detailed("oracle script")
+
+    assert result.returncode == 124
+    assert result.stdout == ""
+    assert result.stderr == "Timeout after 45s"
+    assert runtime.unchanged_checks == 2
+
+
 def test_rulespec_run_compiled_timeout_is_reproducible_across_temp_roots(
     tmp_path,
 ):

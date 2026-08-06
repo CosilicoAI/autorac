@@ -277,6 +277,52 @@ def test_routing_cache_reuses_git_identity_only_inside_bounded_scope(
     assert len(git_calls) == 8
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, 10),
+        ("2", 10),
+        ("invalid", 10),
+        ("17", 17),
+    ],
+)
+def test_git_identity_probes_use_safe_configurable_timeout(
+    monkeypatch,
+    tmp_path,
+    configured,
+    expected,
+):
+    checkout = tmp_path / "rulespec-us"
+    _init_checkout(checkout, "https://github.com/TheAxiomFoundation/rulespec-us.git")
+    policy_root = checkout / "us"
+    policy_root.mkdir()
+    original_run = subprocess.run
+    observed_timeouts = []
+
+    if configured is None:
+        monkeypatch.delenv(
+            "AXIOM_ENCODE_GIT_PROBE_TIMEOUT_SECONDS",
+            raising=False,
+        )
+    else:
+        monkeypatch.setenv(
+            "AXIOM_ENCODE_GIT_PROBE_TIMEOUT_SECONDS",
+            configured,
+        )
+
+    def recording_run(command, *args, **kwargs):
+        observed_timeouts.append(kwargs.get("timeout"))
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr("axiom_encode.repo_routing.subprocess.run", recording_run)
+
+    with _rulespec_routing_cache_scope():
+        assert canonical_rulespec_root_identity(policy_root) == "rulespec-us/us"
+
+    assert len(observed_timeouts) == 6
+    assert set(observed_timeouts) == {expected}
+
+
 def test_routing_cache_invalidates_changed_git_origin_inside_scope(tmp_path):
     checkout = tmp_path / "rulespec-us"
     _init_checkout(checkout, "https://github.com/TheAxiomFoundation/rulespec-us.git")
@@ -699,7 +745,7 @@ def test_canonical_identity_rejects_observed_git_boundary_when_git_unavailable(
     [
         (FileNotFoundError(2, "git unavailable"), "git-top-level-probe-oserror-2"),
         (
-            subprocess.TimeoutExpired(["git", "rev-parse"], 2),
+            subprocess.TimeoutExpired(["git", "rev-parse"], 10),
             "git-top-level-probe-timeout",
         ),
     ],

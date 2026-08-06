@@ -85,6 +85,9 @@ the output directory are not a second validation layout.
 `rulespec-<country>/<jurisdiction>` layout. Cross-country imports require an
 explicit `--rulespec-dependency-root` pointing to the canonical country
 checkout; ambient environment and sibling checkout discovery are not used.
+Git identity probes use a 10-second production timeout.
+`AXIOM_ENCODE_GIT_PROBE_TIMEOUT_SECONDS` may raise, but cannot lower, that
+timeout for unusually loaded hosts.
 
 `encode` resolves the requested citation to exactly one active
 `corpus.provisions` row before model generation. Each RuleSpec checkout must

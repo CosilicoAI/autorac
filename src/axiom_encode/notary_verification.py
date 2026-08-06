@@ -27,7 +27,6 @@ from typing import Any, Literal
 from axiom_encode import __version__
 
 from .constants import (
-    RULESPEC_ATOMIC_MODULE_ROOTS,
     RULESPEC_FILE_SUFFIX,
     RULESPEC_TEST_FILE_SUFFIX,
 )
@@ -45,6 +44,7 @@ from .harness.validator_pipeline import (
     resolve_axiom_rules_engine_binary,
 )
 from .repo_routing import (
+    RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS,
     atomic_rulespec_module_paths,
     canonical_rulespec_repo_name,
     find_policy_repo_root,
@@ -1162,7 +1162,7 @@ def _is_primary_rulespec_module(path: Path, *, checkout: Path) -> bool:
         path.suffix == RULESPEC_FILE_SUFFIX
         and not path.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
         and len(relative.parts) >= 2
-        and relative.parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS
+        and relative.parts[0] in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
     )
 
 
@@ -1172,11 +1172,11 @@ def _protected_rulespec_root_index(relative: PurePosixPath) -> int | None:
     parts = relative.parts
     if len(parts) < 2:
         return None
-    if parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+    if parts[0] in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS:
         return 0
     if (
         len(parts) >= 3
-        and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS
+        and parts[1] in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
         and re.fullmatch(r"[a-z]{2}(?:-[a-z0-9_]+)*", parts[0])
     ):
         return 1
@@ -1193,11 +1193,11 @@ def _is_protected_rulespec_relative(relative: PurePosixPath) -> bool:
 def _authority_surface_path_reason(relative: PurePosixPath) -> str | None:
     """Return the authority class for one path, independent of its mode."""
 
-    if relative.name == ".gitignore":
-        return None
     relative_text = relative.as_posix()
     if ".axiom" in relative.parts:
         return "protected verifier, trust-root, or repository configuration"
+    if relative.name == ".gitignore":
+        return None
     if relative.parts and relative.parts[0] == ".github":
         return "protected GitHub workflow or repository configuration"
     if relative.name == ".gitattributes":
@@ -1775,6 +1775,7 @@ def _write_receipt(
     temporary_name: str | None = None
     published = False
     complete = False
+    has_primary_error = False
     try:
         parent_descriptor = _open_receipt_parent(
             path,
@@ -1830,7 +1831,11 @@ def _write_receipt(
         publication_check()
         complete = True
     except OSError as exc:
+        has_primary_error = True
         raise NotaryVerificationError(f"Cannot write notary receipt: {path}") from exc
+    except BaseException:
+        has_primary_error = True
+        raise
     finally:
         if parent_descriptor is not None:
             if temporary_name is not None:
@@ -1851,7 +1856,19 @@ def _write_receipt(
                         f"published receipt {path}: {exc!r}",
                         file=sys.stderr,
                     )
-            os.close(parent_descriptor)
+            try:
+                os.close(parent_descriptor)
+            except OSError as exc:
+                if not has_primary_error:
+                    raise NotaryVerificationError(
+                        "Cannot close notary receipt output directory: "
+                        f"{path.parent}"
+                    ) from exc
+                print(
+                    "notary-verify: warning: failed to close the receipt output "
+                    f"directory while preserving the primary error: {exc!r}",
+                    file=sys.stderr,
+                )
 
 
 def _utc_timestamp(now: datetime | None = None) -> str:

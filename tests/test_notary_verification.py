@@ -62,6 +62,9 @@ from tests.test_policyengine_runtime import (
 _RELEASE_NAME = "notary-verifier-test-release"
 _RELEASE_VERSION = "2026-notary-verifier-test"
 _MODULE_RELATIVE = Path("us/statutes/26/151.yaml")
+_REAL_MANUAL_MODULE_RELATIVE = Path(
+    "us-mo/manual/dss/snap/1115-000-00/1115-035-00/1115-035-25/block-1.yaml"
+)
 _FIXED_NOW = datetime(2026, 7, 21, 15, 4, 5, tzinfo=timezone.utc)
 _ORACLE_OUTPUT_ID = "us:statutes/26/151#senior_deduction_age_threshold"
 _ORACLE_SOURCE_TEXT = "The senior deduction age threshold is 65 years."
@@ -305,7 +308,11 @@ def _write_corpus(corpus_root: Path):
     )
 
 
-def _write_fake_engine(engine_root: Path) -> None:
+def _write_fake_engine(
+    engine_root: Path,
+    *,
+    legal_anchor: str = "us:statutes/26/151",
+) -> None:
     binary = engine_root / "target/debug/axiom-rules-engine"
     binary.parent.mkdir(parents=True)
     binary.write_text(
@@ -349,7 +356,7 @@ elif sys.argv[1] == "run-compiled":
     }))
 else:
     raise SystemExit(2)
-""",
+""".replace("us:statutes/26/151", legal_anchor),
         encoding="utf-8",
     )
     binary.chmod(0o755)
@@ -478,6 +485,7 @@ def _write_notary_fixture(
     module_relative: Path = _MODULE_RELATIVE,
     rulespec: str = _RULESPEC,
     companion: str = _COMPANION,
+    engine_legal_anchor: str = "us:statutes/26/151",
     policy_object_format: str = "sha1",
 ) -> _NotaryFixture:
     policy_root = tmp_path / "rulespec-us"
@@ -509,7 +517,7 @@ def _write_notary_fixture(
     module.parent.mkdir(parents=True)
     module.write_text(rulespec, encoding="utf-8")
     companion_path.write_text(companion, encoding="utf-8")
-    _write_fake_engine(engine_root)
+    _write_fake_engine(engine_root, legal_anchor=engine_legal_anchor)
     _commit_all(policy_root, "notary policy fixture")
     _commit_all(engine_root, "notary engine fixture")
     return _NotaryFixture(
@@ -1179,6 +1187,9 @@ def test_diff_mode_rejects_distinct_ancestor_with_identical_tree(
         Path(".github/workflows/notary.yml"),
         Path(".github/actions/notary/action.yml"),
         Path(".github/scripts/notary.py"),
+        Path(".axiom/.gitignore"),
+        Path(".axiom/nested/.gitignore"),
+        Path("us/.axiom/.gitignore"),
         Path("us/.axiom/encoding-manifests/notary.json"),
         Path("us/ca/.axiom/encoding-manifests/notary.json"),
     ],
@@ -1201,9 +1212,6 @@ def test_authority_surface_matcher_rejects_recognized_paths(relative: Path):
         Path("docs/.gitignore"),
         Path(".github/.gitignore"),
         Path(".github/nested/.gitignore"),
-        Path(".axiom/.gitignore"),
-        Path(".axiom/nested/.gitignore"),
-        Path("us/.axiom/.gitignore"),
         Path("us/axioms/foo.yaml"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
@@ -1254,10 +1262,13 @@ def test_gitignore_matcher_still_rejects_privileged_modes(
     [
         Path(".axiom/toolchain.toml"),
         Path(".axiom/repository-structure.yaml"),
+        Path(".axiom/.gitignore"),
+        Path(".axiom/nested/.gitignore"),
         Path(".github/workflows/notary.yml"),
         Path(".github/actions/notary/action.yml"),
         Path(".github/scripts/notary.py"),
         Path("us/.axiom/encoding-manifests/notary.json"),
+        Path("us/.axiom/.gitignore"),
         Path("us/ca/.axiom/encoding-manifests/notary.json"),
         Path("docs/CODEOWNERS"),
         Path("docs/config/.gitattributes"),
@@ -1314,9 +1325,6 @@ def test_diff_mode_records_non_authority_matcher_controls_as_out_of_scope(
         Path("docs/.gitignore"),
         Path(".github/.gitignore"),
         Path(".github/nested/.gitignore"),
-        Path(".axiom/.gitignore"),
-        Path(".axiom/nested/.gitignore"),
-        Path("us/.axiom/.gitignore"),
         Path("us/axioms/foo.txt"),
         Path("docs/notes/OWNERS.md"),
         Path("docs/notes/CODEOWNERS"),
@@ -2830,6 +2838,111 @@ def test_failed_post_publication_cleanup_warns_and_preserves_primary_error(
     )
 
 
+def test_failed_parent_close_warns_and_preserves_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    receipt_out = tmp_path / "parent-close-failure.json"
+    receipt = attach_receipt_sha256({"schema_id": "close-warning-test"})
+    original_open_parent = notary_module._open_receipt_parent
+    original_close = os.close
+    parent_descriptors: list[int] = []
+
+    def tracking_open_parent(*args, **kwargs):
+        descriptor = original_open_parent(*args, **kwargs)
+        parent_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_parent_close(descriptor: int) -> None:
+        if descriptor in parent_descriptors:
+            raise OSError("injected receipt-parent close failure")
+        original_close(descriptor)
+
+    def fail_publication_check() -> None:
+        raise NotaryVerificationError("injected primary publication failure")
+
+    monkeypatch.setattr(
+        notary_module,
+        "_open_receipt_parent",
+        tracking_open_parent,
+    )
+    monkeypatch.setattr(notary_module.os, "close", fail_parent_close)
+
+    try:
+        with pytest.raises(
+            NotaryVerificationError,
+            match="injected primary publication failure",
+        ):
+            notary_module._write_receipt(
+                receipt_out,
+                receipt,
+                protected_identities=(),
+                publication_check=fail_publication_check,
+            )
+    finally:
+        for descriptor in parent_descriptors:
+            original_close(descriptor)
+
+    assert not receipt_out.exists()
+    assert not tuple(tmp_path.glob(".parent-close-failure.json.*"))
+    assert (
+        "warning: failed to close the receipt output directory while preserving "
+        "the primary error"
+        in capsys.readouterr().err
+    )
+
+
+def test_close_only_failure_is_primary_even_during_an_outer_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    receipt_out = tmp_path / "close-only-failure.json"
+    receipt = attach_receipt_sha256({"schema_id": "close-only-failure-test"})
+    original_open_parent = notary_module._open_receipt_parent
+    original_close = os.close
+    parent_descriptors: list[int] = []
+
+    def tracking_open_parent(*args, **kwargs):
+        descriptor = original_open_parent(*args, **kwargs)
+        parent_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_parent_close(descriptor: int) -> None:
+        if descriptor in parent_descriptors:
+            raise OSError("injected sole receipt-parent close failure")
+        original_close(descriptor)
+
+    monkeypatch.setattr(
+        notary_module,
+        "_open_receipt_parent",
+        tracking_open_parent,
+    )
+    monkeypatch.setattr(notary_module.os, "close", fail_parent_close)
+
+    try:
+        try:
+            raise RuntimeError("ambient caller exception")
+        except RuntimeError:
+            with pytest.raises(
+                NotaryVerificationError,
+                match="Cannot close notary receipt output directory",
+            ):
+                notary_module._write_receipt(
+                    receipt_out,
+                    receipt,
+                    protected_identities=(),
+                    publication_check=lambda: None,
+                )
+    finally:
+        for descriptor in parent_descriptors:
+            original_close(descriptor)
+
+    assert receipt_out.read_bytes() == canonical_receipt_bytes(receipt)
+    assert "while preserving the primary error" not in capsys.readouterr().err
+
+
 def test_same_content_checkout_replacement_is_rejected_before_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2992,6 +3105,67 @@ def test_compile_gate_requires_ci_recompile_evidence():
     assert _ci_compile_passed([result]) is False
 
 
+def test_whole_repo_produces_receipt_for_real_manual_jurisdiction_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    manual_citation_path = _REAL_MANUAL_MODULE_RELATIVE.with_suffix("").as_posix()
+    manual_legal_anchor = manual_citation_path.replace("/", ":", 1)
+    manual_rulespec = _RULESPEC.replace(
+        "jurisdiction: us\n",
+        "jurisdiction: us-mo\n",
+    ).replace(
+        "citation_path: us/statutes/26/151",
+        f"citation_path: {manual_citation_path}",
+    )
+    manual_companion = _COMPANION.replace(
+        "us:statutes/26/151",
+        manual_legal_anchor,
+    )
+    fixture = _write_notary_fixture(
+        tmp_path,
+        module_relative=_REAL_MANUAL_MODULE_RELATIVE,
+        rulespec=manual_rulespec,
+        companion=manual_companion,
+        engine_legal_anchor=manual_legal_anchor,
+    )
+    monkeypatch.setattr(
+        "axiom_encode.harness.validator_pipeline.run_claude_code",
+        _forbidden_model_backend,
+    )
+    receipt_out = tmp_path / "whole-repo-manual-layout.json"
+
+    result = run_notary_verification(
+        policy_repo_path=fixture.policy_root,
+        corpus_path=fixture.corpus_root,
+        axiom_rules_engine_path=fixture.engine_root,
+        receipt_out=receipt_out,
+        base_commit=None,
+        whole_repo=True,
+        allow_reduced=True,
+        now=_FIXED_NOW,
+    )
+
+    assert result.passed is True
+    assert receipt_out.read_bytes() == canonical_receipt_bytes(result.receipt)
+    assert result.receipt["status"] == "passed-reduced"
+    assert result.receipt["targets"] == {
+        "mode": "whole-repo",
+        "files": [
+            {
+                "path": fixture.companion.relative_to(
+                    fixture.policy_root
+                ).as_posix(),
+                "disposition": "verified",
+            },
+            {
+                "path": _REAL_MANUAL_MODULE_RELATIVE.as_posix(),
+                "disposition": "verified",
+            },
+        ],
+    }
+
+
 def test_whole_repo_inventories_real_authority_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2999,12 +3173,14 @@ def test_whole_repo_inventories_real_authority_surfaces(
     fixture = _write_notary_fixture(tmp_path)
     authority_files = {
         Path(".axiom/encoding-manifests/root.json"): "{}\n",
+        Path(".axiom/nested/.gitignore"): "# authority surface\n",
         Path(".gitattributes"): "*.yaml text\n",
         Path(".github/CODEOWNERS"): "* @AxiomNotary\n",
         Path(".github/actions/notary/action.yml"): "name: notary\n",
         Path(".github/actions/notary/run.sh"): "#!/bin/sh\nexit 0\n",
         Path(".github/workflows/notary.yml"): "name: notary\n",
         Path("CODEOWNERS"): "* @AxiomNotary\n",
+        Path("us/.axiom/.gitignore"): "# authority surface\n",
         Path("us/.axiom/encoding-manifests/jurisdiction.json"): "{}\n",
         Path("us/ca/.axiom/encoding-manifests/state.json"): "{}\n",
         Path("us/ca/.gitattributes"): "*.yaml text\n",
@@ -3016,8 +3192,6 @@ def test_whole_repo_inventories_real_authority_surfaces(
     (fixture.policy_root / ".github/actions/notary/run.sh").chmod(0o755)
     for relative in (
         Path(".github/nested/.gitignore"),
-        Path(".axiom/nested/.gitignore"),
-        Path("us/.axiom/.gitignore"),
         Path("us/axioms/foo.txt"),
     ):
         control = fixture.policy_root / relative
@@ -3056,6 +3230,7 @@ def test_whole_repo_inventories_real_authority_surfaces(
     }
     assert result.receipt["authority_surfaces"] == [
         {"path": ".axiom/encoding-manifests/root.json"},
+        {"path": ".axiom/nested/.gitignore"},
         {"path": ".axiom/toolchain.toml"},
         {"path": ".gitattributes"},
         {"path": ".github/CODEOWNERS"},
@@ -3064,6 +3239,7 @@ def test_whole_repo_inventories_real_authority_surfaces(
         {"path": ".github/workflows/notary.yml"},
         {"path": "CODEOWNERS"},
         {"path": "known-validation-gaps.yaml"},
+        {"path": "us/.axiom/.gitignore"},
         {"path": "us/.axiom/encoding-manifests/jurisdiction.json"},
         {"path": "us/ca/.axiom/encoding-manifests/state.json"},
         {"path": "us/ca/.gitattributes"},

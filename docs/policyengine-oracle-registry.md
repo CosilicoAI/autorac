@@ -64,6 +64,8 @@ and PolicyEngine closure before and after imports and around each oracle run.
 The resulting `axiom-policyengine-runtime/v2` identity and canonical SHA-256
 flow through suite admission, results, verdicts, reports, and archives. Pin or
 closure mutation, resume mismatches, and zero comparable evidence fail closed.
+Each oracle subprocess has a fixed 300-second wall timeout and a 45-second idle
+timeout; idle expiry is reported with the shorter limit that actually fired.
 
 TAXSIM and the former `all` selector are removed. Validation, suite evidence,
 prediction scores, run records, telemetry, and exports accept only PolicyEngine

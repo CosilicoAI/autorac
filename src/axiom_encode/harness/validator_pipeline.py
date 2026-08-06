@@ -60,7 +60,6 @@ from axiom_encode.concepts.jurisdiction import jurisdiction_prefix
 from axiom_encode.constants import (
     DEFAULT_OPENAI_MODEL,
     REVIEWER_CLI_MODEL,
-    RULESPEC_ATOMIC_MODULE_ROOTS,
     RULESPEC_COMPOSITION_SPEC_ROOT,
     RULESPEC_FILE_SUFFIX,
     RULESPEC_TEST_FILE_SUFFIX,
@@ -75,6 +74,7 @@ from axiom_encode.corpus_resolver import (
     resolve_local_corpus_source,
 )
 from axiom_encode.repo_routing import (
+    RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS,
     _path_identity_fingerprint,
     _path_mutation_stamp,
     _PathMutationStamp,
@@ -125,6 +125,8 @@ from .source_completeness import (
 
 logger = logging.getLogger(__name__)
 
+_POLICYENGINE_ORACLE_WALL_TIMEOUT_SECONDS = 300
+_POLICYENGINE_ORACLE_IDLE_TIMEOUT_SECONDS = 45
 _STATED_CONVERSION_CALENDAR_CONSTANTS = frozenset({4.0, 12.0, 24.0, 52.0, 365.0})
 _STATED_CONVERSION_UNGROUNDED_HINT = (
     "Complete-source stated-conversion hint: encode the source-stated base and "
@@ -11129,7 +11131,7 @@ def _rulespec_executable_index_for_roots(
         if not root.exists():
             continue
         prefix = _rulespec_repo_prefix(root)
-        for source_root_name in sorted(RULESPEC_ATOMIC_MODULE_ROOTS):
+        for source_root_name in sorted(RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS):
             source_root = validate_rulespec_context_directory(
                 root / source_root_name,
                 root,
@@ -11244,7 +11246,10 @@ def _canonical_rulespec_target(
     relative = rules_file.resolve().relative_to(repo_root.resolve())
     if relative.suffix == RULESPEC_FILE_SUFFIX:
         relative = relative.with_suffix("")
-    if not relative.parts or relative.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS:
+    if (
+        not relative.parts
+        or relative.parts[0] not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
+    ):
         raise ValueError(
             "RuleSpec target must be beneath a canonical content root "
             f"in the canonical jurisdiction root: {rules_file}"
@@ -14475,7 +14480,7 @@ def _module_self_scope_parts(rules_file: Path | None) -> tuple[str, ...]:
         return ()
     file_parts = rules_file.with_suffix("").parts
     for index in range(len(file_parts) - 1, -1, -1):
-        if file_parts[index] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        if file_parts[index] in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS:
             return tuple(file_parts[index:])
     return ()
 
@@ -20483,7 +20488,7 @@ def find_import_shape_issues(content: str) -> list[str]:
                         f"`imports[{index}]` uses `{raw_item}`. Atomic RuleSpec "
                         "imports must use a jurisdiction-prefixed target beneath "
                         "one of "
-                        f"{sorted(RULESPEC_ATOMIC_MODULE_ROOTS)}; "
+                        f"{sorted(RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS)}; "
                         f"`{RULESPEC_COMPOSITION_SPEC_ROOT}/` contains separate "
                         "axiom-compose ProgramSpecs and cannot be imported."
                     )
@@ -20683,7 +20688,7 @@ def _normalize_rulespec_import_path_static(import_path: str) -> str:
     return normalized.strip("/")
 
 
-_RULESPEC_IMPORT_SOURCE_ROOTS = RULESPEC_ATOMIC_MODULE_ROOTS
+_RULESPEC_IMPORT_SOURCE_ROOTS = RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
 
 
 def _rulespec_import_path_aliases_static(import_path: str) -> set[str]:
@@ -20798,7 +20803,7 @@ def _resolve_rulespec_import_file_static(
         )
     if (
         not normalized_path.parts
-        or normalized_path.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS
+        or normalized_path.parts[0] not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
     ):
         return None
 
@@ -23121,7 +23126,7 @@ def _parse_rulespec_target(target: str) -> _RuleSpecTargetRef | None:
         return None
     if (
         not relative_path.parts
-        or relative_path.parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS
+        or relative_path.parts[0] not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS
     ):
         return None
     if not path_text.endswith(RULESPEC_FILE_SUFFIX):
@@ -23140,7 +23145,7 @@ def _parse_rulespec_target(target: str) -> _RuleSpecTargetRef | None:
 def _target_path_embeds_jurisdiction(target_ref: _RuleSpecTargetRef) -> bool:
     """Return whether a RuleSpec path repeats a jurisdiction after the kind."""
     parts = target_ref.relative_path.with_suffix("").parts
-    if len(parts) < 2 or parts[0] not in RULESPEC_ATOMIC_MODULE_ROOTS:
+    if len(parts) < 2 or parts[0] not in RULESPEC_PROTECTED_ATOMIC_MODULE_ROOTS:
         return False
     embedded = parts[1]
     return (
@@ -29001,13 +29006,13 @@ Output ONLY valid JSON:
         """Run a Python script with no ambient environment or interpreter lookup."""
 
         runtime = self._required_policyengine_runtime()
-        timeout = 300
+        timeout = _POLICYENGINE_ORACLE_WALL_TIMEOUT_SECONDS
         runtime.assert_unchanged()
         try:
             result = _run_subprocess_with_idle_timeout(
                 runtime.oracle_command(script),
                 timeout=timeout,
-                idle_timeout=45,
+                idle_timeout=_POLICYENGINE_ORACLE_IDLE_TIMEOUT_SECONDS,
                 cwd=runtime.root,
                 env=policyengine_subprocess_environment(),
             )
@@ -29021,7 +29026,7 @@ Output ONLY valid JSON:
                 returncode=124,
                 stdout=getattr(exc, "stdout", "") or "",
                 stderr=(getattr(exc, "stderr", "") or "").strip()
-                or f"Timeout after {timeout}s",
+                or f"Timeout after {exc.timeout}s",
             )
         except Exception as exc:
             return OracleSubprocessResult(returncode=1, stderr=str(exc))
