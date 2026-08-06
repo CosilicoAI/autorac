@@ -1351,6 +1351,21 @@ def test_rejected_dotted_candidates_are_scanned_with_bounded_runtime():
     assert elapsed < 1.5
 
 
+def test_accepted_nested_markers_are_closed_with_bounded_runtime():
+    source = (
+        "A. Start.\n"
+        + "".join(f"({index}) Row {index}.\n" for index in range(1, 20_001))
+        + "B. End."
+    )
+
+    started = time.perf_counter()
+    branches = recognize_source_structure(source)
+    elapsed = time.perf_counter() - started
+
+    assert len(branches) == 20_002
+    assert elapsed < 1.5
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -1518,6 +1533,1153 @@ def test_parenthesized_letters_nest_under_active_numeric_paragraph():
         ("a", "2"),
         ("b",),
     }
+
+
+def test_parenthesized_numeric_items_nest_under_active_letter_parent():
+    source = "A. Outer.\n(a) Letter.\n(1) First.\n(2) Second.\n(b) Next.\nB. End."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "2"),
+        ("a", "b"),
+        ("b",),
+    }
+
+
+def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
+    source = """\
+A. There shall be a credit from the tax imposed by this Part for child care expenses for which a resident individual is eligible pursuant to the federal income tax credit provided by Internal Revenue Code Section 21 for the same taxable year. The credit shall be calculated using the following percentages :
+
+(1)(a) If the resident individual's federal adjusted gross income is equal to or less than twenty-five thousand dollars, the credit shall be calculated based on the federal tax credit before it is reduced by the amount of the individual's federal income tax and be equal to the following amounts for the following tax years:
+
+(i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+
+(ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+
+(b) For the individuals provided for by this Paragraph, the Louisiana credit shall be allowed without regard to whether they claimed such federal credit.
+
+(2) If the resident individual's federal adjusted gross income is greater than twenty-five thousand dollars and less than or equal to thirty-five thousand dollars, the credit shall be equal to thirty percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
+
+(3) If the resident individual's federal adjusted gross income is greater than thirty-five thousand and less than or equal to sixty thousand dollars, the credit shall be equal to ten percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
+
+(4) If the resident individual's federal adjusted gross income is greater than sixty thousand dollars, the credit shall be equal to the lesser of twenty-five dollars or ten percent of the federal credit for child care expenses claimed on the resident individual's federal tax return.
+
+B.(1) If the credit against Louisiana income tax for resident individuals whose federal adjusted gross income is equal to or less than twenty-five thousand dollars exceeds the amount of such individual's tax liability for the taxable year, then such excess tax credit shall constitute an overpayment, as defined in R.S. 47:1621(A), and the secretary shall make a refund of such overpayment from the current collections of the taxes imposed under this Part. The right to a refund of any such overpayment shall not be subject to the requirements of R.S. 47:1621(B).
+
+(2) If the credit against Louisiana income tax for resident individuals whose federal adjusted gross income is greater than twenty-five thousand dollars exceeds the amount of such individual's tax liability for the taxable period, then such excess tax credit may be carried forward as a credit against any subsequent tax liability of such individual imposed by this Part for a period not exceeding five years.
+"""
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "1", "a"),
+        ("a", "1", "a", "i"),
+        ("a", "1", "a", "ii"),
+        ("a", "1", "b"),
+        ("a", "2"),
+        ("a", "3"),
+        ("a", "4"),
+        ("b",),
+        ("b", "1"),
+        ("b", "2"),
+    ]
+    by_path = {branch.path: branch for branch in branches}
+    assert "B.(1)" not in by_path[("a", "4")].text
+    assert "carried forward" not in by_path[("b", "1")].text
+    assert "(ii)" not in by_path[("a", "1", "a", "i")].text
+    assert "fifty percent" in by_path[("a", "1", "a", "ii")].text
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert [branch.path for branch in formula_branches] == [
+        ("a", "1", "a", "i"),
+        ("a", "1", "a", "ii"),
+        ("a", "2"),
+        ("a", "3"),
+        ("a", "4"),
+    ]
+    assert all(not branch.text.rstrip().endswith(":") for branch in formula_branches)
+
+    principal_suffixes = (
+        "(A)",
+        "(A)(1)(a)",
+        "(A)(1)(b)",
+        "(A)(2)",
+        "(A)(3)",
+        "(A)(4)",
+        "(B)(1)",
+        "(B)(2)",
+    )
+    content = yaml.safe_dump(
+        {
+            "format": "rulespec/v1",
+            "module": {
+                "source_verification": {
+                    "corpus_citation_path": "us-la/statute/47:297.4"
+                }
+            },
+            "rules": [
+                *(
+                    {
+                        "name": f"louisiana_child_care_credit_output_{index}",
+                        "kind": "derived",
+                        "source": f"us-la/statute/47:297.4{suffix}",
+                        "versions": [
+                            {
+                                "effective_from": "2006-01-01",
+                                "formula": (
+                                    "low_income_credit_rate * federal_credit"
+                                    if suffix == "(A)(1)(a)"
+                                    else "1"
+                                ),
+                            }
+                        ],
+                    }
+                    for index, suffix in enumerate(principal_suffixes)
+                ),
+                {
+                    "name": "low_income_credit_rate",
+                    "kind": "parameter",
+                    "source": "us-la/statute/47:297.4(A)(1)(a)(i)-(ii)",
+                    "metadata": {
+                        "proof": {
+                            "atoms": [
+                                {
+                                    "path": "versions[0].formula",
+                                    "kind": "parameter",
+                                    "source": {
+                                        "corpus_citation_path": (
+                                            "us-la/statute/47:297.4"
+                                        ),
+                                        "excerpt": (
+                                            "twenty-five percent of the unreduced "
+                                            "federal credit"
+                                        ),
+                                    },
+                                },
+                                {
+                                    "path": "versions[1].formula",
+                                    "kind": "parameter",
+                                    "source": {
+                                        "corpus_citation_path": (
+                                            "us-la/statute/47:297.4"
+                                        ),
+                                        "excerpt": (
+                                            "fifty percent of the unreduced federal "
+                                            "credit"
+                                        ),
+                                    },
+                                },
+                            ]
+                        }
+                    },
+                    "versions": [
+                        {"effective_from": "2006-01-01", "formula": "0.25"},
+                        {"effective_from": "2007-01-01", "formula": "0.50"},
+                    ],
+                },
+            ],
+        }
+    )
+    analysis = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert not _has_issue(analysis, "formula-output")
+
+    unbound_payload = yaml.safe_load(content)
+    parent_rule = next(
+        rule
+        for rule in unbound_payload["rules"]
+        if rule.get("source") == "us-la/statute/47:297.4(A)(1)(a)"
+    )
+    parent_rule["versions"][0]["formula"] = "federal_credit"
+    unbound = analyze_complete_source_unit(
+        yaml.safe_dump(unbound_payload),
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert _has_issue(unbound, "formula-output", "(i)")
+    assert _has_issue(unbound, "formula-output", "(ii)")
+
+    quoted_literal_payload = yaml.safe_load(content)
+    quoted_parent_rule = next(
+        rule
+        for rule in quoted_literal_payload["rules"]
+        if rule.get("source") == "us-la/statute/47:297.4(A)(1)(a)"
+    )
+    quoted_parent_rule["versions"][0]["formula"] = (
+        'match filing_status:\n  "married" => federal_credit\n  _ => 0'
+    )
+    quoted_parameter = next(
+        rule
+        for rule in quoted_literal_payload["rules"]
+        if rule.get("name") == "low_income_credit_rate"
+    )
+    quoted_parameter["name"] = "married"
+    quoted_literal = analyze_complete_source_unit(
+        yaml.safe_dump(quoted_literal_payload),
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    assert _has_issue(quoted_literal, "formula-output", "(i)")
+    assert _has_issue(quoted_literal, "formula-output", "(ii)")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The tax equals income * 2:\n(1) This rule applies to residents.\nB. End.",
+        "A. The tax shall be calculated as twenty-five percent of income:\n"
+        "(1) This rule applies to residents.\nB. End.",
+    ),
+)
+def test_substantive_formula_chapeau_survives_noncomputational_children(source: str):
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+
+
+def test_sum_chapeau_remains_distinct_from_computational_child():
+    source = """\
+A. The credit equals the sum of:
+(1) the base credit.
+(2) bonus equals income * rate.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "2")]
+
+
+@pytest.mark.parametrize(
+    "selection",
+    (
+        "lesser of",
+        "greater of",
+        "minimum of",
+        "maximum of",
+        "min of the following amounts",
+        "max of the following amounts",
+        "smallest of the following amounts",
+        "largest of the following amounts",
+        "lesser of the following amounts",
+        "greater of the following amounts",
+    ),
+)
+def test_selection_chapeau_remains_distinct_from_computational_child(
+    selection: str,
+):
+    source = f"""\
+A. The credit shall be computed as the {selection}:
+(1) income * rate.
+(2) the fixed cap.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "by adding the following amounts",
+        "by subtracting the following amounts",
+        "by dividing by the following amounts",
+        "as the average of the following amounts",
+        "as the mean of the following values",
+        "as the median of the following values",
+        "as the product of the following amounts",
+        "as the ratio of the following values",
+        "as the quotient of the following values",
+    ),
+)
+def test_aggregation_chapeau_remains_distinct_from_computational_child(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be computed {operation}:
+(1) income * rate.
+(2) the fixed amount.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "computed by reducing the base by an amount equal to the following amounts",
+        "computed by deducting an amount set forth in the following table",
+        "computed by increasing the base by an amount equal to the following amounts",
+        "computed by decreasing the base by an amount equal to the following amounts",
+    ),
+)
+def test_computed_by_chapeau_cannot_delegate_to_allowlisted_suffix(operation: str):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) the fixed amount.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit shall be computed by applying the rate to income",
+        "The credit shall be computed as income multiplied by the applicable rate",
+        "The credit shall be determined by applying the ratio to income",
+        "The credit shall be calculated through application of the rate to the base",
+        "The credit shall be computed by combining the base and supplement",
+        "The credit equals twice the base",
+        "The credit is half of income",
+        "The credit is calculated by doubling the base",
+        "The credit is calculated by taking the lesser of income and the limit",
+        "The credit equals twice the base, with the base computed using Table 1 below",
+        "The credit is half of income, with the rate determined according to Schedule A below",
+        "The credit shall be computed by applying the applicable rate to income, and "
+        "the applicable rate shall be equal to the following percentages",
+        "The credit shall be computed as income multiplied by the applicable rate, "
+        "and the applicable rate shall be equal to the following percentages",
+        "The credit shall be computed based on the product of income and rate and "
+        "shall be equal to the following amounts",
+        "The credit shall be computed based on income multiplied by the rate and "
+        "shall be equal to the following amounts",
+        "The credit equals three-fourths of income, with the rate computed using "
+        "Table 1 below",
+    ),
+)
+def test_unrecognized_operative_chapeau_cannot_delegate_to_formula_children(
+    operation: str,
+):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "reduced by deductions, using the following rates",
+        "deducted by offsets, using the following rates",
+        "increased by bonuses, using the following rates",
+        "decreased by adjustments, using the following rates",
+    ),
+)
+def test_participial_operation_chapeau_cannot_delegate_to_table_children(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit shall be equal to the lesser of the following values",
+        "The credit is equal to the average of the following values",
+    ),
+)
+def test_equal_to_result_chapeau_is_an_explicit_formula_obligation(operation: str):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit shall be determined by decreasing the base by an amount under "
+        "the following schedule",
+        "The credit is the average of the following values",
+        "The credit is the mean of the following values",
+        "The credit is the median of the following values",
+        "The credit is the ratio of the following values",
+        "The credit is the quotient of the following values",
+        "The credit is the remainder of the following values",
+    ),
+)
+def test_contextual_operator_is_an_explicit_formula_obligation(operation: str):
+    source = f"""\
+A. {operation}:
+(1) income * rate.
+(2) the fixed amount.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "calculated as income reduced by deductions, using the following rates",
+        "calculated through subtraction of deductions, using the following rates",
+    ),
+)
+def test_operative_prefix_cannot_delegate_through_generic_table_suffix(
+    operation: str,
+):
+    source = f"""\
+A. The credit shall be {operation}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "program_name",
+    (
+        "higher education tax credit",
+        "product use tax credit",
+        "average-income tax credit",
+        "product of agriculture tax credit",
+        "sum of services tax credit",
+        "difference between generations tax credit",
+    ),
+)
+def test_incidental_operator_word_in_program_name_does_not_block_table_delegation(
+    program_name: str,
+):
+    source = f"""\
+A. The {program_name} shall be computed as follows:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize("verb", ("calculated", "computed", "determined"))
+def test_based_on_following_table_heading_delegates_to_computational_children(
+    verb: str,
+):
+    source = f"""\
+A. The credit shall be {verb} based on the following rates:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    (
+        "computed pursuant to the following schedule",
+        "computed as set forth in the following table",
+        "calculated pursuant to the following rates",
+        "computed pursuant to the following rates for the following tax years",
+        "calculated pursuant to following amounts for following tax years",
+        "computed pursuant to the table below",
+        "computed as set forth in the table below",
+        "determined in accordance with the following schedule",
+        "calculated from the following rates",
+        "computed pursuant to the schedule set forth below",
+        "computed in accordance with the schedule set forth below",
+        "calculated from the rates set forth in the following table",
+        "determined pursuant to the table set forth below",
+        "computed using the table below",
+        "computed according to the table below",
+        "computed from the rates in the following table",
+        "computed from the rates shown in the table below",
+        "calculated in accordance with the rates prescribed in the table below",
+        "determined pursuant to the percentages in the following schedule",
+        "computed using Table 1 below",
+        "computed using the following Table 1",
+        "computed according to Schedule A below",
+        "computed using the table below for tax year 2026",
+        "computed according to the following table for taxable year 2026",
+        "determined by the following schedule",
+        "computed by reference to the table below",
+        "computed in the manner shown in the table below",
+        "computed under the following schedule",
+        "calculated as shown in the table below",
+        "calculated as provided in the following table",
+        "computed under the following table",
+        "computed in the following table",
+        "determined with the following schedule",
+        "computed using the table below for taxable years 2025 and 2026",
+        "computed from Table 1",
+        "computed pursuant to paragraph (1) and shall be equal to the following amounts",
+        "computed under R.S. 47:1 and shall be equal to the following amounts",
+        "computed using the method prescribed in paragraph (1) and shall be equal "
+        "to the following amounts",
+    ),
+)
+def test_pursuant_to_following_table_heading_delegates_to_children(heading: str):
+    source = f"""\
+A. The credit shall be {heading}:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The Division of Revenue shall administer this section.\nB. End.",
+        "A. The addition of a dependent to the household shall be reported.\nB. End.",
+        "A. An increase of benefits shall take effect next year.\nB. End.",
+        "A. The responsible agency is the Division of Revenue.\nB. End.",
+        "A. The amendment is the addition of a dependent category.\nB. End.",
+        "A. The change constitutes the increase of available benefits.\nB. End.",
+        "A. The amendment is the addition of a dependent category and shall "
+        "apply in 2026.\nB. End.",
+        "A. The responsible agency is the Division of Revenue and is represented "
+        "by counsel.\nB. End.",
+        "A. The responsible agency is the Division of Revenue by designation.\nB. End.",
+        "A. The change constitutes the increase of available benefits by the "
+        "department.\nB. End.",
+        "A. The revision is the reduction of paperwork by the agency.\nB. End.",
+        "A. The organization is the product of a merger.\nB. End.",
+        "A. The amendment to the tax code is the addition of a dependent category "
+        "and shall apply in 2026.\nB. End.",
+        "A. The refund administrator is the Division of Revenue by designation.\n"
+        "B. End.",
+        "A. The administrator of benefits is the Division of Revenue and is "
+        "represented by counsel.\nB. End.",
+        "A. The administrator of the refund is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The administrator for all benefits is the Division of Revenue and is "
+        "represented by counsel.\nB. End.",
+        "A. The agency responsible for the tax is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The administrator for the benefit is the product of a merger.\nB. End.",
+        "A. The distinction from the amount is the difference between federal and "
+        "state administration.\nB. End.",
+        "A. The limitation on the tax is the difference between current law and "
+        "prior law.\nB. End.",
+        "A. The organization that provides the benefit is the product of a merger.\n"
+        "B. End.",
+        "A. The agency administering the tax is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The organization providing the benefit is the product of a merger.\n"
+        "B. End.",
+        "A. The office handling the refund is the Division of Revenue by "
+        "designation.\nB. End.",
+        "A. The committee's charge is the division of responsibilities by office.\n"
+        "B. End.",
+        "A. The assessment is the product of a review and public comment.\nB. End.",
+        "A. The distribution is the division of responsibilities by office.\nB. End.",
+        "A. The assessment is the product of a review of income and public comment.\n"
+        "B. End.",
+        "A. The committee's charge is the division of responsibilities by the tax "
+        "office.\nB. End.",
+        "A. The distribution is the division of responsibilities by the benefits "
+        "office.\nB. End.",
+        "A. The committee's charge is the division of responsibilities by office, "
+        "and the tax is administered annually.\nB. End.",
+        "A. For purposes of this section, the administrator of the refund is the "
+        "Division of Revenue.\nB. End.",
+        "A. Pursuant to paragraph (1), the administrator for the benefit is the "
+        "product of a merger.\nB. End.",
+        "A. The benefit is the product of a collective bargaining agreement and "
+        "employer policy.\nB. End.",
+        "A. The withholding is the product of a court order and agency action.\n"
+        "B. End.",
+        "A. The margin is the difference between the printed text and the page "
+        "edge.\nB. End.",
+        "A. The benefit is the product of a collective bargaining agreement and "
+        "employer policy reflecting the following values: fairness, consistency, "
+        "and transparency.\nB. End.",
+        "A. The withholding is the product of a court order and agency action "
+        "concerning the following amounts of paperwork.\nB. End.",
+        "A. The benefit is the product of the following values: fairness and "
+        "transparency.\nB. End.",
+        "A. The benefit is the product of the following values, fairness and "
+        "transparency.\nB. End.",
+        "A. The benefit is the product of the following values:\n(1) fairness.\n"
+        "(2) transparency.\nB. End.",
+    ),
+)
+def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert not source_states_explicit_computation(source)
+    assert formula_branches == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The eligibility is determined by the commissioner.",
+        "The status is determined in accordance with section 5.",
+        "The award is determined without regard to income.",
+        "The amount is determined on the basis of the agency's findings.",
+        "The classification is determined in the manner provided by rule.",
+        "The eligibility is determined annually.",
+        "The status is determined as provided in R.S. 47:1.",
+        "The award is determined on a per-capita basis.",
+        "The amount is determined at the time the return is filed.",
+        "The credit is determined separately for each spouse.",
+    ),
+)
+def test_delegated_determinations_are_not_computations(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+def test_determined_by_arithmetic_remains_a_computation():
+    assert source_states_explicit_computation(
+        "The credit is determined by adding the base and the supplement."
+    )
+
+
+def test_rounding_only_detection_preserves_contextual_arithmetic():
+    source = (
+        "The sum of the amounts in paragraphs (1) and (2) shall be rounded "
+        "downward to the nearest dollar."
+    )
+
+    assert completeness_module._rounding_only_direction(source) is None
+
+
+def test_mixed_following_operands_keep_the_chapeau_obligation():
+    source = """\
+A. The credit shall be the greater of the following amounts:
+(1) income * rate.
+(2) an equitable adjustment.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+def test_table_heading_with_mixed_rows_delegates_to_computational_rows():
+    source = """\
+A. The credit shall be computed using the following table:
+(1) income * rate.
+(2) an equitable adjustment.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1")]
+
+
+def test_formula_dependency_identifiers_ignore_comments():
+    masked = completeness_module._mask_formula_strings_and_comments(
+        "base_amount # ignored_parameter\n+ supplement"
+    )
+
+    assert set(completeness_module._FORMULA_IDENTIFIER.findall(masked)) == {
+        "base_amount",
+        "supplement",
+    }
+
+
+@pytest.mark.parametrize("citation", ("R.S. 47:1621", "U.S. Code title 7"))
+def test_formula_clause_normalization_preserves_leading_citation(citation: str):
+    assert completeness_module._strip_source_clause_marker(citation) == citation
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "The credit is the addition of the base and the bonus",
+        "The credit shall be the division of income by the divisor",
+        "The number is the sum of dwelling units and vouchers",
+        "The count is the sum of dwelling units and vouchers",
+        "The quantity is the sum of the base and the bonus",
+        "The assessment is the sum of the base and the bonus",
+        "The credit for qualified taxpayers is the average of the following values",
+        "The amount determined under paragraph (1) shall be equal to the lesser of "
+        "the following values",
+        "The tax imposed by this section is the sum of the base and the surcharge",
+        "The credit allowable under this section shall be reduced by deductions",
+        "The number of dwelling units is the sum of occupied units and vacant units",
+        "The applicable credit is the average of the following values",
+        "The adjusted amount is the sum of the base and the bonus",
+        "The amount otherwise allowable under paragraph (1) shall be equal to the "
+        "lesser of the following values",
+        "If income exceeds the limit, the credit for qualified taxpayers is the "
+        "average of the following values",
+        "The amount, determined under paragraph (1), shall be equal to the lesser of "
+        "the following values",
+        "The adjusted gross income is the sum of wages and interest",
+        "The allowable amount shall be equal to the lesser of the following values",
+        "The imposed tax is the addition of the base and surcharge",
+        "The credit available to a resident is the average of the following values",
+        "The amount attributable to this section is the sum of the base and bonus",
+        "The tax otherwise due is the lesser of the following amounts",
+        "The benefit payable to the individual is the sum of the allowance and "
+        "supplement",
+        "If eligible, the credit, determined under paragraph (1), is the average of "
+        "the following values",
+        "If eligible, the credit, if any, shall be equal to the lesser of the "
+        "following values",
+        "For taxable years beginning after December 31, 2025, the credit is the sum "
+        "of the base and the supplement",
+        "Under this section after December 31, 2025, the amount shall be equal to the "
+        "lesser of the following values",
+        "The credits are the sum of the base and the supplement",
+        "The amounts are equal to the lesser of the following values",
+        "The credits are reduced by deductions",
+        "The applicable operating income is the sum of wages and interest",
+        "The credit computed pursuant to this section is the sum of the base and "
+        "the supplement",
+        "The amount set forth in paragraph (1) is the lesser of the following values",
+        "The exemption is the lesser of the following values",
+        "The surtax is the percentage of taxable income set forth below",
+        "The surcharge shall be reduced by the allowable credit",
+        "The taxes are the sum of the base and surcharge",
+        "The taxpayer's taxes are the sum of the base and surcharge",
+        "The credit shall equal the sum of the base and supplement",
+        "The credit must equal the lesser of the following values",
+        "The credits shall equal the sum of the base and supplement",
+        "The tax then due is the sum of the base and surcharge",
+        "The tax then imposed is the sum of the base and surcharge",
+        "The credit herein allowed shall be the lesser of the following values",
+        "Subject to subsection A the credit is the sum of the base and supplement",
+        "Pursuant to paragraph (1) the amount is the lesser of the following values",
+        "Except as provided in paragraph (1) the tax is the sum of the base and "
+        "surcharge",
+        "For purposes of this section the credit is the average of the following "
+        "values",
+        "The credit for individuals who are resident, elderly, or disabled is the "
+        "average of the following values",
+        "The taxpayer's operating income is the sum of wages and interest",
+        "The taxpayer's withholding credit is the sum of payments and offsets",
+        "The rebates are the sum of refundable credits and payments",
+        "The loss is the difference between gross income and deductions",
+        "The taxable net worth is the sum of assets and liabilities",
+        "For purposes of this section the credit for an eligible resident is the "
+        "average of the following values",
+        "Pursuant to paragraph (1) the amount determined under this subsection is "
+        "the lesser of the following values",
+        "For taxable years after 2025 the credit is the sum of the base and supplement",
+        "The taxpayer's operating business income is the sum of wages and interest",
+        "The taxpayer's qualifying resident credit is the average of the following "
+        "values",
+        "The tax due hereunder is the sum of the base and surcharge",
+        "The withholding is the sum of state and local payments",
+        "The taxable margin is the difference between gross receipts and deductions",
+        "Under subsection A the credit is the sum of the base and supplement",
+        "After 2025 the credit is the sum of the base and supplement",
+        "Effective for taxable years after 2025 the credit is the sum of the base "
+        "and supplement",
+        "According to paragraph (1) the amount is the lesser of the following values",
+        "The tax now due is the sum of the base and surcharge",
+        "The tax thereon imposed is the sum of the base and surcharge",
+        "The credit hereby allowed shall be the lesser of the following values",
+        "In accordance with paragraph (1) the amount is the lesser of the "
+        "following values",
+        "As provided in subsection A the credit is the sum of the base and supplement",
+        "Except under subsection A the credit is the sum of the base and supplement",
+        "Beginning after 2025 the credit is the sum of the base and supplement",
+        "On or after January 1, 2025 the tax is the sum of the base and surcharge",
+        "Under chapter 1 the credit is the sum of the base and supplement",
+        "The tax currently due is the sum of the base and surcharge",
+        "The assessment is the product of taxable value and assessment ratio",
+        "The charge is the addition of the base fee and administrative surcharge",
+        "The assessment is the sum of gross income, as adjusted, and deductions",
+        "The distribution is the division of proceeds by number of beneficiaries",
+        "The assessment is the difference between fair market value and adjusted basis",
+        "The charge is the product of the number of units and the rate",
+        "The assessment is the sum of $100 and $200",
+        "The assessment is the sum of wages, interest, and dividends",
+        "The assessment is the sum of income from all sources and deductions",
+        "The assessment is the product of the amount determined under paragraph "
+        "(1) and the rate",
+        "The charge is the division of the total tax shown on the return by the "
+        "number of installments",
+        "For purposes of this Part the credit is the sum of the base and supplement",
+        "For purposes of this Title the amount is the lesser of the following values",
+        "Pursuant to R.S. 47:297.4 the credit is the sum of the base and supplement",
+        "Under R.S. 47:297.4 the tax is the sum of the base and surcharge",
+        "Subject to the limitations of paragraph (1) the credit is the average of "
+        "the following values",
+        "Except as provided in R.S. 47:297.4 the amount is the lesser of the "
+        "following values",
+        "Effective on or after January 1 2025 the credit is the sum of the base and "
+        "supplement",
+        "Beginning on January 1 2025 the tax is the sum of the base and surcharge",
+        "Under Title 47 the credit is the sum of the base and supplement",
+        "Under Article I the credit is the sum of the base and supplement",
+        "Under Part A the credit is the sum of the base and supplement",
+        "Subject to subdivision (a)(1) the credit is the sum of the base and "
+        "supplement",
+        "Except as otherwise provided in subsection A the credit is the sum of the "
+        "base and supplement",
+        "To the extent provided in subsection A the credit is the sum of the base "
+        "and supplement",
+        "The income derived from sources in this state is the sum of wages and "
+        "interest",
+        "The credit previously allowed shall equal the lesser of the following values",
+        "The assessment is the sum of assets and liabilities",
+        "The assessment is the sum of wages and salaries",
+        "The assessment is the sum of income, net of deductions, and interest",
+        "The assessment is the sum of wages, including bonuses, and interest",
+        "The charge is the sum of $100 and 200 dollars",
+        "The charge is the difference between ($100) and $50",
+        "The assessment is the lesser of taxable value and adjusted basis",
+        "The distribution is the average of partnership income and capital gains",
+        "The assessment is the ratio of taxable value to adjusted basis",
+        "The assessment is the difference between gains and losses",
+        "The distribution is the product of partnership income and the ownership "
+        "percentage",
+        "The charge is the product of hours and the hourly rate",
+        "The assessment is the sum of wages paid during the taxable year and "
+        "interest received during the taxable year",
+        "The assessment is the difference between income derived from sources in "
+        "this state and deductions allowable under this section",
+        "The assessment is the sum of one hundred dollars and two hundred dollars",
+        "The assessment is the difference between $100 and ($20)",
+        "The assessment is the total of wages and interest",
+        "The assessment is the smaller of taxable value and adjusted basis",
+        "The credit is the lesser of the base or the cap",
+        "The credit is the greater of the federal amount or the state amount",
+        "The assessment is the average of monthly wages",
+        "The charge is the average of hours worked during the month",
+        "The assessment is the ratio of the numerator to the denominator",
+        "The charge is the quotient of total receipts by twelve months",
+        "The assessment is the median of reported values",
+        "The distribution is the remainder of proceeds after deductions",
+        "The assessment is the sum of wages, if applicable, and interest",
+        "The assessment is the sum of wages, determined under paragraph (1), and interest",
+        "The assessment is the sum of taxable value and the greater of $100 or $200",
+        "The income properly derived from sources in this state is the sum of wages "
+        "and interest",
+        "The credit duly allowed shall equal the lesser of the base or the cap",
+        "The tax legally imposed is the sum of the base and surcharge",
+        "Pursuant to § 47:297.4 the credit is the sum of the base and supplement",
+        "Except as otherwise provided by subsection A the credit is the sum of the "
+        "base and supplement",
+        "The credit is the lesser of taxable income or the statutory limit, whichever "
+        "is less",
+        "The assessment is the greater of taxable value and adjusted basis, as applicable",
+        "The assessment is the sum of monthly wages",
+        "The distribution is the sum of partnership earnings and capital gains",
+        "The assessment is the sum of wages, whether paid or accrued, and interest",
+        "The assessment is the ratio between taxable value and adjusted basis",
+        "The income allocable to this state is the sum of wages and interest",
+        "The credit authorized by this section is the lesser of the base or the cap",
+        "The tax levied under this section is the sum of the base and surcharge",
+        "The tax assessed under this section is the sum of the base and surcharge",
+        "Pursuant to R.S. 47:297.4(A) the credit is the sum of the base and supplement",
+        "The assessment is the ratio of gains recognized during the year to losses "
+        "incurred during the year",
+        "The assessment is the sum of income earned and expenses incurred",
+        "The assessment is the sum of wages, as defined in R.S. 47:1, and interest",
+        "The assessment is the sum of wages, as defined in § 47:1, and interest",
+        "The credit is 75 percent of taxable income",
+        "The credit equals three-fourths of income",
+        "The credit is the lesser of taxable income or the statutory limit, whichever "
+        "amount is less",
+        "The deductible amount is the sum of employer contributions and employee "
+        "contributions",
+        "The income wholly allocable to this state is the sum of wages and interest",
+        "The income entirely allocable to this state is the sum of wages and interest",
+        "The income allocable entirely to this state is the sum of wages and interest",
+        "The assessment is the difference between receipts collected during the year "
+        "and losses sustained during the year",
+        "The assessment is the sum of deductions claimed under this section and "
+        "expenses disallowed under this section",
+        "The assessment is the ratio of income sourced from this state to income earned "
+        "from this state",
+        "The assessment is the sum of the following amounts: monthly wages",
+        "The assessment is the average of the following values: monthly wages",
+        "The assessment is the sum of the following amounts: wages; interest",
+    ),
+)
+def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
+    source = f"A. {operation}.\nB. End."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert source_states_explicit_computation(source)
+    assert [branch.path for branch in formula_branches] == [("a",)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The agency shall report the amount and percent of claims approved.",
+        "The agency shall report the number and percent of applications denied.",
+    ),
+)
+def test_reporting_number_and_percent_is_not_a_computation(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+def test_parenthesized_i_without_ii_remains_an_alpha_sibling():
+    source = "A. Outer.\n(1)(a) First.\n(i) Ninth alpha.\n(j) Tenth alpha.\nB. End."
+
+    paths = {branch.path for branch in recognize_source_structure(source)}
+
+    assert ("a", "1", "i") in paths
+    assert ("a", "1", "j") in paths
+    assert ("a", "1", "a", "i") not in paths
+
+
+def test_parenthesized_prose_is_not_an_outline_marker():
+    source = "A. First.\n(note) explanatory prose.\nB. Second."
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [("a",), ("b",)]
+    assert "(note) explanatory prose" in branches[0].text
+    assert (
+        completeness_module._strip_source_clause_marker("(note) amount = income * 2")
+        == "(note) amount = income * 2"
+    )
+
+
+def test_compound_terminal_roman_marker_preserves_following_roman_siblings():
+    source = """\
+A.
+(1)(a)(i) First.
+(ii) Second.
+(iii) Third.
+(b) Fourth.
+B. End.
+"""
+
+    paths = [branch.path for branch in recognize_source_structure(source)]
+
+    assert ("a", "1", "a", "i") in paths
+    assert ("a", "1", "a", "ii") in paths
+    assert ("a", "1", "a", "iii") in paths
+    assert ("a", "1", "ii") not in paths
+    assert ("a", "1", "iii") not in paths
+
+
+def test_long_valid_roman_outline_labels_are_preserved():
+    source = "A.\n(1)(a)(xviii) Eighteenth.\n(xix) Nineteenth.\nB. End."
+
+    paths = {branch.path for branch in recognize_source_structure(source)}
+
+    assert ("a", "1", "a", "xviii") in paths
+    assert ("a", "1", "a", "xix") in paths
+
+
+def test_legacy_children_belong_only_to_most_specific_outline_segment():
+    source = """\
+A.
+(1)(a) Parent.
+Satz 1: amount = income * 2.
+1. Number.
+a) Letter.
+(i) First.
+(ii) Second.
+(b) Next.
+(2) End.
+B. Done.
+"""
+
+    branches = recognize_source_structure(source)
+    paths = [branch.path for branch in branches]
+
+    assert paths.count(("a", "1", "a", "satz-1")) == 1
+    assert paths.count(("a", "1", "a", "1")) == 1
+    assert paths.count(("a", "1", "a", "1", "a")) == 1
+    assert ("a", "1", "satz-1") not in paths
+    assert ("a", "1", "1") not in paths
+    assert ("a", "1", "1", "a") not in paths
 
 
 def test_nj_historical_rate_remains_a_source_unit_formula_obligation():

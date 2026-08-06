@@ -12,6 +12,7 @@ import ast
 import bisect
 import contextlib
 import heapq
+import itertools
 import math
 import re
 import textwrap
@@ -83,6 +84,16 @@ class SourceStructureBranch:
     text: str
     start: int
     end: int
+
+
+@dataclass(frozen=True)
+class _OutlineMarker:
+    """One resolved marker in a nested parenthesized legal outline."""
+
+    start: int
+    path: tuple[str, ...]
+    kind: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -187,7 +198,7 @@ _PARAGRAPH_MARKER = re.compile(
     flags=re.IGNORECASE,
 )
 _DOTTED_SUBSECTION_MARKER = re.compile(
-    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$))"
+    r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)(?:[ \t]+|(?=\r?$)|(?=\())"
 )
 _JOINED_DOTTED_BOUNDARY_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[A-Z])\.)"
@@ -199,6 +210,11 @@ _NUMBER_MARKER = re.compile(
 )
 _LETTER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[a-z]{1,2})\))[ \t]+",
+    flags=re.IGNORECASE,
+)
+_PARENTHESIZED_OUTLINE_MARKER = re.compile(
+    r"(?m)^[ \t]*(?:[A-Z]\.)?"
+    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _GLUED_SENTENCE_MARKER = re.compile(
@@ -307,12 +323,369 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"(?:des|der|von)|"
     r"splitting-verfahren|verfahren\s+nach\s+absatz|"
     r"calculated|computed|computation|multiplied|divided|"
-    r"sum\s+of|difference\s+between|product\s+of|twice|half\s+of|"
+    r"twice|half\s+of|"
     r"amount\s+of\s+(?:the\s+)?excess|"
     r"\d+(?:[.,]\d+)?\s+times\b|"
     r"percentage\s+of|in\s+excess\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
+    flags=re.IGNORECASE,
+)
+_ENGLISH_NUMBER_WORD = (
+    r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+    r"thousand|million|billion|trillion)"
+)
+_ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
+    rf"\b{_ENGLISH_NUMBER_WORD}"
+    rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*"
+    r"\s+percent\s+of\b",
+    flags=re.IGNORECASE,
+)
+_EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*(?:%|per\s+cent|percent)\s+of\b",
+    flags=re.IGNORECASE,
+)
+_ENGLISH_FRACTION_OF = re.compile(
+    r"\b(?:half|one[-\s]+half|one[-\s]+third|two[-\s]+thirds?|"
+    r"one[-\s]+fourth|three[-\s]+fourths?|one[-\s]+quarter|"
+    r"three[-\s]+quarters?|(?:one|two|three|four)[-\s]+fifths?|"
+    r"(?:one|five)[-\s]+sixths?|(?:one|two|three|four|five|six)[-\s]+sevenths?|"
+    r"(?:one|three|five|seven)[-\s]+eighths?|(?:one|two|four|five|seven|eight)"
+    r"[-\s]+ninths?|(?:one|three|seven|nine)[-\s]+tenths?)\s+of\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+(?:-[A-Z0-9]+)*)?"
+_FORMULA_GENERIC_TABLE_TARGET = (
+    r"(?:the\s+)?(?:"
+    r"following\s+(?:amounts?|percentages?|rates?|values?|tables?|schedules?)"
+    r"(?:\s+for\s+(?:the\s+)?following\s+tax\s+years?)?|"
+    rf"following\s+{_FORMULA_TABLE_NAME}|"
+    rf"{_FORMULA_TABLE_NAME}\s+(?:set\s+forth\s+)?below|"
+    rf"{_FORMULA_TABLE_NAME}|"
+    r"(?:amounts?|percentages?|rates?|values?)\s+"
+    r"(?:(?:set\s+forth|shown|prescribed)\s+)?in\s+(?:the\s+)?"
+    rf"(?:following\s+{_FORMULA_TABLE_NAME}|{_FORMULA_TABLE_NAME}\s+below))"
+)
+_FORMULA_GENERIC_TABLE_REFERENCE = (
+    r"(?:pursuant\s+to|as\s+set\s+forth\s+in|in\s+accordance\s+with|"
+    r"from|by\s+reference\s+to)\s+"
+    rf"{_FORMULA_GENERIC_TABLE_TARGET}"
+)
+_FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
+    rf"(?:\b(?:calculated|computed|determined)\s+(?:"
+    r"as\s+follows|"
+    rf"{_FORMULA_GENERIC_TABLE_REFERENCE}|"
+    rf"(?:using|according\s+to|based\s+on|by|under|in|with|"
+    rf"as\s+(?:shown|provided)\s+in|in\s+the\s+manner\s+shown\s+in)\s+"
+    rf"{_FORMULA_GENERIC_TABLE_TARGET}"
+    rf"|based\s+on\s+[^.;:\n]{{1,240}}?\band\s+(?:\w+\s+)?"
+    rf"(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET}"
+    rf")|\b(?:equals?|(?:be\s+)?equal\s+to)\s+{_FORMULA_GENERIC_TABLE_TARGET})"
+    r"(?:\s+for\s+(?:taxable|tax|calendar|fiscal)\s+years?\s+"
+    r"(?:\d{4}(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or|through|to)\s+|"
+    r"\s*[-–]\s*)\d{4})*|beginning\s+[^.;:\n]{0,80}\b\d{4}))?"
+    r"\s*:\s*$",
+    flags=re.IGNORECASE,
+)
+_FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
+    r"\b(?:calculated|computed|determined)\s+(?:"
+    r"(?:by|through)\s+(?:applying|application|adding|addition|subtracting|subtraction|dividing|"
+    r"division|multiplying|multiplication|reducing|reduction|deducting|"
+    r"deduction|increasing|increase|decreasing|decrease)\b|"
+    r"as\s+(?:the\s+)?(?:addition|average|difference|mean|median|ratio|"
+    r"quotient|remainder|product|sum|total|min|max|minimum|maximum|least|"
+    r"greatest|lesser|greater|lower|higher|lowest|highest|smallest|largest|"
+    r"smaller|larger|percent|percentage)\s+(?:of|between)\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+_FORMULA_RESULT_PREDICATE = (
+    r"(?:(?:is|are|shall\s+be|must\s+be|may\s+be)\s+equal\s+to|"
+    r"(?:shall|must|may)\s+equal|is|are|equals?|shall\s+be|must\s+be|"
+    r"may\s+be|means|constitutes?)"
+)
+_FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE = re.compile(
+    rf"\b(?:calculated|computed)\s+"
+    rf"(?!(?:using|according\s+to|under|as\s+follows|based\s+on|"
+    rf"by|in|with|without|pursuant\s+to|on\s+the\s+basis\s+of|"
+    rf"in\s+the\s+manner|"
+    rf"{_FORMULA_GENERIC_TABLE_REFERENCE})\b)|"
+    r"\b(?:sum|product)\s+of\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
+    r"\bdifference\s+between\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_ROUNDED_OPERATION_LANGUAGE = re.compile(
+    r"\b(?:(?:sum|product)\s+of|difference\s+between)\b"
+    r"[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:shall|must|may|is|are)\s+(?:be\s+)?rounded\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_RESULT_OPERATION_LANGUAGE = re.compile(
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
+    r"min|max|minimum|maximum|least|greatest|lesser|greater|lower|higher|"
+    r"lowest|highest|smallest|largest|smaller|larger|sum|total|average|mean|"
+    r"median|ratio|quotient|difference|product|remainder|percentage|percent)\s+"
+    r"(?:amount\s+)?(?:of|between)\b|"
+    rf"\b{_FORMULA_RESULT_PREDICATE}\s+(?:the\s+)?(?:"
+    r"addition\s+of\b[^.;:\n]{1,120}\band\b|"
+    r"(?:subtraction|deduction)\s+of\b[^.;:\n]{1,120}\bfrom\b|"
+    r"(?:reduction|increase|decrease|division|multiplication)\s+of\b"
+    r"[^.;:\n]{1,120}\bby\b)",
+    flags=re.IGNORECASE,
+)
+_FORMULA_DIRECT_FOLLOWING_OPERANDS = re.compile(
+    r"\b(?:addition|average|difference|greater|greatest|higher|highest|larger|"
+    r"largest|least|lesser|lower|lowest|max|maximum|mean|median|min|minimum|"
+    r"product|quotient|ratio|remainder|smaller|smallest|sum|total)\s+"
+    r"(?:of|between)\s+(?:the\s+)?following\s+"
+    r"(?:amounts?|percentages?|rates?|values?)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_PARTICIPIAL_RESULT_LANGUAGE = re.compile(
+    r"\b(?:(?:is|are|shall\s+be|must\s+be|may\s+be)\s+)?"
+    r"(?:reduced|deducted|increased|decreased)\s+by\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_NUMERIC_RESULT_HEADS = frozenset(
+    {
+        "allowance",
+        "amount",
+        "assessment",
+        "balance",
+        "base",
+        "benefit",
+        "bracket",
+        "cap",
+        "ceiling",
+        "charge",
+        "count",
+        "credit",
+        "decrease",
+        "deduction",
+        "deficiency",
+        "distribution",
+        "excess",
+        "exemption",
+        "expense",
+        "factor",
+        "fee",
+        "floor",
+        "income",
+        "increase",
+        "liability",
+        "limit",
+        "loss",
+        "margin",
+        "networth",
+        "number",
+        "offset",
+        "overpayment",
+        "payment",
+        "percent",
+        "percentage",
+        "proceeds",
+        "quantity",
+        "rate",
+        "rebate",
+        "reduction",
+        "refund",
+        "result",
+        "shortfall",
+        "surcharge",
+        "surtax",
+        "tax",
+        "threshold",
+        "total",
+        "value",
+        "withholding",
+        "worth",
+    }
+)
+_FORMULA_SUBJECT_PHRASE_BREAK = re.compile(
+    r"\b(?:of|for|to|under|by|from|in|on|with|without|that|which|who|whose|"
+    r"before|after|during|throughout|within)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
+    {
+        "adjusted",
+        "allocable",
+        "allowed",
+        "allowable",
+        "applicable",
+        "attributable",
+        "available",
+        "authorized",
+        "calculated",
+        "computed",
+        "currently",
+        "described",
+        "derived",
+        "determined",
+        "due",
+        "earned",
+        "hereby",
+        "imposed",
+        "incurred",
+        "herein",
+        "hereunder",
+        "now",
+        "otherwise",
+        "paid",
+        "payable",
+        "permitted",
+        "properly",
+        "prescribed",
+        "provided",
+        "pursuant",
+        "received",
+        "reported",
+        "responsible",
+        "shown",
+        "so",
+        "specified",
+        "set",
+        "subject",
+        "taxable",
+        "forth",
+        "then",
+        "thereon",
+        "previously",
+        "below",
+        "duly",
+        "legally",
+        "levied",
+        "realized",
+        "recognized",
+        "assessed",
+        "worked",
+    }
+)
+_FORMULA_SUBJECT_LEADING_NONHEAD_WORDS = frozenset(
+    {
+        "a",
+        "adjusted",
+        "allowable",
+        "an",
+        "applicable",
+        "earned",
+        "federal",
+        "gross",
+        "imposed",
+        "individual",
+        "operating",
+        "qualified",
+        "resident",
+        "state",
+        "taxable",
+        "the",
+    }
+)
+_FORMULA_SUBJECT_PARENTHETICAL = re.compile(
+    r"(?:as|adjusted|calculated|computed|described|determined|if|provided|"
+    r"specified|subject|when|where)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_LEGAL_PROVISION_REFERENCE = (
+    r"(?:"
+    r"(?:(?:this|the)\s+)?(?:section|subsection|paragraph|chapter|part|title|"
+    r"article|subdivision)"
+    r"(?:\s+(?:(?:\([^)]+\))+|[A-Z]+|[IVXLCDM]+|\d+(?:\.\d+)*))?|"
+    r"R\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*(?:\([^)]+\))*|"
+    r"§+\s*\d+[A-Za-z]?\s*:\s*\d+(?:\.\d+)*(?:\([^)]+\))*)"
+)
+_FORMULA_SUBJECT_PREAMBLE_PREFIX = re.compile(
+    rf"(?:"
+    rf"(?:for\s+purposes\s+of|pursuant\s+to|under|according\s+to|"
+    rf"in\s+accordance\s+with|except\s+under|to\s+the\s+extent\s+provided\s+in)"
+    rf"\s+{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
+    rf"subject\s+to\s+(?:(?:the\s+)?(?:limitations?|provisions?|requirements?)"
+    rf"\s+of\s+)?{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
+    rf"(?:except\s+)?as\s+(?:otherwise\s+)?provided\s+(?:in|by)\s+"
+    rf"{_FORMULA_LEGAL_PROVISION_REFERENCE}|"
+    r"for\s+(?:taxable|tax|calendar|fiscal)\s+years?[^,.;:\n]*?"
+    r"(?:18|19|20)\d{2}|"
+    r"effective\s+for\s+(?:taxable|tax|calendar|fiscal)\s+years?"
+    r"[^,.;:\n]*?(?:18|19|20)\d{2}|"
+    r"(?:after|beginning\s+after)\s+(?:18|19|20)\d{2}|"
+    r"(?:effective\s+)?on\s+or\s+after\s+[A-Za-z]+\s+\d{1,2}\s*,?\s*"
+    r"(?:18|19|20)\d{2}|"
+    r"beginning\s+on\s+[A-Za-z]+\s+\d{1,2}\s*,?\s*(?:18|19|20)\d{2}"
+    r")(?:\s*,\s*|\s+)",
+    flags=re.IGNORECASE,
+)
+_FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
+    {
+        "allowance",
+        "amount",
+        "asset",
+        "base",
+        "basis",
+        "benefit",
+        "bonus",
+        "cap",
+        "contribution",
+        "credit",
+        "deduction",
+        "dividend",
+        "divisor",
+        "denominator",
+        "expense",
+        "earning",
+        "factor",
+        "fee",
+        "gain",
+        "hour",
+        "income",
+        "interest",
+        "liability",
+        "limit",
+        "loss",
+        "margin",
+        "month",
+        "numerator",
+        "number",
+        "offset",
+        "payment",
+        "percent",
+        "percentage",
+        "proceeds",
+        "rate",
+        "ratio",
+        "receipt",
+        "salary",
+        "supplement",
+        "surcharge",
+        "tax",
+        "threshold",
+        "total",
+        "unit",
+        "value",
+        "voucher",
+        "wage",
+    }
+)
+_FORMULA_NUMERIC_OPERAND_LITERAL_CORE = (
+    rf"(?:(?:[$€£]\s*)?-?\d+(?:,\d{{3}})*(?:\.\d+)?|"
+    rf"{_ENGLISH_NUMBER_WORD}"
+    rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*)"
+    r"(?:\s+(?:dollars?|cents?|percent(?:age)?(?:\s+points?)?|hours?|units?))?"
+)
+_FORMULA_NUMERIC_OPERAND_LITERAL = re.compile(
+    rf"\s*(?:the\s+)?(?:\(\s*{_FORMULA_NUMERIC_OPERAND_LITERAL_CORE}\s*\)|"
+    rf"{_FORMULA_NUMERIC_OPERAND_LITERAL_CORE})\s*",
+    flags=re.IGNORECASE,
+)
+_FORMULA_ADMINISTRATIVE_PARTICIPLE = frozenset(
+    {"administering", "handling", "providing"}
+)
+_VALID_ROMAN_OUTLINE_LABEL = re.compile(
+    r"(?=[ivxlcdm]+\Z)m{0,3}(?:cm|cd|d?c{0,3})"
+    r"(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})",
     flags=re.IGNORECASE,
 )
 _FORMULA_APPLICABILITY_YEAR = r"(?:18|19|20)\d{2}"
@@ -1294,46 +1667,35 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                         outer_end,
                     )
                 )
-            nested_matches = tuple(
-                _PARAGRAPH_MARKER.finditer(source_text, outer_start, outer_end)
+            nested_markers = _nested_parenthesized_outline_markers(
+                source_text,
+                outer_path=outer_path,
+                start=outer_start,
+                end=outer_end,
             )
-            nested_numeric_matches = tuple(
-                match for match in nested_matches if match.group("label")[0].isdigit()
-            )
-            if not nested_matches:
+            if not nested_markers:
                 paragraph_segments.append(
                     (outer_path, outer_start, outer_end, outer_text)
                 )
                 continue
-            for index, match in enumerate(nested_matches):
-                start = match.start()
-                end = (
-                    nested_matches[index + 1].start()
-                    if index + 1 < len(nested_matches)
-                    else outer_end
-                )
-                label = match.group("label").lower()
-                numeric_parent = next(
-                    (
-                        parent
-                        for parent in reversed(nested_numeric_matches)
-                        if parent.start() < start
-                    ),
-                    None,
-                )
-                path = outer_path
-                if label[0].isalpha() and numeric_parent is not None:
-                    path = (*path, numeric_parent.group("label").lower())
-                path = (*path, label)
-                text = source_text[start:end].strip()
+            for marker, end in _nested_outline_marker_spans(
+                nested_markers,
+                outer_end=outer_end,
+            ):
+                text = source_text[marker.start : end].strip()
                 if _is_editorial_omission(text):
                     continue
                 branches.append(
                     SourceStructureBranch(
-                        path, "paragraph", match.group("marker"), text, start, end
+                        marker.path,
+                        marker.kind,
+                        marker.label,
+                        text,
+                        marker.start,
+                        end,
                     )
                 )
-                paragraph_segments.append((path, start, end, text))
+                paragraph_segments.append((marker.path, marker.start, end, text))
     else:
         paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
         for index, match in enumerate(paragraph_matches):
@@ -1358,9 +1720,24 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
     if not paragraph_segments:
         paragraph_segments = [((), 0, len(source_text), source_text)]
 
+    legacy_marker_offsets = {
+        *(match.start() for match in _NUMBER_MARKER.finditer(source_text)),
+        *(match.start() for match in _LETTER_MARKER.finditer(source_text)),
+        *(match.start() for match in _GLUED_SENTENCE_MARKER.finditer(source_text)),
+        *(match.start() for match in _EXPLICIT_SENTENCE_MARKER.finditer(source_text)),
+    }
+    owner_paths = _most_specific_segment_paths_at_offsets(
+        paragraph_segments,
+        legacy_marker_offsets,
+    )
+
     for paragraph_path, paragraph_start, paragraph_end, _ in paragraph_segments:
         paragraph_text = source_text[paragraph_start:paragraph_end]
-        number_matches = list(_NUMBER_MARKER.finditer(paragraph_text))
+        number_matches = [
+            match
+            for match in _NUMBER_MARKER.finditer(paragraph_text)
+            if owner_paths.get(paragraph_start + match.start()) == paragraph_path
+        ]
         number_segments: list[tuple[tuple[str, ...], int, int]] = []
         for index, match in enumerate(number_matches):
             start = paragraph_start + match.start()
@@ -1386,7 +1763,11 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
         ]
         for container_path, container_start, container_end in letter_containers:
             container_text = source_text[container_start:container_end]
-            letter_matches = list(_LETTER_MARKER.finditer(container_text))
+            letter_matches = [
+                match
+                for match in _LETTER_MARKER.finditer(container_text)
+                if owner_paths.get(container_start + match.start()) == paragraph_path
+            ]
             for index, match in enumerate(letter_matches):
                 start = container_start + match.start()
                 end = (
@@ -1405,13 +1786,17 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                     )
                 )
 
-        sentence_matches = sorted(
-            (
-                *_GLUED_SENTENCE_MARKER.finditer(paragraph_text),
-                *_EXPLICIT_SENTENCE_MARKER.finditer(paragraph_text),
-            ),
-            key=lambda item: item.start(),
-        )
+        sentence_matches = [
+            match
+            for match in sorted(
+                (
+                    *_GLUED_SENTENCE_MARKER.finditer(paragraph_text),
+                    *_EXPLICIT_SENTENCE_MARKER.finditer(paragraph_text),
+                ),
+                key=lambda item: item.start(),
+            )
+            if owner_paths.get(paragraph_start + match.start()) == paragraph_path
+        ]
         for index, match in enumerate(sentence_matches):
             start = paragraph_start + match.start()
             end = (
@@ -1439,6 +1824,31 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
     )
 
 
+def _most_specific_segment_paths_at_offsets(
+    segments: Sequence[tuple[tuple[str, ...], int, int, str]],
+    offsets: Iterable[int],
+) -> dict[int, tuple[str, ...]]:
+    """Assign legacy markers to their deepest active structural segment."""
+
+    ordered_segments = sorted(segments, key=lambda item: item[1])
+    active: list[tuple[int, int, int, tuple[str, ...]]] = []
+    owners: dict[int, tuple[str, ...]] = {}
+    segment_index = 0
+    for offset in sorted(set(offsets)):
+        while (
+            segment_index < len(ordered_segments)
+            and ordered_segments[segment_index][1] <= offset
+        ):
+            path, start, end, _text = ordered_segments[segment_index]
+            heapq.heappush(active, (-len(path), -start, end, path))
+            segment_index += 1
+        while active and active[0][2] <= offset:
+            heapq.heappop(active)
+        if active:
+            owners[offset] = active[0][3]
+    return owners
+
+
 def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str], ...]:
     """Return an ordered legal subsection sequence, excluding isolated initials."""
 
@@ -1463,6 +1873,131 @@ def _qualified_dotted_subsection_matches(source_text: str) -> tuple[re.Match[str
         if len(sequence) >= 2:
             return tuple(sequence)
     return ()
+
+
+def _nested_parenthesized_outline_markers(
+    source_text: str,
+    *,
+    outer_path: tuple[str, ...],
+    start: int,
+    end: int,
+) -> tuple[_OutlineMarker, ...]:
+    """Resolve attached and line-leading U.S. subsection marker chains."""
+
+    matches = tuple(_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text, start, end))
+    markers: list[_OutlineMarker] = []
+    active: list[str] = []
+    active_roman = False
+    for index, match in enumerate(matches):
+        labels = tuple(
+            label.lower()
+            for label in re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker"))
+        )
+        if not labels or not all(
+            _is_parenthesized_outline_label(label) for label in labels
+        ):
+            continue
+        marker_start = match.start("marker")
+        if len(labels) > 1:
+            active = []
+            for label in labels:
+                active.append(label)
+                markers.append(
+                    _OutlineMarker(
+                        marker_start,
+                        (*outer_path, *active),
+                        "paragraph" if label[0].isdigit() else "letter",
+                        f"({label})",
+                    )
+                )
+            active_roman = len(active) >= 3 and _is_roman_outline_label(active[-1])
+            continue
+
+        label = labels[0]
+        if label[0].isdigit():
+            numeric_depth = next(
+                (
+                    position
+                    for position, active_label in enumerate(active)
+                    if active_label[0].isdigit()
+                ),
+                None,
+            )
+            if numeric_depth is None:
+                active = [*active, label] if active else [label]
+            else:
+                active = [*active[:numeric_depth], label]
+            active_roman = False
+        else:
+            next_labels = (
+                tuple(
+                    item.lower()
+                    for item in re.findall(
+                        r"\(([A-Za-z0-9]+)\)", matches[index + 1].group("marker")
+                    )
+                )
+                if index + 1 < len(matches)
+                else ()
+            )
+            begins_roman_children = (
+                label == "i"
+                and len(active) >= 2
+                and bool(next_labels)
+                and next_labels[0] == "ii"
+            )
+            continues_roman_children = (
+                active_roman and len(active) >= 3 and _is_roman_outline_label(label)
+            )
+            if begins_roman_children or continues_roman_children:
+                active = [*active[:2], label]
+                active_roman = True
+            else:
+                numeric_parent = (
+                    active[0] if active and active[0][0].isdigit() else None
+                )
+                active = [numeric_parent, label] if numeric_parent else [label]
+                active_roman = False
+        markers.append(
+            _OutlineMarker(
+                marker_start,
+                (*outer_path, *active),
+                "paragraph" if label[0].isdigit() else "letter",
+                f"({label})",
+            )
+        )
+    return tuple(markers)
+
+
+def _nested_outline_marker_spans(
+    markers: Sequence[_OutlineMarker],
+    *,
+    outer_end: int,
+) -> tuple[tuple[_OutlineMarker, int], ...]:
+    """Close nested marker spans in one forward stack pass."""
+
+    ends: dict[_OutlineMarker, int] = {}
+    active: list[_OutlineMarker] = []
+    for start, grouped in itertools.groupby(markers, key=lambda marker: marker.start):
+        group = tuple(grouped)
+        shallowest_depth = min(len(marker.path) for marker in group)
+        while active and len(active[-1].path) >= shallowest_depth:
+            ends[active.pop()] = start
+        active.extend(group)
+    while active:
+        ends[active.pop()] = outer_end
+    return tuple((marker, ends[marker]) for marker in markers)
+
+
+def _is_parenthesized_outline_label(label: str) -> bool:
+    return bool(
+        re.fullmatch(r"\d+[a-z]?", label, flags=re.IGNORECASE)
+        or re.fullmatch(r"[a-z]", label, flags=re.IGNORECASE)
+        or _is_roman_outline_label(label)
+    )
+
+
+def _is_roman_outline_label(label: str) -> bool:
+    return bool(_VALID_ROMAN_OUTLINE_LABEL.fullmatch(label))
 
 
 def _dotted_subsection_boundary_matches(source_text: str) -> tuple[re.Match[str], ...]:
@@ -1501,6 +2036,313 @@ def _is_editorial_omission(text: str) -> bool:
     return bool(_EDITORIAL_OMISSION_ONLY.fullmatch(text))
 
 
+def _normalize_formula_result_head(head: str) -> str:
+    head = head.lower()
+    if head in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head
+    if head.endswith("ies") and head[:-3] + "y" in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-3] + "y"
+    if head.endswith("es") and head[:-2] in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-2]
+    if head.endswith("s") and head[:-1] in _FORMULA_NUMERIC_RESULT_HEADS:
+        return head[:-1]
+    return ""
+
+
+def _formula_subject_segment_head(subject: str) -> str:
+    """Return the grammatical head of one comma-delimited subject segment."""
+
+    subject = _FORMULA_SUBJECT_PHRASE_BREAK.split(subject, maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", subject)
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        if not lowered.endswith("ing"):
+            continue
+        preceding_has_head = any(
+            preceding.lower() not in _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS
+            for preceding in words[:index]
+        )
+        following = words[index + 1 :]
+        following_has_numeric_head = any(
+            _normalize_formula_result_head(candidate) for candidate in following
+        )
+        if preceding_has_head and (
+            lowered in _FORMULA_ADMINISTRATIVE_PARTICIPLE
+            or not following_has_numeric_head
+        ):
+            words = words[:index]
+            break
+    while len(words) > 1 and (
+        words[-1].lower() in _FORMULA_SUBJECT_TRAILING_MODIFIERS
+        or words[-1].lower().endswith("ly")
+    ):
+        words.pop()
+    return words[-1].lower() if words else ""
+
+
+def _formula_result_subject_head(prefix: str) -> str:
+    """Return the grammatical head of a formula predicate's subject phrase."""
+
+    subject = _strip_source_clause_marker(prefix).strip()
+    preamble = _FORMULA_SUBJECT_PREAMBLE_PREFIX.match(subject)
+    if preamble is not None:
+        subject = subject[preamble.end() :].strip()
+
+    segments = [segment.strip() for segment in subject.split(",")]
+    while segments and not segments[-1]:
+        segments.pop()
+    if subject.rstrip().endswith(","):
+        while len(segments) > 1 and _FORMULA_SUBJECT_PARENTHETICAL.match(segments[-1]):
+            segments.pop()
+    selected = segments[-1] if segments else ""
+    if not _normalize_formula_result_head(_formula_subject_segment_head(selected)):
+        for segment in segments[:-1]:
+            if not _FORMULA_SUBJECT_PHRASE_BREAK.search(segment):
+                continue
+            if _normalize_formula_result_head(_formula_subject_segment_head(segment)):
+                selected = segment
+                break
+    return _formula_subject_segment_head(selected)
+
+
+def _formula_operand_is_numeric(operand: str) -> bool:
+    if _FORMULA_NUMERIC_OPERAND_LITERAL.fullmatch(operand):
+        return True
+    if re.match(
+        r"\s*(?:the\s+)?(?:addition|average|difference|greater|greatest|higher|"
+        r"highest|larger|largest|least|lesser|lower|lowest|max|maximum|mean|"
+        r"median|min|minimum|product|quotient|ratio|remainder|smaller|smallest|"
+        r"sum|total)\s+(?:of|between)\b",
+        operand,
+        flags=re.IGNORECASE,
+    ):
+        return _formula_operation_has_numeric_operands(operand)
+    head = _formula_subject_segment_head(operand)
+    if _normalize_formula_operand_head(head):
+        return True
+    operand_segment = _FORMULA_SUBJECT_PHRASE_BREAK.split(operand, maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", operand_segment)
+    for index, word in enumerate(words):
+        if not _normalize_formula_operand_head(word):
+            continue
+        trailing = words[index + 1 :]
+        if trailing and all(
+            candidate.lower().endswith(("ed", "en"))
+            or candidate.lower().endswith("ly")
+            or candidate.lower() in {"made", "withheld"}
+            for candidate in trailing
+        ):
+            return True
+    return False
+
+
+def _normalize_formula_operand_head(head: str) -> str:
+    head = head.lower()
+    if head in _FORMULA_NUMERIC_OPERAND_HEADS:
+        return head
+    candidates = []
+    if head.endswith("ies"):
+        candidates.append(head[:-3] + "y")
+    if head.endswith("es"):
+        candidates.append(head[:-2])
+    if head.endswith("s"):
+        candidates.append(head[:-1])
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate in _FORMULA_NUMERIC_OPERAND_HEADS
+        ),
+        "",
+    )
+
+
+def _formula_aggregate_operands_are_numeric(operands: str) -> bool:
+    comma_parts = [
+        re.sub(r"^(?:and|or)\s+", "", part.strip(), flags=re.IGNORECASE)
+        for part in re.split(r"\s*,\s*", operands)
+        if part.strip()
+    ]
+    if len(comma_parts) >= 2:
+        return all(_formula_operand_is_numeric(part) for part in comma_parts)
+    conjunctions = list(re.finditer(r"\s+(?:and|or)\s+", operands, flags=re.IGNORECASE))
+    for conjunction in conjunctions:
+        left = operands[: conjunction.start()]
+        right = operands[conjunction.end() :]
+        if _formula_operand_is_numeric(left) and _formula_operand_is_numeric(right):
+            return True
+        left_words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", left)
+        if (
+            _formula_operand_is_numeric(right)
+            and left_words
+            and all(
+                word.lower() in _FORMULA_SUBJECT_LEADING_NONHEAD_WORDS
+                for word in left_words
+            )
+        ):
+            return True
+    return False
+
+
+def _formula_inline_operands_are_numeric(operands: str) -> bool:
+    operands = operands.strip().strip(".;:, ")
+    semicolon_parts = [part.strip() for part in operands.split(";") if part.strip()]
+    if len(semicolon_parts) >= 2:
+        return all(_formula_operand_is_numeric(part) for part in semicolon_parts)
+    return _formula_operand_is_numeric(operands) or (
+        _formula_aggregate_operands_are_numeric(operands)
+    )
+
+
+def _formula_operation_has_numeric_operands(text: str) -> bool:
+    """Require actual numeric operand heads for a noun-form operation."""
+
+    without_parentheticals = re.sub(
+        r",\s*(?:(?:as|adjusted|calculated|computed|described|determined|"
+        r"provided|subject|whether)\s+[^,]+|if\s+[^,]+|net\s+of\s+[^,]+|"
+        r"including\s+[^,]+|excluding\s+[^,]+)\s*,",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    direct_following = _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(without_parentheticals)
+    if direct_following is not None:
+        tail = without_parentheticals[direct_following.end() :].lstrip()
+        if tail.lstrip().startswith(":"):
+            tail = tail.lstrip()[1:]
+        elif tail.startswith(","):
+            tail = tail[1:]
+        tail = re.split(r"\n(?=\s*[A-Z]\.)", tail, maxsplit=1)[0]
+        marker = re.search(r"(?m)^\s*(?:\([^)]+\)|\d+\.)\s*", tail)
+        if marker is not None:
+            entries = [
+                entry.strip()
+                for entry in re.split(
+                    r"(?m)^\s*(?:\([^)]+\)|\d+\.)\s*",
+                    tail[marker.start() :],
+                )
+                if entry.strip()
+            ]
+            return bool(entries) and all(
+                source_states_explicit_computation(entry)
+                or _formula_inline_operands_are_numeric(entry)
+                for entry in entries
+            )
+        inline = re.split(r"\n(?=\s*[A-Z]\.)", tail, maxsplit=1)[0]
+        inline = inline.strip().strip(".;:, ")
+        if inline:
+            return _formula_inline_operands_are_numeric(inline)
+        return True
+
+    clause = re.split(r"[.;:\n]", without_parentheticals, maxsplit=1)[0]
+    clause = re.sub(
+        r",\s*(?:whichever[^,]{0,80}\bis\s+[^,]+|as\s+applicable|"
+        r"if\s+applicable|but\s+not\s+less\s+than\s+zero)\s*$",
+        "",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if re.search(
+        r"\b(?:addition|average|difference|greater|greatest|higher|highest|"
+        r"larger|largest|least|lesser|lower|lowest|max|maximum|mean|median|min|"
+        r"minimum|product|quotient|ratio|remainder|smaller|smallest|sum|total)"
+        r"\s+(?:of|between)\s*$",
+        clause,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    remainder = re.search(
+        r"\bremainder\s+of\s+(?P<left>.+?)\s+after\s+(?P<right>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if remainder is not None:
+        return _formula_operand_is_numeric(
+            remainder.group("left")
+        ) and _formula_operand_is_numeric(remainder.group("right"))
+
+    aggregate = re.search(
+        r"\b(?P<operation>addition|average|greater|greatest|higher|highest|largest|least|"
+        r"larger|lesser|lower|lowest|max|maximum|mean|median|min|minimum|product|"
+        r"remainder|smaller|smallest|sum|total|difference)\s+of\s+"
+        r"(?P<operands>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if aggregate is not None:
+        operands = aggregate.group("operands")
+        if _formula_aggregate_operands_are_numeric(operands):
+            return True
+        return aggregate.group("operation").lower() in {
+            "addition",
+            "average",
+            "mean",
+            "median",
+            "sum",
+            "total",
+        } and _formula_operand_is_numeric(operands)
+
+    patterns = (
+        r"\bdifference\s+between\s+(?P<left>.+?)\s+and\s+(?P<right>.+)$",
+        r"\b(?:quotient|ratio)\s+between\s+(?P<left>.+?)\s+and\s+"
+        r"(?P<right>.+)$",
+        r"\b(?:quotient|ratio)\s+of\s+(?P<left>.+?)\s+"
+        r"(?:and|by|to)\s+(?P<right>.+)$",
+        r"\b(?:decrease|division|increase|multiplication|reduction)\s+of\s+"
+        r"(?P<left>.+?)\s+by\s+(?P<right>.+)$",
+        r"\b(?:deduction|subtraction)\s+of\s+(?P<left>.+?)\s+from\s+"
+        r"(?P<right>.+)$",
+    )
+    for pattern in patterns:
+        operation = re.search(pattern, clause, flags=re.IGNORECASE)
+        if operation is not None:
+            right = operation.group("right").split(",", maxsplit=1)[0]
+            return _formula_operand_is_numeric(
+                operation.group("left")
+            ) and _formula_operand_is_numeric(right)
+    unary = re.search(
+        r"\b(?:percent|percentage)\s+of\s+(?P<operand>.+)$",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if unary is not None:
+        operand = unary.group("operand").split(",", maxsplit=1)[0]
+        return _formula_operand_is_numeric(operand)
+    return False
+
+
+def _formula_states_contextual_operator(
+    source_text: str,
+    *,
+    include_unconditional: bool = True,
+) -> bool:
+    """Recognize result operations only when their grammatical subject is numeric."""
+
+    if include_unconditional and _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE.search(
+        source_text
+    ):
+        return True
+    for pattern in (
+        _FORMULA_RESULT_OPERATION_LANGUAGE,
+        _FORMULA_PARTICIPIAL_RESULT_LANGUAGE,
+    ):
+        for match in pattern.finditer(source_text):
+            prefix = source_text[: match.start()]
+            if pattern is _FORMULA_PARTICIPIAL_RESULT_LANGUAGE and re.search(
+                r"\bbefore(?:\s+\w+){0,3}\s*$",
+                prefix,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            head = _normalize_formula_result_head(_formula_result_subject_head(prefix))
+            if head and (
+                pattern is _FORMULA_PARTICIPIAL_RESULT_LANGUAGE
+                or _formula_operation_has_numeric_operands(source_text[match.start() :])
+            ):
+                return True
+    return False
+
+
 def source_states_explicit_computation(source_text: str) -> bool:
     """Return whether text states a computation rather than only a scalar."""
 
@@ -1508,7 +2350,29 @@ def source_states_explicit_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
+        or _ENGLISH_FRACTION_OF.search(computation_text)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(computation_text)
+        or _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(computation_text)
+        or _formula_states_contextual_operator(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
+    )
+
+
+def _source_states_nonrounding_computation(source_text: str) -> bool:
+    """Return whether text states a computation other than rounding."""
+
+    computation_text = _without_stated_conversion_results(source_text)
+    return bool(
+        _has_substantive_arithmetic_expression(computation_text)
+        or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
+        or _ENGLISH_FRACTION_OF.search(computation_text)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(computation_text)
+        or _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(computation_text)
+        or _formula_states_contextual_operator(computation_text)
     )
 
 
@@ -1573,8 +2437,7 @@ def _stated_conversion_candidate_contains_formula(
     characters[verb_start:verb_end] = " " * (verb_end - verb_start)
     candidate = "".join(characters)
     return bool(
-        _has_substantive_arithmetic_expression(candidate)
-        or _COMPUTATION_LANGUAGE.search(candidate)
+        _source_states_nonrounding_computation(candidate)
         or _ROUNDING_LANGUAGE.search(candidate)
     )
 
@@ -1721,6 +2584,11 @@ def _analyze_rulespec_payload(
         branches=branches,
         corpus_citation_path=corpus_citation_path,
     )
+    named_rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in payload.get("rules", [])
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
     deferred_paths, imprecise_deferrals = _deferred_coverage(
         payload,
         corpus_citation_path=corpus_citation_path,
@@ -1777,6 +2645,7 @@ def _analyze_rulespec_payload(
         formula_branches,
         principal_rules=principal_rules,
         principal_rule_paths=principal_rule_paths,
+        named_rules=named_rules,
         corpus_citation_path=corpus_citation_path,
     )
     source_has_computation = source_states_explicit_computation(source_text)
@@ -1983,6 +2852,7 @@ def _principal_formula_clause_rules(
     *,
     principal_rules: dict[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
+    named_rules: dict[str, dict[str, Any]],
     corpus_citation_path: str,
 ) -> dict[SourceStructureBranch, set[str]]:
     """Bind each computation clause to principal output evidence.
@@ -2001,13 +2871,25 @@ def _principal_formula_clause_rules(
     for clause in formula_branches:
         path_rules = set(_rules_covering_branch(clause, principal_rule_paths))
         if clause_count_by_path[clause.path] == 1:
-            clause_rules[clause] = path_rules
-            continue
+            if path_rules:
+                clause_rules[clause] = path_rules
+                continue
+        candidate_rules = path_rules or {
+            rule_name
+            for rule_name, paths in principal_rule_paths.items()
+            if any(
+                path
+                and len(path) < len(clause.path)
+                and clause.path[: len(path)] == path
+                for path in paths
+            )
+        }
+        uses_ancestor_binding = not path_rules
         clause_text = _normalized_formula_clause_text(clause.text)
         rounding_direction = _rounding_only_direction(clause.text)
         clause_rules[clause] = {
             rule_name
-            for rule_name in path_rules
+            for rule_name in candidate_rules
             if (
                 rounding_direction is not None
                 and _rule_implements_rounding(
@@ -2020,12 +2902,47 @@ def _principal_formula_clause_rules(
                 and excerpt_citation_path.strip("/").lower() == normalized_citation_path
                 and source_states_explicit_computation(excerpt)
                 and (excerpt_text in clause_text or clause_text in excerpt_text)
-                for excerpt_citation_path, excerpt in _rule_formula_source_excerpts(
-                    principal_rules[rule_name]
+                for excerpt_citation_path, excerpt in (
+                    _formula_dependency_source_excerpts(
+                        principal_rules[rule_name],
+                        named_rules=named_rules,
+                    )
+                    if uses_ancestor_binding
+                    else _rule_formula_source_excerpts(principal_rules[rule_name])
                 )
             )
         }
     return clause_rules
+
+
+def _formula_dependency_source_excerpts(
+    rule: dict[str, Any],
+    *,
+    named_rules: dict[str, dict[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    """Include direct parameter evidence consumed by a principal formula."""
+
+    excerpts = list(_rule_formula_source_excerpts(rule))
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return tuple(excerpts)
+    dependency_names = {
+        identifier
+        for version in versions
+        if isinstance(version, dict) and isinstance(version.get("formula"), str)
+        for identifier in _FORMULA_IDENTIFIER.findall(
+            _mask_formula_strings_and_comments(version["formula"])
+        )
+    }
+    for dependency_name in dependency_names:
+        dependency = named_rules.get(dependency_name)
+        if (
+            dependency is None
+            or str(dependency.get("kind") or "").lower() != "parameter"
+        ):
+            continue
+        excerpts.extend(_rule_formula_source_excerpts(dependency))
+    return tuple(excerpts)
 
 
 def _normalized_formula_clause_text(text: str) -> str:
@@ -2038,9 +2955,19 @@ def _normalized_formula_clause_text(text: str) -> str:
 def _strip_source_clause_marker(text: str) -> str:
     """Remove a leading paragraph/list/Satz marker, including glued statutes."""
 
+    compound = re.match(
+        r"^\s*(?:(?-i:[A-Z])\.)?"
+        r"(?P<chain>(?:\([A-Za-z0-9]+\))+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if compound is not None:
+        labels = re.findall(r"\(([A-Za-z0-9]+)\)", compound.group("chain"))
+        if labels and all(_is_parenthesized_outline_label(label) for label in labels):
+            return text[compound.end() :].lstrip()
     return re.sub(
         r"^\s*(?:"
-        r"\((?:\d+[a-z]?|[a-z])\)|"
+        r"(?-i:[A-Z])\.(?!\s*(?-i:[A-Z])\.)|"
         r"\d+[a-z]?\.|"
         r"[a-z]\)|"
         r"satz\s+\d+[a-z]?\s*:?\s*|"
@@ -2069,10 +2996,10 @@ def _rounding_only_direction(text: str) -> str | None:
     direction = _rounding_direction(text)
     if direction is None:
         return None
+    if _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(text):
+        return None
     without_rounding = _ROUNDING_LANGUAGE.sub("", text)
-    if _has_substantive_arithmetic_expression(
-        without_rounding
-    ) or _COMPUTATION_LANGUAGE.search(without_rounding):
+    if _source_states_nonrounding_computation(without_rounding):
         return None
     return direction
 
@@ -4363,6 +5290,15 @@ def _companion_test_issues(
         active_branches=active_branches,
         deferred_paths=deferred_paths,
     )
+    boundary_branches = tuple(
+        branch
+        for branch in boundary_branches
+        if not _is_marker_only_container(
+            branch,
+            branches=branches,
+            source_text=source_text,
+        )
+    )
     boundary_obligations = _source_boundary_obligations(
         boundary_branches,
         narrative_formula_branches=formula_branches,
@@ -4589,6 +5525,22 @@ def _source_formula_branches(
                 0,
                 len(source_text),
             )
+        if _formula_clause_has_nonnumeric_inline_following_operands(
+            clause,
+            end=end,
+            owner=owner,
+            branches=branches,
+            source_text=source_text,
+        ):
+            continue
+        if _formula_clause_is_structural_chapeau(
+            clause,
+            end=end,
+            owner=owner,
+            branches=branches,
+            source_text=source_text,
+        ):
+            continue
         obligation = SourceStructureBranch(
             owner.path,
             "formula-clause",
@@ -4605,6 +5557,137 @@ def _source_formula_branches(
             continue
         obligations.append(obligation)
     return tuple(obligations)
+
+
+def _formula_clause_has_nonnumeric_inline_following_operands(
+    clause: str,
+    *,
+    end: int,
+    owner: SourceStructureBranch,
+    branches: Sequence[SourceStructureBranch],
+    source_text: str,
+) -> bool:
+    """Reject abstract inline lists mislabeled as following numeric values."""
+
+    if not (
+        clause.rstrip().endswith(":")
+        and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(clause)
+    ):
+        return False
+    descendants = tuple(
+        branch
+        for branch in branches
+        if branch.start >= end
+        and branch.end <= owner.end
+        and len(branch.path) > len(owner.path)
+        and branch.path[: len(owner.path)] == owner.path
+    )
+    next_descendant = min(
+        (branch.start for branch in descendants),
+        default=owner.end,
+    )
+    inline = source_text[end:next_descendant].strip().strip(".;:")
+    if inline:
+        return not _formula_inline_operands_are_numeric(inline)
+    non_leaf_paths = {
+        candidate.path[:depth]
+        for candidate in descendants
+        for depth in range(len(owner.path) + 1, len(candidate.path))
+    }
+    leaves = tuple(
+        branch for branch in descendants if branch.path not in non_leaf_paths
+    )
+    return bool(leaves) and not any(
+        source_states_explicit_computation(branch.text)
+        or _formula_inline_operands_are_numeric(
+            _strip_source_clause_marker(branch.text)
+        )
+        for branch in leaves
+    )
+
+
+def _formula_clause_is_structural_chapeau(
+    clause: str,
+    *,
+    end: int,
+    owner: SourceStructureBranch,
+    branches: Sequence[SourceStructureBranch],
+    source_text: str,
+) -> bool:
+    """Let a colon-ended computation heading delegate to its child rows."""
+
+    heading = _FORMULA_NONOPERATIVE_TABLE_HEADING.search(clause)
+    if (
+        not clause.rstrip().endswith(":")
+        or heading is None
+        or _formula_clause_states_substantive_operation(clause[: heading.start()])
+        or _formula_clause_states_substantive_operation(clause)
+    ):
+        return False
+    descendants = tuple(
+        branch
+        for branch in branches
+        if (
+            len(branch.path) > len(owner.path)
+            and branch.path[: len(owner.path)] == owner.path
+            and branch.start >= end
+            and branch.end <= owner.end
+        )
+    )
+    if (
+        not descendants
+        or source_text[end : min(branch.start for branch in descendants)].strip()
+    ):
+        return False
+    non_leaf_paths = {
+        candidate.path[:depth]
+        for candidate in descendants
+        for depth in range(len(owner.path) + 1, len(candidate.path))
+    }
+    leaf_descendants = tuple(
+        branch for branch in descendants if branch.path not in non_leaf_paths
+    )
+    return any(
+        source_states_explicit_computation(branch.text) for branch in leaf_descendants
+    )
+
+
+def _formula_clause_states_substantive_operation(clause: str) -> bool:
+    """Distinguish an operative formula from a non-operative table heading."""
+
+    coordinate_starts = [
+        match.start()
+        for match in re.finditer(r",?\s+and\s+", clause, flags=re.IGNORECASE)
+        if re.match(
+            r"(?:(?![,.;:\n]).){0,80}\b(?:"
+            r"(?:shall|must|may)\s+(?:be\s+)?equal|is\s+equal|equals?)\b",
+            clause[match.end() :],
+            flags=re.IGNORECASE,
+        )
+    ]
+    operative_prefix = clause[: coordinate_starts[-1]] if coordinate_starts else clause
+    operative_prefix = _strip_source_clause_marker(operative_prefix)
+    return bool(
+        _has_substantive_arithmetic_expression(clause)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(clause)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(clause)
+        or _ENGLISH_FRACTION_OF.search(clause)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(clause)
+        or _formula_states_contextual_operator(clause, include_unconditional=False)
+        or _formula_operation_has_numeric_operands(operative_prefix)
+        or re.search(r"\btwice\s+(?:the\s+)?\w+", clause, flags=re.IGNORECASE)
+        or re.search(
+            r"\b(?:calculated|computed|determined)\s+(?:by|through)\s+"
+            r"(?:applying|application|combining|doubling|taking)\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:added|divided|multiplied|subtracted)\s+by\b",
+            clause,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _source_control_branches(
@@ -4644,7 +5727,13 @@ def _source_control_branches(
     )
     return tuple(
         {
-            (branch.path, branch.start, branch.end): branch for branch in controlled
+            (branch.path, branch.start, branch.end): branch
+            for branch in controlled
+            if not _is_marker_only_container(
+                branch,
+                branches=branches,
+                source_text=source_text,
+            )
         }.values()
     )
 
@@ -4738,6 +5827,13 @@ def _source_clause_spans(
         match
         for match in boundary.finditer(source_text)
         if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+        and not (
+            match.group() == ";"
+            and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(
+                source_text[max(0, match.start() - 300) : match.start()]
+            )
+            and ":" in source_text[max(0, match.start() - 300) : match.start()]
+        )
     )
     split_points = {
         0,
@@ -7409,6 +8505,22 @@ def _mask_formula_strings(text: str) -> str:
             escaped = True
         elif character == quote:
             quote = None
+    return "".join(masked)
+
+
+def _mask_formula_strings_and_comments(text: str) -> str:
+    """Blank quoted content and comments while preserving source offsets."""
+
+    masked = list(_mask_formula_strings(text))
+    in_comment = False
+    for index, character in enumerate(masked):
+        if character == "\n":
+            in_comment = False
+        elif in_comment:
+            masked[index] = " "
+        elif character == "#":
+            in_comment = True
+            masked[index] = " "
     return "".join(masked)
 
 
