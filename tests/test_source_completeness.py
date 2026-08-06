@@ -1993,6 +1993,11 @@ B. End.
         "The credit shall be determined through applying the rate to income",
         "The amount shall be determined by applying the statutory formula to income",
         "The amount shall be determined by applying the multiplier to income",
+        "The amount shall be determined by applying the coefficient to income",
+        "The amount shall be determined by applying the index to income",
+        "The amount shall be determined by applying the fraction to income",
+        "The amount shall be determined by applying the tax table to income",
+        "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
         "The credit is half of income",
@@ -2363,7 +2368,13 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "provided that the credit shall",
         "provided, however, that the credit shall",
         "provided further that the credit shall",
+        "and provided that the credit shall",
+        "provided, further, that the credit shall",
         "on condition that the credit shall",
+        "if the taxpayer is eligible, the department shall",
+        "so long as the taxpayer is eligible, the department shall",
+        "in which case the department shall",
+        "except when the taxpayer is ineligible, the department shall",
         "the credit shall",
     ),
 )
@@ -2504,6 +2515,28 @@ def test_delegated_determinations_are_not_computations(source: str):
     assert not source_states_explicit_computation(source)
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The eligibility is determined by applying the requirements of section 5, "
+        "and the credit equals income plus the supplement.",
+        "The status is determined by applying statutory criteria, and the credit "
+        "is the sum of income and tax.",
+    ),
+)
+def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
+    assert source_states_explicit_computation(source)
+    branches = recognize_source_structure(f"A. {source}\nB. End.")
+    formula_branches = completeness_module._source_formula_branches(
+        f"A. {source}\nB. End.",
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+
+
 def test_determined_by_arithmetic_remains_a_computation():
     assert source_states_explicit_computation(
         "The credit is determined by adding the base and the supplement."
@@ -2528,6 +2561,12 @@ def test_bare_round_noun_is_not_a_computation():
     )
 
 
+def test_rounding_policy_noun_is_not_a_computation():
+    assert not source_states_explicit_computation(
+        "The credit rounding policy shall be published."
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -2536,6 +2575,13 @@ def test_bare_round_noun_is_not_a_computation():
         "The result shall be rounded to four decimal places.",
         "Any fraction shall be rounded to the nearest whole number.",
         "The count must be rounded to the nearest whole number.",
+        "The quotient shall be rounded downward.",
+        "The ratio shall be rounded to four decimal places.",
+        "The average shall be rounded down.",
+        "The sum shall be rounded to the nearest whole number.",
+        "The department shall round the amount down.",
+        "Round the amount down.",
+        "Round the amount to the nearest whole number.",
     ),
 )
 def test_numeric_rounding_directive_is_a_computation(source: str):
@@ -2823,6 +2869,8 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The allocation equals two-sixths of annual income",
         "The allocation equals one-sixteenth of annual income",
         "The allocation equals one twenty-fourth of annual income",
+        "The allocation equals a third of annual income",
+        "The allocation equals a fifth of annual income",
         "The tax equals one-half per cent of taxable income",
         "The tax equals one-half percent of taxable income",
         "The tax equals two and one-half percent of taxable income",
@@ -2852,6 +2900,10 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, except that it shall not be "
         "less than zero",
         "The credit is the lesser of the base or the cap, with a minimum of zero",
+        "The credit is the lesser of the base or the cap, but not less than 0",
+        "The credit is the lesser of the base or the cap, but not less than $0",
+        "The credit is the lesser of the base or the cap, in no case less than zero",
+        "The credit is the lesser of the base or the cap, subject to a floor of zero",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -6632,6 +6684,19 @@ rules: []
 )
 def test_common_german_formula_language_is_computation(source: str):
     assert source_states_explicit_computation(source)
+
+
+def test_ordinary_duration_is_not_an_english_fraction():
+    source = "A. The recording shall include one second of silence.\nB. End."
+    branches = recognize_source_structure(source)
+
+    assert not source_states_explicit_computation(source)
+    assert not completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
 
 
 @pytest.mark.parametrize(
@@ -11252,6 +11317,8 @@ rules:
         "Effective January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
         "For tax years beginning after December 31, 2005 and ending before January 1, 2007, the amount is calculated by multiplying income by the rate.",
+        "For taxable years beginning on or after January 1, 2026, the amount is calculated by multiplying income by the rate.",
+        "For tax years beginning after December 31, 2005 and ending on or before December 31, 2006, the amount is calculated by multiplying income by the rate.",
     ),
 )
 def test_common_formula_applicability_prefaces_are_not_coefficients(source):
@@ -11324,6 +11391,28 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
             item, source
         )
         for item in substantive
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "For taxable years beginning on or after January 1, 2026, twenty-five "
+        "percent of income.",
+        "For tax years beginning after December 31, 2005 and ending on or before "
+        "December 31, 2006, twenty-five percent of income.",
+    ),
+)
+def test_inclusive_tax_year_range_dates_are_entirely_preface(source: str):
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+    temporal = [item for item in occurrences if item.has_temporal_context]
+
+    assert temporal
+    assert all(
+        completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+        for item in temporal
     )
 
 

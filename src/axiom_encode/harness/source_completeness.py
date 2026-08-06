@@ -352,7 +352,7 @@ _ENGLISH_CARDINAL_PHRASE = (
     rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*"
 )
 _ENGLISH_ORDINAL_WORD = (
-    r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"(?:third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
     r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|"
     r"eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|sixtieth|"
     r"seventieth|eightieth|ninetieth|hundredth|thousandth|millionth|billionth|"
@@ -360,7 +360,8 @@ _ENGLISH_ORDINAL_WORD = (
 )
 _ENGLISH_FRACTION_DENOMINATOR = rf"(?:half|quarter|{_ENGLISH_ORDINAL_WORD}s?)"
 _ENGLISH_FRACTION_PHRASE = (
-    rf"(?:half|quarter|{_ENGLISH_CARDINAL_PHRASE}[-\s]+"
+    rf"(?:half|quarter|(?:a|an)[-\s]+(?:half|quarter|{_ENGLISH_ORDINAL_WORD})|"
+    rf"{_ENGLISH_CARDINAL_PHRASE}[-\s]+"
     rf"(?:(?:{_ENGLISH_NUMBER_WORD})[-\s]+)*{_ENGLISH_FRACTION_DENOMINATOR})"
 )
 _ENGLISH_FRACTION_OF = re.compile(
@@ -420,7 +421,9 @@ _FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
 _FORMULA_APPLIED_OPERATION_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+(?:"
     r"(?:by|through)\s+(?:applying|application\s+of))\s+"
-    r"(?P<operands>[^.;:\n]+)",
+    r"(?P<operands>[^.;:\n]+?)"
+    r"(?=,\s*(?:and\s+)?(?:the\s+)?(?:\w+\s+){1,8}"
+    r"(?:shall|must|may|is|are|equals?)\b|[.;:\n]|$)",
     flags=re.IGNORECASE,
 )
 _FORMULA_RESULT_PREDICATE = (
@@ -447,8 +450,10 @@ _FORMULA_ROUNDED_OPERATION_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_FOLLOWING_OPERAND_PROVISO = re.compile(
-    r"\s*(?:provided(?:\s*,\s*however\s*,?|\s+further)?\s+that|"
-    r"on\s+condition\s+that|except\s+that|however|but|unless|subject\s+to|"
+    r"\s*(?:(?:and\s+)?provided"
+    r"(?:\s*,?\s*(?:however|further)\s*,?)?\s+that|"
+    r"on\s+condition\s+that|if|so\s+long\s+as|in\s+which\s+case|"
+    r"except\s+(?:that|when)|however|but|unless|subject\s+to|"
     r"notwithstanding|(?:the|such|a|an)\s+(?:\w+\s+){0,8}"
     r"(?:shall|must|may|is|are|equals?))\b",
     flags=re.IGNORECASE,
@@ -483,7 +488,9 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
     {
         "allowance",
         "amount",
+        "addition",
         "assessment",
+        "average",
         "balance",
         "base",
         "benefit",
@@ -497,6 +504,7 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "deduction",
         "deficiency",
         "distribution",
+        "difference",
         "excess",
         "exemption",
         "expense",
@@ -510,6 +518,8 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "limit",
         "loss",
         "margin",
+        "mean",
+        "median",
         "networth",
         "number",
         "offset",
@@ -517,16 +527,21 @@ _FORMULA_NUMERIC_RESULT_HEADS = frozenset(
         "payment",
         "percent",
         "percentage",
+        "product",
         "proceeds",
         "quantity",
+        "quotient",
         "rate",
+        "ratio",
         "rebate",
         "reduction",
         "refund",
+        "remainder",
         "result",
         "shortfall",
         "surcharge",
         "surtax",
+        "sum",
         "tax",
         "threshold",
         "total",
@@ -658,20 +673,24 @@ _FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
         "benefit",
         "bonus",
         "cap",
+        "coefficient",
         "contribution",
         "credit",
         "deduction",
         "dividend",
         "divisor",
+        "dollar",
         "denominator",
         "expense",
         "earning",
         "factor",
         "fee",
         "formula",
+        "fraction",
         "gain",
         "hour",
         "income",
+        "index",
         "interest",
         "liability",
         "limit",
@@ -692,6 +711,7 @@ _FORMULA_NUMERIC_OPERAND_HEADS = frozenset(
         "salary",
         "supplement",
         "surcharge",
+        "table",
         "tax",
         "threshold",
         "total",
@@ -775,10 +795,12 @@ _FORMULA_APPLICABILITY_PREFACE = re.compile(
     rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
     rf"(?:for|during)\s+(?:the\s+)?"
     rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
-    rf"beginning\s+(?:after|on)\s+{_FORMULA_APPLICABILITY_DATE}"
-    rf"(?:\s+and\s+ending\s+(?:before|on)\s+"
+    rf"beginning\s+(?:after|on(?:\s+or\s+after)?)\s+"
+    rf"{_FORMULA_APPLICABILITY_DATE}"
+    rf"(?:\s+and\s+ending\s+(?:before|on(?:\s+or\s+before)?)\s+"
     rf"{_FORMULA_APPLICABILITY_DATE})?\s*,?|(?:"
-    rf"beginning\s+(?:on\s+)?{_FORMULA_APPLICABILITY_DATE}"
+    rf"beginning\s+(?:(?:after|on(?:\s+or\s+after)?)\s+)?"
+    rf"{_FORMULA_APPLICABILITY_DATE}"
     rf"(?:,?\s+and\s+thereafter)?|"
     rf"(?:for|during)\s+(?:the\s+)?"
     rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
@@ -2342,7 +2364,8 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
     if not _normalize_formula_result_head(_formula_result_subject_head(prefix)):
         return False
     operands = re.split(
-        r",\s*(?:and\s+)?(?:the\s+)?(?:\w+\s+){1,8}(?:shall|must|may|is|are)\b",
+        r",\s*(?:and\s+)?(?:the\s+)?(?:\w+\s+){1,8}"
+        r"(?:shall|must|may|is|are|equals?)\b",
         match.group("operands"),
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -2381,14 +2404,34 @@ def _rounding_language_is_computational(text: str) -> bool:
     for match in _ROUNDING_LANGUAGE.finditer(text):
         if not re.match(r"round", match.group(), flags=re.IGNORECASE):
             return True
-        if match.group().lower() == "round" and not re.match(
-            r"\s+(?:down|up|to\s+the\s+nearest)\b",
+        rounding_word = match.group().lower()
+        active_target = None
+        if rounding_word == "round":
+            direct_direction = re.match(
+                r"\s+(?:down(?:ward)?|up(?:ward)?|to\s+the\s+nearest)\b",
+                text[match.end() :],
+                flags=re.IGNORECASE,
+            )
+            active_direction = re.match(
+                r"\s+(?P<target>[^.;\n]{1,80}?)\s+"
+                r"(?:down(?:ward)?|up(?:ward)?|to\s+the\s+nearest)\b",
+                text[match.end() :],
+                flags=re.IGNORECASE,
+            )
+            if direct_direction is None and active_direction is None:
+                continue
+            if active_direction is not None:
+                active_target = active_direction.group("target")
+        elif rounding_word == "rounding" and not re.match(
+            r"\s+(?:down(?:ward)?|up(?:ward)?|to\s+the\s+nearest)\b",
             text[match.end() :],
             flags=re.IGNORECASE,
         ):
             continue
         if re.match(r"\s+out\b", text[match.end() :], flags=re.IGNORECASE):
             continue
+        if active_target is not None and _formula_operand_is_numeric(active_target):
+            return True
         clause_start = max(
             text.rfind(".", 0, match.start()),
             text.rfind(";", 0, match.start()),
@@ -2464,10 +2507,14 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
     clause = re.split(r"[.;:\n]", without_parentheticals, maxsplit=1)[0]
     clause = re.sub(
         r",\s*(?:whichever[^,]{0,80}\b(?:is|shall\s+be|may\s+be|would\s+be)\s+[^,]+|as\s+applicable|"
-        r"if\s+applicable|but\s+(?:in\s+no\s+event\s+)?(?:not\s+)?"
-        r"(?:less\s+than|below)\s+zero|except\s+that\s+it\s+"
-        r"(?:shall|must|may)\s+not\s+be\s+less\s+than\s+zero|"
-        r"with\s+a\s+minimum\s+of\s+zero)\s*$",
+        r"if\s+applicable|but\s+(?:in\s+(?:no\s+event|no\s+case)\s+)?"
+        r"(?:not\s+)?(?:less\s+than|below)\s+(?:zero|\$?\s*0(?:\.0+)?)|"
+        r"(?:in\s+)?no\s+case\s+(?:less\s+than|below)\s+"
+        r"(?:zero|\$?\s*0(?:\.0+)?)|except\s+that\s+it\s+"
+        r"(?:shall|must|may)\s+not\s+be\s+less\s+than\s+"
+        r"(?:zero|\$?\s*0(?:\.0+)?)|with\s+a\s+minimum\s+of\s+"
+        r"(?:zero|\$?\s*0(?:\.0+)?)|subject\s+to\s+a\s+floor\s+of\s+"
+        r"(?:zero|\$?\s*0(?:\.0+)?))\s*$",
         "",
         clause,
         flags=re.IGNORECASE,
