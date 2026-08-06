@@ -702,6 +702,11 @@ _FORMULA_APPLICABILITY_DATE = (
 )
 _FORMULA_APPLICABILITY_PREFACE = re.compile(
     rf"^\s*(?:(?:\([^)]+\)|[A-Z]\.)\s*)?(?:"
+    rf"(?:for|during)\s+(?:the\s+)?"
+    rf"(?:tax(?:able)?|calendar|fiscal|assessment)\s+years?\s+"
+    rf"beginning\s+(?:after|on)\s+{_FORMULA_APPLICABILITY_DATE}"
+    rf"(?:\s+and\s+ending\s+(?:before|on)\s+"
+    rf"{_FORMULA_APPLICABILITY_DATE})?\s*,?|(?:"
     rf"beginning\s+(?:on\s+)?{_FORMULA_APPLICABILITY_DATE}"
     rf"(?:,?\s+and\s+thereafter)?|"
     rf"(?:for|during)\s+(?:the\s+)?"
@@ -709,7 +714,7 @@ _FORMULA_APPLICABILITY_PREFACE = re.compile(
     rf"{_FORMULA_APPLICABILITY_YEAR}|"
     rf"(?:effective(?:\s+(?:on|from))?|starting(?:\s+(?:on|from))?|"
     rf"as\s+of|on\s+or\s+after)\s+{_FORMULA_APPLICABILITY_DATE}"
-    rf")\s*,",
+    rf")\s*,)",
     flags=re.IGNORECASE,
 )
 _STATED_CONVERSION_CUE = re.compile(
