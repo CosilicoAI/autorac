@@ -483,22 +483,27 @@ _FORMULA_FOLLOWING_OPERAND_PROVISO = re.compile(
 )
 _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:can|could|may|might|must|shall|should|will|would)\s+|"
-    r"(?:is|are)\s+(?:(?:required|supposed)\s+)?to\s+|"
+    r"(?:is|are)\s+(?:(?:designed|expected|intended|required|supposed)\s+)?"
+    r"to\s+|"
     r"(?:is|are)\s+|(?:has|have|had)\s+(?:been\s+)?(?:"
-    r"always\s+)?)?(?:"
+    r"(?:always|at\s+all\s+times)\s+)?)?(?:"
     r"(?:(?:in\s+(?:no\s+event|no\s+case)\s+|never\s+)?"
     r"(?:(?:not\s+)?(?:be\s+)?|be\s+not\s+)(?:(?:less|lower)\s+than|below|"
     r"no\s+(?:less|lower)\s+than|at\s+least|"
     r"greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?))|"
-    r"(?:always\s+)?remain(?:s|ed)?\s+(?:at\s+least|no\s+(?:less|lower)\s+than|"
+    r"(?:(?:always|at\s+all\s+times)\s+)?remain(?:s|ed)?\s+"
+    r"(?:at\s+least|at\s+or\s+above|no\s+(?:less|lower)\s+than|"
     r"greater\s+than\s+or\s+equal\s+to)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?)|"
-    r"not\s+(?:be\s+negative|fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
+    r"not\s+(?:be\s+negative|(?:become|turn)\s+negative|"
+    r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
-    r"never\s+(?:(?:be|remain(?:s|ed)?)\s+)?negative|"
-    r"(?:(?:always|never)\s+)?(?:(?:be|remain(?:s|ed)?)\s+)?"
+    r"never\s+(?:(?:be|become|remain(?:s|ed)?|turn)\s+)?negative|"
+    r"(?:(?:always|never|at\s+all\s+times|in\s+all\s+cases)\s+)?"
+    r"(?:(?:be|remain(?:s|ed)?)\s+)?"
     r"(?:not\s+negative|non-?negative)|"
+    r"(?:does?|do)\s+not\s+(?:become|turn)\s+negative|"
     r"(?:in\s+no\s+(?:event|case)|never|under\s+no\s+circumstances)\s+"
     r"be\s+negative|"
     r"be\s+(?:(?:treated\s+as|deemed)\s+)?zero\s+"
@@ -515,20 +520,23 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"be\s+(?:less|lower)\s+than\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
-    r"cannot\s+be\s+negative|can\s+not\s+be\s+negative)"
+    r"cannot\s+(?:be|become|turn)\s+negative|"
+    r"can\s+not\s+(?:be|become|turn)\s+negative)"
 )
 _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     r"\b(?:agreements?|administration|amendments?|appendices|appendix|bulletins?|"
     r"bylaws?|"
     r"archives?|books?|brochures?|catalogs?|chapters?|circulars?|codes?|"
     r"contracts?|criteria|decrees?|directives?|documents?|"
-    r"decisions?|exhibits?|files?|forms?|guidance|guides?|guidelines|handbooks?|"
+    r"dashboards?|databases?|decisions?|exhibits?|files?|forms?|guidance|"
+    r"guides?|guidelines|handbooks?|"
     r"instructions?|letters?|"
     r"legislation|manuals?|memos?|memorand(?:a|ums?)|methodolog(?:y|ies)|"
     r"notices?|operations?|opinions?|orders?|ordinances?|"
     r"plans?|polic(?:y|ies)|procedures?|processes?|programs?|protocols?|"
-    r"publications?|records?|registers?|regulations?|reports?|requirements?|"
-    r"rules?|rulings?|"
+    r"overviews?|portals?|publications?|records?|registers?|regulations?|"
+    r"reports?|repositories?|requirements?|rules?|rulings?|sites?|summaries?|"
+    r"websites?|"
     r"papers?|resolutions?|schedules?|sections?|specifications?|standards?|"
     r"statutes?|tax|work|workbooks?|workpapers?|worksheets?|workflows?)\b",
     flags=re.IGNORECASE,
@@ -2577,25 +2585,10 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
             # code grammar, then reject semantic document-title heads above.
             bounded_code = re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier_tail)
             code_segments = identifier_tail.split("-")
-            structured_code_has_payload = (
-                len(code_segments) > 1
-                and code_segments[0].lower()
-                in {
-                    "appendix",
-                    "chapter",
-                    "code",
-                    "form",
-                    "formula",
-                    "index",
-                    "rule",
-                    "schedule",
-                    "section",
-                    "table",
-                }
-                and any(
-                    not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(segment)
-                    for segment in code_segments[1:]
-                )
+            structured_code_has_payload = len(
+                code_segments
+            ) > 1 and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
+                code_segments[-1]
             )
             code_like = bounded_code is not None and (
                 administrative_title is None
@@ -2672,6 +2665,20 @@ def _formula_numeric_noun_phrase_head(phrase: str) -> str:
     return _normalize_formula_result_head(_formula_subject_segment_head(phrase))
 
 
+def _formula_rounding_noun_phrase_is_numeric(phrase: str) -> bool:
+    """Recognize a numeric antecedent without admitting a titled document."""
+
+    last_word = phrase.strip().rsplit(maxsplit=1)[-1]
+    administrative_titles = tuple(
+        _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.finditer(phrase)
+    )
+    return bool(
+        not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(last_word)
+        and all(match.group().lower() == "tax" for match in administrative_titles)
+        and _formula_numeric_noun_phrase_head(phrase)
+    )
+
+
 def _formula_rounding_actor_is_bounded(actor: str) -> bool:
     """Recognize a finite-clause actor while rejecting titled documents."""
 
@@ -2708,20 +2715,14 @@ def _formula_rounding_actor_is_bounded(actor: str) -> bool:
     actor_starts_with_role = bool(
         _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.match(actor_core)
     )
-    actor_ends_with_role = bool(
-        _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.fullmatch(
-            actor_core.rsplit(maxsplit=1)[-1]
-        )
-    )
     actor_last_word = actor_core.rsplit(maxsplit=1)[-1]
-    actor_ends_with_person_role = bool(
-        not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(actor_last_word)
-        and re.search(
-            r"(?:ant|ent|er|ist|or)$",
-            actor_last_word,
-            flags=re.IGNORECASE,
-        )
+    actor_ends_with_role = bool(
+        _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.fullmatch(actor_last_word)
     )
+    actor_ends_with_title = bool(
+        _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(actor_last_word)
+    )
+    actor_has_title = bool(_FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.search(actor))
     role_starts_scoped_actor = bool(
         actor_starts_with_role
         and re.match(
@@ -2730,11 +2731,14 @@ def _formula_rounding_actor_is_bounded(actor: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+    if determined_actor or bare_actor:
+        return bool(role_starts_scoped_actor or not actor_ends_with_title)
+    if not actor_has_title:
+        return True
     return bool(
-        actor_ends_with_role
-        or actor_ends_with_person_role
-        or role_starts_scoped_actor
-        or not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.search(actor)
+        role_starts_scoped_actor
+        or actor_ends_with_role
+        or (len(actor_core.split()) == 2 and not actor_ends_with_title)
     )
 
 
@@ -2759,6 +2763,13 @@ def _formula_passive_rounding_actor(tail: str) -> str | None:
             )
             or re.fullmatch(
                 r"as\s+(?:required|provided|specified)",
+                modifier,
+                flags=re.IGNORECASE,
+            )
+            or re.fullmatch(
+                r"(?:according\s+to|in\s+accordance\s+with|under|pursuant\s+to)\s+"
+                r"(?:(?:the|this|that|such)\s+)?"
+                r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60}",
                 modifier,
                 flags=re.IGNORECASE,
             )
@@ -2798,7 +2809,7 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
         passive_actor = _formula_passive_rounding_actor(passive.group("tail"))
         if (
             passive_actor is not None
-            and _formula_numeric_noun_phrase_head(passive.group("noun_phrase"))
+            and _formula_rounding_noun_phrase_is_numeric(passive.group("noun_phrase"))
             and _formula_rounding_actor_is_bounded(passive_actor)
         ):
             return True
@@ -2807,7 +2818,7 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
     body = gerund.group("body").strip()
     if "," in body:
         body = body.split(",", maxsplit=1)[0].strip()
-        return bool(_formula_numeric_noun_phrase_head(body))
+        return _formula_rounding_noun_phrase_is_numeric(body)
     # Without punctuation, find a numeric result phrase followed by any
     # bounded finite-clause actor.  This avoids hard-coding agency titles such
     # as department, commissioner, secretary, or board.
@@ -2817,7 +2828,7 @@ def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
         actor = " ".join(words[split_at:])
         if _formula_rounding_actor_is_bounded(
             actor
-        ) and _formula_numeric_noun_phrase_head(noun_phrase):
+        ) and _formula_rounding_noun_phrase_is_numeric(noun_phrase):
             return True
     return False
 
@@ -10409,7 +10420,11 @@ def _formula_conjoined_bound(
     exclusive_comparisons = {
         "<",
         "below",
+        "cannot equal or exceed",
+        "cannot equal or be greater than",
         "less than",
+        "not equal or exceed",
+        "not equal or be greater than",
         "remain below",
         "under",
         "up to but not including",
@@ -10483,6 +10498,8 @@ def _formula_conjoined_bound(
         "cannot be under",
         "cannot fall below",
         "equal to or greater than",
+        "equal or exceed",
+        "equal or be greater than",
         "greater than or equal to",
         "no less than",
         "no lower than",
@@ -10504,7 +10521,15 @@ def _formula_conjoined_bound(
         return occurrences[1], False, "lower"
     if has_negative_control and copula_stripped in inclusive_lower_comparisons:
         return occurrences[1], False, "upper"
+    permissive_modal = modal_seen in {"can", "could", "may", "might", "would"}
+    prohibitive_comparison = bool(
+        re.match(r"^(?:can\s+not|cannot|no|not)\b", copula_stripped)
+        or comparison in negative_exceed_comparisons
+        or copula_stripped in negative_exceed_comparisons
+    )
     if copula_stripped in exclusive_comparisons:
+        if permissive_modal and not prohibitive_comparison:
+            return None
         return occurrences[1], False, "upper"
     if (
         copula_stripped in inclusive_comparisons
@@ -10512,6 +10537,8 @@ def _formula_conjoined_bound(
         or copula_stripped in negative_exceed_comparisons
         or (has_negative_control and copula_stripped in affirmative_lower_comparisons)
     ):
+        if permissive_modal and not prohibitive_comparison:
+            return None
         return occurrences[1], True, "upper"
     if (
         not has_negative_control
@@ -10525,7 +10552,7 @@ def _formula_conjoined_bound(
         return occurrences[1], False, "lower"
     if (
         not has_negative_control
-        and modal_seen not in {"can", "could", "may", "might", "would"}
+        and (not permissive_modal or prohibitive_comparison)
         and copula_stripped in inclusive_lower_comparisons
     ):
         return occurrences[1], True, "lower"
@@ -10535,27 +10562,29 @@ def _formula_conjoined_bound(
 def _formula_interval_with_conjoined_bound(
     first: NumericOccurrenceLike,
     first_inclusive: bool,
+    first_kind: str,
     bound: tuple[NumericOccurrenceLike, bool, str] | None,
 ) -> _NumericInterval:
-    """Compose a first lower threshold with a parsed second constraint."""
+    """Compose either first threshold with an optional second constraint."""
 
-    if bound is None:
-        return _NumericInterval(first, first_inclusive, None, False)
-    occurrence, inclusive, kind = bound
-    if kind == "upper":
-        return _NumericInterval(first, first_inclusive, occurrence, inclusive)
-    first_value = float(first.value)
-    occurrence_value = float(occurrence.value)
-    if occurrence_value > first_value:
-        return _NumericInterval(occurrence, inclusive, None, False)
-    if math.isclose(occurrence_value, first_value):
-        return _NumericInterval(
-            first,
-            first_inclusive and inclusive,
-            None,
-            False,
-        )
-    return _NumericInterval(first, first_inclusive, None, False)
+    lower = first if first_kind == "lower" else None
+    lower_inclusive = first_inclusive if lower is not None else False
+    upper = first if first_kind == "upper" else None
+    upper_inclusive = first_inclusive if upper is not None else False
+    if bound is not None:
+        occurrence, inclusive, kind = bound
+        if kind == "lower":
+            if lower is None or float(occurrence.value) > float(lower.value):
+                lower = occurrence
+                lower_inclusive = inclusive
+            elif math.isclose(float(occurrence.value), float(lower.value)):
+                lower_inclusive = lower_inclusive and inclusive
+        elif upper is None or float(occurrence.value) < float(upper.value):
+            upper = occurrence
+            upper_inclusive = inclusive
+        elif math.isclose(float(occurrence.value), float(upper.value)):
+            upper_inclusive = upper_inclusive and inclusive
+    return _NumericInterval(lower, lower_inclusive, upper, upper_inclusive)
 
 
 def _formula_interval_from_text(
@@ -10581,9 +10610,13 @@ def _formula_interval_from_text(
         r"mehr\s+als|weniger\s+als|"
         r"von(?!\s+(?:mehr\s+als|weniger\s+als|höchstens|mindestens|"
         r"nicht\s+mehr\s+als|über|unter))|"
-        r"from|unter|no\s+less\s+than|not\s+less\s+than|less\s+than|below|"
-        r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
-        r"at\s+most|über|more\s+than|greater\s+than|"
+        r"from|unter|less\s+than\s+or\s+equal\s+to|"
+        r"equal\s+to\s+or\s+less\s+than|no\s+(?:greater|higher|larger|more)\s+than|"
+        r"not\s+(?:greater|higher|larger|more)\s+than|at\s+or\s+(?:below|under)|"
+        r"no\s+less\s+than|not\s+less\s+than|less\s+than|below|"
+        r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
+        r"greater\s+than\s+or\s+equal\s+to|equal\s+to\s+or\s+greater\s+than|"
+        r"at\s+or\s+(?:above|over)|über|more\s+than|greater\s+than|"
         r"exceeds?|exceeding|above|ab|at\s+least|mindestens)\b",
         lowered,
     )
@@ -10637,33 +10670,53 @@ def _formula_interval_from_text(
             return None
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
     if re.match(
-        r"(?:unter|less\s+than|below|(?:von\s+)?weniger\s+als)\b",
+        r"(?:unter|less\s+than(?!\s+or\s+equal\s+to)|below|"
+        r"(?:von\s+)?weniger\s+als)\b",
         lowered_range,
     ):
-        return _NumericInterval(None, False, occurrences[0], False)
+        return _formula_interval_with_conjoined_bound(
+            occurrences[0],
+            False,
+            "upper",
+            _formula_conjoined_bound(text, occurrences),
+        )
     if re.match(
-        r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most)\b",
+        r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
+        r"less\s+than\s+or\s+equal\s+to|equal\s+to\s+or\s+less\s+than|"
+        r"no\s+(?:greater|higher|larger|more)\s+than|"
+        r"not\s+(?:greater|higher|larger|more)\s+than|"
+        r"at\s+or\s+(?:below|under))\b",
         lowered_range,
     ):
-        return _NumericInterval(None, False, occurrences[0], True)
+        return _formula_interval_with_conjoined_bound(
+            occurrences[0],
+            True,
+            "upper",
+            _formula_conjoined_bound(text, occurrences),
+        )
     if re.match(
-        r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|greater\s+than|"
+        r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|"
+        r"greater\s+than(?!\s+or\s+equal\s+to)|"
         r"exceeds?|exceeding|above)\b",
         lowered_range,
     ):
         return _formula_interval_with_conjoined_bound(
             occurrences[0],
             False,
+            "lower",
             _formula_conjoined_bound(text, occurrences),
         )
     if re.match(
         r"(?:von|ab|from|at\s+least|no\s+less\s+than|"
-        r"not\s+less\s+than|mindestens)\b",
+        r"not\s+less\s+than|greater\s+than\s+or\s+equal\s+to|"
+        r"equal\s+to\s+or\s+greater\s+than|at\s+or\s+(?:above|over)|"
+        r"mindestens)\b",
         lowered_range,
     ):
         return _formula_interval_with_conjoined_bound(
             occurrences[0],
             True,
+            "lower",
             _formula_conjoined_bound(text, occurrences),
         )
     return None
