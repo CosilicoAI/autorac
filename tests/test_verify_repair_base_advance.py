@@ -24,13 +24,14 @@ def _repository(
     tmp_path: Path,
     *,
     candidate_path: str = "statutes/42/1437c-1.yaml",
+    jurisdiction: str = "us",
 ) -> tuple[Path, str]:
     repository = tmp_path / "rulespec-us"
     repository.mkdir()
     subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
     _git(repository, "config", "user.email", "test@example.com")
     _git(repository, "config", "user.name", "Test")
-    rulespec_path = Path("us") / candidate_path
+    rulespec_path = Path(jurisdiction) / candidate_path
     payloads = {
         rulespec_path: "format: rulespec/v1\n",
         rulespec_path.with_suffix(".test.yaml"): "tests: []\n",
@@ -57,6 +58,114 @@ def test_accepts_ancestor_base_when_repair_target_identity_is_unchanged(
         current_ref=current_ref,
         candidate_path="statutes/42/1437c-1.yaml",
     )
+
+
+def test_accepts_state_jurisdiction_repository_path(tmp_path: Path) -> None:
+    candidate_path = "statutes/47/297/4.yaml"
+    repository, source_ref = _repository(
+        tmp_path,
+        candidate_path=candidate_path,
+        jurisdiction="us-la",
+    )
+    (repository / "unrelated.txt").write_text("advance\n", encoding="utf-8")
+    current_ref = _commit(repository, "unrelated advance")
+
+    verify_base_advance(
+        repository,
+        country="us",
+        source_ref=source_ref,
+        current_ref=current_ref,
+        candidate_path=candidate_path,
+        rulespec_path="us-la/statutes/47/297/4.yaml",
+    )
+
+
+def test_rejects_mismatched_state_candidate_repository_path(
+    tmp_path: Path,
+) -> None:
+    candidate_path = "statutes/47/297/4.yaml"
+    repository, source_ref = _repository(
+        tmp_path,
+        candidate_path=candidate_path,
+        jurisdiction="us-la",
+    )
+
+    with pytest.raises(ValueError, match="repository RuleSpec path"):
+        verify_base_advance(
+            repository,
+            country="us",
+            source_ref=source_ref,
+            current_ref=source_ref,
+            candidate_path=candidate_path,
+            rulespec_path="us-la/statutes/47/297/8.yaml",
+        )
+
+
+@pytest.mark.parametrize(
+    "rulespec_path",
+    [
+        "ca-la/statutes/47/297/4.yaml",
+        "us-/statutes/47/297/4.yaml",
+        "us-_/statutes/47/297/4.yaml",
+        "us-LA/statutes/47/297/4.yaml",
+        "us-la_foo/statutes/47/297/4.yaml",
+        "us-la//statutes/47/297/4.yaml",
+        "us-la/./statutes/47/297/4.yaml",
+        "us-la/other/47/297/4.yaml",
+        "us-la/statutes/47/297/4.test.yaml",
+        "us-la/statutes/../297/4.yaml",
+        "/us-la/statutes/47/297/4.yaml",
+    ],
+)
+def test_rejects_noncanonical_state_repository_path(
+    tmp_path: Path,
+    rulespec_path: str,
+) -> None:
+    candidate_path = "statutes/47/297/4.yaml"
+    repository, source_ref = _repository(
+        tmp_path,
+        candidate_path=candidate_path,
+        jurisdiction="us-la",
+    )
+
+    with pytest.raises(ValueError, match="repository RuleSpec path"):
+        verify_base_advance(
+            repository,
+            country="us",
+            source_ref=source_ref,
+            current_ref=source_ref,
+            candidate_path=candidate_path,
+            rulespec_path=rulespec_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "us/statutes/42/1437c-1.yaml",
+        "us/statutes/42/1437c-1.test.yaml",
+        ".axiom/encoding-manifests/us/statutes/42/1437c-1.json",
+    ],
+)
+def test_rejects_target_identity_missing_at_source_base(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    repository, _ = _repository(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(repository), "rm", "-q", "--", relative_path],
+        check=True,
+    )
+    source_ref = _commit(repository, "source without identity path")
+
+    with pytest.raises(ValueError, match="missing at its source RuleSpec base"):
+        verify_base_advance(
+            repository,
+            country="us",
+            source_ref=source_ref,
+            current_ref=source_ref,
+            candidate_path="statutes/42/1437c-1.yaml",
+        )
 
 
 @pytest.mark.parametrize(
@@ -149,6 +258,8 @@ def test_rejects_current_ref_that_is_not_checkout_head(tmp_path: Path) -> None:
         ("../us", "statutes/42/1437c-1.yaml"),
         ("us", "../statutes/42/1437c-1.yaml"),
         ("us", "/statutes/42/1437c-1.yaml"),
+        ("us", "statutes//42/1437c-1.yaml"),
+        ("us", "statutes/./42/1437c-1.yaml"),
         ("us", "statutes/42/1437c-1.test.yaml"),
     ],
 )
