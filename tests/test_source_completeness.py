@@ -10974,6 +10974,7 @@ rules:
     (
         "Effective January 1, 2026, the amount is calculated by multiplying income by the rate.",
         "Beginning January 1, 2026 and thereafter, the amount is calculated by multiplying income by the rate.",
+        "For tax years beginning after December 31, 2005 and ending before January 1, 2007, the amount is calculated by multiplying income by the rate.",
     ),
 )
 def test_common_formula_applicability_prefaces_are_not_coefficients(source):
@@ -11021,6 +11022,108 @@ rules:
     )
 
     assert not result.issues
+
+
+def test_tax_year_range_preface_does_not_hide_following_percentage():
+    source = (
+        "(i) For tax years beginning after December 31, 2005 and ending before "
+        "January 1, 2007, twenty-five percent of the unreduced federal credit."
+    )
+    occurrences = EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR(source)
+
+    temporal = [item for item in occurrences if item.has_temporal_context]
+    substantive = [item for item in occurrences if not item.has_temporal_context]
+
+    assert temporal
+    assert all(
+        completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+        for item in temporal
+    )
+    assert any(item.value == 25 for item in substantive)
+    assert all(
+        not completeness_module._temporal_occurrence_is_formula_applicability_preface(
+            item, source
+        )
+        for item in substantive
+    )
+
+
+def test_tax_year_range_prefaces_allow_distinct_temporal_rate_witnesses():
+    source = """\
+(i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+(ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:297.4
+rules:
+  - name: credit_percentage
+    kind: parameter
+    dtype: Rate
+    source: La. R.S. 47:297.4(A)(1)(a)(i)-(ii)
+    versions:
+      - effective_from: '2006-01-01'
+        formula: 0.25
+      - effective_from: '2007-01-01'
+        formula: 0.50
+  - name: child_care_expense_credit
+    kind: derived
+    dtype: Money
+    source: La. R.S. 47:297.4(A)(1)(a)(i)-(ii)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+    versions:
+      - effective_from: '2006-01-01'
+        formula: credit_percentage * unreduced_federal_credit
+      - effective_from: '2007-01-01'
+        formula: credit_percentage * unreduced_federal_credit
+"""
+    cases = [
+        {
+            "name": "subparagraph i",
+            "period": "2006",
+            "input": {"unreduced_federal_credit": 1000},
+            "output": {"child_care_expense_credit": 250},
+        },
+        {
+            "name": "subparagraph ii",
+            "period": "2007",
+            "input": {"unreduced_federal_credit": 1000},
+            "output": {"child_care_expense_credit": 500},
+        },
+    ]
+
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.4",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert not _has_issue(result, "formula branch")
 
 
 def test_temporal_formula_filter_keeps_substantive_multiplier_grounding():
