@@ -9501,6 +9501,32 @@ def _formula_interval_from_text(
         r"exceeds?|exceeding|above)\b",
         lowered_range,
     ):
+        if len(occurrences) >= 2:
+            upper_gap = text[occurrences[0].end : occurrences[1].start]
+            normalized_upper_gap = " ".join(upper_gap.replace(",", " , ").split())
+            upper_match = re.fullmatch(
+                r"(?:(?:dollars?|usd|euros?|eur) )?(?:, )?"
+                r"(?:and|und) "
+                r"(?P<comparison>"
+                r"less than or equal to|less than|below|at most|"
+                r"weniger als oder gleich|weniger als|höchstens"
+                r")",
+                normalized_upper_gap,
+                flags=re.IGNORECASE,
+            )
+            if upper_match is not None:
+                inclusive = upper_match.group("comparison").lower() in {
+                    "less than or equal to",
+                    "at most",
+                    "weniger als oder gleich",
+                    "höchstens",
+                }
+                return _NumericInterval(
+                    occurrences[0],
+                    False,
+                    occurrences[1],
+                    inclusive,
+                )
         return _NumericInterval(occurrences[0], False, None, False)
     if re.match(
         r"(?:von|ab|from|at\s+least|mindestens)\b",
