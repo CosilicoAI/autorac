@@ -1345,8 +1345,8 @@ def _validate_legacy_exact_dependents(
     live_manifests: set[PurePosixPath],
     manifest_payloads: dict[PurePosixPath, dict[str, object]],
     changed: set[PurePosixPath],
-) -> set[PurePosixPath]:
-    """Verify every v2 exact dependent and return unchanged authorized files."""
+) -> set[tuple[PurePosixPath, PurePosixPath]]:
+    """Verify v2 exact dependents and return manifest-bound unchanged claims."""
 
     from axiom_encode.cli import (
         _legacy_primary_source_citations,
@@ -1364,7 +1364,7 @@ def _validate_legacy_exact_dependents(
         raise ValueError(
             f"legacy replacement exact_dependents are malformed: {root_manifest}"
         )
-    unchanged_authorized: set[PurePosixPath] = set()
+    unchanged_authorized: set[tuple[PurePosixPath, PurePosixPath]] = set()
     seen_primaries: set[PurePosixPath] = set()
     seen_group_paths: set[PurePosixPath] = set()
     seen_manifests: set[PurePosixPath] = set()
@@ -1561,7 +1561,7 @@ def _validate_legacy_exact_dependents(
                 continue
             if base_by_path[path] != live_by_path[path] or path in changed:
                 raise ValueError(f"{label} unrewritten file differs: {path}")
-            unchanged_authorized.add(path)
+            unchanged_authorized.add((expected_manifest, path))
 
         if expected_manifest not in live_manifests or expected_manifest not in changed:
             raise ValueError(f"{label} lacks a changed exact dependent manifest")
@@ -1663,10 +1663,21 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
 
     authorized = set(live_manifests)
     authorized_unchanged: set[PurePosixPath] = set()
+    authenticated_unchanged_claims: set[tuple[PurePosixPath, PurePosixPath]] = set()
+    unchanged_claims: set[tuple[PurePosixPath, PurePosixPath]] = set()
     for relative, payload in manifest_payloads.items():
+        tool = payload.get("tool")
+        backend = payload.get("backend")
+        if tool == MODEL_APPLY_TOOL and (
+            not isinstance(backend, str) or backend not in MODEL_APPLY_BACKENDS
+        ):
+            raise ValueError(
+                f"model apply manifest has an unsupported backend: {relative}"
+            )
+        is_model_apply = tool == MODEL_APPLY_TOOL
         replacement = payload.get("replacement")
         receipt_rewrites: set[PurePosixPath] = set()
-        if payload.get("tool") == LEGACY_REPLACEMENT_TOOL:
+        if tool == LEGACY_REPLACEMENT_TOOL:
             if not isinstance(replacement, dict):
                 raise ValueError(f"legacy replacement binding is malformed: {relative}")
             receipt_relative = _safe_relative_path(
@@ -2229,6 +2240,9 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         )
                     if live_path not in changed:
                         authorized_unchanged.add(live_path)
+                        authenticated_unchanged_claims.add(
+                            (retained_manifest, live_path)
+                        )
                 authorized.add(retained_old_manifest)
             expected_applied_files = [
                 *live_files,
@@ -2447,20 +2461,22 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             }:
+                exact_unchanged_claims = _validate_legacy_exact_dependents(
+                    repo,
+                    root_manifest=relative,
+                    receipt_relative=receipt_relative,
+                    receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+                    receipt=receipt,
+                    receipt_replacement=receipt_replacement,
+                    base_commit=str(base_commit or ""),
+                    authoritative_replacements=authoritative_replacements,
+                    live_manifests=live_manifests,
+                    manifest_payloads=manifest_payloads,
+                    changed=changed,
+                )
+                authenticated_unchanged_claims.update(exact_unchanged_claims)
                 authorized_unchanged.update(
-                    _validate_legacy_exact_dependents(
-                        repo,
-                        root_manifest=relative,
-                        receipt_relative=receipt_relative,
-                        receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
-                        receipt=receipt,
-                        receipt_replacement=receipt_replacement,
-                        base_commit=str(base_commit or ""),
-                        authoritative_replacements=authoritative_replacements,
-                        live_manifests=live_manifests,
-                        manifest_payloads=manifest_payloads,
-                        changed=changed,
-                    )
+                    path for _manifest, path in exact_unchanged_claims
                 )
             authorized.update({receipt_relative, old_manifest_path, *receipt_rewrites})
 
@@ -2477,6 +2493,52 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if applied_path not in receipt_rewrites:
                 _validate_rulespec_path(repo, applied_path, label=label)
             authorized.add(applied_path)
+            if is_model_apply:
+                digest = entry.get("sha256")
+                if (
+                    set(entry) != {"path", "sha256"}
+                    or not isinstance(digest, str)
+                    or DIGEST_PATTERN.fullmatch(digest) is None
+                ):
+                    raise ValueError(
+                        f"{relative} applied_files[{index}] must bind an exact sha256"
+                    )
+                live_raw = _read_bounded_regular(
+                    repo,
+                    applied_path,
+                    label="model-applied file",
+                    max_bytes=16 * 1024 * 1024,
+                )
+                if hashlib.sha256(live_raw).hexdigest() != digest:
+                    raise ValueError(
+                        f"{relative} applied_files[{index}] differs from its signed "
+                        "sha256"
+                    )
+                if applied_path not in changed:
+                    try:
+                        base_raw = _git(
+                            repo,
+                            "show",
+                            f"HEAD:{applied_path.as_posix()}",
+                        )
+                    except subprocess.CalledProcessError as exc:
+                        raise ValueError(
+                            f"{relative} unchanged applied_files[{index}] is not an "
+                            "existing clean-HEAD file"
+                        ) from exc
+                    if hashlib.sha256(base_raw).hexdigest() != digest:
+                        raise ValueError(
+                            f"{relative} unchanged applied_files[{index}] differs "
+                            "from its signed sha256"
+                        )
+                    authorized_unchanged.add(applied_path)
+                    authenticated_unchanged_claims.add((relative, applied_path))
+            elif (
+                tool == LEGACY_REPLACEMENT_TOOL and applied_path in authorized_unchanged
+            ):
+                authenticated_unchanged_claims.add((relative, applied_path))
+            if applied_path not in changed:
+                unchanged_claims.add((relative, applied_path))
 
     if deleted_manifests - authorized:
         raise ValueError(
@@ -2484,6 +2546,11 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             + ", ".join(map(str, sorted(deleted_manifests - authorized)))
         )
 
+    authorized_unchanged.difference_update(
+        path
+        for manifest, path in unchanged_claims
+        if (manifest, path) not in authenticated_unchanged_claims
+    )
     authorized.difference_update(authorized_unchanged)
     unexpected = changed - authorized
     missing = authorized - changed

@@ -1778,6 +1778,192 @@ def test_stage_authorized_changes_stages_only_manifest_and_applied_files(
     )
 
 
+def _write_model_change_with_unchanged_companion(
+    repo: Path,
+    *,
+    companion_sha256: str | None = None,
+) -> tuple[Path, Path, Path]:
+    companion = repo / "us/regulations/example.test.yaml"
+    companion.parent.mkdir(parents=True)
+    companion.write_text("- name: existing\n", encoding="utf-8")
+    _git(repo, "add", companion.relative_to(repo).as_posix())
+    _git(repo, "commit", "-m", "add existing companion")
+
+    rule = repo / "us/regulations/example.yaml"
+    rule.write_text("rules: []\n", encoding="utf-8")
+    manifest = repo / ".axiom/encoding-manifests/us/regulations/example.json"
+    manifest.parent.mkdir(parents=True)
+    companion_entry: dict[str, str] = {"path": companion.relative_to(repo).as_posix()}
+    if companion_sha256 is not None:
+        companion_entry["sha256"] = companion_sha256
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "axiom-encode/applied-rulespec/v5",
+                "tool": "axiom-encode encode --apply",
+                "backend": "openai",
+                "applied_files": [
+                    {
+                        "path": rule.relative_to(repo).as_posix(),
+                        "sha256": hashlib.sha256(rule.read_bytes()).hexdigest(),
+                    },
+                    companion_entry,
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return rule, companion, manifest
+
+
+def test_stage_accepts_hash_bound_unchanged_model_applied_file(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    companion_sha256 = hashlib.sha256(b"- name: existing\n").hexdigest()
+    rule, companion, manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=companion_sha256,
+    )
+
+    stage_authorized_changes(repo)
+
+    assert _git(repo, "diff", "--cached", "--name-only").splitlines() == sorted(
+        [str(manifest.relative_to(repo)), str(rule.relative_to(repo))]
+    )
+    assert (
+        companion.relative_to(repo).as_posix()
+        not in _git(repo, "diff", "--cached", "--name-only").splitlines()
+    )
+
+
+def test_stage_rejects_unbound_unchanged_model_applied_file(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write_model_change_with_unchanged_companion(repo)
+
+    with pytest.raises(ValueError, match="must bind an exact sha256"):
+        stage_authorized_changes(repo)
+
+
+def test_stage_rejects_wrong_hash_for_unchanged_model_applied_file(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_model_change_with_unchanged_companion(repo, companion_sha256="a" * 64)
+
+    with pytest.raises(ValueError, match="differs from its signed sha256"):
+        stage_authorized_changes(repo)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"path": "us/regulations/example.yaml"},
+        {
+            "path": "us/regulations/example.yaml",
+            "sha256": False,
+            "extra": [],
+        },
+    ],
+)
+def test_stage_rejects_malformed_changed_model_applied_file(
+    tmp_path: Path,
+    entry: dict[str, object],
+) -> None:
+    repo = _repo(tmp_path)
+    _rule, _companion, manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=hashlib.sha256(b"- name: existing\n").hexdigest(),
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["applied_files"][0] = entry
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must bind an exact sha256"):
+        stage_authorized_changes(repo)
+
+
+def test_stage_rejects_wrong_hash_for_changed_model_applied_file(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _rule, _companion, manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=hashlib.sha256(b"- name: existing\n").hexdigest(),
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["applied_files"][0]["sha256"] = "a" * 64
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="differs from its signed sha256"):
+        stage_authorized_changes(repo)
+
+
+def test_stage_rejects_unsupported_model_backend(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _rule, _companion, manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=hashlib.sha256(b"- name: existing\n").hexdigest(),
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["backend"] = "unsupported"
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported backend"):
+        stage_authorized_changes(repo)
+
+
+@pytest.mark.parametrize("mutation", ["delete", "symlink", "executable"])
+def test_stage_rejects_noncanonical_changed_model_applied_file(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _rule, companion, _manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=hashlib.sha256(b"- name: existing\n").hexdigest(),
+    )
+    if mutation == "delete":
+        companion.unlink()
+    elif mutation == "symlink":
+        companion.unlink()
+        companion.symlink_to("example.yaml")
+    else:
+        companion.chmod(0o755)
+
+    with pytest.raises(ValueError, match="model-applied file"):
+        stage_authorized_changes(repo)
+
+
+def test_stage_rejects_borrowed_unchanged_exemption_across_manifests(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _rule, companion, _manifest = _write_model_change_with_unchanged_companion(
+        repo,
+        companion_sha256=hashlib.sha256(b"- name: existing\n").hexdigest(),
+    )
+    second_rule = repo / "us/regulations/second.yaml"
+    second_rule.write_text("rules: []\n", encoding="utf-8")
+    second_manifest = repo / ".axiom/encoding-manifests/us/regulations/second.json"
+    second_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "axiom-encode/applied-rulespec/v5",
+                "tool": "unsupported",
+                "applied_files": [
+                    {"path": second_rule.relative_to(repo).as_posix()},
+                    {"path": companion.relative_to(repo).as_posix()},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="authorizes paths that are not changed"):
+        stage_authorized_changes(repo)
+
+
 def test_stage_authorized_changes_rejects_unexpected_file(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     _write_signed_change(repo)
