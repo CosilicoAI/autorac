@@ -1,0 +1,1 @@
+Allow authenticated repair replay for state RuleSpec paths such as `us-la/statutes/...` while keeping generated candidate paths lane-relative and binding base-advance checks to the exact repository-relative target, companion test, and manifest paths.

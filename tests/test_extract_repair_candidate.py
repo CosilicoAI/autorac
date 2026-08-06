@@ -13,6 +13,7 @@ from scripts.extract_repair_candidate import (
     MAX_ARCHIVE_MEMBERS,
     MAX_CANDIDATE_BYTES,
     SINGLE_TARGET_MODE_FIELDS,
+    _expected_module_path,
     extract_candidate,
 )
 
@@ -115,6 +116,34 @@ def test_extracts_checksum_bound_final_candidate(tmp_path):
     assert result["source_rulespec_ref"] == "d" * 40
     assert (root / result["path"]).read_text() == "format: rulespec/v1\nrules: []\n"
     assert (root / "statutes/42/1437c-1.test.yaml").read_text() == "[]\n"
+
+
+def test_state_rulespec_path_maps_to_lane_relative_candidate_path():
+    assert (
+        _expected_module_path("us", "us-la/statutes/47/297/4.yaml")
+        == "statutes/47/297/4.yaml"
+    )
+
+
+@pytest.mark.parametrize(
+    "replace_rulespec_path",
+    (
+        "ca-la/statutes/47/297/4.yaml",
+        "us-/statutes/47/297/4.yaml",
+        "us-_/statutes/47/297/4.yaml",
+        "us-LA/statutes/47/297/4.yaml",
+        "us-la_foo/statutes/47/297/4.yaml",
+        "us-la//statutes/47/297/4.yaml",
+        "us-la/./statutes/47/297/4.yaml",
+        "us-la/other/47/297/4.yaml",
+        "us-la/statutes/47/297/4.test.yaml",
+        "us-la/statutes/../297/4.yaml",
+        "/us-la/statutes/47/297/4.yaml",
+    ),
+)
+def test_rejects_noncanonical_state_rulespec_path(replace_rulespec_path):
+    with pytest.raises(ValueError, match="not canonical"):
+        _expected_module_path("us", replace_rulespec_path)
 
 
 @pytest.mark.parametrize(

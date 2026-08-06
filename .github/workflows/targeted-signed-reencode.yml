@@ -493,7 +493,8 @@ jobs:
             --country "$COUNTRY" \
             --source-ref "$repair_source_rulespec_ref" \
             --current-ref "$RULESPEC_REF" \
-            --candidate-path "$repair_candidate_path"
+            --candidate-path "$repair_candidate_path" \
+            --rulespec-path "$REPLACE_RULESPEC_PATH"
           echo "root=$(jq -r '.root' "$RUNNER_TEMP/repair-candidate.json")" \
             >> "$GITHUB_OUTPUT"
           echo "path=$(jq -r '.path' "$RUNNER_TEMP/repair-candidate.json")" \

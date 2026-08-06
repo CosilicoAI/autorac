@@ -21,6 +21,7 @@ MAX_ARCHIVE_MEMBERS = 8192
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 RUNNER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+JURISDICTION_PATTERN = re.compile(r"[a-z]{2,3}(?:-[a-z0-9]+)*")
 CONTRACT = runpy.run_path(
     Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
 )
@@ -146,10 +147,13 @@ def _verified_generated_file(
 
 def _expected_module_path(country: str, replace_rulespec_path: str) -> str:
     path = PurePosixPath(replace_rulespec_path)
+    jurisdiction = path.parts[0] if path.parts else ""
     if (
         path.is_absolute()
+        or path.as_posix() != replace_rulespec_path
         or len(path.parts) < 3
-        or path.parts[0] != country
+        or JURISDICTION_PATTERN.fullmatch(jurisdiction) is None
+        or (jurisdiction != country and not jurisdiction.startswith(f"{country}-"))
         or path.parts[1] not in ATOMIC_ROOTS
         or path.suffix != ".yaml"
         or path.name.endswith(".test.yaml")
