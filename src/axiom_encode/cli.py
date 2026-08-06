@@ -342,6 +342,7 @@ from .legacy_replacement_overlay import (
 from .legacy_replacement_overlay import (
     stage_legacy_replacement_overlay as _stage_legacy_replacement_overlay,
 )
+from .live_run_telemetry import LiveRunTelemetry
 from .oracles.policyengine.pending import (
     PendingDeclarationError,
     apply_pending_to_report,
@@ -27194,6 +27195,31 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             backend=args.backend,
             model=config.escalation_model,
         )
+    with LiveRunTelemetry(
+        citation=str(args.citation),
+        backend=str(getattr(args, "backend", "") or ""),
+        model=str(config.initial_model or ""),
+        encoder_version=__version__,
+        enabled=getattr(args, "sync", True) is True,
+    ) as live_run:
+        return _run_encode_attempts_with_retries(
+            args,
+            config=config,
+            live_run=live_run,
+            apply_signing_broker=apply_signing_broker,
+            resolved_policy_checkout_path=resolved_policy_checkout_path,
+        )
+
+
+def _run_encode_attempts_with_retries(
+    args,
+    *,
+    config: _EncodeEscalationConfig,
+    live_run: LiveRunTelemetry,
+    apply_signing_broker: SigningBroker | None = None,
+    resolved_policy_checkout_path: Path | None = None,
+):
+    """Bounded validator-retry loop for one encode invocation."""
     initial_retry_candidate = _load_initial_validation_retry_candidate(args)
     failed_attempts: tuple[_FailedEncodeAttempt, ...] = ()
     current_model = config.initial_model
@@ -27261,6 +27287,7 @@ def _cmd_encode_with_authoritative_rulespec_roots(
                     f"from_model={current_model} to_model={next_model}"
                 )
                 current_model = next_model
+                live_run.set_attempt(len(failed_attempts) + 1, str(current_model))
                 continue
 
         outcome = execution.outcome
@@ -27325,6 +27352,13 @@ def _cmd_encode_with_authoritative_rulespec_roots(
             else:
                 print("  supabase_sync=failed")
 
+        encode_succeeded = (
+            execution.apply_passed if apply_requested else execution.result.success
+        )
+        live_run.finish(
+            "completed" if encode_succeeded else "failed",
+            run_id=logged_run.id,
+        )
         if apply_requested:
             sys.exit(0 if execution.apply_passed else 1)
         sys.exit(0 if execution.result.success else 1)
