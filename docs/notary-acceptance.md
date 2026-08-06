@@ -176,9 +176,11 @@ Notary statement (`axiom/notary-acceptance/v1`, signed):
 
 ### 4.0 Preflight (trusted)
 
-Resolves canonical repository identity, protected base `B` (resolved by the
-trusted workflow from the protected branch — never accepted from caller
-input), candidate commit `X`, and the complete git-object diff `B..X`. The preflight MUST reject
+Resolves canonical repository identity, candidate commit `X`, and — in `diff`
+mode — protected base `B` (resolved by the trusted workflow from the
+protected branch — never accepted from caller input) plus the complete
+git-object diff `B..X`. In `whole-repo` mode no base exists; preflight is the
+whole-tree structural scan of §2.3. In diff mode the preflight MUST reject
 candidate changes to authority surfaces: workflow files, verifier pins, trust
 roots, waiver policy files, repository-structure declarations, executable
 modes, symlinks. Those move only through separately privileged flows.
