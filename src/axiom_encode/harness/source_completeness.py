@@ -531,9 +531,9 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:amount|balance|value)|"
     r"be\s+(?:zero|\$?\s*0(?:\.0+)?)\s+or\s+(?:above|greater|higher|more)|"
     r"(?:have|has|had)\s+(?:(?:a\s+)?(?:floor|lower\s+bound|"
-    r"minimum(?:\s+value)?)\s+of\s+(?:zero|\$?\s*0(?:\.0+)?)|"
+    r"minimum(?:\s+value)?)\s+(?:at|of)\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"(?:a\s+)?(?:zero|\$?\s*0(?:\.0+)?)\s+(?:as\s+a\s+)?lower\s+bound)|"
-    r"be\s+bounded\s+(?:from\s+)?below\s+by\s+"
+    r"be\s+bounded\s+(?:from\s+)?below\s+(?:at|by)\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?)|"
     r"(?:cannot|can\s+not)\s+(?:(?:be|become|turn)\s+negative|"
     r"(?:drop|fall|go)\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
@@ -2845,7 +2845,7 @@ def _formula_passive_rounding_modifier_is_bounded(modifier: str) -> bool:
         or re.fullmatch(
             rf"in\s+(?:the\s+)?manner\s+(?:authorized|established|mandated|"
             rf"outlined|provided|required|specified|prescribed|stipulated)\s+"
-            rf"by\s+"
+            rf"(?:by|in|under)\s+"
             rf"{legal_reference}",
             modifier,
             flags=re.IGNORECASE,
@@ -10593,6 +10593,20 @@ def _formula_bound_from_comparison(
             if required_predicate_match.group("negative"):
                 comparison = f"not {comparison}"
             continue
+        bound_predicate_match = re.match(
+            r"(?:is|are|be)\s+(?:[a-z]+ly\s+){0,2}"
+            r"(?:bound|duty-bound)\s+"
+            r"(?:(?:by|under)\s+(?:(?:this|that|the)\s+)?"
+            r"[a-z][a-z0-9 .():§'-]{0,50}?\s+)?"
+            r"(?P<negative>not\s+)?to\s+",
+            comparison,
+        )
+        if bound_predicate_match is not None:
+            modal_seen = "must"
+            comparison = comparison[bound_predicate_match.end() :]
+            if bound_predicate_match.group("negative"):
+                comparison = f"not {comparison}"
+            continue
         descriptive_predicate_match = re.match(
             r"(?:(?:is|are|be)\s+(?:anticipated\s+to|apt\s+to|capable\s+of|"
             r"designed\s+to|estimated\s+to|expected\s+to|forecast\s+to|"
@@ -10977,7 +10991,7 @@ def _formula_interval_from_text(
                     flags=re.IGNORECASE,
                 )
                 introduced_subject = re.search(
-                    rf"\b{subject}\s+(?:are|be|is|must\s+be|ranges?|"
+                    rf"\b{subject}\s+(?:are|be|is|must\s+(?:be|range)|ranges?|"
                     r"shall\s+(?:be|range))$",
                     candidate_prefix,
                     flags=re.IGNORECASE,
@@ -10993,7 +11007,7 @@ def _formula_interval_from_text(
             continue
         first_gap = text[candidate.end() : candidate_occurrences[0].start]
         if re.fullmatch(
-            r"\s*(?:\$|€|£)?\s*(?:(?:zu|bis)\s+)?"
+            r"\s*(?:\$|€|£|usd|eur|gbp)?\s*(?:(?:zu|bis)\s+)?"
             r"(?:(?:einschließlich|maximal|inklusive|including|maximum)\s+)?"
             r"(?:(?:einem?|einer|dem|der|das)\s+)?"
             r"(?:(?:zu\s+versteuernd\w*|maßgeblich\w*)\s+)?"
