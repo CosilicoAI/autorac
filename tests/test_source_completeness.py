@@ -1844,18 +1844,24 @@ B.(1) If the credit against Louisiana income tax for resident individuals whose 
 
 
 @pytest.mark.parametrize(
-    ("comparison", "upper_inclusive"),
+    ("connector", "comparison", "upper_inclusive"),
     (
-        ("less than or equal to", True),
-        ("less than", False),
+        ("and", "less than or equal to", True),
+        ("and", "less than", False),
+        ("but", "less than", False),
+        ("and", "not more than", True),
+        ("and", "does not exceed", True),
+        (", and", "is less than or equal to", True),
     ),
 )
 def test_formula_interval_recognizes_conjoined_upper_bound(
+    connector: str,
     comparison: str,
     upper_inclusive: bool,
 ):
     source = (
-        "(2) If income is greater than twenty-five thousand dollars and "
+        "(2) If income is greater than twenty-five thousand dollars "
+        f"{connector} "
         f"{comparison} thirty-five thousand dollars, the credit equals "
         "thirty percent of the federal credit."
     )
@@ -2158,9 +2164,14 @@ B. End.
         "The tax shall be determined by applying the rate to that portion of taxable income in excess of the threshold",
         "The tax shall be determined by applying the rate to the portion of taxable income which exceeds $10,000",
         "The tax shall be determined by applying the rate to that portion of taxable income that exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income which is greater than $10,000",
+        "The tax shall be determined by applying the rate to that part of taxable income which exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income which does not exceed $10,000",
         "The tax shall be determined by applying the rate to the excess of taxable income above $10,000",
         "The tax shall be determined by applying the rate to so much of taxable income as is in excess of $10,000",
         "The tax shall be determined by applying the rate to so much of taxable income as exceeds or equals $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as is greater than $10,000",
+        "The tax shall be determined by applying the rate to so much of taxable income as does not exceed $10,000",
         "The credit shall be determined by applying the rate to each dollar of taxable income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
@@ -2204,6 +2215,45 @@ B. End.
         ("a", "1"),
         ("a", "2"),
     ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The tax is determined by applying the rate to that part of taxable income which exceeds $10,000.",
+        "A. The tax is determined by applying the rate to that portion of taxable income which does not exceed $10,000.",
+        "A. The tax is determined by applying the rate to so much of taxable income as does not exceed $10,000.",
+    ),
+)
+def test_bracket_computation_cannot_be_encoded_as_parameter_only(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules:
+  - name: bracket_threshold
+    kind: parameter
+    dtype: Money
+    source: us-la/statute/47:294(A)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '10000'
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -2565,10 +2615,12 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
         "except in any case where the taxpayer is ineligible, the department shall",
         "except as otherwise provided in section 5, the department shall",
         "except as required by section 5, the department shall",
+        "except as prescribed by section 5, the department shall",
         "except as otherwise specified, the department shall",
         "in any case where the taxpayer is eligible, the department shall",
         "in a case where the taxpayer is eligible, the department shall",
         "save where the taxpayer is eligible, the department shall",
+        "subject however to section 5, the department shall",
         "the credit shall",
     ),
 )
@@ -2707,8 +2759,12 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The benefit is determined by applying Benefit Rules.",
         "The benefit is determined by applying Formula Policy.",
         "The benefit is determined by applying Formula Policy Guide.",
+        "The benefit is determined by applying Formula Administration Manual.",
+        "The benefit is determined by applying Formula Operations Manual.",
         "The amount is determined by applying Formula Guidelines.",
         "The benefit is determined by applying Index Requirements.",
+        "The amount is determined by applying Index Methodology Guide.",
+        "The amount is determined by applying Index Publication.",
         "The credit is determined by applying Credit Requirements.",
         "The credit is determined by applying CREDIT REQUIREMENTS.",
         "The amount is determined by applying Amount Guidelines.",
@@ -2760,6 +2816,9 @@ def test_delegated_determinations_are_not_computations(source: str):
         "given that the credit equals income plus the supplement.",
         "The eligibility is determined by applying the requirements of section 5 "
         "inasmuch as the credit equals income plus the supplement.",
+        "considering that the credit equals income plus the supplement.",
+        "seeing that the credit equals income plus the supplement.",
+        "provided the credit equals income plus the supplement.",
     ),
 )
 def test_administrative_applied_coordinate_does_not_mask_later_formula(source: str):
@@ -2855,6 +2914,7 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "The department shall round the amount when necessary.",
         "The department shall round the amount as necessary.",
         "The department shall round the amount if required.",
+        "The department shall round the amount whenever necessary.",
         "For each return, round the amount down.",
         "If necessary, round the amount down.",
         "For each return, promptly round the amount.",
@@ -2880,6 +2940,12 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
 )
 def test_numeric_rounding_directive_is_a_computation(source: str):
     assert source_states_explicit_computation(source)
+
+
+def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
+    assert not source_states_explicit_computation(
+        "After reviewing the Benefit Policy, the department shall round it down."
+    )
 
 
 def test_rounding_only_detection_preserves_contextual_arithmetic():
@@ -3172,6 +3238,8 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit equals one half of the current month amount",
         "The credit equals one half of the months of eligibility",
         "The allowance equals one half of the hours of service",
+        "The service requirement equals one half of the hours of service",
+        "The benefit period equals one half of the months of eligibility",
         "The tax equals one-half per cent of taxable income",
         "The tax equals one-half percent of taxable income",
         "The tax equals two and one-half percent of taxable income",
@@ -3225,6 +3293,11 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but shall in no event be negative",
         "The credit is the lesser of the base or the cap, but cannot be negative",
         "The credit is the lesser of the base or the cap, but shall be zero if negative",
+        "The credit is the lesser of the base or the cap, but shall under no circumstances be negative",
+        "The credit is the lesser of the base or the cap, but shall be treated as zero if negative",
+        "The credit is the lesser of the base or the cap, but shall be deemed zero when negative",
+        "The amount is the difference of income and deduction and shall not be negative",
+        "The amount is the difference between income and deduction and shall not be negative",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -3243,6 +3316,37 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
 
     assert source_states_explicit_computation(source)
     assert [branch.path for branch in formula_branches] == [("a",)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "A. The amount is the difference of income and deduction and shall not be negative.",
+        "A. The amount is the difference between income and deduction and shall not be negative.",
+    ),
+)
+def test_coordinated_nonnegative_floor_still_requires_formula_output(source: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -11828,6 +11932,12 @@ def test_tax_year_range_preface_does_not_hide_following_percentage():
         "For taxable years ending 2026, twenty-five percent of income.",
         "For taxable years ending in 2026, twenty-five percent of income.",
         "For taxable years 2025 through 2027, twenty-five percent of income.",
+        "For taxable years 2025 through 2027 inclusive, twenty-five percent of income.",
+        "For taxable years from 2025 through 2027, twenty-five percent of income.",
+        "For taxable years 2025, 2026, and thereafter, twenty-five percent of income.",
+        "For taxable year 2025 and thereafter, twenty-five percent of income.",
+        "For taxable years 2025 and later, twenty-five percent of income.",
+        "For taxable years 2025 and onward, twenty-five percent of income.",
         "For taxable years 2025 and 2026, twenty-five percent of income.",
         "For taxable years 2025, 2026, and 2027, twenty-five percent of income.",
         "For taxable years 2025-2027, twenty-five percent of income.",
