@@ -5955,6 +5955,186 @@ rules: []
     assert not result.issues
 
 
+def _louisiana_state_runtime_gap_fixture(citation: str) -> tuple[str, str]:
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295/c#federal_return_copy_becomes_part_of_state_return
+      reason: >-
+        {citation} cannot be encoded because the runtime lacks a
+        document-filing and document-incorporation capability for a filed
+        federal income tax return becoming part of the required state return.
+rules:
+  - name: annual_report_filing_record
+    kind: derived
+    dtype: Judgment
+    period: Day
+    source: us-la/statute/47:295(A)
+    versions:
+      - formula: 'true'
+  - name: audit_record_retention
+    kind: derived
+    dtype: Judgment
+    period: Day
+    source: us-la/statute/47:295(B)
+    versions:
+      - formula: 'true'
+"""
+    source = """\
+A. The secretary shall file an annual administration report.
+
+B. The secretary shall retain the audit record.
+
+C. The secretary may require that a complete copy of the taxpayer's federal income
+tax return, or any part thereof, be filed. When the return is filed, the federal
+income tax return, or part thereof, shall constitute and become part of the return
+required to be filed under this Part.
+"""
+    return content, source
+
+
+@pytest.mark.parametrize(
+    ("citation", "target"),
+    (
+        ("us-la/statute/47:295", "us-la:statutes/47/295"),
+        ("us-la/statute/47:297.4", "us-la:statutes/47/297/4"),
+        ("us-az/statute/43-1072.01", "us-az:statutes/43-1072/01"),
+        ("us-co/statute/39/39-22-123.5", "us-co:statutes/39/39-22-123.5"),
+        (
+            "us-co/regulation/10-ccr-2506-1/4.207.2",
+            "us-co:regulations/10-ccr-2506-1/4.207.2",
+        ),
+        ("us/regulation/26/1.36B-2", "us:regulations/26/1.36B-2"),
+        ("us-dc/statute/47/47-1803.02", "us-dc:statutes/47/47-1803/02"),
+        ("us-nj/statute/54a:8-6", "us-nj:statutes/54a:8-6"),
+    ),
+)
+def test_state_source_deferral_target_uses_canonical_rulespec_path(
+    citation: str,
+    target: str,
+):
+    assert completeness_module._rulespec_target_base(citation) == target
+
+
+def test_exact_louisiana_rs_branch_can_name_source_bound_runtime_gap():
+    content, source = _louisiana_state_runtime_gap_fixture("R.S. 47:295(C)")
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(c)", "deferral")
+    assert not _has_issue(result, "source branch c", "neither encoded")
+
+
+def test_exact_canonical_state_branch_can_name_source_bound_runtime_gap():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-nj/statute/54a:8-6
+  deferred_outputs:
+    - output: us-nj:statutes/54a:8-6/c#federal_return_copy_submission
+      reason: >-
+        us-nj/statute/54a:8-6(c) cannot be encoded until the runtime has a
+        document-submission capability for the required federal return copy.
+rules: []
+"""
+    source = (
+        "(c) The director may require the taxpayer to submit a copy of the "
+        "taxpayer's federal return."
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-nj/statute/54a:8-6",
+        test_cases=[],
+    )
+
+    assert not result.issues
+
+
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "R.S. 47:295",
+        "R.S. 47:295(B)",
+        "R.S. 47:296(C)",
+        "R.S. 47:295(C)(1)",
+        "R.S. 47:295(C)junk",
+        "us-la/statute/47:295",
+        "us-la/statute/47:295(b)",
+        "us-la/statute/47:296(c)",
+        "us-la/statute/47:295(c)(1)",
+        "us-la/statute/47:295(c)junk",
+    ),
+)
+def test_state_runtime_gap_requires_exact_current_branch(citation: str):
+    content, source = _louisiana_state_runtime_gap_fixture(citation)
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(c)", "deferral", "runtime capability")
+
+
+def test_state_runtime_gap_retry_names_exact_canonical_branch():
+    content, source = _louisiana_state_runtime_gap_fixture("This current source branch")
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    issue = next(
+        issue
+        for issue in result.issues
+        if issue.startswith("[complete-source-unit:deferral]")
+    )
+    assert "`us-la/statute/47:295(c)`" in issue
+
+
+@pytest.mark.parametrize(
+    ("corpus_citation_path", "path", "reason", "expected"),
+    (
+        ("us-la/statute/47/32", ("c",), "R.S. 47:32(C)", True),
+        ("us-la/statute/47/32", ("c",), "La. R.S. 47:32(C)", True),
+        ("us-la/statute/47:295/c", ("1",), "R.S. 47:295(C)(1)", True),
+        ("us-la/statute/47/295/c", ("1",), "R.S. 47:295(C)(1)", True),
+        ("us-la/statute/47:295/c", ("1",), "R.S. 47:295(1)", False),
+        ("us-la/statute/47:295/c", ("1",), "R.S. 47:295(C)(2)", False),
+        ("us-la/statute/47/32", ("c",), "R.S. 47:32(C)(1)", False),
+    ),
+)
+def test_louisiana_rs_branch_reconstructs_full_statute_tail(
+    corpus_citation_path: str,
+    path: tuple[str, ...],
+    reason: str,
+    expected: bool,
+):
+    assert (
+        completeness_module._reason_cites_exact_current_statute_branch(
+            reason,
+            corpus_citation_path=corpus_citation_path,
+            path=path,
+        )
+        is expected
+    )
+
+
 @pytest.mark.parametrize(
     "reason",
     [

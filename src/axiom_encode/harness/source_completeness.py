@@ -1682,8 +1682,8 @@ _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
 _ADMINISTRATIVE_SOURCE_ARTIFACT_LANGUAGE = re.compile(
     r"\b(?:"
     r"amendment|approval|audit|certification|comment|complaint|consultation|"
-    r"document|filing|hearing|inspection|notice|plan|procedure|recommendation|"
-    r"record|report|submission|waiver"
+    r"copy|document|filing|hearing|inspection|notice|plan|procedure|"
+    r"recommendation|record|report|return|submission|waiver"
     r")[a-z-]*\b",
     flags=re.IGNORECASE,
 )
@@ -1756,6 +1756,19 @@ def _imprecise_deferral_retry_shape(
                 "\nFor this rejected current-source branch, the literal citation "
                 f"required in `reason` is `{citation.title} U.S.C. "
                 f"{section}{fragments}`."
+            )
+    elif path:
+        citation_parts = [
+            part for part in corpus_citation_path.strip("/").split("/") if part
+        ]
+        if len(citation_parts) >= 3 and citation_parts[1] == "statute":
+            fragments = "".join(
+                f"({normalize_rulespec_path_segment(part)})" for part in path
+            )
+            branch_hint = (
+                "\nFor this rejected current-source branch, the literal canonical "
+                f"citation required in `reason` is "
+                f"`{corpus_citation_path.rstrip('/')}{fragments}`."
             )
     return f"{_IMPRECISE_DEFERRAL_RETRY_SHAPE}{branch_hint}"
 
@@ -5839,7 +5852,7 @@ def _reason_names_source_bound_runtime_gap(
     path: tuple[str, ...],
     corpus_citation_path: str,
 ) -> bool:
-    """Accept a concrete runtime gap anchored to the exact current USC branch."""
+    """Accept a concrete runtime gap anchored to the exact current statute branch."""
 
     if (
         not path
@@ -5849,32 +5862,18 @@ def _reason_names_source_bound_runtime_gap(
         or not _ADMINISTRATIVE_SOURCE_ARTIFACT_LANGUAGE.search(source_scope_text)
         or not _ADMINISTRATIVE_SOURCE_ACTION_LANGUAGE.search(source_scope_text)
         or source_states_explicit_computation(source_scope_text)
-        or not corpus_citation_path.startswith("us/statute/")
     ):
         return False
-    try:
-        citation = parse_usc_citation(corpus_citation_path)
-    except ValueError:
+    citation_parts = [
+        part for part in corpus_citation_path.strip("/").split("/") if part
+    ]
+    if len(citation_parts) < 3 or citation_parts[1] != "statute":
         return False
-
-    dash_pattern = (
-        "[-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212\\ufe58\\ufe63\\uff0d]"
-    )
-    section_pattern = re.escape(
-        normalize_rulespec_path_segment(citation.section)
-    ).replace(r"\-", dash_pattern)
-    complete_branch = (*citation.fragments, *path)
-    branch_pattern = r"\s*".join(
-        rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
-        for part in complete_branch
-    )
-    descendant_guard = r"(?!\s*\()" if len(complete_branch) > 1 else ""
-    exact_branch_citation = re.compile(
-        rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
-        rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{branch_pattern}{descendant_guard}",
-        flags=re.IGNORECASE,
-    )
-    if not exact_branch_citation.search(reason):
+    if not _reason_cites_exact_current_statute_branch(
+        reason,
+        corpus_citation_path=corpus_citation_path,
+        path=path,
+    ):
         return False
 
     def substantive_tokens(text: str) -> set[str]:
@@ -5887,6 +5886,98 @@ def _reason_names_source_bound_runtime_gap(
     # Two shared source terms keep an exact self-citation from laundering a vague
     # or invented capability assertion into complete-source coverage.
     return len(substantive_tokens(reason) & substantive_tokens(source_scope_text)) >= 2
+
+
+def _reason_cites_exact_current_statute_branch(
+    reason: str,
+    *,
+    corpus_citation_path: str,
+    path: tuple[str, ...],
+) -> bool:
+    """Bind a runtime-gap reason to one complete current-source branch."""
+
+    dash_pattern = (
+        "[-\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u2212\\ufe58\\ufe63\\uff0d]"
+    )
+
+    def literal_pattern(value: str) -> str:
+        normalized = re.sub(
+            r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]",
+            "-",
+            value,
+        )
+        return re.escape(normalized).replace(r"\-", dash_pattern)
+
+    complete_branch = path
+    branch_pattern = r"\s*".join(
+        rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
+        for part in complete_branch
+    )
+    state_branch_terminal_guard = r"(?!\s*\()(?![A-Za-z0-9_])"
+
+    if corpus_citation_path.startswith("us/statute/"):
+        try:
+            citation = parse_usc_citation(corpus_citation_path)
+        except ValueError:
+            return False
+        complete_usc_branch = (*citation.fragments, *path)
+        usc_branch_pattern = r"\s*".join(
+            rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
+            for part in complete_usc_branch
+        )
+        usc_descendant_guard = r"(?!\s*\()" if len(complete_usc_branch) > 1 else ""
+        section_pattern = literal_pattern(
+            normalize_rulespec_path_segment(citation.section)
+        )
+        return bool(
+            re.search(
+                rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
+                rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{usc_branch_pattern}"
+                rf"{usc_descendant_guard}",
+                reason,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    canonical_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_.-]){literal_pattern(corpus_citation_path.rstrip('/'))}"
+        rf"\s*{branch_pattern}{state_branch_terminal_guard}",
+        flags=re.IGNORECASE,
+    )
+    if canonical_pattern.search(reason):
+        return True
+
+    citation_parts = [
+        part for part in corpus_citation_path.strip("/").split("/") if part
+    ]
+    if len(citation_parts) < 3 or citation_parts[0].lower() != "us-la":
+        return False
+    statute_tail = citation_parts[2:]
+    if not statute_tail:
+        return False
+    if ":" in statute_tail[0]:
+        title_section = statute_tail[0].split(":")
+        if len(title_section) != 2 or not all(title_section):
+            return False
+        title, section = title_section
+        existing_scope = statute_tail[1:]
+    else:
+        if len(statute_tail) < 2:
+            return False
+        title, section, *existing_scope = statute_tail
+    complete_louisiana_branch = (*existing_scope, *path)
+    louisiana_branch_pattern = r"\s*".join(
+        rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
+        for part in complete_louisiana_branch
+    )
+    louisiana_rs_pattern = re.compile(
+        rf"(?<![A-Za-z0-9])(?:La\.?\s+)?R\.?\s*S\.?\s*"
+        rf"{literal_pattern(title)}\s*:\s*{literal_pattern(section)}\s*"
+        rf"{louisiana_branch_pattern}"
+        rf"{state_branch_terminal_guard}",
+        flags=re.IGNORECASE,
+    )
+    return bool(louisiana_rs_pattern.search(reason))
 
 
 def _rulespec_target_base(corpus_citation_path: str) -> str:
@@ -5906,7 +5997,42 @@ def _rulespec_target_base(corpus_citation_path: str) -> str:
         "policy": "policies",
         "form": "forms",
     }.get(document_class, f"{document_class}s")
+    if jurisdiction == "us-la" and plural == "statutes" and tail:
+        title_section = tail[0].split(":")
+        if len(title_section) == 2 and all(title_section):
+            tail = [*title_section, *tail[1:]]
+    if (
+        plural == "statutes"
+        and tail
+        and not _preserve_state_statute_dotted_target_leaf(
+            jurisdiction,
+            plural,
+            tail,
+        )
+    ):
+        leaf_segments = [part for part in tail[-1].split(".") if part]
+        if leaf_segments:
+            tail = [*tail[:-1], *leaf_segments]
     return f"{jurisdiction}:{plural}/{'/'.join(tail)}"
+
+
+def _preserve_state_statute_dotted_target_leaf(
+    jurisdiction: str,
+    root: str,
+    tail: list[str],
+) -> bool:
+    """Mirror canonical state-statute leaves that intentionally retain dots."""
+
+    if jurisdiction != "us-co" or root != "statutes" or len(tail) < 2:
+        return False
+    if len(tail) == 2 and tail[0].isdigit():
+        crs_segments = tail[-1].split("-")
+        return len(crs_segments) == 3 and all(
+            re.fullmatch(r"\d+(?:\.\d+)*", segment) for segment in crs_segments
+        )
+    if not re.fullmatch(r"\d+(?:\.\d+)+", tail[-1]):
+        return False
+    return bool(re.fullmatch(r"\d+(?:-\d+)+(?:\.\d+)?", tail[-2]))
 
 
 def _is_marker_only_container(
