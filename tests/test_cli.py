@@ -12878,8 +12878,8 @@ class TestCmdEncode:
         ] == [
             (),
             ("terra-1",),
-            ("terra-2", "terra-1"),
-            ("sol-1", "terra-2", "terra-1"),
+            ("terra-2",),
+            ("sol-1",),
         ]
         retry_candidates = [
             call.kwargs["validation_retry_candidate"]
@@ -12935,10 +12935,11 @@ class TestCmdEncode:
             result=SimpleNamespace(
                 metrics=SimpleNamespace(
                     compile_issues=[],
-                    ci_issues=[hint],
+                    ci_issues=["stale pre-repair diagnostic"],
                 )
             ),
             error="Generated RuleSpec failed CI validation",
+            validation_issues=(hint,),
         )
 
         assert cli_module._encode_validation_retry_feedback([failed_attempt]) == (
@@ -12946,7 +12947,7 @@ class TestCmdEncode:
             hint,
         )
 
-    def test_encode_retry_feedback_round_robins_across_failed_attempts(self):
+    def test_encode_retry_feedback_matches_only_latest_candidate(self):
         import axiom_encode.cli as cli_module
 
         generic_error = "Generated RuleSpec failed CI validation"
@@ -12956,13 +12957,14 @@ class TestCmdEncode:
                 result=SimpleNamespace(
                     metrics=SimpleNamespace(
                         compile_issues=[],
-                        ci_issues=list(issues),
+                        ci_issues=["stale pre-repair diagnostic"],
                     )
                 ),
                 error=generic_error,
+                validation_issues=issues,
             )
 
-        formula_output = (
+        stale_formula_output = (
             "[complete-source-unit:formula-output] parameter-only representation "
             "is invalid; bind the computation to a principal derived output"
         )
@@ -12971,20 +12973,20 @@ class TestCmdEncode:
         )
         feedback = cli_module._encode_validation_retry_feedback(
             [
-                failed_attempt(formula_output),
+                failed_attempt(stale_formula_output),
                 failed_attempt("middle companion-test failure"),
                 failed_attempt("latest branch-test failure", *latest_flood),
             ]
         )
 
         assert len(feedback) == 12
-        assert feedback[:4] == (
+        assert feedback[:2] == (
             generic_error,
             "latest branch-test failure",
-            "middle companion-test failure",
-            formula_output,
         )
-        assert feedback.index(formula_output) < feedback.index(latest_flood[0])
+        assert "middle companion-test failure" not in feedback
+        assert stale_formula_output not in feedback
+        assert latest_flood[0] in feedback
 
     def test_encode_retry_feedback_bounds_diagnostic_flood_inspection(self):
         import axiom_encode.cli as cli_module
@@ -13004,10 +13006,11 @@ class TestCmdEncode:
             result=SimpleNamespace(
                 metrics=SimpleNamespace(
                     compile_issues=[],
-                    ci_issues=issues,
+                    ci_issues=["stale pre-repair diagnostic"],
                 )
             ),
             error="Generated RuleSpec failed CI validation",
+            validation_issues=issues,
         )
 
         feedback = cli_module._encode_validation_retry_feedback([failed_attempt])
@@ -13017,6 +13020,43 @@ class TestCmdEncode:
         assert feedback[0] == "Generated RuleSpec failed CI validation"
         assert all(len(item) <= 16_000 for item in feedback)
         assert sum(map(len, feedback)) <= 64_000
+
+    def test_encode_retry_issue_snapshot_deduplicates_before_output_cap(self):
+        import axiom_encode.cli as cli_module
+
+        snapshot = cli_module._validation_retry_issue_snapshot(
+            ["repeated current issue"] * 12 + ["distinct current issue"]
+        )
+
+        assert snapshot == ("repeated current issue", "distinct current issue")
+
+    def test_encode_retry_issue_snapshot_bounds_invalid_iterator_inspection(self):
+        import axiom_encode.cli as cli_module
+
+        class EndlessInvalidIssues(list):
+            inspected = 0
+
+            def __iter__(self):
+                while True:
+                    self.inspected += 1
+                    yield None
+
+        issues = EndlessInvalidIssues()
+
+        assert cli_module._validation_retry_issue_snapshot(issues) == ()
+        assert issues.inspected == 48
+
+    def test_encode_retry_issue_snapshot_bounds_each_issue_group_independently(self):
+        import axiom_encode.cli as cli_module
+
+        assert cli_module._validation_retry_issue_snapshot(
+            [None] * 48,
+            ["current CI issue"],
+        ) == ("current CI issue",)
+        assert cli_module._validation_retry_issue_snapshot(
+            ["duplicate compile issue"] * 48,
+            ["current CI issue"],
+        ) == ("duplicate compile issue", "current CI issue")
 
     def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
         import axiom_encode.cli as cli_module
@@ -13031,10 +13071,11 @@ class TestCmdEncode:
             result=SimpleNamespace(
                 metrics=SimpleNamespace(
                     compile_issues=[],
-                    ci_issues=[diagnostic],
+                    ci_issues=["stale pre-repair diagnostic"],
                 )
             ),
             error="Generated RuleSpec failed CI validation",
+            validation_issues=(diagnostic,),
         )
 
         feedback = cli_module._encode_validation_retry_feedback([failed_attempt])
@@ -13141,7 +13182,7 @@ class TestCmdEncode:
         assert candidate.tests is not None
         assert "preserved-companion" in candidate.tests
 
-    def test_encode_keeps_cross_run_repair_candidate_as_retry_floor(self, tmp_path):
+    def test_encode_replaces_cross_run_candidate_after_in_run_rejection(self, tmp_path):
         candidate_root = tmp_path / "preserved-candidate"
         candidate_path = Path("statutes/26/1/j/2.yaml")
         output_file = candidate_root / candidate_path
@@ -13179,9 +13220,36 @@ class TestCmdEncode:
             for call in mock_run.call_args_list
         ]
         assert len(retry_candidates) == 2
-        assert retry_candidates[0] == retry_candidates[1]
-        assert "preserved-cross-run-rule" in retry_candidates[1].rulespec
-        assert "rejected-attempt-1" not in retry_candidates[1].rulespec
+        assert "preserved-cross-run-rule" in retry_candidates[0].rulespec
+        assert "rejected-attempt-1" in retry_candidates[1].rulespec
+        assert "preserved-cross-run-rule" not in retry_candidates[1].rulespec
+        assert mock_run.call_args_list[1].kwargs["validation_retry_feedback"] == (
+            "first candidate regressed",
+        )
+
+    def test_encode_retry_context_rejects_feedback_without_matching_candidate(self):
+        import axiom_encode.cli as cli_module
+
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(compile_issues=[], ci_issues=["fix me"])
+            ),
+            error="Generated RuleSpec failed CI validation",
+            candidate=None,
+            validation_issues=("fix me",),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="Immediately preceding validator-rejected candidate is unavailable",
+        ):
+            cli_module._encode_validation_retry_context(
+                [failed_attempt],
+                initial_retry_candidate=cli_module.ValidationRetryCandidate(
+                    rulespec="format: rulespec/v1\nrules: []\n",
+                    tests="[]\n",
+                ),
+            )
 
     @pytest.mark.parametrize(
         ("root", "relative_path", "message"),

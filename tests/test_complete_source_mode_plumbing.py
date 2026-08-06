@@ -288,16 +288,22 @@ def test_eval_prompt_adds_prior_validation_feedback_only_when_supplied(tmp_path)
         "substantive numeric value in the source text. Complete-source "
         "stated-conversion hint: encode separate grounded parameters.",
     )
+    candidate = evals.ValidationRetryCandidate(
+        rulespec="format: rulespec/v1\nrules: []\n",
+        tests="[]\n",
+    )
 
     default_prompt = evals._build_eval_prompt(**kwargs)
     retry_prompt = evals._build_eval_prompt(
         **kwargs,
         validation_retry_feedback=feedback,
+        validation_retry_candidate=candidate,
     )
 
     assert "PRIOR VALIDATION FEEDBACK" not in default_prompt
     assert "PRIOR VALIDATION FEEDBACK" in retry_prompt
     assert "repair guidance from the validator, not legal authority" in retry_prompt
+    assert "feedback for the rejected candidate below" in retry_prompt
     assert feedback[0] in retry_prompt
 
 
@@ -311,6 +317,10 @@ def test_eval_prompt_preserves_compound_validation_feedback_tail(tmp_path):
     )
     final_control = "FINAL_REQUIRED_CONTROL_PAIR_MUST_REACH_MODEL"
     feedback = ("missing controls: " + "x" * 5_000 + final_control,)
+    candidate = evals.ValidationRetryCandidate(
+        rulespec="format: rulespec/v1\nrules: []\n",
+        tests="[]\n",
+    )
 
     prompt = evals._build_eval_prompt(
         citation="de/regulation/example/1",
@@ -321,10 +331,36 @@ def test_eval_prompt_preserves_compound_validation_feedback_tail(tmp_path):
         include_tests=True,
         runner_backend="openai",
         validation_retry_feedback=feedback,
+        validation_retry_candidate=candidate,
     )
 
     assert feedback[0] in prompt
     assert final_control in prompt
+
+
+def test_eval_prompt_rejects_retry_feedback_without_matching_candidate(tmp_path):
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("The annual amount is 73 800.")
+    workspace = EvalWorkspace(
+        root=tmp_path,
+        source_text_file=source_file,
+        manifest_file=tmp_path / "context-manifest.json",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Validation retry feedback requires its matching rejected candidate",
+    ):
+        evals._build_eval_prompt(
+            citation="de/regulation/example/1",
+            mode="cold",
+            workspace=workspace,
+            context_files=[],
+            target_file_name="1.yaml",
+            include_tests=True,
+            runner_backend="openai",
+            validation_retry_feedback=("candidate-specific issue",),
+        )
 
 
 def test_run_model_eval_forces_tests_and_forwards_complete_mode(tmp_path):
