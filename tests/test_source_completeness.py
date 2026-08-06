@@ -214,8 +214,7 @@ rules:
         for issue in result.issues
     )
     assert any(
-        issue.startswith("[complete-source-unit:deferral]")
-        for issue in result.issues
+        issue.startswith("[complete-source-unit:deferral]") for issue in result.issues
     )
     assert "No tests found." in result.issues
 

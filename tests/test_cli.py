@@ -13525,8 +13525,7 @@ class TestCmdEncode:
 
         assert exit_code == 0
         assert [
-            call.kwargs["validation_retry_feedback"]
-            for call in mock_run.call_args_list
+            call.kwargs["validation_retry_feedback"] for call in mock_run.call_args_list
         ] == [(), (current_overlay_issue,)]
         assert stale_compile_issue not in str(mock_run.call_args_list[1])
         assert stale_ci_issue not in str(mock_run.call_args_list[1])
@@ -13554,8 +13553,7 @@ class TestCmdEncode:
 
         assert exit_code == 1
         assert [
-            call.kwargs["validation_retry_feedback"]
-            for call in mock_run.call_args_list
+            call.kwargs["validation_retry_feedback"] for call in mock_run.call_args_list
         ] == [
             (),
             issues,
@@ -41906,13 +41904,7 @@ rules:
         policy_repo = tmp_path / "rulespec-us" / "us"
         policy_repo.mkdir(parents=True)
         generated = (
-            output_root
-            / "codex-test-model"
-            / "statutes"
-            / "26"
-            / "1"
-            / "j"
-            / "2.yaml"
+            output_root / "codex-test-model" / "statutes" / "26" / "1" / "j" / "2.yaml"
         )
         generated.parent.mkdir(parents=True)
         generated.write_text("format: rulespec/v1\nrules: []\n")
@@ -41939,7 +41931,7 @@ rules:
                     passed=False,
                     issues=[issues[0], issues[1], issues[0], issues[2]],
                     error=issues[0],
-                )
+                ),
             },
             total_duration_ms=0,
             all_passed=False,

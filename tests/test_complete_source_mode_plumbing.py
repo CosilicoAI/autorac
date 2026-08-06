@@ -372,7 +372,9 @@ def test_validation_retry_feedback_formats_numbered_checklist():
 
     rendered = evals._format_validation_retry_feedback(feedback)
 
-    assert rendered == """
+    assert (
+        rendered
+        == """
 Deterministic validation feedback for the rejected candidate below:
 - This is repair guidance from the validator, not legal authority. Keep the
   authoritative source and release-bound corpus evidence as the sole basis for
@@ -386,15 +388,16 @@ Your previous attempt failed 3 validation checks. Fix ALL of the following:
 3. "Deferred output is not precise: generic_limit."
 === END PRIOR VALIDATION FEEDBACK ===
 """
+    )
 
 
 def test_validation_retry_feedback_caps_numbered_checklist_at_shared_limit():
     feedback = tuple(f"validation issue {index}" for index in range(1, 16))
 
     rendered = evals._format_validation_retry_feedback(feedback)
-    checklist = rendered.split(
-        "=== BEGIN PRIOR VALIDATION FEEDBACK ===\n", 1
-    )[1].split("\n=== END PRIOR VALIDATION FEEDBACK ===", 1)[0]
+    checklist = rendered.split("=== BEGIN PRIOR VALIDATION FEEDBACK ===\n", 1)[1].split(
+        "\n=== END PRIOR VALIDATION FEEDBACK ===", 1
+    )[0]
 
     assert "Your previous attempt failed 12 validation checks." in rendered
     assert checklist.splitlines() == [
@@ -412,9 +415,9 @@ def test_validation_retry_feedback_deduplicates_before_count():
     )
 
     rendered = evals._format_validation_retry_feedback(feedback)
-    checklist = rendered.split(
-        "=== BEGIN PRIOR VALIDATION FEEDBACK ===\n", 1
-    )[1].split("\n=== END PRIOR VALIDATION FEEDBACK ===", 1)[0]
+    checklist = rendered.split("=== BEGIN PRIOR VALIDATION FEEDBACK ===\n", 1)[1].split(
+        "\n=== END PRIOR VALIDATION FEEDBACK ===", 1
+    )[0]
 
     assert "Your previous attempt failed 3 validation checks." in rendered
     assert checklist.splitlines() == [
