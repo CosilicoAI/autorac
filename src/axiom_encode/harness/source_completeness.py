@@ -495,21 +495,22 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"(?:(?:always|at\s+all\s+times)\s+)?remain(?:s|ed)?\s+"
     r"(?:(?:at\s+least|at\s+or\s+above|no\s+(?:less|lower)\s+than|"
     r"greater\s+than\s+or\s+equal\s+to)\s+"
-    r"(?:zero|\$?\s*0(?:\.0+)?)|zero\s+or\s+greater)|"
+    r"(?:zero|\$?\s*0(?:\.0+)?)|zero\s+or\s+(?:above|greater|more))|"
     r"not\s+(?:be\s+(?:an?\s+)?negative(?:\s+amount)?|"
     r"(?:become|turn)\s+negative|"
+    r"(?:drop|go)\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
     r"never\s+(?:(?:be|become|remain(?:s|ed)?|turn)\s+)?negative|"
     r"(?:(?:always|never|at\s+all\s+times|in\s+all\s+cases)\s+)?"
     r"(?:(?:be|remain(?:s|ed)?)\s+)?"
-    r"(?:not\s+negative|non-?negative)|"
+    r"(?:not\s+negative|non-?negative)(?:\s+at\s+all\s+times)?|"
     r"(?:does?|do)\s+not\s+(?:become|turn)\s+negative|"
     r"(?:at\s+no\s+time|in\s+no\s+(?:event|case)|never|"
     r"under\s+no\s+circumstances)\s+(?:be|become|turn)\s+negative|"
     r"(?:be\s+)?maintained\s+at\s+no\s+(?:less|lower)\s+than\s+"
     r"(?:zero|\$?\s*0(?:\.0+)?)|"
-    r"be\s+(?:(?:treated\s+as|deemed)\s+)?zero\s+"
+    r"be\s+(?:(?:treated\s+as|deemed|set\s+to)\s+)?zero\s+"
     r"(?:if|when|whenever)\s+(?:(?:(?:it|they)|(?:the\s+)?"
     r"(?:amounts?|benefits?|credits?|incomes?|results?|taxes?|totals?|values?))"
     r"\s+(?:is|are)\s+)?negative|"
@@ -524,8 +525,13 @@ _FORMULA_NONNEGATIVE_FLOOR_CONTROL = (
     r"be\s+(?:less|lower)\s+than\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"fall\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
     r"result\s+in\s+(?:an?\s+)?negative\s+(?:amount|balance|value))|"
-    r"cannot\s+(?:be|become|turn)\s+negative|"
-    r"can\s+not\s+(?:be|become|turn)\s+negative)"
+    r"never\s+(?:carry|have|show)\s+(?:an?\s+)?negative\s+"
+    r"(?:amount|balance|value)|"
+    r"be\s+(?:zero|\$?\s*0(?:\.0+)?)\s+or\s+(?:above|greater|more)|"
+    r"(?:cannot|can\s+not)\s+(?:(?:be|become|turn)\s+negative|"
+    r"(?:drop|fall|go)\s+below\s+(?:zero|\$?\s*0(?:\.0+)?)|"
+    r"(?:carry|have|show)\s+(?:an?\s+)?negative\s+"
+    r"(?:amount|balance|value)))"
 )
 _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     r"\b(?:agreements?|administration|amendments?|appendices|appendix|bulletins?|"
@@ -546,14 +552,20 @@ _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE = re.compile(
     flags=re.IGNORECASE,
 )
 _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE = re.compile(
-    r"\b(?:contents?|copies|copy|drafts?|final|revs?|revisions?|texts?|versions?)\b",
+    r"\b(?:archived|attachments?|contents?|copies|copy|data|drafts?|excerpts?|"
+    r"final|pages?|revs?|revisions?|supplements?|texts?|versions?)\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_CODE_NAMESPACE_TITLE_LANGUAGE = re.compile(
+    r"\b(?:polic(?:y|ies)|rules?|schedules?|sections?|tax|work)\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE = re.compile(
     r"\b(?:administrators?|agenc(?:y|ies)|authorit(?:y|ies)|boards?|bureaus?|"
     r"analysts?|auditors?|clerks?|commissions?|commissioners?|committees?|"
     r"councils?|"
-    r"departments?|directors?|divisions?|managers?|officers?|offices?|"
+    r"chairs?|coordinators?|counsels?|custodians?|departments?|directors?|"
+    r"divisions?|examiners?|leads?|managers?|officers?|offices?|"
     r"secretar(?:y|ies)|services?|supervisors?)\b",
     flags=re.IGNORECASE,
 )
@@ -2593,56 +2605,29 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
             # code grammar, then reject semantic document-title heads above.
             bounded_code = re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", identifier_tail)
             code_segments = identifier_tail.split("-")
-            title_segments = [
+            administrative_segments = [
                 segment
                 for segment in code_segments
                 if _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(segment)
             ]
-            namespace_payload = bool(
-                len(code_segments) == 2
-                and code_segments[0] in {"RULE", "SCHEDULE", "SECTION"}
-                and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
-                    code_segments[-1]
-                )
-                and not _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE.fullmatch(
-                    code_segments[-1]
-                )
+            semantic_document_segment = any(
+                not _FORMULA_CODE_NAMESPACE_TITLE_LANGUAGE.fullmatch(segment)
+                for segment in administrative_segments
             )
-            rule_namespace_payload = bool(
-                "RULE" in code_segments[:-1]
-                and not _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(
-                    code_segments[-1]
-                )
-                and not _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE.fullmatch(
-                    code_segments[-1]
-                )
+            title_qualifier_segment = any(
+                _FORMULA_ADMINISTRATIVE_TITLE_QUALIFIER_LANGUAGE.fullmatch(segment)
+                for segment in code_segments
             )
-            strong_code_signal = bool(
-                any(character.isdigit() for character in identifier_tail)
-                or len(code_segments[0]) == 1
-                or code_segments[0] in {"AGI", "CPI", "GDP", "PCE", "RPI", "TAX"}
-                or namespace_payload
-                or rule_namespace_payload
-                or (
-                    len(code_segments) > 1
-                    and code_segments[-1].lower()
-                    in {
-                        "adjustment",
-                        "coefficient",
-                        "factor",
-                        "index",
-                        "multiplier",
-                        "ratio",
-                        "rate",
-                        "scale",
-                        "weight",
-                    }
-                )
-            )
-            code_like = bounded_code is not None and (
-                administrative_title is None
-                or rule_namespace_payload
-                or (strong_code_signal and len(title_segments) <= 1)
+            # Ambiguous namespace atoms (RULE, SECTION, SCHEDULE, POLICY, TAX,
+            # WORK) may participate in a multi-atom code.  An unambiguous
+            # document atom such as MANUAL, REPORT, GUIDE, or WEBSITE wins over
+            # every acronym, digit, and payload suffix; those signals cannot
+            # turn a titled document into executable work.
+            code_like = bool(
+                bounded_code is not None
+                and not semantic_document_segment
+                and not title_qualifier_segment
+                and (not administrative_segments or len(code_segments) > 1)
             )
             coefficient_tail_is_numeric = code_segments[-1].lower() in {
                 "adjustment",
@@ -2761,28 +2746,12 @@ def _formula_rounding_actor_is_bounded(actor: str) -> bool:
         actor,
         flags=re.IGNORECASE,
     )
-    administrative_titles = tuple(
-        _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.finditer(actor_core)
-    )
-    if administrative_titles:
-        qualifier_tail = actor_core[administrative_titles[-1].end() :].strip()
-        if qualifier_tail and re.fullmatch(
-            r"(?:contents?|copies|copy|drafts?|final|revs?|revisions?|"
-            r"texts?|versions?)(?:\s+(?:contents?|copies|copy|drafts?|final|"
-            r"revs?|revisions?|texts?|versions?))*",
-            qualifier_tail,
-            flags=re.IGNORECASE,
-        ):
-            return False
     actor_starts_with_role = bool(
         _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.match(actor_core)
     )
     actor_last_word = actor_core.rsplit(maxsplit=1)[-1]
     actor_ends_with_role = bool(
         _FORMULA_ROUNDING_ACTOR_ROLE_LANGUAGE.fullmatch(actor_last_word)
-    )
-    actor_ends_with_title = bool(
-        _FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.fullmatch(actor_last_word)
     )
     actor_has_title = bool(_FORMULA_ADMINISTRATIVE_TITLE_LANGUAGE.search(actor))
     role_starts_scoped_actor = bool(
@@ -2793,14 +2762,66 @@ def _formula_rounding_actor_is_bounded(actor: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
-    if determined_actor or bare_actor:
-        return bool(role_starts_scoped_actor or not actor_ends_with_title)
     if not actor_has_title:
         return True
+    return bool(role_starts_scoped_actor or actor_ends_with_role)
+
+
+def _formula_passive_rounding_modifier_is_bounded(modifier: str) -> bool:
+    """Recognize bounded adverbial, actor, and legal passive modifiers."""
+
+    adverbial_by_actor = re.fullmatch(
+        r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*\s+by\s+"
+        r"(?P<actor>[^,.;:\n]{1,60})",
+        modifier,
+        flags=re.IGNORECASE,
+    )
+    if re.fullmatch(
+        r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*",
+        modifier,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if adverbial_by_actor is not None:
+        return _formula_rounding_actor_is_bounded(adverbial_by_actor.group("actor"))
+    if modifier.lower().startswith("by "):
+        return _formula_rounding_actor_is_bounded(modifier[3:])
+    legal_reference = (
+        r"(?:(?:the|this|that|such)\s+)?"
+        r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60}"
+    )
+    legal_connector = (
+        r"(?:according\s+to|consistent\s+with|for\s+(?:the\s+)?purposes?\s+of|"
+        r"in\s+accordance\s+with|in\s+conformity\s+with|subject\s+to|"
+        r"under|pursuant\s+to)"
+    )
     return bool(
-        role_starts_scoped_actor
-        or actor_ends_with_role
-        or (len(actor_core.split()) == 2 and not actor_ends_with_title)
+        re.fullmatch(
+            rf"as\s+(?:otherwise\s+)?(?:required|provided|specified|prescribed)"
+            rf"(?:\s+(?:by|in|under|{legal_connector})\s+{legal_reference})?",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            rf"as\s+set\s+forth\s+in\s+{legal_reference}",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            r"as\s+(?:the\s+)?law\s+requires",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            rf"in\s+(?:the\s+)?manner\s+prescribed\s+by\s+{legal_reference}",
+            modifier,
+            flags=re.IGNORECASE,
+        )
+        or re.fullmatch(
+            rf"{legal_connector}\s+{legal_reference}",
+            modifier,
+            flags=re.IGNORECASE,
+        )
     )
 
 
@@ -2813,45 +2834,7 @@ def _formula_passive_rounding_actor(tail: str) -> str | None:
     if "," in tail:
         modifier, actor = tail.rsplit(",", maxsplit=1)
         modifier = modifier.strip()
-        adverbial_by_actor = re.fullmatch(
-            r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*\s+by\s+"
-            r"(?P<actor>[^,.;:\n]{1,60})",
-            modifier,
-            flags=re.IGNORECASE,
-        )
-        if modifier and not (
-            re.fullmatch(
-                r"[A-Za-z]+ly(?:\s+and\s+[A-Za-z]+ly)*",
-                modifier,
-                flags=re.IGNORECASE,
-            )
-            or (
-                adverbial_by_actor is not None
-                and _formula_rounding_actor_is_bounded(
-                    adverbial_by_actor.group("actor")
-                )
-            )
-            or (
-                modifier.lower().startswith("by ")
-                and _formula_rounding_actor_is_bounded(modifier[3:])
-            )
-            or re.fullmatch(
-                r"as\s+(?:otherwise\s+)?(?:required|provided|specified|prescribed)"
-                r"(?:\s+(?:by|in|under)\s+"
-                r"(?:(?:the|this|that|such)\s+)?"
-                r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60})?",
-                modifier,
-                flags=re.IGNORECASE,
-            )
-            or re.fullmatch(
-                r"(?:according\s+to|consistent\s+with|in\s+accordance\s+with|"
-                r"subject\s+to|under|pursuant\s+to)\s+"
-                r"(?:(?:the|this|that|such)\s+)?"
-                r"[A-Za-z§][A-Za-z0-9 .():§'-]{0,60}",
-                modifier,
-                flags=re.IGNORECASE,
-            )
-        ):
+        if modifier and not _formula_passive_rounding_modifier_is_bounded(modifier):
             return None
         return actor.strip()
     adverbial_actor = re.fullmatch(
@@ -10478,14 +10461,17 @@ def _formula_bound_from_comparison(
     )
 
     modal = r"(?:can|could|may|might|must|shall|should|will|would)"
-    control = r"(?:in\s+no\s+(?:event|case)|under\s+no\s+circumstances|never)"
+    control = (
+        r"(?:at\s+no\s+time|in\s+no\s+(?:event|case)|not\s+ever|"
+        r"under\s+no\s+(?:conditions?|circumstances)|never)"
+    )
     has_negative_control = False
     modal_seen: str | None = None
     subject = (
         r"(?:it|(?:(?:the|this|that|such)\s+)?"
         r"(?:[a-z][a-z-]*\s+){0,5}(?:amount|income|limit|total|value))"
     )
-    for _ in range(6):
+    for _ in range(8):
         control_match = re.match(rf"{control}\s+", comparison)
         if control_match is not None:
             has_negative_control = True
@@ -10495,6 +10481,50 @@ def _formula_bound_from_comparison(
         if modal_match is not None:
             modal_seen = modal_match.group().strip()
             comparison = comparison[modal_match.end() :]
+            comparison = re.sub(
+                r"^(?:[a-z]+ly\s+){1,3}",
+                "",
+                comparison,
+                flags=re.IGNORECASE,
+            )
+            continue
+        need_not_match = re.match(r"need\s+not\s+", comparison)
+        if need_not_match is not None:
+            modal_seen = "need not"
+            comparison = comparison[need_not_match.end() :]
+            continue
+        cannot_match = re.match(
+            r"(?:can\s+not|cannot)(?:\s+(?:ever|[a-z]+ly)){0,3}\s+",
+            comparison,
+        )
+        if cannot_match is not None:
+            has_negative_control = True
+            comparison = comparison[cannot_match.end() :]
+            continue
+        prohibited_match = re.match(
+            r"(?:is|are|be)\s+(?:not\s+(?:allowed|permitted)\s+to|"
+            r"(?:forbidden|prohibited)\s+(?:from|to))\s+",
+            comparison,
+        )
+        if prohibited_match is not None:
+            has_negative_control = True
+            comparison = comparison[prohibited_match.end() :]
+            continue
+        permissive_predicate_match = re.match(
+            r"(?:is|are|be)\s+(?:allowed|authorized|permitted)\s+to\s+",
+            comparison,
+        )
+        if permissive_predicate_match is not None:
+            modal_seen = "may"
+            comparison = comparison[permissive_predicate_match.end() :]
+            continue
+        required_predicate_match = re.match(
+            r"(?:is|are|be)\s+(?:obliged|required)\s+to\s+",
+            comparison,
+        )
+        if required_predicate_match is not None:
+            modal_seen = "must"
+            comparison = comparison[required_predicate_match.end() :]
             continue
         subject_match = re.match(rf"{subject}\s+", comparison)
         if subject_match is not None:
@@ -10642,9 +10672,16 @@ def _formula_bound_from_comparison(
         return occurrence, True, "upper"
     if has_negative_control and copula_stripped in lower_inclusive_comparisons:
         return occurrence, False, "upper"
-    permissive_modal = modal_seen in {"can", "could", "may", "might", "would"}
+    permissive_modal = modal_seen in {
+        "can",
+        "could",
+        "may",
+        "might",
+        "need not",
+        "would",
+    }
     prohibitive_comparison = bool(
-        re.match(r"^(?:can\s+not|cannot|no|not)\b", copula_stripped)
+        re.match(r"^(?:can\s+not|cannot|not)\b", copula_stripped)
         or comparison in negative_exceed_comparisons
         or copula_stripped in negative_exceed_comparisons
     )
@@ -10687,6 +10724,7 @@ def _formula_first_bound(
     clause_start = max(
         text.rfind(".", 0, occurrence.start),
         text.rfind(";", 0, occurrence.start),
+        text.rfind(":", 0, occurrence.start),
         text.rfind("\n", 0, occurrence.start),
     )
     prefix = _strip_source_clause_marker(text[clause_start + 1 : occurrence.start])
@@ -10694,6 +10732,15 @@ def _formula_first_bound(
     for start in starts[-18:]:
         bound = _formula_bound_from_comparison(prefix[start:], occurrence)
         if bound is not None:
+            discarded_prefix = prefix[:start]
+            if re.search(
+                r"\b(?:allowed|authorized|can|cannot|could|forbidden|may|might|"
+                r"must|need|never|not|obliged|permitted|prohibited|required|"
+                r"shall|should|will|would)\b",
+                discarded_prefix,
+                flags=re.IGNORECASE,
+            ):
+                return occurrence, False, "permissive"
             return bound
     return None
 
@@ -10757,7 +10804,8 @@ def _formula_interval_from_text(
         r"nicht\s+mehr\s+als|über|unter))|"
         r"from|unter|less\s+than\s+or\s+equal\s+to|"
         r"equal\s+to\s+or\s+less\s+than|no\s+(?:greater|higher|larger|more)\s+than|"
-        r"not\s+(?:greater|higher|larger|more)\s+than|at\s+or\s+(?:below|under)|"
+        r"not\s+(?:greater|higher|larger|more)\s+than|not\s+(?:in\s+excess\s+of|over)|"
+        r"at\s+or\s+(?:below|under)|"
         r"no\s+less\s+than|not\s+less\s+than|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
         r"greater\s+than\s+or\s+equal\s+to|equal\s+to\s+or\s+greater\s+than|"
@@ -10765,6 +10813,11 @@ def _formula_interval_from_text(
         r"exceeds?|exceeding|above|ab|at\s+least|mindestens)\b",
         lowered,
     )
+    symbol_keyword = re.search(r"(?:<=|>=|[<>≤≥])", lowered)
+    if symbol_keyword is not None and (
+        keyword is None or symbol_keyword.start() < keyword.start()
+    ):
+        keyword = symbol_keyword
     if keyword is None:
         return None
     range_text = text[keyword.start() :]
