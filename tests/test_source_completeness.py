@@ -6756,6 +6756,1659 @@ rules: []
     assert not _has_issue(result, "(b)", "deferral")
 
 
+def _louisiana_external_dependency_deferral(
+    reason: str,
+    *,
+    source_reference: str = "R.S. 47:32",
+    source_link: str = "determined in accordance with the provisions of",
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295/a#individual_louisiana_income_tax_amount
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = (
+        "A. There is imposed an income tax for each taxable year upon the Louisiana "
+        "income of every individual. The amount of the tax shall be "
+        f"{source_link} {source_reference}.\n\nB. Reserved."
+    )
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "R.S. 47:295(A) imposes tax upon Louisiana income but directs that "
+            "the amount be determined in accordance with R.S. 47:32; the supplied "
+            "R.S. 47:32 context provides only an individual income tax rate and "
+            "lacks the complete R.S. 47:32 taxable-income-base computation needed "
+            "to calculate the tax amount."
+        ),
+        (
+            "Cannot compute the tax imposed by us-la/statute/47:295(a) because "
+            "the supplied R.S. 47:32 dependency exports only the individual income "
+            "tax rate and does not provide the complete tax-amount computation "
+            "that R.S. 47:295(A) directs determines the amount."
+        ),
+    ),
+)
+def test_source_bound_louisiana_rs_dependency_accepts_archived_reasons(reason: str):
+    result = _louisiana_external_dependency_deferral(reason)
+
+    assert not _has_issue(result, "(a)", "deferral")
+    assert not _has_issue(result, "source branch a", "neither encoded")
+
+
+def test_line_wrapped_source_bound_louisiana_rs_dependency_is_accepted():
+    result = _louisiana_external_dependency_deferral(
+        "Cannot compute the tax until the calculation required by La. R.S. "
+        "47:32 is available.",
+        source_reference="R.S.\n47:32",
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+    assert not _has_issue(result, "source branch a", "neither encoded")
+
+
+def test_compact_source_bound_louisiana_rs_dependency_is_accepted():
+    result = _louisiana_external_dependency_deferral(
+        "Cannot compute the tax until the calculation required by RS 47:32 is "
+        "available.",
+        source_reference="La. R.S. 47:32",
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+
+
+def test_dotted_source_bound_louisiana_rs_dependency_is_accepted():
+    result = _louisiana_external_dependency_deferral(
+        "Cannot compute the tax because R.S. 47:297.4 lacks the required tax "
+        "amount computation.",
+        source_reference="R.S. 47:297.4",
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+
+
+@pytest.mark.parametrize(
+    ("reason", "source_reference", "source_link"),
+    (
+        (
+            "Cannot compute the tax because R.S. 47:33 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:33",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:295(A) lacks the required tax "
+            "amount computation.",
+            "R.S. 47:295(A)",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 is supplied only as "
+            "historical context and lacks the required tax amount computation.",
+            "R.S. 47:32",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "stated notwithstanding",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32(A)",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 48:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32junk lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32(A)junk lacks the required "
+            "tax amount computation.",
+            "R.S. 47:32(A)",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because junk_R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "determined in accordance with the provisions of",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "is stated without prejudice to",
+        ),
+        (
+            "Cannot compute the tax because R.S. 47:32 lacks the required tax "
+            "amount computation.",
+            "R.S. 47:32",
+            "does not affect",
+        ),
+    ),
+)
+def test_louisiana_rs_dependency_requires_exact_operative_external_reference(
+    reason: str,
+    source_reference: str,
+    source_link: str,
+):
+    result = _louisiana_external_dependency_deferral(
+        reason,
+        source_reference=source_reference,
+        source_link=source_link,
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "R.S. 47:33 lacks the required tax amount computation, but "
+            "R.S. 47:32 is available."
+        ),
+        (
+            "R.S. 47:32 is available, but R.S. 47:33 lacks the required tax "
+            "amount computation."
+        ),
+        (
+            "R.S. 47:33 lacks the required tax amount computation; "
+            "R.S. 47:32 is mentioned for context."
+        ),
+    ),
+)
+def test_louisiana_rs_dependencies_cannot_borrow_missingness(reason: str):
+    result = _louisiana_external_dependency_deferral(reason)
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        ("R.S. 47:32 lacks metadata and supplies the required tax amount computation."),
+        "R.S. 47:32 lacks no required tax amount computation.",
+        (
+            "R.S. 47:32 exports only the rate, but RS 47:33 lacks the required "
+            "computation."
+        ),
+        (
+            "R.S. 47:32 exports only the rate and RS 47:33 lacks the required "
+            "computation."
+        ),
+        (
+            "R.S. 47:32 exports only the rate, but the unrelated runtime lacks "
+            "the required computation."
+        ),
+        (
+            "R.S. 47:32 does not provide historical notes and provides the "
+            "required tax amount computation."
+        ),
+    ),
+)
+def test_louisiana_rs_insufficiency_must_govern_the_missing_object(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "R.S. 47:32 lacks metadata and is fully available with required tax "
+            "amount computation."
+        ),
+        "R.S. 47:32 lacks metadata and defines a complete tax formula.",
+        "R.S. 47:32 lacks historical notes about required tax amount computation.",
+        "R.S. 47:32 lacks metadata required to audit tax amount computation.",
+        ("R.S. 47:32 does not provide a commentary describing tax amount formula."),
+        "R.S. 47:32 lacks required tax computation examples.",
+        "R.S. 47:32 lacks the complete tax formula commentary.",
+        "R.S. 47:32 lacks the complete tax calculation notes.",
+        "R.S. 47:32 lacks metadata regarding the required tax computation.",
+        "R.S. 47:32 lacks commentary on the tax formula.",
+        "R.S. 47:32 lacks notes concerning the income calculation.",
+        "R.S. 47:32 lacks examples illustrating the required computation.",
+        "R.S. 47:32 lacks documentation supporting the tax formula.",
+        "R.S. 47:32 lacks metadata documenting the tax computation.",
+        "R.S. 47:32 lacks metadata explaining the tax formula.",
+        "R.S. 47:32 lacks notes outlining the tax computation.",
+        "R.S. 47:32 lacks examples demonstrating the required calculation.",
+        "R.S. 47:32 lacks commentary summarizing the tax formula.",
+        "R.S. 47:32 lacks metadata, including the required tax computation.",
+        "R.S. 47:32 lacks annotations detailing the tax computation.",
+        "R.S. 47:32 lacks guidance discussing the tax formula.",
+        "R.S. 47:32 lacks background covering the required computation.",
+        "R.S. 47:32 lacks explanatory material setting out the calculation.",
+        "R.S. 47:32 lacks a memo detailing the computation.",
+        "R.S. 47:32 lacks a summary covering the tax formula.",
+    ),
+)
+def test_louisiana_rs_insufficiency_requires_an_immediate_executable_object(
+    reason: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount shall be determined not in accordance with R.S. 47:32.",
+        "The amount need not be determined in accordance with R.S. 47:32.",
+        "The amount shall in no event be determined in accordance with R.S. 47:32.",
+        (
+            "The amount is determined independently of, not in accordance with "
+            "R.S. 47:32."
+        ),
+        (
+            "The amount is prohibited from being determined in accordance with "
+            "R.S. 47:32."
+        ),
+        "The amount shall not be determined under R.S. 47:32.",
+        "The amount is not calculated according to R.S. 47:32.",
+        "The amount need not be established pursuant to R.S. 47:32.",
+        "The amount does not depend on R.S. 47:32.",
+        "The amount must never be computed pursuant to R.S. 47:32.",
+        (
+            "The amount shall under no circumstances be determined in accordance "
+            "with R.S. 47:32."
+        ),
+        (
+            "The amount is expressly barred from being determined in accordance "
+            "with R.S. 47:32."
+        ),
+        "The amount is determined rather than in accordance with R.S. 47:32.",
+        "The amount is determined other than in accordance with R.S. 47:32.",
+        "The amount shall not, under R.S. 47:32, be assessed.",
+        "The amount must never, pursuant to R.S. 47:32, be computed.",
+        (
+            "The amount shall not, under any circumstances, be determined under "
+            "R.S. 47:32."
+        ),
+        "The amount shall not, however, be calculated according to R.S. 47:32.",
+        (
+            "The amount shall not under any circumstances be determined under "
+            "R.S. 47:32."
+        ),
+        "The amount shall not ever be determined under R.S. 47:32.",
+        "The amount may in no case be calculated according to R.S. 47:32.",
+        "The amount shall at no time be computed pursuant to R.S. 47:32.",
+        "The amount must by no means be determined under R.S. 47:32.",
+        "The tax shall not apply under R.S. 47:32.",
+        "The tax shall not be imposed under R.S. 47:32.",
+        "The amount is not allowed under R.S. 47:32.",
+        "The liability may not arise under R.S. 47:32.",
+        "The amount shall not then be determined under R.S. 47:32.",
+        ("The amount shall not be computed or determined under R.S. 47:32."),
+        "The tax shall not apply or arise under R.S. 47:32.",
+        "The amount does not depend on or arise under R.S. 47:32.",
+        "The amount shall neither be calculated nor determined under R.S. 47:32.",
+        "The amount cannot be determined under R.S. 47:32.",
+        "The amount fails to be determined under R.S. 47:32.",
+        "The amount is forbidden from being determined under R.S. 47:32.",
+        "The amount is precluded from being determined under R.S. 47:32.",
+        "The amount is fixed without being determined under R.S. 47:32.",
+        (
+            "It is not the case that the preliminary amount is fixed and the final "
+            "amount is determined under R.S. 47:32."
+        ),
+        (
+            "The statute does not provide that the preliminary amount is fixed and "
+            "the final amount is determined under R.S. 47:32."
+        ),
+        (
+            "The rule never states that the base is fixed or the amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed, but the final amount is neither "
+            "calculated nor determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed, but the final amount is fixed "
+            "without being determined under R.S. 47:32."
+        ),
+        "The amount isn't determined under R.S. 47:32.",
+        "The amount is unable to be determined under R.S. 47:32.",
+        "The amount is fixed without determination under R.S. 47:32.",
+        "The amount is in no way determined under R.S. 47:32.",
+        "No amount is determined under R.S. 47:32.",
+        "No tax is computed under R.S. 47:32.",
+        "The amount is prevented from being determined under R.S. 47:32.",
+        "The amount is excluded from being determined under R.S. 47:32.",
+        "The amount is determined except under R.S. 47:32.",
+        "The amount is determined in no manner under R.S. 47:32.",
+        "The law denies that the amount is determined under R.S. 47:32.",
+        "It is false that the amount is determined under R.S. 47:32.",
+        "The amount does not depend on or ordinarily arise under R.S. 47:32.",
+        "The amount shall not apply or otherwise arise under R.S. 47:32.",
+        ("The amount is not computed, and instead is described under R.S. 47:32."),
+        "The amount is not computed, but is merely discussed under R.S. 47:32.",
+        "The amount is not computed, but is only referenced under R.S. 47:32.",
+        "No credit is calculated under R.S. 47:32.",
+        "No deduction is determined under R.S. 47:32.",
+        "The amount won’t be determined under R.S. 47:32.",
+        "The amount hasn’t been determined under R.S. 47:32.",
+        "The amount is incapable of being determined under R.S. 47:32.",
+        "The amount is merely described as calculated under R.S. 47:32.",
+        "The amount is referenced as determined under R.S. 47:32.",
+        "The amount is discussed as computed under R.S. 47:32.",
+        "The amount is quoted as calculated under R.S. 47:32.",
+        (
+            "The amount is determined without regard to the requirements under "
+            "R.S. 47:32."
+        ),
+        (
+            "The statute does not mean that the base is fixed and the amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The statute does not imply that the base is fixed and the amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The statute does not provide evidence that the base is fixed and the "
+            "amount is determined under R.S. 47:32."
+        ),
+        (
+            "It is by no means true that the base is fixed and the amount is "
+            "determined under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_rs_source_link_rejects_natural_negation(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "The amount shall not exceed the statutory cap and is determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined below zero and the "
+            "final amount is computed under R.S. 47:32."
+        ),
+        (
+            "The amount shall not be determined by estimate and instead is "
+            "calculated according to R.S. 47:32."
+        ),
+        (
+            "The amount must not be calculated provisionally and shall be "
+            "determined pursuant to R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined while the final amount "
+            "is computed under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined whereas the final "
+            "amount is computed under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined or the final amount is "
+            "computed under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined then the final amount "
+            "is computed under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount shall not be determined, but the final amount "
+            "is computed in accordance with R.S. 47:32."
+        ),
+        "The amount with no cap is determined under R.S. 47:32.",
+        "The amount is determined with no adjustment under R.S. 47:32.",
+        ("The amount, which shall not exceed the cap, is determined under R.S. 47:32."),
+        (
+            "The preliminary amount is not fixed and the final amount becomes "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed and the final amount remains "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed because the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed since the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed if the final amount is determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed when the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed although the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed unless the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed as the final amount is determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed provided that the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "The preliminary amount is not fixed even though the final amount is "
+            "determined under R.S. 47:32."
+        ),
+        "The amount is zero except as determined under R.S. 47:32.",
+        (
+            "The amount is calculated, except that the rate is determined under "
+            "R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_rs_source_link_does_not_borrow_unrelated_negation(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "R.S. 47:295/1",
+        "R.S. 47:295:1",
+        "R.S. 47:295/1:2",
+    ),
+)
+def test_noncanonical_louisiana_suffix_cannot_turn_self_reference_external(
+    reference: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"{reference} lacks the required tax amount computation.",
+        f"The amount is determined in accordance with {reference}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason_reference", "source_reference"),
+    (
+        ("R.S. 47:32-1", "R.S. 47:32-2"),
+        ("R.S. 47:32–1", "R.S. 47:32–2"),
+        ("R.S. 47:32.1x", "R.S. 47:32.1y"),
+        ("R.S. 47:32/1", "R.S. 47:32/2"),
+        ("R.S. 47:32:1", "R.S. 47:32:2"),
+    ),
+)
+def test_louisiana_rs_dependency_requires_complete_section_suffix(
+    reason_reference: str,
+    source_reference: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"{reason_reference} lacks the required tax amount computation.",
+        f"The amount is determined in accordance with {source_reference}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("dash", ("-", "–"))
+def test_louisiana_rs_dependency_consumes_alphabetic_dash_suffix(dash: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        f"The amount is determined in accordance with R.S. 47:32{dash}foo.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("separator", ("-", "–", "/", ":"))
+def test_louisiana_rs_dependency_rejects_post_fragment_suffix_laundering(
+    separator: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"Missing tax computation under R.S. 47:32(A){separator}(B).",
+        (f"The amount is determined under R.S. 47:32(A){separator}(C)."),
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "connector",
+    (
+        "through",
+        "to",
+        "and",
+        "or",
+        ",",
+        "as well as",
+        "plus",
+        "&",
+        "together with",
+        "and subsection",
+        "through subsection",
+        "and paragraph",
+    ),
+)
+def test_louisiana_rs_dependency_rejects_post_fragment_list_laundering(
+    connector: str,
+):
+    separator = connector if connector == "," else f" {connector}"
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32(A){separator} (B) lacks the required tax computation.",
+        (f"The amount is determined under R.S. 47:32(A){separator} (C)."),
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "as additionally amended and further extended through subsection",
+        "as well as the newly enacted and renumbered subsection",
+        "together with the separately codified and recently amended paragraph",
+    ),
+)
+def test_louisiana_rs_dependency_rejects_long_fragment_tail_laundering(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32(A) {continuation} (B) lacks the required computation.",
+        f"The amount is determined under R.S. 47:32(A) {continuation} (C).",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    (
+        "using table (1)",
+        "when condition (B) applies",
+        "and labeled output (X)",
+        "revised by Act (2026)",
+    ),
+)
+def test_louisiana_rs_dependency_allows_unrelated_labeled_parenthetical(
+    annotation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A) lacks the required computation.",
+        f"The amount is determined under R.S. 47:32(A), {annotation}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Notwithstanding R.S. 47:31, the amount is determined in accordance "
+            "with R.S. 47:32."
+        ),
+        (
+            "Without prejudice to R.S. 47:31, the amount is determined in "
+            "accordance with R.S. 47:32."
+        ),
+        (
+            "Notwithstanding any other provision of law, the amount is determined "
+            "in accordance with R.S. 47:32."
+        ),
+        (
+            "Without prejudice to any other right, the amount is determined under "
+            "R.S. 47:32."
+        ),
+        (
+            "Without prejudice to 42 USC 1234, the amount is determined in "
+            "accordance with R.S. 47:32."
+        ),
+        "Notwithstanding federal law, the amount is determined under R.S. 47:32.",
+        (
+            "Without prejudice to the federal return rule, the amount is calculated "
+            "pursuant to R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, the final amount becomes determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law—the final amount remains determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law: the final amount becomes determined "
+            "under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_context_disclaimer_is_bound_to_its_own_citation(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "The amount is determined without prejudice to the requirements, if "
+            "any, under R.S. 47:32."
+        ),
+        (
+            "The amount is unaffected by the requirements, if applicable, under "
+            "R.S. 47:32."
+        ),
+        ("The rule does not affect the calculation, as described, under R.S. 47:32."),
+        (
+            "Notwithstanding the calculation requirements, as amended, under "
+            "R.S. 47:32, the separate rule applies."
+        ),
+        (
+            "Notwithstanding other law, the amount is determined without prejudice "
+            "to the requirements under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to other rights, the amount is determined but "
+            "remains unaffected by the requirements under R.S. 47:32."
+        ),
+        (
+            "The amount is determined without prejudice to the requirement—that "
+            "the tax is calculated under R.S. 47:32."
+        ),
+        (
+            "The amount is determined without prejudice to the requirement: the "
+            "tax is calculated under R.S. 47:32."
+        ),
+        (
+            "The amount is unaffected by the requirement, which is determined "
+            "under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_context_disclaimer_with_interruption_is_not_operative(
+    source: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the executable tax computation.",
+        "R.S. 47:32 lacks the taxpayer-specific tax amount computation.",
+        "R.S. 47:32 lacks the net income calculation.",
+        "R.S. 47:32 lacks the state individual income tax formula.",
+        "R.S. 47:32 lacks the upstream tax computation.",
+        "R.S. 47:32 lacks the adjusted gross income calculation.",
+        "R.S. 47:32 lacks the filing-status classification.",
+        "R.S. 47:32 lacks the taxpayer eligibility determination.",
+        "R.S. 47:32 lacks the executable computations.",
+        "R.S. 47:32 lacks the required calculations.",
+        "R.S. 47:32 lacks the tax formulas.",
+        "R.S. 47:32 lacks necessary inputs.",
+        "R.S. 47:32 lacks the tax calculation logic.",
+        "R.S. 47:32 lacks the tax formula implementation.",
+        "R.S. 47:32 lacks the calculation procedure.",
+        "R.S. 47:32 lacks the amount-computation rule set.",
+        "R.S. 47:32 lacks the taxable-income-base mechanics.",
+        "R.S. 47:32 lacks the tax calculation method.",
+        "R.S. 47:32 lacks the tax computation algorithm.",
+        "R.S. 47:32 lacks the rate schedule.",
+        "R.S. 47:32 lacks the data set.",
+        "R.S. 47:32 lacks the calculation steps.",
+        "R.S. 47:32 lacks the computation instructions.",
+        "R.S. 47:32 lacks the calculation mechanism.",
+        "R.S. 47:32 lacks the executable rule sequence.",
+        "R.S. 47:32 lacks the formula set.",
+        "R.S. 47:32 lacks the rate lookup.",
+        "R.S. 47:32 lacks the bracket threshold.",
+        "R.S. 47:32 lacks the data sets.",
+        "R.S. 47:32 lacks the rule sets.",
+        "R.S. 47:32 lacks the formula sets.",
+        "R.S. 47:32 lacks the calculation specification.",
+        "R.S. 47:32 lacks the computation protocol.",
+        "R.S. 47:32 lacks the formula definition.",
+        "R.S. 47:32 lacks the rate structure.",
+    ),
+)
+def test_louisiana_rs_insufficiency_accepts_precise_executable_object_heads(
+    reason: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the required tax computation and supplies it in full.",
+        "R.S. 47:32 does not provide the tax formula and then provides the formula.",
+        (
+            "R.S. 47:32 exports only the rate and lacks the computation and supplies "
+            "the complete computation."
+        ),
+        "R.S. 47:32 lacks the required computation and it is supplied in full.",
+        "R.S. 47:32 lacks the tax formula and the module does provide the formula.",
+        "R.S. 47:32 lacks the computation and the module can compute it.",
+        "R.S. 47:32 lacks the formula and the module makes it available.",
+        "R.S. 47:32 lacks the computation and the module is capable of computing it.",
+        "R.S. 47:32 lacks the formula and the module returns the amount.",
+        "R.S. 47:32 lacks the computation and the module already computes it.",
+        "R.S. 47:32 lacks the computation and the module successfully supplies it.",
+        "R.S. 47:32 lacks the computation and the supplied module computes it.",
+        "R.S. 47:32 lacks the computation and the context provides it.",
+        "R.S. 47:32 lacks the formula and the module has the formula.",
+        "R.S. 47:32 lacks the formula and the module exposes it.",
+        "R.S. 47:32 lacks the computation and the module generates it.",
+    ),
+)
+def test_louisiana_rs_insufficiency_rejects_coordinated_reversal(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_rs_insufficiency_accepts_coordinated_missing_object_list():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation and the required table.",
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined, and metadata is recorded under R.S. 47:32.",
+        "The tax is computed, but commentary is published under R.S. 47:32.",
+        "The amount is calculated, while notes are maintained under R.S. 47:32.",
+        (
+            "The amount is determined for one purpose, while reporting is required "
+            "under R.S. 47:32."
+        ),
+        "The source shows the amount as determined under R.S. 47:32.",
+        "The amount is listed as calculated under R.S. 47:32.",
+        "An example treats the amount as calculated under R.S. 47:32.",
+        "The amount is determined not under R.S. 47:32.",
+        "The amount is determined other than under R.S. 47:32.",
+        "The amount is determined rather than under R.S. 47:32.",
+        "The historical note depends on R.S. 47:32.",
+        "The amount description depends on R.S. 47:32.",
+        "The amount ceases to depend on R.S. 47:32.",
+        "The documentation requires R.S. 47:32.",
+        "The amount ceases to require R.S. 47:32.",
+        "The note about the amount depends on R.S. 47:32.",
+        "The example shows the tax calculated under R.S. 47:32.",
+        "The amount is calculated only as an example under R.S. 47:32.",
+        "The amount is calculated for comparison under R.S. 47:32.",
+        "The amount is calculated solely for background under R.S. 47:32.",
+        (
+            "The statute fails to establish that the amount is determined under "
+            "R.S. 47:32."
+        ),
+        (
+            "The statute does not state whether the amount is determined under "
+            "R.S. 47:32."
+        ),
+        "It is uncertain whether the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_source_requires_immediately_attached_positive_predicate(
+    source: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is fixed under R.S. 47:32.",
+        "The rate is prescribed under R.S. 47:32.",
+        "The amount is specified under R.S. 47:32.",
+        "The rate is set under R.S. 47:32.",
+        "The deduction is allowed under R.S. 47:32.",
+        "The credit is available under R.S. 47:32.",
+        "The amount is statutorily determined under R.S. 47:32.",
+        "The amount is equal to the tax calculated under R.S. 47:32.",
+        "The amount equals the amount determined under R.S. 47:32.",
+        "The amount shall equal the tax computed under R.S. 47:32.",
+        "The department computes the amount under R.S. 47:32.",
+        "The computation depends on R.S. 47:32.",
+        "The calculation requires R.S. 47:32.",
+    ),
+)
+def test_louisiana_source_accepts_common_attached_operative_predicates(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "subdivision",
+        "division",
+        "subpart",
+        "followed by subdivision",
+        "followed by",
+        "including",
+        "as enumerated in",
+        "as also set forth at",
+        "alongside",
+        "as extended from",
+    ),
+)
+def test_louisiana_citation_rejects_arbitrary_hidden_fragment_continuations(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"Missing computation under R.S. 47:32(A) {continuation} (B).",
+        f"The amount is determined under R.S. 47:32(A) {continuation} (C).",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_citation_rejects_compound_hidden_fragment_continuation():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "Missing computation under R.S. 47:32(A) through (B-1).",
+        "The amount is determined under R.S. 47:32(A) through (C-1).",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_citation_rejects_uppercase_multiletter_fragment():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "Missing computation under R.S. 47:32(A) followed by (AA).",
+        "The amount is determined under R.S. 47:32(A) followed by (BB).",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    (
+        "and the calculation uses schedule (1)",
+        "and the worksheet reports line (2)",
+        "and is rounded (annually)",
+        "and is rounded (statewide)",
+        "and is rounded (otherwise)",
+    ),
+)
+def test_louisiana_citation_allows_nonfragment_parenthetical_prose(annotation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A) lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A), {annotation}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount, notwithstanding federal law, is determined under R.S. 47:32.",
+        ("The amount is determined, notwithstanding federal law, under R.S. 47:32."),
+        "The amount—notwithstanding federal law—is calculated under R.S. 47:32.",
+        ("The amount is determined, notwithstanding 42 USC 1234, under R.S. 47:32."),
+        (
+            "The preliminary amount remains unaffected by federal law, but the "
+            "final amount is determined under R.S. 47:32."
+        ),
+        (
+            "The prior calculation does not affect liability, while the final "
+            "amount is computed under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_context_disclaimer_allows_independent_operative_reset(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Without prejudice to the requirement—that the tax is calculated "
+            "under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to the requirement: the tax is calculated under "
+            "R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_clause_initial_disclaimer_keeps_finite_object(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks a memorandum whose subject is the tax computation.",
+        "R.S. 47:32 lacks an annotation whose subject is the formula.",
+    ),
+)
+def test_louisiana_missing_object_rejects_documentary_relative_possessor(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the corresponding tax calculation.",
+        "R.S. 47:32 lacks the governing tax computation.",
+        "R.S. 47:32 lacks the underlying tax formula.",
+        "R.S. 47:32 lacks the resulting amount calculation.",
+        "R.S. 47:32 lacks the remaining tax calculation.",
+        "R.S. 47:32 lacks the calculation parameters.",
+        "R.S. 47:32 lacks the tax equation.",
+        "R.S. 47:32 lacks the income averaging computation.",
+        "R.S. 47:32 lacks the capital gains netting calculation.",
+        "R.S. 47:32 lacks the tax credit ordering rules.",
+        "R.S. 47:32 lacks the bracket rounding method.",
+        "R.S. 47:32 lacks the tax benefit stacking algorithm.",
+    ),
+)
+def test_louisiana_missing_object_accepts_tax_compound_modifiers(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the tax computation and provides the tax rate.",
+        "R.S. 47:32 lacks the formula and has documentation.",
+        "R.S. 47:32 lacks the computation and calculates a separate fee.",
+        "R.S. 47:32 lacks the formula and the module provides no formula.",
+        "R.S. 47:32 lacks the formula and the module has no formula.",
+        "R.S. 47:32 lacks the computation and provides no formula.",
+        "R.S. 47:32 lacks the computation and supplies none of it.",
+        "R.S. 47:32 lacks the computation and has no calculation logic.",
+        "R.S. 47:32 lacks the computation and is not available.",
+        "R.S. 47:32 lacks the computation and makes no formula available.",
+        "R.S. 47:32 lacks the computation and never calculates it.",
+        "R.S. 47:32 lacks the computation and fails to provide it.",
+        "R.S. 47:32 lacks the formula and the formula is mentioned in a note.",
+        (
+            "R.S. 47:32 lacks the computation and provides the tax rate used to "
+            "calculate the formula."
+        ),
+    ),
+)
+def test_louisiana_reversal_requires_positive_coreferent_assertion(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module possesses the formula.",
+        "R.S. 47:32 lacks the formula and the module retains it.",
+        "R.S. 47:32 lacks the formula and the formula exists.",
+        "R.S. 47:32 lacks the formula and it is fully available.",
+        ("R.S. 47:32 lacks the computation and without delay the module provides it."),
+        (
+            "R.S. 47:32 lacks the computation and the module, not previously "
+            "loaded, provides it."
+        ),
+        ("R.S. 47:32 lacks the computation and the module never fails to provide it."),
+    ),
+)
+def test_louisiana_reversal_rejects_positive_coreferent_variants(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "For comparison, the amount is calculated under R.S. 47:32.",
+        "As an example, the amount is computed under R.S. 47:32.",
+        "For background, the tax is determined under R.S. 47:32.",
+        "In a nonbinding example, the tax is computed under R.S. 47:32.",
+        "The example has the amount calculated under R.S. 47:32.",
+        "The report says the amount is determined under R.S. 47:32.",
+        "The record assumes that the amount is determined under R.S. 47:32.",
+        "It is unclear if the amount is determined under R.S. 47:32.",
+        "It is possible that the amount is determined under R.S. 47:32.",
+        "The source purports to establish that the amount is determined under R.S. 47:32.",
+        "The narrative claims that the amount is determined under R.S. 47:32.",
+        "The source reportedly suggests the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_source_rejects_fronted_or_complementary_context(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The illustration of the tax depends on R.S. 47:32.",
+        "The explanation of the amount depends on R.S. 47:32.",
+        "The audit of the computation depends on R.S. 47:32.",
+        "A chart of the tax requires R.S. 47:32.",
+        "The comparison of the formula depends on R.S. 47:32.",
+        "The label for the tax depends on R.S. 47:32.",
+        "The historical discussion of the tax depends on R.S. 47:32.",
+        "The availability of the formula depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_direct_dependency_rejects_contextual_subject_head(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The final computation directly depends on R.S. 47:32.",
+        "The amount directly depends on R.S. 47:32.",
+        "Taxable income depends on R.S. 47:32.",
+        "The applicable percentage depends on R.S. 47:32.",
+        "The rate schedule depends on R.S. 47:32.",
+        "The bracket threshold depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_direct_dependency_accepts_executable_subject_head(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined annually under R.S. 47:32.",
+        "The amount is computed separately under R.S. 47:32.",
+        "The amount is calculated for each taxpayer under R.S. 47:32.",
+        "The amount shall be computed exclusively under R.S. 47:32.",
+        "The tax is imposed each year under R.S. 47:32.",
+        "The amount is calculated and determined under R.S. 47:32.",
+        "The tax shall be assessed and imposed under R.S. 47:32.",
+        "The rate is established and prescribed under R.S. 47:32.",
+        "The amount is determined solely under R.S. 47:32.",
+        "The amount is determined, for purposes of this section, under R.S. 47:32.",
+        "The tax is determined, as applicable, under R.S. 47:32.",
+        "The commissioner calculates the amount under R.S. 47:32.",
+        "The court determines the tax under R.S. 47:32.",
+        "The taxpayer computes the amount under R.S. 47:32.",
+        "Although no preliminary amount is calculated, the final amount is determined under R.S. 47:32.",
+        "Because no estimate is used, the amount is determined under R.S. 47:32.",
+        "While no adjustment applies, the amount is calculated under R.S. 47:32.",
+        "Notwithstanding state law, the amount is determined under R.S. 47:32.",
+        "Without prejudice to the federal statute, the amount is fixed under R.S. 47:32.",
+        "Without prejudice to state rights, the amount is fixed under R.S. 47:32.",
+    ),
+)
+def test_louisiana_source_accepts_bounded_modifiers_and_legal_framing(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("connector", ("because", "although", "or", "when", "since"))
+def test_louisiana_disclaimer_allows_independent_connector_reset(connector: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        (
+            "The preliminary amount is unaffected by the cap, "
+            f"{connector} the final amount is determined under R.S. 47:32."
+        ),
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined without prejudice to federal law, which is established under R.S. 47:32.",
+        "Without prejudice to federal law, which is established under R.S. 47:32, the amount is fixed.",
+        "Notwithstanding other law, which is determined under R.S. 47:32, the amount applies.",
+    ),
+)
+def test_louisiana_disclaimer_does_not_reset_into_relative_object(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "source"),
+    (
+        (
+            "Missing computation under R.S. 47:32(A) followed by (vi).",
+            "The amount is determined under R.S. 47:32(A) followed by (vii).",
+        ),
+        (
+            "Missing computation under R.S. 47:32(A) followed by (aa).",
+            "The amount is determined under R.S. 47:32(A) followed by (bb).",
+        ),
+        (
+            "Missing computation under R.S. 47:32(A) and line (B).",
+            "The amount is determined under R.S. 47:32(A) and line (C).",
+        ),
+        (
+            "Missing computation under R.S. 47:32(A) and schedule (B).",
+            "The amount is determined under R.S. 47:32(A) and schedule (C).",
+        ),
+        (
+            "Missing computation under R.S. 47:32(A)-(B).",
+            "The amount is determined under R.S. 47:32(A)-(C).",
+        ),
+    ),
+)
+def test_louisiana_citation_rejects_lowercase_and_labeled_fragment_tails(
+    reason: str, source: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    (
+        "for married filers (MFJ)",
+        "for qualifying widows (QW)",
+        "for Louisiana residents (LA)",
+        "in United States dollars (USD)",
+        "for category (B)",
+        "for group (C)",
+        "using Appendix (A)",
+        "under option (2)",
+        "in column (3)",
+        "during phase (B)",
+    ),
+)
+def test_louisiana_citation_allows_detached_tax_annotations(annotation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A) lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A), {annotation}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks a record whose subject is the formula.",
+        "R.S. 47:32 lacks a record which discusses the formula.",
+        "R.S. 47:32 lacks an exhibit containing the tax formula.",
+        "R.S. 47:32 lacks an appendix containing the computation.",
+        "R.S. 47:32 lacks a report detailing the calculation.",
+        "R.S. 47:32 lacks an audit record documenting the computation.",
+    ),
+)
+def test_louisiana_missing_object_rejects_documentary_head_synonyms(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the computation and the module provides this.",
+        "R.S. 47:32 lacks the formula and the module supplies that.",
+        "R.S. 47:32 lacks the calculations and the module provides those.",
+        "R.S. 47:32 lacks the formula and the module includes the same.",
+        "R.S. 47:32 lacks the formula and offers the formula.",
+        "R.S. 47:32 lacks the rate and lists the rate.",
+        "R.S. 47:32 lacks the formula and the formula is present.",
+        "R.S. 47:32 lacks the formula and reproduces it.",
+        "R.S. 47:32 lacks the formula and does not provide notes, then possesses the formula.",
+        "R.S. 47:32 lacks the formula and the module does not fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module is not unable to provide it.",
+        "R.S. 47:32 lacks the formula and the module cannot fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module doesn't fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module provides only the formula.",
+    ),
+)
+def test_louisiana_reversal_rejects_demonstratives_and_composed_positives(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and no module provides it.",
+        "R.S. 47:32 lacks the formula and nothing provides it.",
+        "R.S. 47:32 lacks the formula and neither module provides it.",
+        "R.S. 47:32 lacks the formula and the module lacks the ability to provide it.",
+        "R.S. 47:32 lacks the formula and the module is not capable of providing it.",
+        "R.S. 47:32 lacks the formula and provides the deduction computation.",
+        "R.S. 47:32 lacks the marginal rate and provides the average rate.",
+        "R.S. 47:32 lacks the formula and possesses only an incomplete formula.",
+        "R.S. 47:32 lacks the formula and provides a formula outline.",
+        "R.S. 47:32 lacks the formula and provides the rate because it is required.",
+    ),
+)
+def test_louisiana_reversal_accepts_negative_or_noncoreferent_assertions(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Hypothetically, the amount is calculated under R.S. 47:32.",
+        "In a hypothetical scenario, the amount is determined under R.S. 47:32.",
+        "The hypothetical amount is determined under R.S. 47:32.",
+        "The sample amount is calculated under R.S. 47:32.",
+        "Suppose the amount is determined under R.S. 47:32.",
+        "The statute indicates the possibility that the tax is determined under R.S. 47:32.",
+        "It is conceivable that the amount is computed under R.S. 47:32.",
+        "The table indicates the amount is calculated under R.S. 47:32.",
+        "The source alleges that the amount is calculated under R.S. 47:32.",
+        "The narrative indicates that the tax is determined under R.S. 47:32.",
+        "The witness testifies that the amount is computed under R.S. 47:32.",
+        "The analyst believes that the amount is determined under R.S. 47:32.",
+        "If the narrative is accurate, the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_rejects_hypothetical_or_documentary_framing(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The hypothetical tax depends on R.S. 47:32.",
+        "The illustrative calculation depends on R.S. 47:32.",
+        "The comparison calculation depends on R.S. 47:32.",
+        "The audit on the formula depends on R.S. 47:32.",
+        "The description accompanying the tax depends on R.S. 47:32.",
+        "The report covering the formula depends on R.S. 47:32.",
+        "The label attached to the rate depends on R.S. 47:32.",
+        "The metadata entry named tax depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_rejects_contextual_direct_dependency_subject(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The computation in this section depends on R.S. 47:32.",
+        "The amount necessarily and directly depends on R.S. 47:32.",
+        "The amount, as adjusted, depends on R.S. 47:32.",
+        "The amount depends directly on R.S. 47:32.",
+        "The computation is dependent on R.S. 47:32.",
+        "The formula relies on R.S. 47:32.",
+        "Which rate applies depends on R.S. 47:32.",
+        "Application of the rate depends on R.S. 47:32.",
+        "Determination of the amount depends on R.S. 47:32.",
+        "The lesser of two rates depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_accepts_direct_dependency_grammar_variants(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined for the taxable year under R.S. 47:32.",
+        "The amount is computed per taxpayer under R.S. 47:32.",
+        "The amount is calculated on the return under R.S. 47:32.",
+        "The amount is determined monthly under R.S. 47:32.",
+        "The amount is determined quarterly under R.S. 47:32.",
+        "The amount is determined in all cases under R.S. 47:32.",
+        "The amount is calculated and then determined under R.S. 47:32.",
+        "The amount is calculated or determined under R.S. 47:32.",
+        "The amount is computed, rounded, and determined under R.S. 47:32.",
+        "The tax is assessed, levied, and imposed under R.S. 47:32.",
+        "The amount shall not be calculated but determined under R.S. 47:32.",
+        "The commissioner determines the net amount under R.S. 47:32.",
+        "The employer computes the withholding tax under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_accepts_operative_sequences_and_modifiers(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is unaffected by federal law, which remains applicable, but the final amount is determined under R.S. 47:32.",
+        "The rule does not affect federal law, which applies independently, while the final amount is computed under R.S. 47:32.",
+        "Without prejudice to federal law, which applies independently, the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_disclaimer_allows_later_independent_reset(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is unaffected by the requirement, but the requirement states that the tax is determined under R.S. 47:32.",
+        "The amount is unaffected by the requirement, although the requirement indicates that the tax is determined under R.S. 47:32.",
+        "Without prejudice to federal law, under which the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, in which the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, where the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle10_disclaimer_rejects_governed_relative_or_report(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the sample calculation.",
+        "R.S. 47:32 lacks the hypothetical formula.",
+        "R.S. 47:32 lacks the draft computation.",
+        "R.S. 47:32 lacks the proposed formula.",
+        "R.S. 47:32 lacks an overview covering the tax formula.",
+    ),
+)
+def test_louisiana_cycle10_missing_object_rejects_nonoperative_artifacts(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not not provide it.",
+        "R.S. 47:32 lacks the formula and the module did not refuse to provide it.",
+        "R.S. 47:32 lacks the formula and the module cannot refuse to provide it.",
+        "R.S. 47:32 lacks the formula and the module makes the formula available.",
+        "R.S. 47:32 lacks the formula and there is a formula.",
+        "R.S. 47:32 lacks the formula, the module provides the formula.",
+        "R.S. 47:32 lacks the formula and the module publishes the formula.",
+        "R.S. 47:32 lacks the computation and the module provides the calculation.",
+        "R.S. 47:32 lacks the formula and the module provides the equation.",
+        "R.S. 47:32 lacks the rate schedule and the module provides the rate table.",
+    ),
+)
+def test_louisiana_cycle10_reversal_rejects_composed_positive_synonyms(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module can't provide it.",
+        "R.S. 47:32 lacks the formula and the module couldn't provide it.",
+        "R.S. 47:32 lacks the formula and the module won't provide it.",
+        "R.S. 47:32 lacks the formula and the module hasn't provided it.",
+        "R.S. 47:32 lacks the formula and the module isn't able to provide it.",
+        "R.S. 47:32 lacks the formula and the module provides only part of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides hardly any formula.",
+        "R.S. 47:32 lacks the formula and the module provides a draft formula.",
+        "R.S. 47:32 lacks the resident calculation and the module provides the corporate calculation.",
+        "R.S. 47:32 lacks the income-tax formula and the module provides the payroll-tax formula.",
+        "R.S. 47:32 lacks the taxpayer's calculation and the module provides the employer's computation.",
+        "R.S. 47:32 lacks the 2025 calculation and the module provides the 2024 computation.",
+        "R.S. 47:32 lacks the marginal rate and the module provides this average rate.",
+    ),
+)
+def test_louisiana_cycle10_reversal_accepts_negative_partial_or_distinct(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "and (B)",
+        "or (B)",
+        "plus (B)",
+        "as well as (B)",
+        "together with (B)",
+        "as supplemented by (B)",
+        "combined with (B)",
+        "in addition to (B)",
+        "as amended by (B)",
+        "through (ii)",
+        "followed by (vi)",
+        "and line (B)",
+        "and schedule (B)",
+        "-(B)",
+    ),
+)
+def test_louisiana_cycle10_citation_accepts_identical_natural_tail(continuation: str):
+    reference = (
+        f"R.S. 47:32(A) {continuation}"
+        if not continuation.startswith("-")
+        else f"R.S. 47:32(A){continuation}"
+    )
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"{reference} lacks the computation.",
+        f"The amount is determined under {reference}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "masked_tail",
+    (
+        "R.S. 47:32(A), for category (X), followed by (B)",
+        "R.S. 47:32(A), see table (1), followed by (B)",
+    ),
+)
+def test_louisiana_cycle10_citation_rejects_annotation_masked_tail(masked_tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"{masked_tail} lacks the computation.",
+        f"The amount is determined under {masked_tail.replace('(B)', '(C)')}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle10_citation_allows_detached_line_annotation():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A) lacks the computation.",
+        "The amount is determined under R.S. 47:32(A), line (B) of the worksheet is then used.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "47 USC 32 is supplied only as historical context. R.S. 47:32 lacks "
+            "the required computation."
+        ),
+        (
+            "R.S. 47:32 lacks the required computation. 47 USC 32 is supplied "
+            "only as historical context."
+        ),
+    ),
+)
+def test_louisiana_rs_context_is_not_contaminated_by_usc(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        ("47 USC 32 lacks the required computation. R.S. 47:32 is available."),
+        ("R.S. 47:32 is available. 47 USC 32 lacks the required computation."),
+    ),
+)
+def test_louisiana_rs_dependency_cannot_borrow_usc_missingness(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "verb",
+    ("computed", "encoded", "resolved"),
+)
+def test_malformed_cannot_dependency_language_is_rejected(verb: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"Cannot {verb} the benefit under 42 USC 1437f(o).",
+        "The benefit is determined under 42 USC 1437f(o).",
+        corpus_citation_path="us/statute/42/1437c-1",
+    )
+
+
+def test_bare_rs_dependency_is_not_louisiana_outside_louisiana_source():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the required tax amount computation.",
+        "The amount is determined in accordance with R.S. 47:32.",
+        corpus_citation_path="us-nj/statute/54a:1-1",
+    )
+
+
 def test_unrelated_usc_dependency_cannot_defer_computable_source():
     content = """\
 format: rulespec/v1
@@ -18986,3 +20639,6172 @@ rules:
 
     assert not correct.issues
     assert _has_issue(cancelled, "rounding", "fractional")
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The sample tax calculation depends on R.S. 47:32.",
+        "The example tax calculation depends on R.S. 47:32.",
+        "The draft tax formula depends on R.S. 47:32.",
+        "The proposed tax formula depends on R.S. 47:32.",
+        "The fictional tax formula depends on R.S. 47:32.",
+        "The nonbinding tax formula depends on R.S. 47:32.",
+        "The witness asserts the tax depends on R.S. 47:32.",
+        "The regulation recites the tax depends on R.S. 47:32.",
+        "The requirement declares the tax depends on R.S. 47:32.",
+        "Fictionally, the tax depends on R.S. 47:32.",
+        "The document avers the amount is determined under R.S. 47:32.",
+        "The analysis predicts the amount is determined under R.S. 47:32.",
+        "The agency contends the amount is determined under R.S. 47:32.",
+        "There might be a chance that the amount is determined under R.S. 47:32.",
+        "The source cannot confirm if the amount is determined under R.S. 47:32.",
+        "The agency has yet to confirm if the amount is determined under R.S. 47:32.",
+        "The footnote to the tax depends on R.S. 47:32.",
+        "The commentary beside the tax depends on R.S. 47:32.",
+        "The annotation beneath the tax depends on R.S. 47:32.",
+        "The example illustrating the tax depends on R.S. 47:32.",
+        "The exhibit containing the tax depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle11_rejects_documentary_and_hypothetical_links(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The tax depends solely on R.S. 47:32.",
+        "The tax depends entirely upon R.S. 47:32.",
+        "The tax ultimately depends on R.S. 47:32.",
+        "The tax depends in part on R.S. 47:32.",
+        "The tax is directly dependent on R.S. 47:32.",
+        "The tax relies directly upon R.S. 47:32.",
+        "The rate shown in the table depends on R.S. 47:32.",
+        "The amount specified in the subsection depends upon R.S. 47:32.",
+        "The calculation required for the return relies directly on R.S. 47:32.",
+        "The computation alone is directly dependent on R.S. 47:32.",
+        "The amount is hereby determined under R.S. 47:32.",
+        "The amount is to be determined under R.S. 47:32.",
+        "The amount is calculated and provisionally determined under R.S. 47:32.",
+        "The amount is calculated and, where applicable, determined under R.S. 47:32.",
+        "The amount is determined for every taxpayer under R.S. 47:32.",
+        "The amount is determined for each return under R.S. 47:32.",
+        "The amount is determined on an annual basis under R.S. 47:32.",
+        "The amount is determined at the taxpayer level under R.S. 47:32.",
+        "The amount is determined for the applicable taxable year under R.S. 47:32.",
+        "The amount is rounded to the nearest dollar under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle11_accepts_operational_dependency_variants(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined under R.S. 47:31 and R.S. 47:32.",
+        "The amount is determined pursuant to R.S. 47:31 or R.S. 47:32.",
+        "The tax depends on R.S. 47:31 and R.S. 47:32.",
+        "The calculation requires R.S. 47:31 or R.S. 47:32.",
+        "The amount is determined under both R.S. 47:31 and R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle11_accepts_coordinated_second_citation(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The report relies on 42 U.S.C. 1234.",
+        "The annotation is dependent on 42 U.S.C. 1234.",
+        "The description depends directly on 42 U.S.C. 1234.",
+    ),
+)
+def test_cycle11_louisiana_linkers_do_not_expand_generic_usc_syntax(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "42 U.S.C. 1234 lacks the computation.",
+        source,
+        corpus_citation_path="us/statute/1/1",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Without prejudice to federal law, which remains applicable, but the "
+            "final amount is determined under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which remains applicable, and the "
+            "final amount is determined under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which, despite the filing rule, "
+            "remains applicable, the final amount is determined under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_cycle11_disclaimer_allows_independent_main_reset(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "Without prejudice to federal law, to which the amount is determined "
+            "under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, pursuant to which the amount is "
+            "determined under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which, despite the filing rule, "
+            "remains applicable under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which remains applicable, and the "
+            "requirement asserts the final amount is determined under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which remains applicable, but the "
+            "requirement declares the final amount is determined under R.S. 47:32."
+        ),
+        (
+            "Without prejudice to federal law, which remains applicable, while "
+            "the requirement recites the final amount is determined under R.S. 47:32."
+        ),
+    ),
+)
+def test_louisiana_cycle11_disclaimer_rejects_relative_or_reported_reset(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "source"),
+    (
+        (
+            "R.S. 47:32(A), (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A), (B).",
+        ),
+        (
+            "R.S. 47:32(A), and (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A), and (B).",
+        ),
+        (
+            "R.S. 47:32(A) & (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) & (B).",
+        ),
+        (
+            "R.S. 47:32(A) as provided in (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) as provided in (B).",
+        ),
+        (
+            "R.S. 47:32(A) together with subsection (B) lacks the computation.",
+            (
+                "The amount is determined under R.S. 47:32(A) together with "
+                "subsection (B)."
+            ),
+        ),
+        (
+            "R.S. 47:32, subsections (A) and (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32, subsections (A) and (B).",
+        ),
+        (
+            "R.S. 47:32(A) paragraphs (1) through (3) lacks the computation.",
+            (
+                "The amount is determined under R.S. 47:32(A) paragraphs (1) "
+                "through (3)."
+            ),
+        ),
+        (
+            "R.S. 47:32(A) subject to paragraph (B) lacks the computation.",
+            ("The amount is determined under R.S. 47:32(A) subject to paragraph (B)."),
+        ),
+        (
+            "R.S. 47:32(A) read together with paragraph (B) lacks the computation.",
+            (
+                "The amount is determined under R.S. 47:32(A) read together with "
+                "paragraph (B)."
+            ),
+        ),
+        (
+            "R.S. 47:32(A) except as provided in paragraph (B) lacks the computation.",
+            (
+                "The amount is determined under R.S. 47:32(A) except as provided "
+                "in paragraph (B)."
+            ),
+        ),
+    ),
+)
+def test_louisiana_cycle11_accepts_exact_structural_citation_tails(
+    reason: str, source: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason_tail", "source_tail"),
+    (
+        ("and (B)", "or (B)"),
+        ("and line (B)", "and schedule (B)"),
+        ("through (B)", "followed by (B)"),
+        ("plus (B)", "as amended by (B)"),
+        ("as supplemented by (B)", "combined with (B)"),
+        ("read with (B)", "read with (C)"),
+        ("and part (B)", "and part (C)"),
+    ),
+)
+def test_louisiana_cycle11_rejects_structural_citation_tail_mismatch(
+    reason_tail: str, source_tail: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32(A) {reason_tail} lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A) {source_tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks a placeholder formula.",
+        "R.S. 47:32 lacks a mock calculation.",
+        "R.S. 47:32 lacks a fictional computation.",
+        "R.S. 47:32 lacks a notional method.",
+        "R.S. 47:32 lacks a tentative amount.",
+        "R.S. 47:32 lacks a purported deduction.",
+        "R.S. 47:32 lacks a suggested liability.",
+        "R.S. 47:32 lacks a digest of the formula.",
+        "R.S. 47:32 lacks a brief about the calculation.",
+        "R.S. 47:32 lacks a narrative of the computation.",
+        "R.S. 47:32 lacks a transcript of the formula.",
+    ),
+)
+def test_louisiana_cycle11_rejects_nonoperative_missing_objects(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("head", ("deduction", "credit", "liability", "tax"))
+def test_louisiana_cycle11_accepts_executable_missing_object_heads(head: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {head}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module provides it directly.",
+        "R.S. 47:32 lacks the formula and the module provides it completely.",
+        "R.S. 47:32 lacks the formula and the module provides notes and the formula.",
+        "R.S. 47:32 lacks the formula and the module provides notes, then the formula.",
+        "R.S. 47:32 lacks the formula and the module gives the formula.",
+        "R.S. 47:32 lacks the formula and the module outputs the formula.",
+        "R.S. 47:32 lacks the formula and the module stores the formula.",
+        "R.S. 47:32 lacks the formula and the module holds the formula.",
+        "R.S. 47:32 lacks the formula and the module specifies the formula.",
+        "R.S. 47:32 lacks the formula and the formula is encoded.",
+        "R.S. 47:32 lacks the formula and the formula is defined.",
+        "R.S. 47:32 lacks the formula and the formula is accessible.",
+        "R.S. 47:32 lacks the formula and the formula is complete.",
+        "R.S. 47:32 lacks the formula and the module provides that same.",
+        "R.S. 47:32 lacks the formula, the engine provides it.",
+        "R.S. 47:32 lacks the formula, a formula is present.",
+        "R.S. 47:32 lacks the formula. The module provides it.",
+        "R.S. 47:32 lacks the formula and no module fails to provide it.",
+        "R.S. 47:32 lacks the formula and the module should not fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module can't not provide it.",
+        "R.S. 47:32 lacks the formula and the module won't fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module couldn't refuse to provide it.",
+        "R.S. 47:32 lacks the threshold and the module provides the threshold.",
+        "R.S. 47:32 lacks the base and the module provides the base.",
+        "R.S. 47:32 lacks the algorithm and the module provides the algorithm.",
+        "R.S. 47:32 lacks the amount and the module provides the amount.",
+        "R.S. 47:32 lacks the method and the module provides the method.",
+        (
+            "R.S. 47:32 lacks the resident taxpayer formula and the module "
+            "provides the resident formula."
+        ),
+        (
+            "R.S. 47:32 lacks the individual-income formula and the module "
+            "provides the individual formula."
+        ),
+        (
+            "R.S. 47:32 lacks the annual formula and the module provides the "
+            "yearly formula."
+        ),
+        (
+            "R.S. 47:32 lacks the corporate formula and the module provides the "
+            "corporation formula."
+        ),
+    ),
+)
+def test_louisiana_cycle11_rejects_positive_coreferent_reversals(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module shouldn't provide it.",
+        "R.S. 47:32 lacks the formula and the module mustn't provide it.",
+        "R.S. 47:32 lacks the formula and the module needn't provide it.",
+        "R.S. 47:32 lacks the formula and the module mightn't provide it.",
+        "R.S. 47:32 lacks the formula and the module provides a provisional formula.",
+        "R.S. 47:32 lacks the formula and scarcely any formula is present.",
+        (
+            "R.S. 47:32 lacks the formula and the module identifies the rate but "
+            "provides it."
+        ),
+        (
+            "R.S. 47:32 lacks the formula and the module lists the rate then "
+            "provides this."
+        ),
+        (
+            "R.S. 47:32 lacks the standard deduction formula and the module "
+            "provides the itemized deduction formula."
+        ),
+    ),
+)
+def test_louisiana_cycle11_accepts_negative_partial_or_noncoreferent_supply(
+    reason: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The tax depends primarily on R.S. 47:32.",
+        "The tax depends, in part, on R.S. 47:32.",
+        "The tax is dependent, in part, on R.S. 47:32.",
+        "The tax relies in part on R.S. 47:32.",
+        "The amount is determined for each taxable year under R.S. 47:32.",
+        "The amount is determined for each filing period under R.S. 47:32.",
+        "The amount is rounded to the nearest whole dollar under R.S. 47:32.",
+        "The amount is determined as of the close of the taxable year under R.S. 47:32.",
+        "The witness discussed another issue, but the tax depends on R.S. 47:32.",
+        "The hypothetical amount is irrelevant, while the final tax depends on R.S. 47:32.",
+        "The fictional example is unrelated, yet the final amount is determined under R.S. 47:32.",
+        "The tax is not determined under R.S. 47:31 but is determined under R.S. 47:32.",
+        "The amount is determined under both R.S. 47:31 and R.S. 47:32.",
+        "The amount is determined under either R.S. 47:31 or R.S. 47:32.",
+        "The amount is determined under R.S. 47:30, R.S. 47:31, and R.S. 47:32.",
+        "The amount is determined under R.S. 47:30 as well as R.S. 47:31 together with R.S. 47:32.",
+        "Without prejudice to Louisiana law, the amount is determined under R.S. 47:32.",
+        "Without regard to the law of this state, the amount is determined under R.S. 47:32.",
+        "Notwithstanding any law contrary, the amount is determined under R.S. 47:32.",
+        "The amount is determined under La. R.S. § 47:32.",
+        "The amount is determined under La.R.S. §§ 47:32.",
+        "The amount is determined under R.S. § 47:32.",
+        "The amount is determined under LSA-R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle12_accepts_operative_source_variants(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Perhaps the amount is determined under R.S. 47:32.",
+        "Possibly the amount is determined under R.S. 47:32.",
+        "Conceivably the amount is determined under R.S. 47:32.",
+        "It could be that the amount is determined under R.S. 47:32.",
+        "The putative tax depends on R.S. 47:32.",
+        "The assumed tax depends on R.S. 47:32.",
+        "The purported tax depends on R.S. 47:32.",
+        "For purposes of argument, the tax depends on R.S. 47:32.",
+        "In theory, the tax depends on R.S. 47:32.",
+        "The imagined tax depends on R.S. 47:32.",
+        "The theoretical tax depends on R.S. 47:32.",
+        "The analyst estimates the tax depends on R.S. 47:32.",
+        "The agency opines the tax depends on R.S. 47:32.",
+        "The commentator opines the tax depends on R.S. 47:32.",
+        "The article observes the tax depends on R.S. 47:32.",
+        "The filing for the tax depends on R.S. 47:32.",
+        "The title of the tax depends on R.S. 47:32.",
+        "The index entry for the tax depends on R.S. 47:32.",
+        "The appendix for the tax depends on R.S. 47:32.",
+        "The worksheet for the tax depends on R.S. 47:32.",
+        "The narrative for the tax depends on R.S. 47:32.",
+        "The manual for the tax depends on R.S. 47:32.",
+        "The guide for the tax depends on R.S. 47:32.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 is discussed.",
+        "The amount is determined pursuant to R.S. 47:31, or R.S. 47:32 illustrates the rule.",
+        "The tax depends on R.S. 47:31, and R.S. 47:32 appears in a footnote.",
+        "The rule requires R.S. 47:31, or R.S. 47:32 is not required.",
+        "The schedule B of the return depends on R.S. 47:32.",
+        "The line B of the tax return depends on R.S. 47:32.",
+        "The part B of the calculation depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle12_rejects_framed_or_documentary_source(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Without prejudice to federal law, by which the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, through which the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, whereby the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, wherein the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, which, despite the filing rule, remains applicable under R.S. 47:32.",
+        "Without prejudice to federal law, which remains applicable, whereas the report stipulates the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, which remains applicable, although the article observes the amount is determined under R.S. 47:32.",
+        "Without prejudice to federal law, which remains applicable, because the agency opines the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle12_rejects_relative_or_reported_disclaimer(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "source"),
+    (
+        (
+            "R.S. 47:32(A) and (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) & (B).",
+        ),
+        (
+            "R.S. 47:32(A) and (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A), and (B).",
+        ),
+        (
+            "R.S. 47:32(A) paragraphs (1) and (2) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) paragraph (1) and (2).",
+        ),
+        (
+            "R.S. 47:32(A) subsection (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) (B).",
+        ),
+        (
+            "R.S. 47:32(A) read with (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) read together with (B).",
+        ),
+        (
+            "R.S. 47:32(A) through (C) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) to (C).",
+        ),
+    ),
+)
+def test_louisiana_cycle12_accepts_semantic_citation_equivalence(
+    reason: str, source: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks a prototype formula.",
+        "R.S. 47:32 lacks a specimen formula.",
+        "R.S. 47:32 lacks a conceptual formula.",
+        "R.S. 47:32 lacks a candidate formula.",
+        "R.S. 47:32 lacks a synopsis of the formula.",
+        "R.S. 47:32 lacks an abstract of the formula.",
+        "R.S. 47:32 lacks an article about the formula.",
+        "R.S. 47:32 lacks an index of the formula.",
+        "R.S. 47:32 lacks a catalog of the formula.",
+    ),
+)
+def test_louisiana_cycle12_rejects_nonexecutable_missing_artifacts(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the tentative tax.",
+        "R.S. 47:32 lacks the provisional credit.",
+        "R.S. 47:32 lacks the applicable percentage.",
+    ),
+)
+def test_louisiana_cycle12_accepts_executable_missing_modifiers(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "head",
+    (
+        "implementation",
+        "output",
+        "parameter",
+        "procedure",
+        "protocol",
+        "rule",
+        "specification",
+        "structure",
+        "data",
+        "input",
+        "logic",
+        "lookup",
+        "mapping",
+        "status",
+        "workflow",
+        "capability",
+        "condition",
+    ),
+)
+def test_louisiana_cycle12_rejects_generic_positive_reversal(head: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {head} and the module provides the {head}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module displays the formula.",
+        "R.S. 47:32 lacks the formula and the module emits the formula.",
+        "R.S. 47:32 lacks the formula and the module retrieves the formula.",
+        "R.S. 47:32 lacks the formula, despite the module providing the formula.",
+        "R.S. 47:32 lacks the formula while the module is providing the formula.",
+        "R.S. 47:32 lacks the formula and the formula has been provided.",
+        "R.S. 47:32 lacks the formula and the formula was made available.",
+        "R.S. 47:32 lacks the formula and the formula can be accessed.",
+        "R.S. 47:32 lacks the formula and the module provides it successfully.",
+        "R.S. 47:32 lacks the formula and the module provides it immediately.",
+        "R.S. 47:32 lacks the formula and the module provides it without delay.",
+        "R.S. 47:32 lacks the formula. The module provides it",
+        "R.S. 47:32 lacks the formula and the module must not fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module could not fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module wouldn't refuse to provide it.",
+        "R.S. 47:32 lacks the formula and the module mightn't fail to provide it.",
+    ),
+)
+def test_louisiana_cycle12_rejects_positive_supply_forms(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not currently provide it.",
+        "R.S. 47:32 lacks the formula and the module never actually provides it.",
+        "R.S. 47:32 lacks the formula and the module cannot readily provide it.",
+        "R.S. 47:32 lacks the formula and the module doesn't presently provide it.",
+        "R.S. 47:32 lacks the formula and the module isn't able to provide it.",
+        "R.S. 47:32 lacks the formula and the module shan't provide it.",
+        "R.S. 47:32 lacks the formula and the module oughtn't provide it.",
+        "R.S. 47:32 lacks the formula and the module daren't provide it.",
+        "R.S. 47:32 lacks the formula and the module provides some formula.",
+        "R.S. 47:32 lacks the formula and the module provides half of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides a fragment of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides portions of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides most but not all of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides pieces of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides an excerpt of the formula.",
+        "R.S. 47:32 lacks the formula and barely any formula is available.",
+        "R.S. 47:32 lacks the formula and almost no formula is available.",
+        "R.S. 47:32 lacks the corporate formula and the module provides the individual formula.",
+        "R.S. 47:32 lacks the marginal rate and the module provides the average rate.",
+        "R.S. 47:32 lacks the formula and the module identifies the rate but the rate is available.",
+        "R.S. 47:32 lacks the formula and the guidance is available; it states the rate.",
+    ),
+)
+def test_louisiana_cycle12_accepts_negative_partial_or_distinct_supply(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "governs a separate report",
+        "determines a filing date",
+        "controls metadata",
+        "establishes a filing date",
+        "sets the label",
+        "supplies commentary",
+        ", however, is discussed only in the report",
+        "merely appears in a footnote",
+        "only illustrates the comparison",
+    ),
+)
+def test_louisiana_cycle13_does_not_inherit_into_new_citation_clause(
+    predicate: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "connector",
+    ("&", "plus", "along with", "combined with"),
+)
+def test_louisiana_cycle13_accepts_common_citation_list_connectors(connector: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 {connector} R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The witness asserts that the example is wrong but the tax is determined under R.S. 47:32.",
+        "Suppose the example is irrelevant, but the final tax is determined under R.S. 47:32.",
+        "The tax memorandum depends on R.S. 47:32.",
+        "The formula bibliography depends on R.S. 47:32.",
+        "The tax legend depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle13_rejects_embedded_reset_or_documentary_head(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "source", "expected"),
+    (
+        (
+            "R.S. 47:32(A), schedule (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A), schedule (B) applies separately.",
+            False,
+        ),
+        (
+            "R.S. 47:32(A) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A), paragraph (B) of the explanatory report.",
+            True,
+        ),
+        (
+            "R.S. 47:32(A) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) and (MFJ) filers use the joint table.",
+            True,
+        ),
+        (
+            "R.S. 47:32(A) in relation to subsection (B) lacks the computation.",
+            "The amount is determined under R.S. 47:32(A) in relation to subsection (B).",
+            True,
+        ),
+    ),
+)
+def test_louisiana_cycle13_distinguishes_citation_tail_from_annotation(
+    reason: str, source: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            reason,
+            source,
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "head",
+    (
+        "fact",
+        "instruction",
+        "mechanism",
+        "bases",
+        "facts",
+        "instructions",
+        "inputs",
+        "mechanisms",
+        "rates",
+        "records",
+        "requirements",
+        "outputs",
+    ),
+)
+def test_louisiana_cycle13_rejects_all_registry_head_reversals(head: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {head} and the module provides the {head}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module provides a subset of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides a fraction of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides less than all of the formula.",
+        "R.S. 47:32 lacks the corporate formula and the module provides a formula.",
+        "R.S. 47:32 lacks the formula and the module provides merely pieces of the formula.",
+        "R.S. 47:32 lacks the formula and the module provides a few fragments of the formula.",
+        "R.S. 47:32 lacks the formula and the module does not yet provide it.",
+        "R.S. 47:32 lacks the formula and the module does not ordinarily provide it.",
+        "R.S. 47:32 lacks the formula and the module cannot reliably provide it.",
+        "R.S. 47:32 lacks the formula and the module never directly provides it.",
+        "R.S. 47:32 lacks the formula and the module isn't currently able to provide it.",
+        "R.S. 47:32 lacks the formula and the module is unable currently to provide it.",
+        "R.S. 47:32 lacks the formula and the module does not affirmatively provide it.",
+        "R.S. 47:32 lacks the formula and the module isn't presently able to provide it.",
+    ),
+)
+def test_louisiana_cycle13_accepts_partial_distinct_or_negative_supply(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not lack the ability to provide it.",
+        "R.S. 47:32 lacks the formula and the module never lacks the ability to provide it.",
+        "R.S. 47:32 lacks the formula and the module is by no means unable to provide it.",
+        "R.S. 47:32 lacks the formula since the module provides it.",
+        "R.S. 47:32 lacks the formula and the module uses the formula.",
+        "R.S. 47:32 lacks the formula and the module accesses the formula.",
+        "R.S. 47:32 lacks the formula and the module can access the formula.",
+        "R.S. 47:32 lacks the formula and the module reads the formula.",
+        "R.S. 47:32 lacks the formula and the module loads the formula.",
+        "R.S. 47:32 lacks the formula and the module imports the formula.",
+        "R.S. 47:32 lacks the formula and the module ships with the formula.",
+        "R.S. 47:32 lacks the formula and the module keeps the formula on hand.",
+    ),
+)
+def test_louisiana_cycle13_rejects_composed_or_explicit_positive_supply(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "actor",
+    (
+        "library",
+        "package",
+        "implementation",
+        "codebase",
+        "repository",
+        "runtime",
+        "service",
+        "system",
+    ),
+)
+def test_louisiana_cycle13_rejects_comma_splice_supply_by_any_actor(actor: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula, the {actor} provides it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "object_text",
+    ("metadata", "an example", "a label", "background", "an appendix", "a catalog"),
+)
+def test_louisiana_cycle13_uses_nearest_nonexecutive_antecedent(object_text: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides {object_text} and it is complete.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "lacks the computation",
+        "defines a filing term",
+        "specifies a filing term",
+        "prescribes a filing rule",
+        "imposes a filing rule",
+        "authorizes a filing method",
+        "addresses a separate issue",
+        "covers a separate issue",
+        "lists a filing date",
+        "identifies a filing date",
+        "references a report",
+        "modifies a filing rule",
+        "amends a filing rule",
+        "creates a filing rule",
+    ),
+)
+def test_louisiana_cycle14_does_not_inherit_into_finite_citation_clause(
+    predicate: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "defines a separate rule",
+        "is discussed in the report",
+        "does not govern the tax",
+        "merely appears in a note",
+    ),
+)
+def test_louisiana_cycle14_rejects_detached_labeled_tail_subject(predicate: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A), schedule (B) lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A), schedule (B) {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The analyst concludes that the tax depends on R.S. 47:32.",
+        "The article concludes that the tax depends on R.S. 47:32.",
+        "The agency maintains that the tax depends on R.S. 47:32.",
+        "The witness surmises that the tax depends on R.S. 47:32.",
+        "The analysis infers that the tax depends on R.S. 47:32.",
+        "It is doubtful that the amount is determined under R.S. 47:32.",
+        "There is no evidence that the amount is determined under R.S. 47:32.",
+        "Nothing establishes that the amount is determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, but this is only a hypothetical example.",
+        "The amount is determined under R.S. 47:32 only in the discarded example.",
+        "The amount is determined under R.S. 47:32, or so the witness claims.",
+    ),
+)
+def test_louisiana_cycle14_rejects_nonoperative_dependency_framing(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Although the example is illustrative, the amount is determined under R.S. 47:32.",
+        "While the background is hypothetical, the tax is calculated under R.S. 47:32.",
+        "Because the sample is merely illustrative, the final amount is computed under R.S. 47:32.",
+        "The amount itself depends on R.S. 47:32.",
+        "The tax due depends on R.S. 47:32.",
+        "The amount payable depends on R.S. 47:32.",
+        "The amount that applies depends on R.S. 47:32.",
+        "The tax that is due depends on R.S. 47:32.",
+        "The formula selected by the commissioner depends on R.S. 47:32.",
+        "The amount is legally determined under R.S. 47:32.",
+        "The amount is properly determined under R.S. 47:32.",
+        "The amount is generally determined under R.S. 47:32.",
+        "The amount is specifically determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle14_accepts_structural_operative_variants(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not avoid providing the formula.",
+        "R.S. 47:32 lacks the formula and the module does not delay providing the formula.",
+        "R.S. 47:32 lacks the formula and the module does not hesitate before providing the formula.",
+        "R.S. 47:32 lacks the formula, software provides it.",
+        "R.S. 47:32 lacks the formula, Axiom provides it.",
+        "R.S. 47:32 lacks the formula, this module provides it.",
+        "R.S. 47:32 lacks the formula, our module provides it.",
+        "R.S. 47:32 lacks the tax calculation and the module provides the calculation of tax.",
+        "R.S. 47:32 lacks the rate table and the module provides the table of rates.",
+        "R.S. 47:32 lacks the credit formula and the module provides the formula for the credit.",
+        "R.S. 47:32 lacks the computation of liability and the module provides the liability computation.",
+        "R.S. 47:32 lacks the formula and the formula is on hand.",
+        "R.S. 47:32 lacks the formula and the formula is obtainable.",
+    ),
+)
+def test_louisiana_cycle14_rejects_structural_positive_supply(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module identifies the rate before providing it.",
+        "R.S. 47:32 lacks the formula and the module does not at any point in practice provide it.",
+        "R.S. 47:32 lacks the formula and the module cannot as a practical matter reliably provide it.",
+    ),
+)
+def test_louisiana_cycle14_accepts_distinct_or_unbounded_negative_supply(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "documentary_head",
+    (
+        "a chart",
+        "an exhibit",
+        "an illustration",
+        "a description",
+        "a comparison",
+        "a transcript",
+        "a synopsis",
+        "a digest",
+        "an index",
+        "a brief",
+        "an annotation",
+    ),
+)
+def test_louisiana_cycle14_uses_unified_documentary_antecedents(
+    documentary_head: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides {documentary_head} and it is complete.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "repeals a filing rule",
+        "incorporates a filing rule",
+        "replaces a filing rule",
+        "exempts a filing rule",
+        "permits a filing method",
+        "prohibits a filing method",
+        "delegates a filing duty",
+        "regulates a filing method",
+    ),
+)
+def test_louisiana_cycle15_does_not_inherit_unlisted_finite_citation_clause(
+    predicate: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "cannot govern the tax",
+        "ought not govern the tax",
+        "governed a filing rule",
+        "concerns a filing rule",
+        "pertains to a filing rule",
+    ),
+)
+def test_louisiana_cycle15_rejects_additional_detached_tail_predicates(
+    predicate: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A), schedule (B) lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A), schedule (B) {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount determined under R.S. 47:31 and R.S. 47:32 is rounded.",
+        "The rate prescribed under R.S. 47:31 and R.S. 47:32 applies.",
+    ),
+)
+def test_louisiana_cycle15_inherits_citation_object_list_before_outer_predicate(
+    source: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "It is questionable that the amount is determined under R.S. 47:32.",
+        "It is dubious that the amount is determined under R.S. 47:32.",
+        "It is unlikely that the amount is determined under R.S. 47:32.",
+        "It is unproven that the amount is determined under R.S. 47:32.",
+        "The analyst posits that the amount is determined under R.S. 47:32.",
+        "The analyst postulates that the amount is determined under R.S. 47:32.",
+        "The analyst speculates that the amount is determined under R.S. 47:32.",
+        "The analyst conjectures that the amount is determined under R.S. 47:32.",
+        "The analyst presumes that the amount is determined under R.S. 47:32.",
+        "The amount is allegedly determined under R.S. 47:32.",
+        "The amount is reportedly determined under R.S. 47:32.",
+        "The amount is supposedly determined under R.S. 47:32.",
+        "The amount is purportedly determined under R.S. 47:32.",
+        "The amount is ostensibly determined under R.S. 47:32.",
+        "The amount is apparently determined under R.S. 47:32.",
+        "The amount is putatively determined under R.S. 47:32.",
+        "The amount is theoretically determined under R.S. 47:32.",
+        "The amount is questionably determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle15_rejects_expanded_nonoperative_framing(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "but only as an illustration",
+        "as the witness claims",
+        "according to a draft report",
+        "only as a contrived example",
+        "though hypothetically",
+        "but the statement is hypothetical",
+    ),
+)
+def test_louisiana_cycle15_rejects_expanded_postfix_framing(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Although the report states, without evidence, that the amount is determined under R.S. 47:32.",
+        "While the witness claims, in passing, that the amount is determined under R.S. 47:32.",
+        "Because the analyst maintains, without support, that the amount is determined under R.S. 47:32.",
+        "Although the document reports, as background, that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle15_does_not_reset_inside_fronted_reporting_clause(
+    source: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "verb",
+    (
+        "documents",
+        "records",
+        "reports",
+        "discusses",
+        "explains",
+        "outlines",
+        "summarizes",
+        "catalogs",
+    ),
+)
+def test_louisiana_cycle15_uses_structural_pre_supply_antecedent(verb: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {verb} the rate before providing it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not log metadata before providing the formula.",
+        "R.S. 47:32 lacks the formula and the module without hesitation provides the formula.",
+        "R.S. 47:32 lacks the formula and the module not surprisingly provides the formula.",
+        "R.S. 47:32 lacks the formula and the module no later than today provides the formula.",
+        "R.S. 47:32 lacks the formula, software returns it.",
+        "R.S. 47:32 lacks the formula, software delivers it.",
+        "R.S. 47:32 lacks the formula, software produces it.",
+        "R.S. 47:32 lacks the formula, software generates it.",
+        "R.S. 47:32 lacks the formula, software retains it.",
+        "R.S. 47:32 lacks the formula, software offers it.",
+        "R.S. 47:32 lacks the formula, software computes it.",
+        "R.S. 47:32 lacks the formula, software defines it.",
+        "R.S. 47:32 lacks the formula, software encodes it.",
+        "R.S. 47:32 lacks the formula, software publishes it.",
+        "R.S. 47:32 lacks the formula and the formula is readily available.",
+        "R.S. 47:32 lacks the formula and the formula is currently available.",
+        "R.S. 47:32 lacks the formula and the formula has been stored.",
+        "R.S. 47:32 lacks the formula and the formula is freely accessible.",
+        "R.S. 47:32 lacks the formula and the formula is retained.",
+        "R.S. 47:32 lacks the formula and the formula is included.",
+        "R.S. 47:32 lacks the formula and the formula is loaded.",
+        "R.S. 47:32 lacks the formula and the formula is imported.",
+        "R.S. 47:32 lacks the formula and the formula is at hand.",
+    ),
+)
+def test_louisiana_cycle15_rejects_structural_positive_supply(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not necessarily fail to provide it.",
+        "R.S. 47:32 lacks the formula and the module does not always fail to provide it.",
+        "R.S. 47:32 lacks the formula without which the module cannot provide it.",
+        "R.S. 47:32 lacks the formula and the module fails without warning to provide it.",
+        "R.S. 47:32 lacks the formula and the module refuses without explanation to provide it.",
+    ),
+)
+def test_louisiana_cycle15_accepts_negative_or_uncertain_supply(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    (
+        "The formula digest",
+        "The tax assertion",
+        "The tax rumor",
+        "The formula outline",
+        "The tax proposal",
+        "The tax abstract",
+        "The tax brief",
+        "The tax material",
+        "The tax overview",
+        "The tax summary",
+        "The tax transcript",
+        "The citation",
+        "The reference",
+        "The claim",
+        "The website",
+        "The email",
+    ),
+)
+def test_louisiana_cycle15_rejects_documentary_or_contextual_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("the corporate formula", "the formula for corporations"),
+        ("the resident calculation", "the calculation for residents"),
+        ("the individual rate", "the rate for individuals"),
+        ("the taxpayer calculation", "the calculation of taxpayers"),
+    ),
+)
+def test_louisiana_cycle15_normalizes_plural_object_modifiers(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks {missing} and the module provides {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined under R.S. 47:31 and R.S. 47:32 governs a separate filing rule.",
+        "The amount is determined under R.S. 47:31 or R.S. 47:32 controls only metadata.",
+        "The tax depends on R.S. 47:31 and R.S. 47:32 sets a filing date.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 set a deadline.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 made no change.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 held a hearing.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 wrote a rule.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 gave relief.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 put a limit in place.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 sought a report.",
+    ),
+)
+def test_louisiana_cycle16_finite_clause_evidence_overrides_punctuation(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount determined under R.S. 47:30, R.S. 47:31, and R.S. 47:32 is rounded.",
+        "The rate prescribed under R.S. 47:31 and R.S. 47:32 applies.",
+    ),
+)
+def test_louisiana_cycle16_preserves_outer_subject_citation_lists(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "set a separate filing date",
+        "said nothing about the tax",
+        "made no change",
+        "govern separate filings",
+    ),
+)
+def test_louisiana_cycle16_rejects_structural_detached_tail_predicates(
+    predicate: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A), schedule (B) lacks the computation.",
+        f"The amount is determined under R.S. 47:32(A), schedule (B) {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined under R.S. 47:32, but the analyst speculates about a different issue.",
+        "The amount is determined under R.S. 47:32, but the witness reportedly disagrees.",
+        "The amount is determined under R.S. 47:32, and a hypothetical example follows.",
+        "The amount is determined under R.S. 47:32, while the report discusses a fictional scenario.",
+        "The amount is determined under R.S. 47:32, though the analyst claims the rate is wrong.",
+        "The statute declares that the amount is determined under R.S. 47:32.",
+        "The Act declares that the tax is calculated under R.S. 47:32.",
+        "The legislature declares that the amount is determined under R.S. 47:32.",
+        "The section presumes that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle16_preserves_independent_postfix_or_legal_speaker(
+    source: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount remaining depends on R.S. 47:32.",
+        "The credit allowed depends on R.S. 47:32.",
+        "The liability imposed depends on R.S. 47:32.",
+        "The amount owed depends on R.S. 47:32.",
+        "The calculation adopted by the department depends on R.S. 47:32.",
+        "The tax legally due depends on R.S. 47:32.",
+        "The amount ultimately payable depends on R.S. 47:32.",
+        "The amount determined for this return depends on R.S. 47:32.",
+        "The amount with no adjustment depends on R.S. 47:32.",
+        "The amount without rounding depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle16_accepts_executable_postpositive_subjects(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module cannot help providing the formula.",
+        "R.S. 47:32 lacks the formula and the module does not log metadata prior to providing the formula.",
+        "R.S. 47:32 lacks the formula and the module no doubt provides it.",
+        "R.S. 47:32 lacks the formula and the module never ceases to provide it.",
+        "R.S. 47:32 lacks the formula and the module has no difficulty providing it.",
+    ),
+)
+def test_louisiana_cycle16_rejects_scoped_positive_supply_idioms(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle16_accepts_uncertain_modal_reversal():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module may not fail to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "without qualification",
+        "unconditionally",
+        "in every case",
+        "for all filers",
+        "as needed",
+        "on request",
+        "at all times",
+        "in its entirety",
+        "today",
+    ),
+)
+def test_louisiana_cycle16_corefers_pronoun_with_bounded_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides it {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "antecedent",
+    (
+        "a diagram",
+        "a certificate",
+        "an address",
+        "a message",
+        "a warning",
+        "an attachment",
+        "a receipt",
+    ),
+)
+def test_louisiana_cycle16_tracks_opaque_pre_supply_antecedent(antecedent: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {antecedent} before providing it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the formula is already available.",
+        "R.S. 47:32 lacks the formula and the formula is still available.",
+        "R.S. 47:32 lacks the formula and the formula is now available.",
+        "R.S. 47:32 lacks the formula and the formula is publicly accessible.",
+        "R.S. 47:32 lacks the formula and the formula has already been stored.",
+        "R.S. 47:32 lacks the formula and the formula can readily be obtained.",
+        "R.S. 47:32 lacks the formula and the formula is unquestionably available.",
+    ),
+)
+def test_louisiana_cycle16_rejects_generalized_availability_states(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("the annual formula", "the formula for each year"),
+        ("the monthly formula", "the formula for each month"),
+        ("the child formula", "the formula for children"),
+        ("the return formula", "the formula for returns"),
+        ("the household formula", "the formula for households"),
+    ),
+)
+def test_louisiana_cycle16_normalizes_temporal_and_generic_plural_modifiers(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks {missing} and the module provides {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "modifier",
+    (
+        "collectively",
+        "jointly",
+        "equally",
+        "respectively",
+        ", where applicable",
+        ", if applicable",
+        ", when required",
+    ),
+)
+def test_louisiana_cycle17_preserves_citation_list_modifiers(modifier: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32 {modifier}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 read as a filing rule.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 and its regulations set a deadline.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 together with its regulations, sets a deadline.",
+    ),
+)
+def test_louisiana_cycle17_rejects_modified_finite_citation_subject(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle17_accepts_generic_reduced_passive_citation_list():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the rule.",
+        "The statute prescribed under R.S. 47:31 and R.S. 47:32 applies.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle17_accepts_detached_label_in_outer_reduced_passive():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A), schedule (B) lacks the computation.",
+        "The amount determined under R.S. 47:32(A), schedule (B) is rounded.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle17_rejects_coordinated_detached_label_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32(A), schedule (B) lacks the computation.",
+        "The amount is determined under R.S. 47:32(A), schedule (B) and its appendix set a deadline.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "merely for illustrative purposes",
+        "only by way of example",
+        "if the witness is correct",
+        "according to the analyst",
+        "as the commentator alleges",
+        "or so the agency says",
+        "purportedly according to the report",
+        "which is only a hypothetical example",
+        "merely as an illustration",
+        "or so the commentator claims",
+    ),
+)
+def test_louisiana_cycle17_rejects_semantically_governing_postfix(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The taxpayer claims that the tax depends on R.S. 47:32.",
+        "The applicant alleges that the amount depends on R.S. 47:32.",
+        "Counsel states that the formula depends on R.S. 47:32.",
+        "The petitioner contends that the amount depends on R.S. 47:32.",
+        "The auditor believes that the amount depends on R.S. 47:32.",
+        "The author states that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle17_rejects_reporter_agnostic_evidential_complement(
+    source: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    (
+        "The tax petition",
+        "The tax question",
+        "The tax sentence",
+        "The tax notice",
+        "The tax newsletter",
+        "The tax blog",
+        "The tax testimony",
+        "The tax affidavit",
+        "The tax advertisement",
+        "The tax press release",
+        "The eligibility for the tax credit",
+        "The accuracy of the formula",
+        "The timing of the calculation",
+    ),
+)
+def test_louisiana_cycle17_rejects_nonexecutive_grammatical_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module does not stop providing it.",
+        "R.S. 47:32 lacks the formula and the module never stops providing it.",
+        "R.S. 47:32 lacks the formula and the module does not refrain from providing it.",
+        "R.S. 47:32 lacks the formula and the module is anything but unable to provide it.",
+        "R.S. 47:32 lacks the formula and the module is far from unable to provide it.",
+        "R.S. 47:32 lacks the formula and the module is not incapable of providing it.",
+    ),
+)
+def test_louisiana_cycle17_rejects_continuative_or_double_negative_supply(
+    reason: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("modal", ("may", "might", "should"))
+def test_louisiana_cycle17_accepts_non_guaranteed_modal_supply(modal: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {modal} provide the formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "only hypothetically",
+        "in a fictional example",
+        "if the missing dependency were supplied",
+        "only conditionally",
+        "merely as a sample",
+        "according to an unverified report",
+        "in theory but not in practice",
+    ),
+)
+def test_louisiana_cycle17_accepts_nonoperative_pronoun_supply(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides it {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "identifies a diagram, then provides it",
+        "identifies a diagram and then provides it",
+        "selects a certificate; then provides it",
+        "mentions an address and later provides it",
+        "creates a message, and provides it",
+    ),
+)
+def test_louisiana_cycle17_tracks_opaque_antecedent_across_coordination(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adverb",
+    (
+        "allegedly",
+        "reportedly",
+        "supposedly",
+        "purportedly",
+        "hypothetically",
+        "possibly",
+        "ostensibly",
+        "apparently",
+        "theoretically",
+        "questionably",
+    ),
+)
+def test_louisiana_cycle17_accepts_epistemic_availability(adverb: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula is {adverb} available.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is furnished",
+        "was delivered",
+        "has just been stored",
+        "is published",
+    ),
+)
+def test_louisiana_cycle17_rejects_general_passive_supply(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle17_corefers_natural_presupply_subject_object():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula before providing it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "provided",
+    ("the formula annually", "the formula for every year"),
+)
+def test_louisiana_cycle17_normalizes_annual_modifier_forms(provided: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the annual formula and the module provides {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("the formula for classes", "the class formula"),
+        ("the calculation for businesses", "the business calculation"),
+        ("the formula for addresses", "the address formula"),
+        ("the calculation for filing statuses", "the filing status calculation"),
+    ),
+)
+def test_louisiana_cycle17_normalizes_stable_es_plural_modifiers(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks {missing} and the module provides {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "modifier",
+    (
+        "taken together",
+        "read together",
+        "considered together",
+        "alone",
+        "both",
+        "whenever applicable",
+    ),
+)
+def test_louisiana_cycle18_accepts_citation_list_modifiers(modifier: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {modifier}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle18_accepts_taxable_income_reduced_passive_citation_list():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The taxable income calculated under R.S. 47:31 and R.S. 47:32 is rounded.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "independently governs the filing deadline",
+        "separately sets the filing deadline",
+        "expressly governs the filing deadline",
+        "ordinarily sets the filing deadline",
+        "as amended, governs the filing deadline",
+        "becomes determined before the filing deadline",
+    ),
+)
+def test_louisiana_cycle18_rejects_finite_citation_subject_tail(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "according to its terms",
+        "according to the applicable table",
+        "as the statute states",
+        "as the department states",
+        "if the statutory condition is satisfied",
+    ),
+)
+def test_louisiana_cycle18_accepts_operative_legal_postfix(tail: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "as the analyst claims",
+        "according to the analyst",
+        "at least according to the analyst",
+    ),
+)
+def test_louisiana_cycle18_rejects_nonlegal_postfix(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    ("law", "regulation", "rule", "Code", "ordinance", "provision"),
+)
+def test_louisiana_cycle18_accepts_operative_legal_speaker(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {speaker} declares the amount depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("speaker", "verb"),
+    (
+        ("court", "speculates"),
+        ("department", "conjectures"),
+        ("statute", "predicts"),
+        ("section", "opines"),
+        ("legislature", "estimates"),
+        ("author of the statute", "states"),
+    ),
+)
+def test_louisiana_cycle18_rejects_speculative_or_nonlegal_speaker(
+    speaker: str, verb: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {speaker} {verb} the amount depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    (
+        "The tax mailing",
+        "The tax warning",
+        "The tax posting",
+        "The tax briefing",
+        "The tax pleading",
+        "The tax recording",
+        "The formula wording",
+        "The tax advertising",
+        "The tax datafeed",
+    ),
+)
+def test_louisiana_cycle18_rejects_documentary_suffix_head(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject", ("The specified amount", "The amount otherwise allowable")
+)
+def test_louisiana_cycle18_accepts_executable_subject_modifier(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "is unable not to provide the formula",
+        "is incapable not to provide the formula",
+        "fails to avoid providing the formula",
+        "fails to stop providing the formula",
+        "refuses to stop providing the formula",
+        "is unable to stop providing the formula",
+        "hesitates to stop providing the formula",
+    ),
+)
+def test_louisiana_cycle18_rejects_nested_positive_supply(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "only in the event it is requested",
+        "only upon receipt of authorization",
+        "subject to approval",
+        "assuming the dependency arrives",
+        "on condition that access is granted",
+        "contingently",
+        "were it ever supplied",
+        "only after the dependency arrives",
+    ),
+)
+def test_louisiana_cycle18_accepts_conditional_pronoun_supply(condition: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides it {condition}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "chose a diagram, then provided it",
+        "found a receipt, then provided it",
+        "made a message, then provided it",
+        "put an attachment aside, then provided it",
+        "will select a certificate, then provide it",
+        "gave a warning, then provided it",
+        "found a diagram and provided it",
+        "identifies a draft formula before providing it",
+    ),
+)
+def test_louisiana_cycle18_tracks_irregular_or_modal_opaque_antecedent(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is available only hypothetically",
+        "is available according to an unverified report",
+        "may be available",
+    ),
+)
+def test_louisiana_cycle18_accepts_epistemic_or_modal_availability(state: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "has been made available",
+        "has just been made available",
+        "has become available",
+        "was rendered available",
+        "came to be available",
+        "was exported",
+        "was held",
+        "was given",
+    ),
+)
+def test_louisiana_cycle18_rejects_actual_availability(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "may readily provide the formula",
+        "allegedly provides the formula",
+        "possibly supplies the formula",
+    ),
+)
+def test_louisiana_cycle18_accepts_uncertain_direct_supply(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("the bonus formula", "the bonuses formula"),
+        ("the matrix formula", "the matrices formula"),
+        ("the wife formula", "the wives formula"),
+        ("the leaf formula", "the leaves formula"),
+        ("the analysis formula", "the analyses formula"),
+        ("the annual formula", "the formula per year"),
+        ("the monthly formula", "the formula every month"),
+    ),
+)
+def test_louisiana_cycle18_normalizes_irregular_or_period_modifier(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks {missing} and the module provides {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "alone sets a deadline",
+        "both sets a deadline and controls metadata",
+        "considered together with its regulations, sets a deadline",
+        "along with its regulations, sets a deadline",
+        "together with two regulations, sets a deadline",
+    ),
+)
+def test_louisiana_cycle19_rejects_modified_citation_finite_predicate(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("head", ("result", "threshold"))
+def test_louisiana_cycle19_accepts_generic_reduced_passive_head(head: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {head} determined under R.S. 47:31 and R.S. 47:32 is rounded.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "according to the analyst’s interpretation of the statute",
+        "the court reporter claims",
+        "if the analyst is correct under applicable law",
+        "the analyst believes",
+    ),
+)
+def test_louisiana_cycle19_rejects_nonlegal_postfix_mentioning_law(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The author states that the taxable amount is determined under R.S. 47:32.",
+        "The author states emphatically that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle19_rejects_modified_reporter_complement(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle19_rejects_relational_nonexecutive_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility under the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject", ("The liability enforceable", "The amount receivable")
+)
+def test_louisiana_cycle19_accepts_postpositive_executable_adjective(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "appears to provide it",
+        "seems to provide it",
+        "is expected to provide it",
+        "tries to provide it",
+        "attempts to provide it",
+        "plans to provide it",
+        "intends to provide it",
+        "is likely to provide it",
+        "is hardly able to provide it",
+        "is said to provide it",
+    ),
+)
+def test_louisiana_cycle20_accepts_prospective_or_epistemic_supply(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "when the dependency becomes available",
+        "once the source arrives",
+        "provided that the source is encoded",
+        "so long as the dependency exists",
+        "in case the source is supplied",
+        "on receipt of the dependency",
+        "after the dependency is encoded",
+        "to the extent the source is available",
+        "unless the source remains absent",
+    ),
+)
+def test_louisiana_cycle20_accepts_general_conditional_supply(condition: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides it {condition}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "can do nothing but provide it",
+        "does nothing except provide it",
+        "cannot do otherwise than provide it",
+        "is powerless to avoid providing it",
+    ),
+)
+def test_louisiana_cycle20_rejects_positive_negative_complement_idiom(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "drew diagrams, then provides them",
+        "sent notices and then provides them",
+        "saw warnings; then provides them",
+        "bought certificates and later provides them",
+        "caught messages, then provides them",
+    ),
+)
+def test_louisiana_cycle20_tracks_plural_irregular_opaque_antecedent(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is conditionally available",
+        "is potentially available",
+        "is nominally available",
+        "is seemingly available",
+        "is available if the source exists",
+        "is available only when the dependency arrives",
+        "is available subject to receipt of the source",
+        "is available on paper but not in practice",
+    ),
+)
+def test_louisiana_cycle20_accepts_qualified_availability(state: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "has been made obtainable",
+        "has been rendered accessible",
+        "has been put on hand",
+        "is ready for use",
+        "is retrievable",
+        "can be found",
+    ),
+)
+def test_louisiana_cycle20_rejects_actual_availability_synonym(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "despite a hypothetical concern the module provides it",
+        "after a fictional scenario ends the module provides it",
+    ),
+)
+def test_louisiana_cycle20_bounds_framing_to_supply_clause(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("plural", "singular"),
+    (("criteria", "criterion"), ("data", "datum"), ("media", "medium")),
+)
+def test_louisiana_cycle20_normalizes_classical_modifier_plural(
+    plural: str, singular: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula for {plural} and "
+        f"the module provides the {singular} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "along with accompanying regulations, sets a deadline",
+        "in its current form, sets a deadline",
+        "as currently amended, sets a deadline",
+    ),
+)
+def test_louisiana_cycle21_rejects_bounded_modifier_before_finite_predicate(
+    tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "in a hypothetical example",
+        "for illustrative purposes",
+        "under the analyst’s unverified assumption",
+    ),
+)
+def test_louisiana_cycle21_rejects_nonoperative_prepositional_postfix(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle21_rejects_pronominal_reporter_complement():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The author states it is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("speaker", ("court", "legislature"))
+def test_louisiana_cycle21_accepts_authoritative_legal_conclusion(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {speaker} concludes that the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ("The eligibility during the calculation", "The accuracy against the formula"),
+)
+def test_louisiana_cycle21_rejects_additional_relational_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("The amount outstanding", "The tax owing"))
+def test_louisiana_cycle21_accepts_participial_executable_adjective(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "is believed to provide it",
+        "is reported to provide it",
+        "is supposed to provide it",
+        "is projected to provide it",
+        "is scheduled to provide it",
+        "hopes to provide it",
+        "expects to provide it",
+        "aims to provide it",
+        "seeks to provide it",
+        "promises to provide it",
+        "is preparing to provide it",
+        "is about to provide it",
+    ),
+)
+def test_louisiana_cycle22_accepts_general_control_or_epistemic_supply(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and subject to approval, the module provides it.",
+        "R.S. 47:32 lacks the formula and the module provides it upon receipt of the source.",
+        "R.S. 47:32 lacks the formula and the module provides it pending receipt of the source.",
+        "R.S. 47:32 lacks the formula and the module provides it as soon as the source arrives.",
+        "R.S. 47:32 lacks the formula and the module provides it whenever the source arrives.",
+        "R.S. 47:32 lacks the formula and the module provides it contingent upon approval.",
+        "R.S. 47:32 lacks the formula and the module provides it conditioned on approval.",
+    ),
+)
+def test_louisiana_cycle22_accepts_extended_conditional_supply(reason: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "provided it after the dependency arrived",
+        "supplied it when authorization was received",
+        "provides it once each year",
+    ),
+)
+def test_louisiana_cycle22_rejects_completed_or_habitual_supply(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "has no alternative except to provide it",
+        "has no option except to provide it",
+        "is left with no alternative except to provide it",
+        "has little choice other than provide it",
+    ),
+)
+def test_louisiana_cycle22_rejects_positive_choice_idiom(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "left notices, then provides them",
+        "sold certificates, then provides them",
+        "hid notices, then provides them",
+        "heard warnings, then provides them",
+        "lost notices, then provides them",
+        "paid invoices, then provides them",
+        "told stories, then provides them",
+        "won certificates, then provides them",
+        "creates a certificate containing the formula, then provides it",
+    ),
+)
+def test_louisiana_cycle22_tracks_opaque_grammatical_head(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is available upon receipt of the source",
+        "is available contingent upon approval",
+        "is available only after the dependency arrives",
+    ),
+)
+def test_louisiana_cycle22_accepts_extended_conditional_availability(state: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "became available once the source arrived",
+        "was available when authorization was received",
+        "is usable",
+        "is in place",
+        "is downloadable",
+        "is recoverable",
+        "is operational",
+        "is at the ready",
+        "has arrived",
+        "resides in the repository",
+    ),
+)
+def test_louisiana_cycle22_rejects_completed_or_usable_availability(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("quarterly", "for each quarter"),
+        ("weekly", "for every week"),
+        ("daily", "per day"),
+    ),
+)
+def test_louisiana_cycle22_normalizes_additional_period_modifier(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and "
+        f"the module provides the formula {provided}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "along with accompanying regulations sets a deadline",
+        "together with regulations sets a deadline",
+        "in its amended form, sets a deadline",
+        "as further amended, sets a deadline",
+    ),
+)
+def test_louisiana_cycle24_rejects_general_modifier_before_finite_predicate(
+    tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "for demonstration only",
+        "under an unsupported assumption",
+        "the analyst contends",
+        "the analyst opines",
+        "the analyst testifies",
+    ),
+)
+def test_louisiana_cycle24_rejects_expanded_nonoperative_postfix(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("with confidence", "without qualification"))
+def test_louisiana_cycle24_rejects_reporter_complement_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The author states {adjunct} that the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    (
+        ("The eligibility after the calculation", False),
+        ("The eligibility before the calculation", False),
+        ("The attached calculation", True),
+        ("The named formula", True),
+    ),
+)
+def test_louisiana_cycle24_binds_direct_subject_relation_or_prenominal_modifier(
+    subject: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            "R.S. 47:32 lacks the computation.",
+            f"{subject} depends on R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "declines to provide it",
+        "neglects to provide it",
+        "forgets to provide it",
+        "struggles to provide it",
+        "endeavors to provide it",
+        "pretends to provide it",
+        "claims to provide it",
+        "threatens to provide it",
+        "would prefer to provide it",
+    ),
+)
+def test_louisiana_cycle24_accepts_nonentailing_control_supply(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "gave it after the dependency arrived",
+        "sent it when authorization was received",
+        "made the formula after the source arrived",
+        "kept it after validation",
+        "had it once the source arrived",
+        "always provides it after validating the input",
+        "routinely provides it when processing returns",
+        "regularly provides it whenever requested",
+    ),
+)
+def test_louisiana_cycle24_rejects_irregular_past_or_habitual_supply(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    (
+        "following receipt",
+        "on approval",
+        "dependent on source availability",
+        "contingent on approval",
+        "conditioned upon approval",
+    ),
+)
+def test_louisiana_cycle24_accepts_equivalent_conditional_supply(condition: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module provides it {condition}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "ran tests, then provides them",
+        "taught classes, then provides them",
+        "met applicants, then provides them",
+        "got receipts, then provides them",
+        "laid markers, then provides them",
+    ),
+)
+def test_louisiana_cycle24_tracks_additional_irregular_opaque_antecedent(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "was available if authorization was received",
+        "had been available if approval was granted",
+        "will be available after the source arrives",
+        "is available following receipt",
+        "is available contingent on approval",
+        "is available conditioned upon approval",
+        "is available dependent on source availability",
+    ),
+)
+def test_louisiana_cycle24_accepts_tense_aware_conditional_availability(state: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is ready",
+        "is extant",
+        "is on file",
+        "has been released",
+        "has been posted",
+        "has been deployed",
+        "can be downloaded",
+        "can be recovered",
+        "is installed",
+    ),
+)
+def test_louisiana_cycle24_rejects_actual_deployment_availability(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("monthly", "per month"),
+        ("annual", "per annum"),
+        ("semiannual", "twice per year"),
+        ("biweekly", "every two weeks"),
+        ("spousal", "spouse"),
+    ),
+)
+def test_louisiana_cycle24_normalizes_period_or_legal_modifier(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and "
+        f"the module provides the {provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "along with accompanying regulations creates a deadline",
+        "together with the regulations requires a filing",
+    ),
+)
+def test_louisiana_cycle26_rejects_generic_finite_citation_predicate(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "as the court confidently concludes",
+        "according to the provisions of the statute",
+        "according to the statutory provisions",
+    ),
+)
+def test_louisiana_cycle26_accepts_modified_legal_authority_postfix(tail: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("with confidence", "without qualification"))
+def test_louisiana_cycle26_rejects_parenthetical_reporter_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The author states, {adjunct}, that the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle26_rejects_matching_nonexecutive_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility matching the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "appeared to provide it",
+        "tried to provide it",
+        "was trying to provide it",
+        "appears to have provided it",
+        "is believed to have provided it",
+        "had planned to provide it",
+    ),
+)
+def test_louisiana_cycle26_accepts_composed_control_aspect(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was providing it when authorization was received",
+        "had been providing it when the source disappeared",
+    ),
+)
+def test_louisiana_cycle26_rejects_actual_progressive_supply(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("objects", "expected"),
+    (
+        ("the formula and a diagram", True),
+        ("the formula and a certificate", True),
+        ("a diagram and the formula", False),
+        ("a certificate and the formula", False),
+    ),
+)
+def test_louisiana_cycle26_uses_nearest_coordinated_antecedent(
+    objects: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            f"R.S. 47:32 lacks the formula and the module identifies {objects}, "
+            "then provides it.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is not merely available but expensive",
+        "is not just available but documented",
+        "is actually available, not hypothetical",
+        "is available rather than merely proposed",
+    ),
+)
+def test_louisiana_cycle26_rejects_contrastive_positive_availability(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided", "expected"),
+    (("means-test", "mean-test", True), ("monies", "money", False)),
+)
+def test_louisiana_cycle26_preserves_modifier_morphology(
+    missing: str, provided: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            f"R.S. 47:32 lacks the {missing} formula and "
+            f"the module provides the {provided} formula.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "along with regulations made no change",
+        "together with regulations put a limit on the credit",
+    ),
+)
+def test_louisiana_cycle28_rejects_irregular_finite_citation_predicate(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail", ("along with related rules", "together with revised regulations")
+)
+def test_louisiana_cycle28_accepts_terminal_citation_modifier(tail: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("speaker", ("court of appeal", "department of revenue"))
+def test_louisiana_cycle28_accepts_compound_legal_authority(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, as the {speaker} concludes.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("after review", "in writing"))
+def test_louisiana_cycle28_rejects_general_reporter_complement_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The author states {adjunct} that the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle28_rejects_generic_relational_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility outside the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "had been trying to provide it",
+        "will be trying to provide it",
+        "tried unsuccessfully to provide it",
+        "was attempting unsuccessfully to provide it",
+    ),
+)
+def test_louisiana_cycle28_accepts_control_aspect_and_adverbs(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was actively providing it when authorization was received",
+        "had already been providing it when the source disappeared",
+        "was continuously providing it after validation",
+    ),
+)
+def test_louisiana_cycle28_rejects_adverbial_actual_progressive_supply(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "objects", "pronoun", "expected"),
+    (
+        ("formulas", "formulas and a diagram", "them", False),
+        ("formula", "a diagram and formulas", "it", True),
+        ("formula", "diagrams and a formula", "them", True),
+    ),
+)
+def test_louisiana_cycle28_resolves_coordinated_antecedent_number(
+    missing: str, objects: str, pronoun: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            f"R.S. 47:32 lacks the {missing} and the module identifies {objects}, "
+            f"then provides {pronoun}.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "if authorized, the formula is available",
+        "provided that authorization is received, the formula is available",
+        "subject to approval, the formula is installed",
+    ),
+)
+def test_louisiana_cycle28_accepts_prefix_conditional_availability(state: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is actually installed, not hypothetical",
+        "is deployed rather than merely proposed",
+    ),
+)
+def test_louisiana_cycle28_rejects_general_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("provided", "expected"),
+    (
+        ("the inflation-indexing formula", True),
+        ("the formula without inflation indexing", False),
+    ),
+)
+def test_louisiana_cycle28_preserves_without_modifier_polarity(
+    provided: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            "R.S. 47:32 lacks the formula without inflation indexing and "
+            f"the module provides {provided}.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "along with the regulations held a hearing",
+        "along with the regulations wrote a rule",
+        "along with the regulations sought a report",
+    ),
+)
+def test_louisiana_cycle30_rejects_additional_irregular_citation_predicate(
+    tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31, and R.S. 47:32 {tail}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle30_accepts_terminal_citation_noun_adjunct():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, "
+        "along with revised rules this year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker", ("Louisiana Department of Revenue", "First Circuit Court of Appeal")
+)
+def test_louisiana_cycle30_accepts_qualified_legal_authority(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, as the {speaker} concludes.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("after review", "in writing"))
+def test_louisiana_cycle30_rejects_parenthetical_reporter_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The author states, {adjunct}, that the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle30_rejects_based_upon_relational_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility based upon the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "tried in vain to provide it",
+        "was attempting without success to provide it",
+    ),
+)
+def test_louisiana_cycle30_accepts_prepositional_failed_attempt(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was in fact providing it when authorization was received",
+        "had for months been providing it when the source disappeared",
+    ),
+)
+def test_louisiana_cycle30_rejects_prepositional_actual_progressive(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("nearest", ("a series", "a collection of diagrams"))
+def test_louisiana_cycle30_uses_antecedent_determiner_number(nearest: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula and "
+        f"{nearest}, then provides it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is in place, not hypothetical",
+        "is on file rather than merely proposed",
+        "is at hand, not hypothetical",
+    ),
+)
+def test_louisiana_cycle30_rejects_multiword_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("parent-subsidiary", "subsidiary-parent"),
+        ("payer-recipient", "recipient-payer"),
+        ("origin-destination", "destination-origin"),
+    ),
+)
+def test_louisiana_cycle30_preserves_ordered_compound_modifier(
+    missing: str, provided: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and "
+        f"the module provides the {provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle32_rejects_irregular_bare_object_citation_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 "
+        "along with the regulations took effect.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle32_accepts_nonfinite_citation_participle():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, "
+        "along with regulations making a change.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker", ("author of the statute", "analyst for the department")
+)
+def test_louisiana_cycle32_rejects_nonauthoritative_relational_speaker(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:32, as the {speaker} concludes.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle32_rejects_prefix_attribution():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to the analyst, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle32_rejects_colon_reporter_complement():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The author states: the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle32_accepts_hyphenated_executable_subject():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The after-tax income depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "tried, in vain, to provide it",
+        "was attempting, without success, to provide it",
+    ),
+)
+def test_louisiana_cycle32_accepts_parenthetical_failed_attempt(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was, in fact, providing it when authorization was received",
+        "had been, for months, providing it when the source disappeared",
+    ),
+)
+def test_louisiana_cycle32_rejects_parenthetical_actual_progressive(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "nearest", ("a collection of two diagrams", "one series of several reports")
+)
+def test_louisiana_cycle32_uses_outer_np_determiner_number(nearest: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula and "
+        f"{nearest}, then provides it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module provides the formula with "
+        "a note stating that it applies if authorized.",
+        "R.S. 47:32 lacks the formula and the formula that applies if authorization "
+        "is received is available.",
+        "R.S. 47:32 lacks the formula and the formula for use if authorized is installed.",
+    ),
+)
+def test_louisiana_cycle32_rejects_embedded_object_condition(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is installed, not merely hypothetical",
+        "is in place, not merely proposed",
+        "is on file, not a hypothetical version",
+    ),
+)
+def test_louisiana_cycle32_rejects_expanded_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided", "expected"),
+    (
+        ("parent-subsidiary", "parent subsidiary", False),
+        ("payer-recipient", "payer recipient", False),
+        ("origin-destination", "origin destination", False),
+        ("parent subsidiary", "subsidiary parent", True),
+        ("payer recipient", "recipient payer", True),
+    ),
+)
+def test_louisiana_cycle32_preserves_role_order_independent_of_hyphenation(
+    missing: str, provided: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            f"R.S. 47:32 lacks the {missing} formula and "
+            f"the module provides the {provided} formula.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+def test_louisiana_cycle34_rejects_found_citation_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 "
+        "along with the regulations found no error.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle34_accepts_reduced_passive_citation_modifier():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, "
+        "along with regulations issued the prior year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "According to the text of the statute, the amount is determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, as the text of the statute states.",
+    ),
+)
+def test_louisiana_cycle34_accepts_authoritative_statutory_text(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("punctuation", (': "', ', "', " — "))
+def test_louisiana_cycle34_rejects_quoted_reporter_complement(punctuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The author states{punctuation}the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("tax-rate", "base-amount"))
+def test_louisiana_cycle34_accepts_hyphenated_executable_compound(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "tried (in vain) to provide it",
+        "was attempting (without success) to provide it",
+    ),
+)
+def test_louisiana_cycle34_accepts_delimited_failed_attempt(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was—in fact—providing it when authorization was received",
+        "had been (for months) providing it when the source disappeared",
+    ),
+)
+def test_louisiana_cycle34_rejects_delimited_actual_progressive(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "nearest",
+    (
+        "the collection of two diagrams",
+        "the series of several reports",
+        "the pair of formulas",
+    ),
+)
+def test_louisiana_cycle34_uses_definite_outer_np_number(nearest: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula and "
+        f"{nearest}, then provides it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        "taxpayers use if authorized.",
+        "R.S. 47:32 lacks the formula and the module provides the formula accompanied "
+        "by a note stating that it applies if authorized.",
+        "R.S. 47:32 lacks the formula and the formula that taxpayers use if authorized "
+        "is available.",
+    ),
+)
+def test_louisiana_cycle34_rejects_general_embedded_object_condition(reason: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "is installed (not hypothetical)",
+        "is in place—not hypothetical",
+        "is on file (not merely proposed)",
+    ),
+)
+def test_louisiana_cycle34_rejects_delimited_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided", "expected"),
+    (
+        ("parents-subsidiaries", "subsidiaries-parents", True),
+        ("payers-recipients", "recipients-payers", True),
+        ("parent-subsidiary", "parents subsidiaries", False),
+        ("trust-beneficiary", "beneficiary-trust", True),
+        ("partnership-partner", "partner-partnership", True),
+    ),
+)
+def test_louisiana_cycle34_preserves_general_modifier_order(
+    missing: str, provided: str, expected: bool
+):
+    assert (
+        completeness_module._reason_dependency_is_source_bound(
+            f"R.S. 47:32 lacks the {missing} formula and "
+            f"the module provides the {provided} formula.",
+            "The amount is determined under R.S. 47:32.",
+            corpus_citation_path="us-la/statute/47:295",
+        )
+        is expected
+    )
+
+
+def test_louisiana_cycle36_rejects_became_citation_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 "
+        "along with the regulations became effective.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle36_accepts_reduced_passive_indefinite_time():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, "
+        "along with regulations issued a year earlier.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "According to the text of the analyst, the amount is determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, as the text of the analyst states.",
+    ),
+)
+def test_louisiana_cycle36_rejects_nonauthoritative_text_complement(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("lead", ("as follows", "the following"))
+def test_louisiana_cycle36_rejects_introduced_quoted_report(lead: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f'The author states {lead}: "the amount is determined under R.S. 47:32.',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle36_accepts_in_state_executable_subject():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The in-state tax depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle36_rejects_derived_from_relational_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility derived from the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "tried [in vain] to provide it",
+        "was attempting [without success] to provide it",
+    ),
+)
+def test_louisiana_cycle36_accepts_square_delimited_attempt(continuation: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "was [in fact] providing it when authorization was received",
+        "had been [for months] providing it when the source disappeared",
+    ),
+)
+def test_louisiana_cycle36_rejects_square_delimited_actual_progressive(
+    continuation: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("objects", "pronoun"),
+    (("the formula and a diagram", "them"), ("the formulas and a diagram", "both")),
+)
+def test_louisiana_cycle36_resolves_coordinated_plural_antecedent(
+    objects: str, pronoun: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, "
+        f"then provides {pronoun}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "provides the formula that was requested, if authorization is received",
+        "provides the formula which is complete, if approval is granted",
+        "provides the formula that applies generally, subject to approval",
+    ),
+)
+def test_louisiana_cycle36_accepts_clause_level_condition_after_relative(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", not merely hypothetical, is installed",
+        "—not hypothetical—is in place",
+        " (not merely proposed) is on file",
+    ),
+)
+def test_louisiana_cycle36_rejects_prepredicate_positive_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("annual resident", "resident annual"),
+        ("2024 resident", "resident 2024"),
+        ("Louisiana annual", "annual Louisiana"),
+    ),
+)
+def test_louisiana_cycle36_keeps_descriptor_order_commutative(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and "
+        f"the module provides the {provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("predicate", ("shall apply", "did not apply"))
+def test_louisiana_cycle38_rejects_modal_citation_predicate(predicate: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 "
+        f"along with the regulations {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_accepts_reduced_passive_general_time_unit():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, "
+        "along with regulations issued a decade earlier.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "According to the text of the analyst concerning the statute, "
+        "the amount is determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, as the text of the analyst "
+        "concerning the statute states.",
+    ),
+)
+def test_louisiana_cycle38_rejects_later_authority_mention(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("state income tax", "state-tax amount"))
+def test_louisiana_cycle38_accepts_state_tax_executable_subject(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_rejects_quoted_report_with_head_noun():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states the following proposition: "the amount is determined '
+        "under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("relation", ("resulting from", "arising from"))
+def test_louisiana_cycle38_rejects_additional_participial_relation(relation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The eligibility {relation} the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_resolves_three_object_plural_antecedent():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula, "
+        "a diagram, and a certificate, then provides them.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_rejects_parenthetical_condition_inside_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that, "
+        "if authorized, taxpayers use.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_rejects_relative_positive_state_composition():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the formula, which, although not "
+        "hypothetical, is installed elsewhere.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_keeps_general_adjectives_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the supplemental local formula and the module provides "
+        "the local supplemental formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_accepts_nested_failed_attempt_aspect():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (repeatedly, but in vain) "
+        "to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle38_rejects_multiword_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for two months) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_rejects_should_citation_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        "the regulations should apply.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_accepts_relative_modal_citation_modifier():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "regulations that may apply.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_accepts_reduced_passive_fiscal_year():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "regulations issued a fiscal year earlier.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "According to the text of the analyst on the statute, the amount is "
+        "determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, as the text of the analyst "
+        "on the statute states.",
+    ),
+)
+def test_louisiana_cycle40_rejects_on_authority_complement(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ("applicable state income tax", "Louisiana state tax", "final state tax"),
+)
+def test_louisiana_cycle40_accepts_modified_state_tax_subject(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_rejects_relevant_part_quoted_report():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states in relevant part as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("relation", ("calculated from", "reflecting"))
+def test_louisiana_cycle40_rejects_generic_participial_subject(relation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The eligibility {relation} the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "identifies not only the formula but also a diagram, then provides both",
+        "identifies three objects: the formula, a diagram, and a certificate, then "
+        "provides them",
+    ),
+)
+def test_louisiana_cycle40_resolves_expanded_coordinated_list(continuation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_rejects_condition_embedded_in_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        "taxpayers, if authorized, use.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, while not hypothetical, is installed",
+        ", which is installed, though not hypothetical",
+    ),
+)
+def test_louisiana_cycle40_rejects_while_or_postfix_positive_state(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_preserves_relational_modifier_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the appeal denial formula and the module provides the "
+        "denial appeal formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_keeps_personal_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the eligible married formula and the module provides the "
+        "married eligible formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_rejects_word_number_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was for four months providing it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_rejects_negated_failed_attempt():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not in vain) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle40_accepts_negated_progressive_evidence():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (not in fact) providing it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("predicate", ("expires next year", "provides a credit"))
+def test_louisiana_cycle42_rejects_general_finite_citation_predicate(predicate: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        f"the regulations {predicate}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_rejects_addressing_authority_complement():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to the text of the analyst addressing the statute, the amount "
+        "is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ("applicable state individual income tax", "final state personal income tax"),
+)
+def test_louisiana_cycle42_accepts_intervening_state_tax_descriptor(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_rejects_parenthesized_quoted_intro():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states, in relevant part, as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_rejects_irregular_participial_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility drawn from the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("tax mailing notice", "tax warning message"))
+def test_louisiana_cycle42_rejects_multiword_documentary_suffix(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("coordinator", ("along with", "as well as"))
+def test_louisiana_cycle42_resolves_three_member_conjunction(coordinator: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula "
+        f"{coordinator} a diagram and a certificate, then provides them.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "objects",
+    (
+        "the formula, a diagram, and a certificate",
+        "three objects: the formula, a diagram, and a certificate",
+    ),
+)
+def test_louisiana_cycle42_rejects_both_for_three_member_list(objects: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, then "
+        "provides both.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_rejects_condition_inside_coordinated_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        "taxpayers use, if authorized, and retain.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, even though not hypothetical, is installed elsewhere",
+        ", which is installed, even though not hypothetical",
+    ),
+)
+def test_louisiana_cycle42_rejects_even_though_positive_state(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("qualified disabled", "disabled qualified"),
+        ("single elderly", "elderly single"),
+    ),
+)
+def test_louisiana_cycle42_keeps_general_person_descriptors_commutative(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration", ("more than four months", "18 consecutive calendar months")
+)
+def test_louisiana_cycle42_rejects_general_duration_progressive(duration: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was (for {duration}) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_rejects_double_negative_failed_attempt():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not without success) to "
+        "provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle42_accepts_never_progressive_evidence():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (never in fact) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "along with agency guidelines",
+        "together with local ordinances",
+        "along with regulations applicable in multiple cases",
+    ),
+)
+def test_louisiana_cycle44_accepts_plural_citation_noun_adjunct(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle44_rejects_outer_predicate_after_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        "regulations that the agency adopted expires next year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "According to the text of the analyst interpreting the statute, the amount "
+        "is determined under R.S. 47:32.",
+        "The amount is determined under R.S. 47:32, as the text of the analyst "
+        "interpreting the statute states.",
+    ),
+)
+def test_louisiana_cycle44_rejects_generic_participial_authority_topic(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The authors state the income tax is determined under R.S. 47:32.",
+        "The authors state the final individual income tax amount is determined under "
+        "R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle44_rejects_real_state_reporting_verb(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle44_rejects_parenthesized_report_intro():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states (in relevant part) as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle44_rejects_taken_participial_subject():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The eligibility taken from the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject", ("eligibility screening calculation", "eligibility testing computation")
+)
+def test_louisiana_cycle44_accepts_gerund_noun_compound(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("objects", "pronoun"),
+    (
+        ("the formula along with a diagram", "them"),
+        ("the formula as well as a diagram", "both"),
+        ("the formula together with a diagram and a certificate", "them"),
+    ),
+)
+def test_louisiana_cycle44_resolves_non_and_coordination(objects: str, pronoun: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, then "
+        f"provides {pronoun}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_tail",
+    (", if authorized, but do not retain", ", if authorized, during filing"),
+)
+def test_louisiana_cycle44_rejects_general_embedded_relative_condition(
+    relative_tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use{relative_tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, even though it is not hypothetical, is installed elsewhere",
+        ", which, despite not being hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle44_rejects_explicit_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("blind dependent", "dependent blind"),
+        ("low-income dependent", "dependent low-income"),
+    ),
+)
+def test_louisiana_cycle44_keeps_additional_descriptors_commutative(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle44_rejects_unbounded_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for a period of more than "
+        "four consecutive calendar months) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "aspect",
+    (
+        "always successfully, never in vain",
+        "never in vain",
+    ),
+)
+def test_louisiana_cycle44_rejects_quantified_negated_failure(aspect: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module tried ({aspect}) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle44_accepts_punctuated_negated_progressive():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (not, in fact) providing it "
+        "when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_accepts_modified_plural_citation_noun():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "agency guidelines currently in effect.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_rejects_terminal_finite_citation_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with the "
+        "regulations expires.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_rejects_present_relative_then_outer_predicate():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        "regulations that the agency adopts expires next year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    ("text of the governing statute", "language of the implementing regulation"),
+)
+def test_louisiana_cycle46_accepts_authoritative_participial_modifier(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to the {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("pronoun", ("They", "We"))
+def test_louisiana_cycle46_rejects_pronoun_state_reporting(pronoun: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"{pronoun} state the income tax is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_rejects_em_dash_report_intro():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states—in relevant part—as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("relation", ("incorporating", "emerging from"))
+def test_louisiana_cycle46_rejects_additional_semantic_participle(relation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The eligibility {relation} the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_accepts_income_averaging_compound():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The income averaging calculation depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("objects", "pronoun"),
+    (
+        ("the formula plus a diagram", "them"),
+        ("the formula plus a diagram", "both"),
+        ("the formula in addition to a diagram and a certificate", "them"),
+    ),
+)
+def test_louisiana_cycle46_resolves_additive_coordination(objects: str, pronoun: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, then "
+        f"provides {pronoun}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_tail",
+    (", if authorized, or retain", ", if authorized, under the statute"),
+)
+def test_louisiana_cycle46_rejects_or_preposition_relative_condition(
+    relative_tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use{relative_tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, although it is not hypothetical, is installed elsewhere",
+        ", which, despite the fact that it is not hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle46_rejects_additional_explicit_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_keeps_minor_orphan_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the minor orphan formula and the module provides the "
+        "orphan minor formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_preserves_representative_role_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the principal representative formula and the module "
+        "provides the representative principal formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_rejects_interrupted_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for more than four months, "
+        "without interruption) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle46_accepts_zero_duration_progressive():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for zero months) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("aspect", ("no longer in vain",))
+def test_louisiana_cycle46_rejects_no_longer_failed_attempt(aspect: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module tried ({aspect}) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("aspect", ("never, in fact", "no longer in fact"))
+def test_louisiana_cycle46_accepts_scoped_negative_progressive(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was ({aspect}) providing it "
+        "when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct", ("agency policies", "filing instructions currently in effect")
+)
+def test_louisiana_cycle48_accepts_additional_plural_citation_noun(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        f"{adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_accepts_relative_plural_subject():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "regulations that the analysis covers.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_accepts_authority_participial_modifier():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to the text of the reviewing court, the amount is determined "
+        "under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_rejects_authority_participial_topic():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to the text of the analyst evaluating the statute, the amount is "
+        "determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("people", "women"))
+def test_louisiana_cycle48_rejects_irregular_plural_state_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} state the income tax is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_accepts_ous_state_descriptor():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The various state income taxes depend on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_rejects_nested_report_intro_punctuation():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states: (in relevant part) as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("relation", ("including", "excluding"))
+def test_louisiana_cycle48_rejects_inclusion_participial_relation(relation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The eligibility {relation} the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject", ("income estimating calculation", "tax reporting calculation")
+)
+def test_louisiana_cycle48_accepts_reporting_word_noun_compound(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_resolves_nested_and_member():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula plus a "
+        "profit and loss diagram, then provides both.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_tail",
+    (", if authorized, yet retain", ", if authorized, by electronic means"),
+)
+def test_louisiana_cycle48_rejects_yet_by_relative_condition(relative_tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use{relative_tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, while it is not hypothetical, is installed elsewhere",
+        ", which, notwithstanding that it is not hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle48_rejects_while_notwithstanding_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_keeps_senior_veteran_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the senior veteran formula and the module provides the "
+        "veteran senior formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_preserves_employee_dependent_role_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the employee dependent formula and the module provides the "
+        "dependent employee formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_accepts_indirect_zero_duration():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for a total of zero months) "
+        "providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle48_rejects_semicolon_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for more than four months; "
+        "without interruption) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("aspect", ("anything but in vain", "not ever in vain"))
+def test_louisiana_cycle48_rejects_general_negated_failure(aspect: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module tried ({aspect}) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("aspect", ("no longer, in fact", "by no means in fact"))
+def test_louisiana_cycle48_accepts_general_scoped_negative(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was ({aspect}) providing it "
+        "when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct", ("agency standards", "filing forms currently in effect")
+)
+def test_louisiana_cycle50_accepts_further_plural_citation_noun(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        f"{adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_accepts_process_relative_subject():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "regulations that the process governs.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "text of the Louisiana reviewing court",
+        "language of the state implementing regulation",
+    ),
+)
+def test_louisiana_cycle50_accepts_modified_authority_participle(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to the {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("children", "men"))
+def test_louisiana_cycle50_rejects_more_irregular_plural_state_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} state the income tax is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_accepts_gross_state_descriptor():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The gross state income tax depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_rejects_semicolon_report_intro():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        'The author states; in relevant part, as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("relation", ("using", "comprising"))
+def test_louisiana_cycle50_rejects_more_semantic_participles(relation: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The eligibility {relation} the formula depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ("taxpayer estimating the income tax", "worker reporting the tax calculation"),
+)
+def test_louisiana_cycle50_rejects_human_reporting_participial_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "objects",
+    (
+        "the formula plus an income and expense diagram",
+        "the formula in addition to a terms and conditions document",
+    ),
+)
+def test_louisiana_cycle50_resolves_general_nested_and_member(objects: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, then "
+        "provides both.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_tail",
+    (", if authorized, after filing", ", if authorized, as well as retain"),
+)
+def test_louisiana_cycle50_rejects_after_additive_relative_condition(
+    relative_tail: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use{relative_tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, though it is not hypothetical, is installed elsewhere",
+        ", which, notwithstanding the fact that it is not hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle50_rejects_through_notwithstanding_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_keeps_student_widow_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the student widow formula and the module provides the "
+        "widow student formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_preserves_taxpayer_dependent_role_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the taxpayer dependent formula and the module provides the "
+        "dependent taxpayer formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_accepts_zero_hours_duration():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for a total of zero hours) "
+        "providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_rejects_dash_duration_progressive():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for more than four months—"
+        "without interruption) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle50_rejects_not_at_all_failed_attempt():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not at all in vain) to "
+        "provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("aspect", ("at no point in fact", "by no means, in fact"))
+def test_louisiana_cycle50_accepts_operator_class_negative(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was ({aspect}) providing it "
+        "when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("status controls", "basis governs"))
+def test_louisiana_cycle52_accepts_singular_s_relative_subject(subject: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        f"regulations that the {subject}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "together with filing notices currently in effect",
+        "along with tax schedules currently in force",
+    ),
+)
+def test_louisiana_cycle52_accepts_additional_citation_adjunct(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    ("researcher evaluating the statute", "outside consultant reviewing the statute"),
+)
+def test_louisiana_cycle52_rejects_general_authority_topic_head(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to the text of the {speaker}, the amount is determined under "
+        "R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("subject", ("staff", "personnel"))
+def test_louisiana_cycle52_rejects_collective_state_subject(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} state the income tax is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle52_accepts_excess_state_descriptor():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The excess state income tax depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "intro",
+    ("states (in relevant part), as follows", "states; [in relevant part], as follows"),
+)
+def test_louisiana_cycle52_rejects_multiple_closing_intro_punctuation(intro: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f'The author {intro}: "the amount is determined under R.S. 47:32."',
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "subject",
+    (
+        "taxpayer calculating the income tax",
+        "worker applying the formula",
+        "eligibility referencing the formula",
+    ),
+)
+def test_louisiana_cycle52_rejects_determiner_marked_participial_clause(subject: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The {subject} depends on R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "objects", ("the formula plus two diagrams", "the formula plus a pair of diagrams")
+)
+def test_louisiana_cycle52_rejects_both_as_determiner(objects: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module identifies {objects}, then "
+        "provides both diagrams.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_tail",
+    (
+        ", if authorized, before filing",
+        ", if authorized, both electronically and on paper",
+    ),
+)
+def test_louisiana_cycle52_rejects_before_both_relative_tail(relative_tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use{relative_tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ", which, even though clearly not hypothetical, is installed elsewhere",
+        ", which, despite itself not being hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle52_rejects_modified_positive_state_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula{state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle52_keeps_adult_citizen_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the adult citizen formula and the module provides the "
+        "citizen adult formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle52_preserves_employer_dependent_role_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the employer dependent formula and the module provides the "
+        "dependent employer formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("duration", ("none of the filing period", "nil hours"))
+def test_louisiana_cycle52_accepts_general_zero_duration(duration: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was (for {duration}) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    (
+        "more than four months (without interruption)",
+        "more than four months: without interruption",
+    ),
+)
+def test_louisiana_cycle52_rejects_nested_colon_duration(duration: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was (for {duration}) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle52_rejects_in_no_sense_failure():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (in no sense in vain) to "
+        "provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "aspect", ("under no circumstances in fact", "in no way, in fact")
+)
+def test_louisiana_cycle52_accepts_more_negative_operators(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was ({aspect}) providing it "
+        "when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "identifies the formula plus two diagrams, then provides those diagrams",
+        "identifies the formula plus two 2024 diagrams, then provides both 2024 diagrams",
+    ),
+)
+def test_louisiana_cycle54_rejects_plural_determiner_as_list_pronoun(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("without modification", "pursuant to the statute"))
+def test_louisiana_cycle54_rejects_condition_inside_relative_tail(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use, if authorized, {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        "which, even though clearly and demonstrably not hypothetical, is installed elsewhere",
+        "which, despite the formula itself not being hypothetical, is installed elsewhere",
+    ),
+)
+def test_louisiana_cycle54_rejects_general_relative_positive_contrast(state: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the formula, {state}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle54_keeps_retiree_clergy_descriptors_commutative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the retiree clergy formula and the module provides the "
+        "clergy retiree formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (("parent student", "student parent"), ("taxpayer widow", "widow taxpayer")),
+)
+def test_louisiana_cycle54_preserves_roles_among_person_descriptors(
+    missing: str, provided: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    (
+        "four months with no interruption",
+        "four months with none of the expected interruptions",
+    ),
+)
+def test_louisiana_cycle54_rejects_positive_duration_with_zero_nested_noun(
+    duration: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was (for {duration}) providing "
+        "it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "aspect", ("not reluctantly but in vain", "not only reluctantly but in vain")
+)
+def test_louisiana_cycle54_accepts_contrastive_failed_attempt(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module tried ({aspect}) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "Acts 2024, First Extraordinary Session, No. 11, §2",
+        "Acts 2024, 1st Extraordinary Session, No. 11, §2",
+        "Acts 2024, First Ex. Session, No. 11, §2",
+        "Acts 2024, 1st Ex. Session, No. 11, §2",
+    ),
+)
+def test_louisiana_cycle54_filters_expanded_session_law_names(citation: str):
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(f"{citation} establishes a 45 dollar fee."),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(45.0, "45")]
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "along with filing requirements currently in effect",
+        "together with agency directives currently in force",
+        "along with regulations that the agency administers for taxpayers",
+        "along with regulations that the series addresses",
+    ),
+)
+def test_louisiana_cycle54_accepts_general_citation_noun_adjunct(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "the Louisiana Constitution",
+        "the text of the administrative implementing regulation",
+        "the text of the agency implementing regulation",
+    ),
+)
+def test_louisiana_cycle54_accepts_general_legal_authority(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        'The author states in pertinent part, as follows: "The amount is determined '
+        'under R.S. 47:32."',
+        'The author states, in relevant part, "The amount is determined under '
+        'R.S. 47:32."',
+        "The author explains that the amount is determined under R.S. 47:32.",
+        "The commentator notes that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle54_rejects_general_documentary_attribution(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (
+        "identifies the formula plus two 2024 diagrams, then provides both (2024) diagrams",
+        "identifies the formula plus two filed diagrams, then provides those “filed” diagrams",
+    ),
+)
+def test_louisiana_cycle56_rejects_delimited_determiner_as_list_pronoun(
+    continuation: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module {continuation}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("via electronic filing", "with the software"))
+def test_louisiana_cycle56_rejects_more_relative_tail_adjuncts(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use, if authorized, {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "contrast", ("far from hypothetical", "anything but hypothetical")
+)
+def test_louisiana_cycle56_rejects_idiomatic_relative_positive_contrast(
+    contrast: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the formula, which, "
+        f"{contrast}, is installed elsewhere.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (("landlord tenant", "tenant landlord"), ("lessor lessee", "lessee lessor")),
+)
+def test_louisiana_cycle56_preserves_rental_role_order(missing: str, provided: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle56_accepts_modified_zero_duration():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for an aggregate duration "
+        "of zero hours) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "aspect", ("not reluctantly yet in vain", "not reluctantly although in vain")
+)
+def test_louisiana_cycle56_accepts_coordinated_failed_attempt(aspect: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module tried ({aspect}) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "Acts 2024, Fifth Ex. Sess., No. 11, §2",
+        "Acts 2024, Twenty-first Ex. Sess., No. 11, §2",
+        "Acts 2024, 5th Extra. Sess., No. 11, §2",
+        "Acts of 2024, 1st Ex. Sess., No. 11, §2",
+    ),
+)
+def test_louisiana_cycle56_filters_general_session_law_names(citation: str):
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(f"{citation} establishes a 45 dollar fee."),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(45.0, "45")]
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "along with agency bulletins currently in effect",
+        "together with filing manuals currently in force",
+        "along with regulations that the IRS administers",
+    ),
+)
+def test_louisiana_cycle56_accepts_more_citation_noun_adjuncts(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "regulations that the agency administers for taxpayers expires next year",
+        "regulations that taxpayers use expires next year",
+    ),
+)
+def test_louisiana_cycle56_rejects_outer_predicate_after_general_relative(
+    relative: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        f"{relative}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "Article VII of the Louisiana Constitution",
+        "Article 7 of the Louisiana Constitution",
+        "the text of the federal tax implementing regulation",
+    ),
+)
+def test_louisiana_cycle56_accepts_labeled_or_modified_authority(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "the text of the agency reviewing analyst evaluating the statute",
+        "the text of the federal reviewing consultant analyzing the statute",
+    ),
+)
+def test_louisiana_cycle56_rejects_modified_documentary_person(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The author writes that the amount is determined under R.S. 47:32.",
+        "The commentator remarks that the amount is determined under R.S. 47:32.",
+        "The witness recounts that the amount is determined under R.S. 47:32.",
+        'The expert states in pertinent portions, as follows: "the amount is '
+        'determined under R.S. 47:32."',
+    ),
+)
+def test_louisiana_cycle56_rejects_more_documentary_attribution(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("determiner", ("both", "those"))
+def test_louisiana_cycle58_rejects_legal_symbol_determiner_as_list_pronoun(
+    determiner: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula plus "
+        f"two diagrams, then provides {determiner} § 2 diagrams.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("using the portal", "at filing"))
+def test_louisiana_cycle58_rejects_general_relative_tail_adjunct(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use, if authorized, {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "contrast", ("nowhere near hypothetical", "the opposite of hypothetical")
+)
+def test_louisiana_cycle58_rejects_more_idiomatic_positive_contrast(contrast: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the formula, which, "
+        f"{contrast}, is installed elsewhere.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("mortgagor mortgagee", "mortgagee mortgagor"),
+        ("assignor assignee", "assignee assignor"),
+    ),
+)
+def test_louisiana_cycle58_preserves_morphological_inverse_role_order(
+    missing: str, provided: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("operator", ("totaling", "equal to"))
+def test_louisiana_cycle58_accepts_equivalent_zero_duration(operator: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (for an aggregate duration "
+        f"{operator} zero hours) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("comparison", ("no less than", "no fewer than"))
+def test_louisiana_cycle58_rejects_positive_no_comparative_duration(comparison: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the formula and the module was (for {comparison} four "
+        "months) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle58_accepts_despite_failed_attempt():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not reluctantly despite "
+        "being in vain) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "Acts 2024, Nos. 11 and 12, §§2 and 3",
+        "Acts 2024, Twenty First Ex. Sess., No. 11, §2",
+        "Acts 2024, 5th E.S., No. 11, §2",
+        "Acts 2024, No. 11 and No. 12, §§2 and 3",
+    ),
+)
+def test_louisiana_cycle58_filters_generalized_session_law_forms(citation: str):
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        authoritative_numeric_recall_text(f"{citation} establishes a 45 dollar fee."),
+        profile="en-US",
+    )
+
+    assert [(item.value, item.raw) for item in inventory] == [(45.0, "45")]
+
+
+@pytest.mark.parametrize(
+    "adjunct",
+    (
+        "along with agency bulletins presently in effect",
+        "together with filing manuals effective today",
+        "along with regulations that DHS administers",
+    ),
+)
+def test_louisiana_cycle58_accepts_structural_citation_adjuncts(adjunct: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"The amount is determined under R.S. 47:31 and R.S. 47:32, {adjunct}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "regulations that taxpayers follow expires next year",
+        "regulations that taxpayers must follow expires next year",
+        "regulations that agencies enforce expires next year",
+    ),
+)
+def test_louisiana_cycle58_rejects_outer_predicate_after_plural_relative(
+    relative: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        f"{relative}.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "the opinion of the Louisiana Supreme Court",
+        "the decision of the Louisiana Supreme Court",
+        "the executive order",
+        "Article VII-A of the Louisiana Constitution",
+        "the text of the statute governing expert witnesses",
+    ),
+)
+def test_louisiana_cycle58_accepts_more_general_legal_authorities(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The author acknowledges that the amount is determined under R.S. 47:32.",
+        "The author confirms that the amount is determined under R.S. 47:32.",
+        "The witness recalls that the amount is determined under R.S. 47:32.",
+        "The author's conclusion is that the amount is determined under R.S. 47:32.",
+        'The professor states substantially as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        'The professor states in substance as follows: "the amount is determined '
+        'under R.S. 47:32."',
+    ),
+)
+def test_louisiana_cycle58_rejects_semantic_documentary_attribution(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("determiner", ("both", "those"))
+def test_louisiana_cycle60_rejects_general_symbol_determiner_as_list_pronoun(
+    determiner: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula plus "
+        f"two diagrams, then provides {determiner} ¶ 2 diagrams.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail", ("because filing is required", "so returns can be filed")
+)
+def test_louisiana_cycle60_rejects_relative_tail_embedded_clause(tail: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers use, if authorized, {tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("quality", ("actual", "real"))
+def test_louisiana_cycle60_rejects_participial_positive_contrast(quality: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the formula, which, being "
+        f"{quality} rather than hypothetical, is installed elsewhere.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (("heir decedent", "decedent heir"), ("guardian ward", "ward guardian")),
+)
+def test_louisiana_cycle60_preserves_lexical_inverse_role_order(
+    missing: str, provided: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration", ("exactly zero hours", "a duration amounting to zero hours")
+)
+def test_louisiana_cycle60_accepts_modified_zero_duration(duration: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was "
+        f"(for {duration}) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle60_rejects_successful_no_respect_attempt():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (in no respect in vain) "
+        "to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle60_accepts_explicit_not_at_all_progressive_negation():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (not at all in fact) "
+        "providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "regulations that the agency wrote expires next year",
+        "regulations that taxpayers must obey expires next year",
+        "regulations that DHS PUBLISHES expires next year",
+    ),
+)
+def test_louisiana_cycle60_rejects_more_outer_predicates_after_relative(
+    relative: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32 along with " + relative + ".",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle60_accepts_now_in_effect_citation_adjunct():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32, along with agency bulletins "
+        "now in effect.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "Article VII, § 3 of the Louisiana Constitution",
+        "Article VII(A) of the Louisiana Constitution",
+    ),
+)
+def test_louisiana_cycle60_accepts_article_section_authority(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "It is said that the amount is determined under R.S. 47:32.",
+        'The affidavit states substantially as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        'The testimony states in substance as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        "The author told the reader that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle60_rejects_irregular_documentary_attribution(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The said amount is determined under R.S. 47:32.",
+        "Said calculation depends on R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle62_accepts_said_as_legal_determiner(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("speaker", ("the purchase order", "the customer order"))
+def test_louisiana_cycle62_rejects_nonlegal_commercial_order(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "regulations that the agency made expires next year",
+        "regulations that taxpayers rely on expires next year",
+        "regulations that taxpayers may retain expires next year",
+        "regulations that DHS ISSUES expires next year",
+    ),
+)
+def test_louisiana_cycle62_rejects_general_outer_predicates_after_relative(
+    relative: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32 along with " + relative + ".",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle62_accepts_already_in_effect_citation_adjunct():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32, along with agency bulletins "
+        "already in effect.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "Article VII, Section 3(A) of the Louisiana Constitution",
+        "Article VII, Section 3, Paragraph A of the Louisiana Constitution",
+    ),
+)
+def test_louisiana_cycle62_accepts_spelled_article_hierarchy(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The affidavit provides that the amount is determined under R.S. 47:32.",
+        'The affidavit reads as follows: "the amount is determined under R.S. 47:32."',
+        "In the author's words, the amount is determined under R.S. 47:32.",
+        "It is understood that the amount is determined under R.S. 47:32.",
+        "The witness answered that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle62_rejects_subject_driven_documentary_framing(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("(successfully)", "[successfully]"))
+def test_louisiana_cycle62_accepts_parenthetical_adverb_after_both(adjunct: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula plus "
+        f"a diagram, then provides both {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ("because the statute requires it", "so the filing can proceed"),
+)
+def test_louisiana_cycle62_preserves_matrix_condition_after_reduced_relative(
+    tail: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"was requested, if authorized, {tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("annual taxpayer", "taxpayer annual"),
+        ("eligible guardian", "guardian eligible"),
+    ),
+)
+def test_louisiana_cycle62_allows_ordinary_adjective_role_reordering(
+    missing: str, provided: str
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    (
+        "a three-month period totaling zero errors",
+        "a four-month period amounting to zero interruptions",
+    ),
+)
+def test_louisiana_cycle62_rejects_zero_nontemporal_duration_quantity(duration: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was "
+        f"(for {duration}) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle62_accepts_modally_failed_attempt():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not necessarily in "
+        "vain) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle62_accepts_modally_negated_progressive():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (not necessarily in "
+        "fact) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The said applicable amount is determined under R.S. 47:32.",
+        "Said adjusted gross income depends on R.S. 47:32.",
+        "The said Louisiana income tax is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle64_accepts_modified_said_determiner(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker", ("the restraining order", "the cease-and-desist order")
+)
+def test_louisiana_cycle64_accepts_substantive_legal_order(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker", ("the administrative work order", "the administrative purchase order")
+)
+def test_louisiana_cycle64_rejects_operational_administrative_order(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "regulations that apply expires next year",
+        "regulations that the agency enforces will expire next year",
+        "regulations that the agency enforces expired last year",
+    ),
+)
+def test_louisiana_cycle64_rejects_outer_modal_or_past_predicate(relative: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32 along with " + relative + ".",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle64_accepts_still_in_effect_citation_adjunct():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:32, along with agency bulletins "
+        "still in effect.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "Article VII, Section 3(A), Paragraph (1) of the Louisiana Constitution",
+        "Article VII, Section 3(A) and (B) of the Louisiana Constitution",
+    ),
+)
+def test_louisiana_cycle64_accepts_coordinated_article_hierarchy(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The affidavit provides, in relevant part, that the amount is determined "
+        "under R.S. 47:32.",
+        'The affidavit reads, in relevant part, as follows: "the amount is '
+        'determined under R.S. 47:32."',
+        "In the author's own words, the amount is determined under R.S. 47:32.",
+        "In the words of the author, the amount is determined under R.S. 47:32.",
+        "As the affidavit puts it, the amount is determined under R.S. 47:32.",
+        "The affidavit sets forth that the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle64_rejects_general_documentary_construction(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize("adjunct", ("(in fact)", "(as expected)", "[with success]"))
+def test_louisiana_cycle64_accepts_multiword_parenthetical_pronoun_adjunct(
+    adjunct: str,
+):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module identifies the formula plus "
+        f"a diagram, then provides both {adjunct}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail", ("because the statute requires it", "so the filing can proceed")
+)
+def test_louisiana_cycle64_preserves_matrix_condition_after_active_past_relative(
+    tail: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers requested, if authorized, {tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "provided"),
+    (
+        ("trustee beneficiary", "beneficiary trustee"),
+        ("executor beneficiary", "beneficiary executor"),
+    ),
+)
+def test_louisiana_cycle64_preserves_common_legal_role_order(
+    missing: str, provided: str
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        f"R.S. 47:32 lacks the {missing} formula and the module provides the "
+        f"{provided} formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    (
+        "a duration of precisely zero aggregate hours",
+        "a total of zero cumulative hours",
+    ),
+)
+def test_louisiana_cycle64_accepts_modified_exact_zero_temporal_unit(duration: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was "
+        f"(for {duration}) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle64_accepts_epistemically_negated_progressive():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was (not demonstrably in "
+        "fact) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle64_accepts_epistemically_failed_attempt():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module tried (not unequivocally in "
+        "vain) to provide it.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail", ("because the statute requires it", "so the filing can proceed")
+)
+def test_louisiana_cycle66_preserves_matrix_condition_after_irregular_past_relative(
+    tail: str,
+):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers chose yesterday, if authorized, {tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle66_preserves_ed_er_inverse_role_order():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the insured insurer formula and the module provides the "
+        "insurer insured formula.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    (
+        "a three-month period totaling zero errors per month",
+        "a four-month period amounting to zero interruptions per month",
+    ),
+)
+def test_louisiana_cycle66_rejects_zero_nontemporal_quantity_per_month(duration: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module was "
+        f"(for {duration}) providing it when the filing period ended.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle66_rejects_outer_predicate_after_consult_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        "regulations that taxpayers consult expires next year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle66_accepts_postpositive_effective_date_adjunct():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "agency bulletins effective on January 1.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "Article VII, Sections 3 and 4 of the Louisiana Constitution",
+        "Articles VII and VIII of the Louisiana Constitution",
+        "Article VII, Section 3(A)-(C) of the Louisiana Constitution",
+    ),
+)
+def test_louisiana_cycle66_accepts_plural_or_ranged_article_label(speaker: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    (
+        "the order of the purchasing department",
+        "the opinion of the economics department",
+    ),
+)
+def test_louisiana_cycle66_rejects_generic_department_authority(speaker: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        f"According to {speaker}, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "It is provided in the affidavit that the amount is determined under R.S. "
+        "47:32.",
+        "The affidavit provides in relevant part that the amount is determined "
+        "under R.S. 47:32.",
+        'The affidavit reads in relevant part as follows: "the amount is determined '
+        'under R.S. 47:32."',
+        "As set forth in the affidavit, the amount is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle66_rejects_documentary_voice_or_punctuation(source: str):
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The understood amount is determined under R.S. 47:32.",
+        "The commonly understood tax rate is determined under R.S. 47:32.",
+    ),
+)
+def test_louisiana_cycle66_accepts_understood_as_adjective(source: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+@pytest.mark.parametrize(
+    "tail", ("because the statute requires it", "so the return can proceed")
+)
+def test_louisiana_cycle68_preserves_irregular_past_relative_with_pp(tail: str):
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the formula and the module provides the formula that "
+        f"taxpayers chose for the filing, if authorized, {tail}.",
+        "The amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_rejects_outer_predicate_after_review_relative():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31, and R.S. 47:32 along with "
+        "regulations that taxpayers review expires next year.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_accepts_adverb_modified_postpositive_adjective():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "The amount is determined under R.S. 47:31 and R.S. 47:32, along with "
+        "agency bulletins currently effective.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_accepts_independently_qualified_section_labels():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to Article VII, Sections 3(A) and 4(B) of the Louisiana "
+        "Constitution, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_rejects_unrecognized_department_modifier():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to the order of the payroll department, the amount is determined "
+        "under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_rejects_past_passive_documentary_framing():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "It was provided in the affidavit that the amount is determined under R.S. "
+        "47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle68_accepts_indefinite_understood_adjective():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "An understood amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle70_rejects_perfect_passive_documentary_framing():
+    assert not completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "It has been provided in the affidavit that the amount is determined under "
+        "R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle70_accepts_demonstrative_understood_adjective():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "This commonly understood tax rate is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )
+
+
+def test_louisiana_cycle70_accepts_plural_article_paragraph_labels():
+    assert completeness_module._reason_dependency_is_source_bound(
+        "R.S. 47:32 lacks the computation.",
+        "According to Article VII, Paragraphs (1) and (2) of the Louisiana "
+        "Constitution, the amount is determined under R.S. 47:32.",
+        corpus_citation_path="us-la/statute/47:295",
+    )

@@ -1151,6 +1151,36 @@ _RELATIVE_USC_DEFERRAL_DEPENDENCY = re.compile(
     r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*)",
     flags=re.IGNORECASE,
 )
+_LOUISIANA_RS_DEFERRAL_DEPENDENCY = re.compile(
+    r"(?<![A-Za-z0-9_])(?:(?:La\.?\s*)|(?:LSA\s*[-\u2010-\u2015]?\s*))?"
+    r"R\.?\s*S\.?\s*(?:§{1,2}\s*)?"
+    r"(?P<title>\d+[A-Za-z]?)\s*:\s*"
+    r"(?P<section>\d+[A-Za-z]?(?:(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d][A-Za-z0-9]+)|(?:\.\d+[A-Za-z]?))*)"
+    r"(?P<tail>(?:\s*\(\s*[A-Za-z0-9]+\s*\))*"
+    r"(?:\s*(?:"
+    r",\s*(?:and\s+)?(?:(?:clauses?|divisions?|items?|lines?|paragraphs?|parts?|"
+    r"schedules?|subclauses?|subdivisions?|subitems?|subparagraphs?|subparts?|"
+    r"subsections?)\s+)?|"
+    r"(?:and/or|and|or|plus|&|as\s+well\s+as|together\s+with|along\s+with|"
+    r"in\s+(?:conjunction|combination|tandem)\s+with|in\s+relation\s+(?:to|with)|"
+    r"as\s+supplemented\s+by|"
+    r"combined\s+with|in\s+addition\s+to|as\s+amended\s+by|including|through|to|"
+    r"followed\s+by|as\s+provided\s+in|read\s+with|read\s+together\s+with|"
+    r"subject\s+to|except\s+as\s+provided\s+in|as\s+(?:modified|qualified)\s+by|"
+    r"[-\u2013\u2014])\s*"
+    r"(?:(?:clauses?|divisions?|items?|lines?|paragraphs?|parts?|schedules?|"
+    r"subclauses?|subdivisions?|subitems?|subparagraphs?|subparts?|subsections?)\s+)?"
+    r"|(?:clauses?|divisions?|items?|lines?|paragraphs?|parts?|schedules?|"
+    r"subclauses?|subdivisions?|subitems?|subparagraphs?|subparts?|subsections?)\s+"
+    r")\(\s*[A-Za-z0-9]+(?:[-\u2013][A-Za-z0-9]+)*\s*\)"
+    r"(?!\s+(?:filers?\b|of\s+(?:the\s+)?(?:calculation|explanatory\s+report|"
+    r"form|report|return|tax\s+return|worksheet)\b)))*)"
+    r"(?!\s*\()(?![A-Za-z0-9_])(?![./:]\s*(?:[A-Za-z0-9]|\())"
+    r"(?![-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"\s*(?:[A-Za-z0-9]|\())",
+    flags=re.IGNORECASE,
+)
 _MISSING_DEPENDENCY_LANGUAGE = re.compile(
     r"\b(?:"
     r"requires?|depends?\s+on|missing|not\s+yet\s+encoded|unavailable|"
@@ -1305,6 +1335,7 @@ _DEPENDENCY_OBJECT_MODIFIER_TERMS = frozenset(
         "described",
         "determined",
         "eligible",
+        "senior",
         "established",
         "furnished",
         "issued",
@@ -1815,12 +1846,15 @@ _TITLE_SUFFIX_LEGAL_CITATION = re.compile(
     flags=re.IGNORECASE,
 )
 _LOUISIANA_SESSION_LAW_CITATION = re.compile(
-    r"\bActs?\s+\d{4}\s*,?\s*"
+    r"\bActs?(?:\s+of)?\s+\d{4}\s*,?\s*"
     r"(?:"
-    r"(?:(?:\d+\s*(?:st|nd|rd|th|d)|first|second|third|fourth)\s+)?"
-    r"Ex\.?\s*Sess\.?\s*,?\s*"
+    r"(?:(?:\d+\s*(?:st|nd|rd|th|d)|"
+    r"[A-Za-z]+(?:[-\s]+[A-Za-z]+){0,3})\s+)?"
+    r"(?:E\.?\s*S\.?|Ex\.?|Extra\.?|Extraordinary)\s*"
+    r"(?:Sess\.?|Session)?\s*,?\s*"
     r")?"
-    r"No\.?\s*\d+(?:-\d+)?\b"
+    r"Nos?\.?\s*\d+(?:-\d+)?\b"
+    r"(?:\s*(?:,|and)\s*(?:Nos?\.?\s*)?\d+(?:-\d+)?\b)*"
     r"(?:\s*,?\s*(?:"
     r"§§\s*\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*"
     r"|§\s*\d+"
@@ -4627,15 +4661,30 @@ def _source_clause_links_dependency(
 
     before = clause[:reference_start]
     after = clause[reference_end:]
-    if re.search(
+    dependency_link = re.search(
         r"\b(?:"
         r"nach|gemäß|laut|entsprechend|under|according\s+to|pursuant\s+to|"
+        r"in\s+accordance\s+with(?:\s+the\s+provisions?\s+of)?|"
         r"abhängig\s+von|depends?\s+on|setzt|requires?|benötigt"
         r")\s*$",
         before,
         flags=re.IGNORECASE,
-    ):
-        return True
+    )
+    if dependency_link:
+        preceding_link = before[: dependency_link.start()]
+        is_in_accordance_link = bool(
+            re.fullmatch(
+                r"in\s+accordance\s+with(?:\s+the\s+provisions?\s+of)?",
+                dependency_link.group(0).strip(),
+                flags=re.IGNORECASE,
+            )
+        )
+        negated_in_accordance_link = (
+            is_in_accordance_link
+            and _source_link_scope_has_unreset_negation(preceding_link)
+        )
+        if not negated_in_accordance_link:
+            return True
     if re.search(
         r"\b(?:voraussetzung\w*|bedingung\w*|conditions?)"
         r"[^.;]{0,100}\b(?:des|der|nach|under)\s*$",
@@ -4717,14 +4766,1707 @@ def _source_scope_cites_usc_dependency(
     return False
 
 
+def _source_scope_cites_louisiana_rs_dependency(
+    source_scope_text: str,
+    *,
+    title: str,
+    section: str,
+    fragments: tuple[str, ...],
+    tail_identity: str,
+) -> bool:
+    """Return whether an operative Louisiana clause cites one exact R.S. dependency."""
+
+    normalized_section = normalize_rulespec_path_segment(section.lower())
+    references = tuple(
+        reference
+        for reference in _qualified_louisiana_rs_dependencies(source_scope_text)
+        if not _louisiana_rs_match_has_detached_structural_subject(
+            source_scope_text, reference
+        )
+    )
+    for reference in references:
+        if (
+            reference.group("title").lower() != title.lower()
+            or normalize_rulespec_path_segment(reference.group("section").lower())
+            != normalized_section
+            or _usc_dependency_fragments(reference) != fragments
+            or _louisiana_rs_tail_identity(reference) != tail_identity
+        ):
+            continue
+        clause_start, clause_end = _reason_clause_bounds(source_scope_text, reference)
+        clause = source_scope_text[clause_start:clause_end]
+        clause_references = tuple(
+            candidate
+            for candidate in references
+            if clause_start <= candidate.start() and candidate.end() <= clause_end
+        )
+        syntax_reference = reference
+        reference_index = clause_references.index(reference)
+        starts_finite_clause = _louisiana_reference_starts_finite_clause(
+            source_scope_text[reference.end() : clause_end]
+        )
+        outer_predicate_follows_citation_list = (
+            starts_finite_clause
+            and _louisiana_citation_list_completes_outer_subject(
+                source_scope_text[clause_start : clause_references[0].start()]
+            )
+        )
+        detached_coordinated_relative = bool(
+            starts_finite_clause
+            and re.match(
+                r"\s*,?\s*(?:along|together)\s+with\b[^,.;]{0,120}"
+                r"\b(?:that|which|who)\b",
+                source_scope_text[reference.end() : clause_end],
+                flags=re.IGNORECASE,
+            )
+        )
+        if detached_coordinated_relative and not outer_predicate_follows_citation_list:
+            continue
+        while reference_index > 0:
+            previous_reference = clause_references[reference_index - 1]
+            bridge = source_scope_text[
+                previous_reference.end() : syntax_reference.start()
+            ]
+            if not re.fullmatch(
+                r"\s*(?:,\s*(?:(?:and/or|and|or)\s*)?|"
+                r"(?:and/or|and|or|as\s+well\s+as|together\s+with|along\s+with|"
+                r"combined\s+with|plus|&)\s*)",
+                bridge,
+                re.IGNORECASE,
+            ):
+                break
+            # Finite-clause evidence wins over optional comma punctuation.  The
+            # exception is a citation list completing a reduced-passive outer
+            # subject (``the amount determined under A, B, and C is rounded``).
+            if starts_finite_clause and not outer_predicate_follows_citation_list:
+                break
+            syntax_reference = previous_reference
+            reference_index -= 1
+        previous_reference_end = max(
+            (
+                candidate.end()
+                for candidate in references
+                if clause_start <= candidate.start()
+                and candidate.end() <= syntax_reference.start()
+            ),
+            default=clause_start,
+        )
+        local_before = source_scope_text[
+            previous_reference_end : syntax_reference.start()
+        ]
+        if _louisiana_disclaimer_governs_reference(local_before):
+            continue
+        reference_start = syntax_reference.start() - clause_start
+        if not _louisiana_source_link_is_operative(
+            clause,
+            reference_start=reference_start,
+            reference_end=reference.end() - clause_start,
+        ):
+            continue
+        return True
+    return False
+
+
+_LOUISIANA_CITATION_FINITE_PREDICATE = re.compile(
+    r"\s*(?:,\s*)?(?:(?:however|merely|only),?\s+)*(?:"
+    r"(?:(?:and|together\s+with)\s+(?:its|the)\s+"
+    r"[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,3},?\s+)?"
+    r"(?!(?:along|as|by|combined|for|from|if|in|of|or|plus|through|to|"
+    r"together|under|when|where|with)\b)(?![A-Za-z][A-Za-z-]*ly\b)"
+    r"[A-Za-z][A-Za-z-]*\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _louisiana_reference_starts_finite_clause(after_reference: str) -> bool:
+    """Reject citation-list inheritance when the citation is a new clause subject."""
+
+    suffix = re.sub(
+        r"^\s*,?\s*(?:(?:however|merely|only),?\s+)*",
+        "",
+        after_reference,
+        flags=re.IGNORECASE,
+    )
+    bounded_modifier = re.match(
+        r"(?:in\s+its\s+(?:current|amended|revised)\s+form|"
+        r"as\s+(?:currently|further|subsequently)\s+amended),?\s*",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if bounded_modifier:
+        return _louisiana_reference_starts_finite_clause(
+            suffix[bounded_modifier.end() :]
+        )
+    modal_predicate = re.match(
+        r"(?:along|together)\s+with\s+(?P<premodal>[^,.;]{1,80}?),?\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)?"
+        r"(?:shall|should|must|will|would|can|could|may|might|does?|did)\s+"
+        r"(?:not\s+)?[A-Za-z][A-Za-z-]*\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if modal_predicate and not re.search(
+        r"\b(?:that|which|who)\b",
+        modal_predicate.group("premodal"),
+        flags=re.IGNORECASE,
+    ):
+        return True
+    coordinated_body = re.match(
+        r"(?:along|together)\s+with\s+(?P<body>[^,.;]{1,120})",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if coordinated_body:
+        body = coordinated_body.group("body")
+        relative = re.search(r"\b(?:that|which|who)\b", body, flags=re.IGNORECASE)
+        if relative is not None:
+            relative_tail = body[relative.end() :]
+            relative_nouns = {
+                "agencies",
+                "analysis",
+                "authors",
+                "codes",
+                "guidelines",
+                "instructions",
+                "irs",
+                "ordinances",
+                "policies",
+                "process",
+                "standards",
+                "forms",
+                "provisions",
+                "regulations",
+                "rules",
+                "sections",
+                "series",
+                "statutes",
+                "taxpayers",
+                "terms",
+            }
+            relative_predicate = next(
+                (
+                    token
+                    for token in re.finditer(r"[A-Za-z][A-Za-z-]*", relative_tail)
+                    if token.group(0).lower() in {"was", "were"}
+                    or token.group(0).lower()
+                    in {
+                        "administer",
+                        "address",
+                        "apply",
+                        "cover",
+                        "consult",
+                        "enforce",
+                        "follow",
+                        "govern",
+                        "issues",
+                        "made",
+                        "obey",
+                        "publishes",
+                        "rely",
+                        "review",
+                        "retain",
+                        "use",
+                        "wrote",
+                    }
+                    or token.group(0).lower().endswith("ed")
+                    or (
+                        token.group(0).lower().endswith("s")
+                        and not token.group(0).isupper()
+                        and not token.group(0).lower().endswith(("is", "ss", "us"))
+                        and token.group(0).lower() not in relative_nouns
+                    )
+                ),
+                None,
+            )
+            body = (
+                relative_tail[relative_predicate.end() :] if relative_predicate else ""
+            )
+        if re.search(
+            r"\b(?:(?:already|currently|now|presently|still)\s+"
+            r"(?:effective|in\s+(?:effect|force))|"
+            r"effective\s+(?:today|on\s+[A-Za-z]+\s+\d{1,2}))\s*$",
+            body,
+            flags=re.IGNORECASE,
+        ):
+            return False
+        words = re.findall(r"[A-Za-z][A-Za-z-]*", body)
+        if relative is not None and re.search(
+            r"\b(?:can|could|may|might|must|shall|should|will|would)\s+"
+            r"[A-Za-z][A-Za-z-]*\b|\b[A-Za-z][A-Za-z-]*ed\b",
+            body,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        for index, word in enumerate(words):
+            if (
+                (index > 0 or relative is not None)
+                and word.lower().endswith("s")
+                and word.lower()
+                not in {
+                    "codes",
+                    "cases",
+                    "guidelines",
+                    "instructions",
+                    "irs",
+                    "notices",
+                    "ordinances",
+                    "policies",
+                    "requirements",
+                    "schedules",
+                    "standards",
+                    "forms",
+                    "provisions",
+                    "regulations",
+                    "rules",
+                    "sections",
+                    "statutes",
+                    "tables",
+                    "taxpayers",
+                    "terms",
+                    "this",
+                    "those",
+                    "directives",
+                }
+                and (
+                    relative is not None
+                    or any(
+                        previous.lower() not in {"a", "an", "its", "the"}
+                        for previous in words[:index]
+                    )
+                )
+            ):
+                return True
+        if relative is not None and not body.strip():
+            return False
+    if re.match(
+        r"(?:along|together)\s+with\s+[^,.;]{1,80}?,?\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)?"
+        r"(?:is|are|was|were|became|becomes?|remained|remains?|"
+        r"applies?|controls?|governs?|"
+        r"sets?|determines?|calculates?|computes?|establishes?|imposes?)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"(?:along|together)\s+with\s+"
+        r"(?:[A-Za-z][A-Za-z-]*\s+){1,6}?"
+        r"(?:adopt(?:s|ed)|amend(?:s|ed)|chang(?:es|ed)|creat(?:es|ed)|"
+        r"enact(?:s|ed)|fil(?:es|ed)|gives?|gave|has|have|had|holds?|held|"
+        r"issu(?:es|ed)|makes?|made|puts?|put|requir(?:es|ed)|seeks?|sought|"
+        r"takes?|took|writes?|wrote|brought|built|bought|caught|chose|drew|"
+        r"found|got|heard|hid|kept|laid|left|lost|met|paid|ran|read|saw|sent|"
+        r"set|sold|taught|told|won)\b"
+        r"\s+(?:a\s+(?!(?:(?:calendar|fiscal|taxable)\s+)?"
+        r"(?:century|day|decade|generation|month|period|quarter|time|week|year)\b)|"
+        r"an|no|"
+        r"the\s+(?!(?:(?:current|following|last|next|prior|"
+        r"previous|same)\s+)?(?:day|month|quarter|week|year)\b)|filing|tax|effect\b|"
+        r"(?:this|that)\s+(?!(?:day|month|quarter|week|year)\b))",
+        suffix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    list_modifier = re.match(
+        r"(?:(?:taken|read|considered)\s+together|together|along)"
+        r"(?:\s+with\s+(?:its|the|two|three|multiple)\s+"
+        r"[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,3})?|"
+        r"(?:alone|both|collectively|equally|jointly|respectively)\b|"
+        r"(?:if|when|whenever|where)\s+(?:applicable|required)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if list_modifier:
+        remainder = suffix[list_modifier.end() :].lstrip(" ,")
+        return bool(remainder) and _louisiana_reference_starts_finite_clause(remainder)
+    suffix = re.sub(
+        r"^(?:as\s+amended|where\s+applicable),?\s*",
+        "",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        re.match(
+            r"(?:(?:and|together\s+with)\s+(?:its|the)\s+"
+            r"[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,3},?\s+)?"
+            r"(?:[A-Za-z][A-Za-z-]*ly\s+)?"
+            r"(?!(?:along|as|by|combined|for|from|if|in|of|or|plus|through|to|"
+            r"together|under|when|whenever|where|with)\b)"
+            r"[A-Za-z][A-Za-z-]*\b",
+            suffix,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_citation_list_completes_outer_subject(
+    before_first_reference: str,
+) -> bool:
+    """Recognize a citation list embedded in a reduced-passive subject."""
+
+    reduced = re.search(
+        r"(?P<subject>\b[^,.;]{1,100}?)\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+        r"(?:allowed|assessed|calculated|computed|derived|determined|established|"
+        r"fixed|imposed|levied|prescribed|set|specified)\s+"
+        r"(?:according\s+to|pursuant\s+to|under|in\s+accordance\s+with)\s*$",
+        before_first_reference,
+        flags=re.IGNORECASE,
+    )
+    if reduced is None:
+        return False
+    return not re.search(
+        r"\b(?:am|are|be|been|being|becomes?|is|remains?|was|were)\s*$",
+        reduced.group("subject"),
+        flags=re.IGNORECASE,
+    )
+
+
+_LOUISIANA_POSITIVE_OPERATIVE_PREDICATE = re.compile(
+    r"\b(?:"
+    r"(?:is|are|was|were|becomes?|remains?)\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:allowed|assessed|available|calculated|computed|derived|determined|rounded|"
+    r"established|fixed|imposed|levied|prescribed|set|specified)|"
+    r"(?:shall|may|must|will|would|can|could)\s+be\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:allowed|assessed|available|calculated|computed|derived|determined|rounded|"
+    r"established|fixed|imposed|levied|prescribed|set|specified)|"
+    r"(?:shall|may|must|will|would|can|could|does|do|did)\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:appl(?:y|ies)|arise[sd]?|calculates?|computes?|derives?|determines?|"
+    r"establishes?|imposes?)|"
+    r"(?:is|are|was|were)\s+to\s+be\s+(?:allowed|assessed|available|calculated|"
+    r"computed|derived|determined|established|fixed|imposed|levied|prescribed|rounded|set|specified)|"
+    r"except\s+as\s+(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:allowed|assessed|available|calculated|computed|derived|determined|"
+    r"established|fixed|imposed|levied|prescribed|set|specified)|"
+    r"(?:amount|base|calculation|computation|credit|deduction|formula|income|liability|"
+    r"percentage|rate|result|rule|schedule|statute|table|tax|threshold)\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:allowed|assessed|available|calculated|computed|derived|determined|"
+    r"established|fixed|imposed|levied|prescribed|set|specified)|"
+    r"(?:agency|commission|commissioner|court|department|employer|rule|secretary|"
+    r"statute|taxpayer)\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:allows?|assesses?|calculates?|computes?|derives?|determines?|"
+    r"establishes?|fixes?|imposes?|levies?|prescribes?|sets?|specifies?)\s+"
+    r"(?:the\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,3}(?:amount|base|calculation|computation|credit|deduction|formula|"
+    r"liability|rate|rule|tax)|"
+    r"(?:but|yet)\s+(?:allowed|assessed|available|calculated|computed|derived|"
+    r"determined|established|fixed|imposed|levied|prescribed|rounded|set|specified)|"
+    r"(?:amount|base|calculation|computation|credit|deduction|income|liability|rate|"
+    r"rule|statute|tax)\s+"
+    r"(?:(?:[A-Za-z][A-Za-z-]*ly|hereby|then)\s+)*"
+    r"(?:appl(?:y|ies)|arise[sd]?|calculates?|computes?|derives?|determines?|"
+    r"establishes?|imposes?)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+_LOUISIANA_REPORTING_PREDICATE = re.compile(
+    r"\b(?:alleg\w*|answer\w*|assert\w*|aver(?:s|red|ring)?|believ\w*|"
+    r"claim\w*|conclud\w*|"
+    r"conjectur\w*|contend\w*|declar\w*|estimat\w*|infer\w*|maintain\w*|"
+    r"explain\w*|not(?:e|es|ed|ing)|observ\w*|opin\w*|posit\w*|postulat\w*|"
+    r"acknowledg\w*|confirm\w*|conclusion|predict\w*|presum\w*|purport\w*|"
+    r"recall\w*|recit\w*|recount\w*|remark\w*|report\w*|"
+    r"said|say\w*|speculat\w*|tell(?:s|ing)?|told|writ(?:e|es|ing|ten)|wrote|"
+    r"(?<!-)stat(?:e|es|ed|ing)|surmis\w*|"
+    r"testif\w*|underst(?:and|ands|anding|ood))\b",
+    flags=re.IGNORECASE,
+)
+
+_LOUISIANA_NONOPERATIVE_LANGUAGE = re.compile(
+    r"\b(?:alleged(?:ly)?|apparently|assumed|candidate|conceivable|conceivably|"
+    r"assumption|conditionally|conceptual|contrived|demonstration|draft|dubious|"
+    r"example|fictional(?:ly)?|"
+    r"hypothetical(?:ly)?|"
+    r"illustration|illustrative|imagined|mock|nonbinding|notional|ostensibly|perhaps|"
+    r"nominally|possibly|potentially|proposed|prototype|purported(?:ly)?|"
+    r"putative(?:ly)?|questionable|"
+    r"questionably|reportedly|sample|scenario|seemingly|specimen|supposedly|"
+    r"theoretical(?:ly)?|"
+    r"unlikely|unproven|unsupported|unverified)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _louisiana_text_has_nonoperative_framing(text: str) -> bool:
+    """Classify bounded hypothetical, evidential, or reported language."""
+
+    if _LOUISIANA_NONOPERATIVE_LANGUAGE.search(text):
+        return True
+    if re.search(
+        r"\b(?:affidavit|testimony)\b[^.;]{0,80}\b"
+        r"(?:provides?(?:\s*,?\s*in\s+(?:relevant|pertinent)\s+part\s*,?)?\s+that|"
+        r"reads?(?:\s*,?\s*in\s+(?:relevant|pertinent)\s+part\s*,?)?\s+"
+        r"(?:substantially\s+|in\s+substance\s+)?as\s+follows|"
+        r"sets?\s+forth(?:\s*,?\s*in\s+(?:relevant|pertinent)\s+part\s*,?)?"
+        r"\s+that)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\bit\s+(?:(?:has|had)\s+been|is|was)\s+provided\s+in\s+(?:the\s+)?"
+        r"(?:affidavit|testimony)\s+that\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:affidavit|agency|analysis|analyst|article|author|commentator|"
+        r"document|expert|narrative|professor|report|source|statement|testimony|"
+        r"witness)\b[^.;]{0,120}" + _LOUISIANA_REPORTING_PREDICATE.pattern,
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    for reporting in _LOUISIANA_REPORTING_PREDICATE.finditer(text):
+        report_tail = text[reporting.end() :]
+        preceding_state = text[: reporting.start()]
+        state_tail_is_executable = bool(
+            re.match(
+                r"(?:-|\s)+(?:[A-Za-z][A-Za-z-]*\s+){0,4}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|percentage|rate|result|rule|schedule|table|tax|"
+                r"threshold)\b",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+        )
+        preceding_word = re.search(r"([A-Za-z][A-Za-z-]*)\s*$", preceding_state)
+        state_descriptors = {
+            "adjusted",
+            "applicable",
+            "excess",
+            "federal",
+            "final",
+            "gross",
+            "louisiana",
+            "local",
+            "net",
+            "taxable",
+            "various",
+        }
+        if reporting.group(0).lower() == "state" and (
+            not preceding_state.strip()
+            or re.search(
+                r"\b(?:a|an|in|the|this|that)\s*$",
+                preceding_state,
+                flags=re.IGNORECASE,
+            )
+            or (
+                state_tail_is_executable
+                and preceding_word is not None
+                and preceding_word.group(1).lower() in state_descriptors
+            )
+        ):
+            continue
+        if (
+            reporting.group(0).lower() == "said"
+            and (
+                not preceding_state.strip()
+                or re.search(
+                    r"\b(?:the|this|that)\s*$",
+                    preceding_state,
+                    flags=re.IGNORECASE,
+                )
+            )
+            and re.match(
+                r"\s+(?:[A-Za-z][A-Za-z-]*\s+){0,4}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|percentage|rate|result|rule|schedule|table|tax|"
+                r"threshold)\b",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+        ):
+            continue
+        if (
+            reporting.group(0).lower() == "understood"
+            and re.search(
+                r"(?:^|[.;])\s*(?:(?:a|an|the|this|that)\s+)?"
+                r"(?:[A-Za-z][A-Za-z-]*ly\s+)?$",
+                preceding_state,
+                flags=re.IGNORECASE,
+            )
+            and re.match(
+                r"\s+(?:[A-Za-z][A-Za-z-]*\s+){0,4}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|percentage|rate|result|rule|schedule|table|tax|"
+                r"threshold)\b",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+        ):
+            continue
+        preceding_compound_head = (
+            preceding_word.group(1).lower() if preceding_word is not None else ""
+        )
+        if (
+            preceding_compound_head
+            in {
+                "amount",
+                "base",
+                "calculation",
+                "computation",
+                "credit",
+                "deduction",
+                "formula",
+                "income",
+                "liability",
+                "rate",
+                "rule",
+                "tax",
+            }
+            and reporting.group(0).lower().endswith("ing")
+            and re.match(
+                r"\s+(?:[A-Za-z][A-Za-z-]*\s+){0,2}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|rate|rule|tax)\s+"
+                r"(?:(?:depends?|requires?|relies?)\b|$)|"
+                r"\s+(?:calculation|computation|formula)\s*$",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+        ):
+            continue
+        report_tail = re.sub(
+            r"^\s*(?:(?:[:,;]|\(|\[|[—–])\s*){0,2}"
+            r"in\s+(?:(?:relevant|pertinent)\s+)?(?:parts?|portions?)\s*"
+            r"(?:(?:[,;]|\)|\]|[—–])\s*){0,2}"
+            r"(?:as\s+follows)?",
+            " as follows",
+            report_tail,
+            flags=re.IGNORECASE,
+        )
+        has_complement = (
+            re.match(
+                r"\s*(?:(?:(?:in\s+(?:(?:relevant|pertinent)\s+)?"
+                r"(?:parts?|portions?)"
+                r"(?:\s+as\s+follows)?|(?:substantially\s+|in\s+substance\s+)?"
+                r"as\s+follows)|"
+                r"the\s+following"
+                r"(?:\s+[A-Za-z][A-Za-z-]*){0,2})\s*)?"
+                r"(?:[:,]|[—–-])?\s*[\"'“”‘’]?\s*"
+                r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*"
+                r"(?:,?\s*(?:with|without)\s+"
+                r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}[A-Za-z][A-Za-z-]*,?\s*)?"
+                r"(?:(?:it|this|that)\s+"
+                r"(?:is|are|was|were|shall|may|must|will|would|can|could)\b|"
+                r"(?:that\s+)?(?:the\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|rate|rule|tax)\b)",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+            or re.match(
+                r"\s*,\s*[^,.;]{1,60},\s*that\s+(?:the\s+)?"
+                r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|rate|rule|tax)\b",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+            or re.match(
+                r"\s*,?\s*(?:[A-Za-z][A-Za-z-]*\s+){1,5}"
+                r"that\s+(?:the\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
+                r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+                r"income|liability|rate|rule|tax)\b",
+                report_tail,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not has_complement:
+            continue
+        local_subject = re.split(r"[,.;]", text[: reporting.start()])[-1]
+        subject_core = re.split(
+            r"\bof\b", local_subject, maxsplit=1, flags=re.IGNORECASE
+        )[0]
+        subject_tokens = re.findall(r"[A-Za-z]+", subject_core.lower())
+        legal_speaker = bool(
+            subject_tokens
+            and subject_tokens[-1]
+            in {
+                "act",
+                "code",
+                "court",
+                "department",
+                "law",
+                "legislature",
+                "ordinance",
+                "provision",
+                "regulation",
+                "rule",
+                "section",
+                "statute",
+            }
+        )
+        authoritative_speech = re.fullmatch(
+            r"(?:assert\w*|conclud\w*|declar\w*|presum\w*|report\w*|say\w*|"
+            r"stat(?:e|es|ed|ing))",
+            reporting.group(0),
+            flags=re.IGNORECASE,
+        )
+        if legal_speaker and authoritative_speech:
+            continue
+        return True
+    return False
+
+
+def _louisiana_source_link_is_operative(
+    clause: str,
+    *,
+    reference_start: int,
+    reference_end: int,
+) -> bool:
+    """Require a local positive executable predicate governing the R.S. link."""
+
+    before = clause[:reference_start]
+    if _louisiana_reference_has_nonoperative_postfix(clause[reference_end:]):
+        return False
+    dependency_link = re.search(
+        r"\b(?:under(?:\s+(?:both|either))?|according\s+to|pursuant\s+to|"
+        r"in\s+accordance\s+with(?:\s+the\s+provisions?\s+of)?|"
+        r"depends?(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+(?:on|upon)|"
+        r"is\s+(?:(?:directly|entirely|necessarily|primarily|solely|ultimately)\s+)*"
+        r"dependent(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+(?:on|upon)|"
+        r"relies?(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+"
+        r"(?:on|upon)|requires?)\s*$",
+        before,
+        flags=re.IGNORECASE,
+    )
+    if dependency_link is None:
+        return False
+    linker_text = dependency_link.group(0).strip().lower()
+    governing_scope = before[: dependency_link.start()]
+    if _louisiana_scope_has_nonoperative_framing(governing_scope):
+        return False
+    if re.fullmatch(
+        r"(?:depends?(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+(?:on|upon)|"
+        r"is\s+(?:(?:directly|entirely|necessarily|primarily|solely|ultimately)\s+)*"
+        r"dependent(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+(?:on|upon)|"
+        r"relies?(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
+        r"ultimately|in\s+part)\s*,?)*\s+"
+        r"(?:on|upon)|requires?)",
+        linker_text,
+    ):
+        return _louisiana_direct_dependency_subject_is_executable(governing_scope)
+
+    governing_scope = _louisiana_strip_inline_context_preamble(governing_scope)
+    operative_predicates = tuple(
+        _LOUISIANA_POSITIVE_OPERATIVE_PREDICATE.finditer(governing_scope)
+    )
+    if not operative_predicates:
+        return False
+    operative = operative_predicates[-1]
+    if _louisiana_text_has_nonoperative_framing(operative.group(0)):
+        return False
+    # The operative predicate must be the expression immediately attached to
+    # the dependency linker.  This prevents an earlier computation from lending
+    # operativeness to later metadata, commentary, examples, or uncertainty.
+    if not _louisiana_operative_suffix_is_bounded(governing_scope[operative.end() :]):
+        return False
+    local_before_operative = _louisiana_local_finite_clause(
+        governing_scope[: operative.start()]
+    )
+    if re.search(
+        r"\b(?:appendix|audit|background|chart|commentary|comparison|description|"
+        r"documentation|example|exhibit|explanation|illustration|label|memo|"
+        r"memorandum|metadata|nonbinding|note|record|report|sample|scenario|summary)\b|"
+        r"\b(?:alleg\w*|assum\w*|believ\w*|claim\w*|describ\w*|discuss\w*|"
+        r"indicat\w*|illustrat\w*|list\w*|mention\w*|purport\w*|quot\w*|"
+        r"report\w*|say\w*|show\w*|suggest\w*|suppos\w*|testif\w*|"
+        r"summariz\w*|treat\w*)\b",
+        local_before_operative,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    local_clause = local_before_operative + operative.group(0)
+    if re.match(r"\s*no\b", local_clause, flags=re.IGNORECASE):
+        return False
+    return not _louisiana_predicate_is_in_negative_complement(
+        governing_scope, predicate_start=operative.start()
+    )
+
+
+def _louisiana_reference_has_nonoperative_postfix(after_reference: str) -> bool:
+    """Reject a qualifier after the citation that retracts its operative use."""
+
+    suffix = after_reference.strip()
+    legal_authority = (
+        r"(?:act|code|court|department|language|law|legislature|ordinance|"
+        r"provisions?|regulation|rule|section|statute|table|terms?|text)"
+    )
+    if re.match(
+        r"^,?\s*(?:in|for|during|using|under)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    ):
+        return _louisiana_text_has_nonoperative_framing(suffix)
+    if re.match(
+        r"^,?\s*(?:but\s+)?(?:this|that|the\s+(?:statement|proposition))\b"
+        r"[^.;]{0,80}\b(?:contrived|draft|dubious|fictional|hypothetical|"
+        r"illustrative|questionable|unproven)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    independent = re.match(
+        r"^,?\s*(?:although|and|but|though|while|whereas|yet)\s+"
+        r"(?:the\s+|a\s+|an\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,5}"
+        r"(?:is|are|was|were|has|have|had|can|could|may|might|must|shall|"
+        r"should|will|would|alleges?|asserts?|believes?|claims?|declares?|"
+        r"discusses?|reports?|says?|states?|speculates?)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if independent:
+        return False
+    attribution = re.match(
+        r"^,?\s*(?:at\s+least\s+)?(?:purportedly\s+)?according\s+to\s+"
+        r"(?P<object>[^.;]{1,100})",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if attribution:
+        return not _louisiana_speaker_is_legal_authority(attribution.group("object"))
+    conditional = re.match(
+        r"^,?\s*if\s+(?P<condition>[^.;]{1,100})",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if conditional:
+        condition_core = re.split(
+            r"\b(?:under|according\s+to|pursuant\s+to)\b",
+            conditional.group("condition"),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        return not re.search(
+            rf"\b(?:statutory|legal|applicable|{legal_authority})\b",
+            condition_core,
+            flags=re.IGNORECASE,
+        )
+    speech = re.match(
+        r"^,?\s*(?:(?:as|or\s+so)\s+)?(?:the\s+)?"
+        r"(?P<speaker>[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,9}?)\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*"
+        r"(?:alleges?|asserts?|believes?|claims?|concludes?|contends?|declares?|"
+        r"maintains?|opines?|reports?|says?|states?|testif(?:y|ies|ied))\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if speech:
+        return not _louisiana_speaker_is_legal_authority(speech.group("speaker"))
+    return bool(
+        re.match(
+            r"^,?\s*(?:"
+            r"(?:but\s+)?(?:merely|only)\b[^.;]{0,100}\b(?:contrived|example|"
+            r"fictional|hypothetical|illustrati\w*|sample|scenario)\b|"
+            r"though\s+(?:allegedly|apparently|hypothetically|purportedly|"
+            r"reportedly|supposedly|theoretically)\b|"
+            r"(?:but\s+)?(?:this|that|which|the\s+(?:statement|proposition))\b"
+            r"[^.;]{0,80}\b(?:contrived|draft|dubious|fictional|hypothetical|"
+            r"illustrative|questionable|unproven)\b"
+            r")",
+            suffix,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_speaker_is_legal_authority(speaker: str) -> bool:
+    """Resolve the grammatical authority head and any required complement."""
+
+    intrinsic_heads = {
+        "act",
+        "code",
+        "constitution",
+        "court",
+        "department",
+        "law",
+        "legislature",
+        "ordinance",
+        "regulation",
+        "rule",
+        "section",
+        "statute",
+        "table",
+    }
+    derivative_heads = {
+        "article",
+        "decision",
+        "language",
+        "opinion",
+        "order",
+        "provision",
+        "provisions",
+        "term",
+        "terms",
+        "text",
+    }
+    relation = re.search(r"\b(?:for|of)\b", speaker, flags=re.IGNORECASE)
+    head_scope = speaker[: relation.start()] if relation else speaker
+    head_tokens = re.findall(r"[A-Za-z]+", head_scope.lower())
+    if not head_tokens:
+        return False
+    head = (
+        "article"
+        if re.fullmatch(
+            r"articles?\s+(?:\d+|[ivxlcdm]+)(?:-[a-z0-9]+|\([a-z0-9]+\))?"
+            r"(?:\s+and\s+(?:\d+|[ivxlcdm]+))?"
+            r"(?:\s*,\s*(?:(?:§+|sections?)\s*\d+(?:[.-]\d+)*"
+            r"(?:\([a-z0-9]+\))*(?:\s*(?:-|–)\s*\([a-z0-9]+\)|"
+            r"\s+and\s+(?:\d+(?:\([a-z0-9]+\))*|\([a-z0-9]+\)))?"
+            r"(?:\s*,\s*paragraph\s+(?:[a-z0-9]+|\([a-z0-9]+\)))?|"
+            r"paragraphs?\s+(?:[a-z0-9]+|\([a-z0-9]+\))"
+            r"(?:\s+and\s+(?:[a-z0-9]+|\([a-z0-9]+\)))?))?",
+            head_scope.strip(),
+            flags=re.IGNORECASE,
+        )
+        else head_tokens[-1]
+    )
+    governmental_department_modifiers = {
+        "federal",
+        "health",
+        "justice",
+        "labor",
+        "louisiana",
+        "revenue",
+        "state",
+        "tax",
+        "taxation",
+        "treasury",
+    }
+    if (
+        head == "department"
+        and len(head_tokens) > 1
+        and not any(
+            token in governmental_department_modifiers for token in head_tokens[:-1]
+        )
+    ):
+        return False
+    if head in intrinsic_heads:
+        return True
+    if head == "order" and re.search(
+        r"\b(?:administrative|court|executive|judicial|restraining)\s+order\s*$|"
+        r"\bcease-and-desist\s+order\s*$",
+        head_scope.strip(),
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if head not in derivative_heads:
+        return False
+    if re.search(r"\b(?:legal|statutory)\b", head_scope, flags=re.IGNORECASE):
+        return True
+    if relation is None:
+        return head in {"provision", "provisions", "term", "terms"}
+    complement_source = speaker[relation.end() :]
+    documentary_person = re.search(
+        r"\b(?:analyst|author|commentator|consultant|expert|researcher|witness)\b",
+        complement_source,
+        flags=re.IGNORECASE,
+    )
+    preceding_authority = (
+        re.search(
+            r"\b(?:act|code|constitution|court|department|law|legislature|"
+            r"ordinance|order|regulation|rule|section|statute|table)\b",
+            complement_source[: documentary_person.start()],
+            flags=re.IGNORECASE,
+        )
+        if documentary_person is not None
+        else None
+    )
+    if documentary_person is not None and preceding_authority is None:
+        return False
+    participle = re.search(
+        r"\b[A-Za-z][A-Za-z-]*ing\b", complement_source, flags=re.IGNORECASE
+    )
+    authority_modifiers = {
+        "administrative",
+        "agency",
+        "federal",
+        "governing",
+        "implementing",
+        "local",
+        "louisiana",
+        "outside",
+        "reviewing",
+        "state",
+        "tax",
+    }
+    prefix_tokens = (
+        tuple(
+            token
+            for token in re.findall(
+                r"[A-Za-z]+", complement_source[: participle.start()].lower()
+            )
+            if token not in {"a", "an", "the"}
+        )
+        if participle is not None
+        else ()
+    )
+    if participle is not None and any(
+        token not in authority_modifiers for token in prefix_tokens
+    ):
+        complement_source = complement_source[: participle.start()]
+    complement_scope = re.split(
+        r"\b(?:about|concerning|in|on|regarding|under|with)\b",
+        complement_source,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    complement_tokens = re.findall(r"[A-Za-z]+", complement_scope.lower())
+    if (
+        complement_tokens
+        and complement_tokens[-1] == "department"
+        and len(complement_tokens) > 1
+        and not any(
+            token in governmental_department_modifiers
+            for token in complement_tokens[:-1]
+        )
+    ):
+        return False
+    return bool(complement_tokens and complement_tokens[-1] in intrinsic_heads)
+
+
+def _louisiana_scope_has_nonoperative_framing(scope: str) -> bool:
+    """Reject hypothetical or documentary embeddings before syntax branches."""
+
+    if re.match(
+        r"\s*(?:\(|\[)?\s*in\s+(?:(?:relevant|pertinent)\s+)?"
+        r"(?:parts?|portions?)\s*"
+        r"(?:\)|\])?\s*,?\s*(?:as\s+follows\b)?",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"\s*in\s+(?:(?:the\s+)?(?:author|commentator|expert|witness)"
+        r"(?:'s|’s)?\s+(?:own\s+)?words|the\s+words\s+of\s+(?:the\s+)?"
+        r"(?:author|commentator|expert|witness))\s*,|"
+        r"\s*as\s+(?:the\s+)?(?:affidavit|testimony)\s+puts?\s+it\s*,",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"\s*as\s+set\s+forth\s+in\s+(?:the\s+)?(?:affidavit|testimony)\s*,",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        return True
+
+    prefix_attribution = re.match(
+        r"\s*according\s+to\s+(?:the\s+)?(?P<speaker>[^.;]{1,80})\s*,",
+        scope,
+        flags=re.IGNORECASE,
+    )
+    if prefix_attribution:
+        if not _louisiana_speaker_is_legal_authority(
+            prefix_attribution.group("speaker")
+        ):
+            return True
+
+    # A fronted subordinate supplies context for, but does not grammatically
+    # govern, the comma-delimited main clause that carries the dependency.
+    if (
+        re.match(
+            r"\s*(?:although|because|since|when|while|whereas)\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+        and (fronted_end := scope.find(",")) >= 0
+        and re.match(
+            r"\s*(?:the|a|an|this|final|applicable)\s+[A-Za-z]",
+            scope[fronted_end + 1 :],
+            flags=re.IGNORECASE,
+        )
+    ):
+        scope = scope[fronted_end + 1 :]
+
+    independent_resets = tuple(
+        re.finditer(
+            r"(?:\b(?:although|and|because|but|or|while|whereas)\s+|"
+            r"\byet\s+(?=(?:the|a|an|this|that|final|applicable)\b))"
+            r"(?=(?:(?:the|a|an|this|that|final|applicable)\s+)?"
+            r"(?:(?:[A-Za-z][A-Za-z-]*\s+){1,7}"
+            r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did|"
+            r"depends?|requires?|relies?|determines?|calculates?|computes?|"
+            r"establishes?|applies?|imposes?|allows?|arises?)\b|"
+            r"(?:[A-Za-z][A-Za-z-]*\s*){1,5}$))",
+            scope,
+            flags=re.IGNORECASE,
+        )
+    )
+    if independent_resets:
+        reset = independent_resets[-1]
+        embedding_prefix = scope[: reset.start()]
+        if not re.search(
+            r"\b(?:alleges?|asserts?|avers?|claims?|contends?|declares?|imagines?|"
+            r"maintains?|reports?|states?|suppose[sd]?|testif(?:y|ies|ied))\s+"
+            r"(?:that\s+)?[^.;]{0,120}$",
+            embedding_prefix,
+            flags=re.IGNORECASE,
+        ):
+            scope = scope[reset.end() :]
+    return _louisiana_text_has_nonoperative_framing(scope) or bool(
+        re.search(
+            r"\b(?:assumed|candidate|conceivable|conceivably|conceptual|draft|"
+            r"example|fictional|fictionally|hypothetical(?:ly)?|illustrative|"
+            r"imagined|mock|nonbinding|notional|perhaps|possibly|proposed|prototype|"
+            r"purported|putative|sample|scenario|specimen|suppose[sd]?|theoretical)\b|"
+            r"\b(?:for\s+purposes\s+of\s+argument|in\s+theory)\b|"
+            r"\b(?:chance|could\s+be|might\s+be|possibility)\b[^.;]{0,40}\bthat\b|"
+            r"^\s*if\s+(?:the\s+)?(?:account|description|narrative|report|source)\s+"
+            r"is\s+(?:accurate|correct|true)\b|"
+            r"\b(?:agency|analysis|analyst|article|commentator|document|narrative|"
+            r"requirement|source|table|witness)\b[^.;]{0,100}"
+            r"\b(?:alleges?|asserts?|avers?|believes?|cannot\s+confirm|concludes?|"
+            r"contends?|declares?|estimates?|has\s+yet\s+to\s+confirm|indicates?|"
+            r"infers?|maintains?|observes?|opines?|predicts?|recites?|surmises?|"
+            r"testif(?:y|ies|ied))\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_direct_dependency_subject_is_executable(scope: str) -> bool:
+    """Bind ``depends on`` and ``requires`` to the direct grammatical subject."""
+
+    scope = re.sub(
+        r"\b(directly|entirely|necessarily|ordinarily|solely|ultimately)\s+and\s+"
+        r"(?=(?:directly|entirely|necessarily|ordinarily|solely|ultimately)\b)",
+        r"\1 ",
+        scope,
+        flags=re.IGNORECASE,
+    )
+    local_clause = _louisiana_local_finite_clause(scope).strip(" ,")
+    if re.search(
+        r"\b(?:after|before)\s+(?:the|a|an)\s+"
+        r"[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*$",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        local_clause = scope.strip(" ,")
+    if re.search(
+        r"\b(?:line|paragraph|part|schedule)\s+[A-Za-z0-9]+\s+of\s+(?:the\s+)?"
+        r"(?:calculation|report|return|tax\s+return|worksheet)\b",
+        local_clause,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if _LOUISIANA_DOCUMENTARY_HEAD.search(local_clause) or re.search(
+        r"^\s*(?:no|neither|nothing)\b|"
+        r"\b(?:can|could|did|does|do|is|are|was|were|will|would)\s+"
+        r"(?:never|not)\b|n['’]t\b|"
+        r"\b(?:uncertain|unknown|whether)\b|"
+        r"\b(?:assertion|availability|citation|claim|date|discussion|email|filing|"
+        r"footnote|guide|historical|hypothetical|identifier|outline|proposal|"
+        r"reference|rumor|status|title|website)\b",
+        local_clause,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\b(?:ceases?|fails?|refuses?)\s+to\s*$",
+        local_clause,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    subject = local_clause
+    while True:
+        stripped = re.sub(
+            r"\s*,?\s*\b(?:directly|entirely|necessarily|ordinarily|solely|"
+            r"ultimately)\b(?:\s+and\s+\b(?:directly|entirely|necessarily|"
+            r"ordinarily|solely|ultimately)\b)*\s*$",
+            "",
+            subject,
+            flags=re.IGNORECASE,
+        ).strip(" ,")
+        if stripped == subject:
+            break
+        subject = stripped
+    if re.match(
+        r"which\s+(?:amount|base|calculation|computation|rate|tax)\s+applies$",
+        subject,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"(?:application|determination)\s+of\s+(?:the\s+)?(?:amount|base|rate|tax)$",
+        subject,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.match(
+        r"(?:the\s+)?(?:lesser|greater)\s+of\s+(?:the\s+)?(?:two|multiple)?\s*rates?$",
+        subject,
+        re.IGNORECASE,
+    ):
+        return True
+    executable_heads = {
+        "amount",
+        "base",
+        "calculation",
+        "computation",
+        "credit",
+        "deduction",
+        "formula",
+        "income",
+        "liability",
+        "percentage",
+        "rate",
+        "result",
+        "rule",
+        "schedule",
+        "statute",
+        "table",
+        "tax",
+        "taxes",
+        "threshold",
+    }
+    relation = re.search(
+        r",|(?<!-)\b(?:about|accompanying|as|beneath|beside|by|concerning|"
+        r"after|against|before|containing|covering|describing|displaying|during|"
+        r"comprising|excluding|for|in|including|incorporating|listing|of|on|"
+        r"outside|under|using|"
+        r"presenting|reciting|"
+        r"regarding|setting\s+out|matching|reflecting|to|with|without|that|which|who|"
+        r"(?:arising|derived|emerging|flowing|resulting|stemming)\s+from|"
+        r"(?:based|dependent|predicated|reliant)\s+(?:on|upon)|"
+        r"(?:linked|related|tied)\s+to)\b(?!-)",
+        subject,
+        flags=re.IGNORECASE,
+    )
+    relation_start = relation.start() if relation else None
+    if relation is None:
+        for candidate in re.finditer(
+            r"\b(?P<head>[A-Za-z][A-Za-z-]*)\s+"
+            r"(?P<relation>(?:[A-Za-z]+ed|drawn|taken)\s+from)\b",
+            subject,
+            flags=re.IGNORECASE,
+        ):
+            if candidate.group("head").lower() in {"a", "an", "the"}:
+                continue
+            relation_start = candidate.start("relation")
+            break
+    if relation_start is None:
+        participial_clause = re.search(
+            r"\b[A-Za-z][A-Za-z-]*ing\s+(?=(?:a|an|the)\s+"
+            r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
+            r"(?:amount|base|calculation|computation|credit|deduction|formula|"
+            r"income|liability|rate|rule|tax)\b)",
+            subject,
+            flags=re.IGNORECASE,
+        )
+        if participial_clause is not None:
+            relation_start = participial_clause.start()
+    grammatical_head_scope = (
+        subject[:relation_start] if relation_start is not None else subject
+    )
+    tokens = re.findall(r"[A-Za-z]+", grammatical_head_scope.lower())
+    if not tokens:
+        return False
+    if tokens[-1] in executable_heads:
+        return True
+    executable_positions = [
+        index for index, token in enumerate(tokens) if token in executable_heads
+    ]
+    if not executable_positions:
+        return False
+    modifiers = {
+        "allowed",
+        "alone",
+        "applicable",
+        "adopted",
+        "attached",
+        "allowable",
+        "calculated",
+        "computed",
+        "determined",
+        "due",
+        "final",
+        "imposed",
+        "itself",
+        "named",
+        "owed",
+        "otherwise",
+        "outstanding",
+        "owing",
+        "payable",
+        "prescribed",
+        "remaining",
+        "required",
+        "selected",
+        "shown",
+        "specified",
+    }
+    return all(
+        token in modifiers or token.endswith(("able", "ible", "ly"))
+        for token in tokens[executable_positions[-1] + 1 :]
+    )
+
+
+def _louisiana_operative_suffix_is_bounded(suffix: str) -> bool:
+    """Allow statutory modifiers without admitting documentary framing."""
+
+    suffix = re.sub(
+        r"\b(and|or|but)\s*,\s*where\s+applicable\s*,\s*",
+        r"\1 ",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    positive_participle = (
+        r"(?:allowed|assessed|available|calculated|computed|derived|determined|"
+        r"established|fixed|imposed|levied|prescribed|rounded|set|specified)"
+    )
+    bounded_modifier = (
+        r"(?:annually|directly|entirely|exclusively|finally|separately|solely|"
+        r"statutorily|provisionally|annually|monthly|quarterly|"
+        r"for\s+(?:each|every)\s+(?:taxpayer|return|filing\s+unit)|each\s+year|"
+        r"for\s+(?:the\s+)?taxable\s+year|per\s+taxpayer|on\s+(?:the\s+)?return|"
+        r"on\s+an\s+annual\s+basis|at\s+the\s+taxpayer\s+level|"
+        r"for\s+the\s+applicable\s+taxable\s+year|to\s+the\s+nearest\s+dollar|"
+        r"for\s+each\s+(?:taxable\s+year|filing\s+period)|"
+        r"to\s+the\s+nearest\s+whole\s+dollar|"
+        r"as\s+of\s+the\s+close\s+of\s+the\s+taxable\s+year|"
+        r"in\s+all\s+cases|where\s+applicable|"
+        r"for\s+purposes\s+of\s+(?:this|the)\s+(?:section|subsection)|"
+        r"as\s+applicable|with\s+no\s+(?:adjustment|cap))"
+    )
+    return bool(
+        re.fullmatch(
+            rf"[\s,]*(?:(?:(?:and(?:\s+then)?|or|but|then)\s+)?"
+            rf"(?:(?:provisionally|finally|directly)\s+)*"
+            rf"{positive_participle}[\s,]*)*(?:{bounded_modifier}[\s,]*)*",
+            suffix,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_local_finite_clause(scope: str) -> str:
+    """Return text after the last structural clause connector."""
+
+    connectors = tuple(
+        re.finditer(
+            r"\b(?:and|although|because|before|but|if|once|or|since|then|"
+            r"unless|when|whenever|where|whereas|while|yet)\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+    )
+    boundary = connectors[-1].end() if connectors else 0
+    # A comma after a fronted subordinate clause starts a fresh finite main
+    # clause; its negation must not contaminate the later operative predicate.
+    comma_boundaries = tuple(
+        match.end()
+        for match in re.finditer(r",", scope)
+        if re.match(
+            r"\s*(?:(?:the|a|an|this|that|final|applicable)\s+)?"
+            r"(?:[A-Za-z][A-Za-z-]*\s+){1,6}"
+            r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did)\b",
+            scope[match.end() :],
+            flags=re.IGNORECASE,
+        )
+    )
+    if (
+        re.match(
+            r"\s*(?:although|because|since|when|while)\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+        and "," in scope
+    ):
+        comma_boundaries += (scope.rfind(",") + 1,)
+    if comma_boundaries:
+        boundary = max(boundary, comma_boundaries[-1])
+    return scope[boundary:]
+
+
+def _louisiana_predicate_is_in_negative_complement(
+    scope: str,
+    *,
+    predicate_start: int,
+) -> bool:
+    """Reject a positive-looking predicate inside a negated ``that`` complement."""
+
+    prefix = scope[:predicate_start]
+    complement_markers = tuple(
+        re.finditer(r"\b(?:if|that|whether)\b", prefix, re.IGNORECASE)
+    )
+    if not complement_markers:
+        return bool(
+            re.search(
+                r"\b(?:uncertain|unknown|unclear|undetermined)\b",
+                _louisiana_local_finite_clause(prefix),
+                flags=re.IGNORECASE,
+            )
+        )
+    complement = complement_markers[-1]
+    marker = complement.group(0).lower()
+    introducer = prefix[: complement.start()]
+    if marker == "whether":
+        return True
+    if marker == "if":
+        return bool(
+            re.search(
+                r"\b(?:possible|uncertain|unclear|unknown|undetermined|questions?|"
+                r"asks?|doubts?)\b",
+                _louisiana_local_finite_clause(introducer),
+                flags=re.IGNORECASE,
+            )
+        )
+    preceding_word = re.search(r"([A-Za-z]+)\s*$", introducer)
+    if preceding_word and preceding_word.group(1).lower() in {
+        "except",
+        "provided",
+        "so",
+    }:
+        return False
+    local_introducer = _louisiana_local_finite_clause(introducer)
+    return bool(
+        re.search(
+            r"\b(?:no|not|nothing|never|cannot|denies?|rejects?|disclaims?|fails?|"
+            r"refuses?)\b|"
+            r"\b(?:assumes?|claims?|reports?|says?|purports?|suggests?)\b|"
+            r"\b(?:doubtful|evidence|false|untrue|impossible|possible|uncertain|"
+            r"unclear|unknown)\b|"
+            r"\bby\s+no\s+means\b|n['’]t\b",
+            local_introducer,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _source_link_scope_has_unreset_negation(governing_scope: str) -> bool:
+    """Bind negation to a linker unless a later finite predicate resets it."""
+
+    negative_markers = tuple(
+        re.finditer(
+            r"\b(?:not|never|neither|nor|cannot|nowhere|prohibit\w*|barred|"
+            r"forbidden|precluded|prevented|excluded|denied|except)\b|"
+            r"\b(?:denies?|rejects?|disclaims?)\b|"
+            r"\b(?:false|untrue|impossible)\s+that\b|"
+            r"(?:^|[,;:]\s*|\b(?:and|but|or|that|while|whereas)\s+)"
+            r"no\s+(?:amount|tax|liability|computation|calculation|"
+            r"determination|rate|base|statute|rule|provision|requirement)\b"
+            r"(?:\s+[A-Za-z-]+){0,3}\s+(?:is|are|was|were|shall|may|must|will|"
+            r"would|can|could|does|do|did|states?|provides?|requires?|"
+            r"determines?|calculates?|computes?|applies?|arises?)\b|"
+            r"\b(?:ca|do|does|did|is|are|was|were|"
+            r"shall|will|would|could|should|must|need)n['’]t\b|"
+            r"\b(?:fails?|refuses?|unable)\s+to\b|"
+            r"\bwithout\s+(?:being\s+)?(?:determin\w*|comput\w*|calculat\w*|"
+            r"appl\w*|impos\w*|aris\w*)\b|"
+            r"\b(?:in\s+no\s+(?:case|event)|under\s+no\s+circumstances|"
+            r"at\s+no\s+time|by\s+no\s+means|in\s+no\s+way|"
+            r"on\s+no\s+account|under\s+no\s+conditions?|"
+            r"in\s+no\s+(?:manner|respect))\b|"
+            r"\b(?:rather|other)\s+than\b",
+            governing_scope,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not negative_markers:
+        return False
+
+    last_negative = negative_markers[-1]
+    after_last_negative = governing_scope[last_negative.end() :]
+
+    # A finite predicate inside an expressly negated complement does not escape
+    # merely because the complement coordinates another subject and verb.
+    if re.search(
+        r"(?:\bnot\s+the\s+case|\b(?:does?|did|is|are|was|were|has|have|had)"
+        r"\s+not\s+(?:provide|state|say|specify|indicate|require|establish|"
+        r"declare|permit|allow|assert|show)|\bnever\s+(?:provides?|states?|"
+        r"says?|specifies?|indicates?|requires?|establishes?|declares?|permits?|"
+        r"allows?|asserts?|shows?)|\b(?:denies?|rejects?|disclaims?)|"
+        r"\b(?:false|untrue|impossible))\s+that\b",
+        governing_scope,
+        flags=re.IGNORECASE,
+    ) and not re.search(
+        r"\b(?:but|yet|however|nevertheless|nonetheless)\b",
+        after_last_negative,
+        flags=re.IGNORECASE,
+    ):
+        return True
+
+    reset = re.search(
+        r"(?:\b(?:provided\s+that|even\s+though|so\s+long\s+as|and|but|yet|"
+        r"while|whereas|or|then|because|since|if|when|whenever|although|unless|"
+        r"once|after|before|where|as)\b|,)\s+"
+        r"(?:instead\s+)?(?:"
+        # A repeated auxiliary/copula makes a coordinated predicate finite.
+        r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did|"
+        r"becomes?|remains?)\b|"
+        # Otherwise require an explicit subject before the finite predicate;
+        # this keeps shared-negation forms such as "not apply or arise" bound.
+        r"(?:(?:the|a|an|this|that|final|preliminary|separate)\s+)?"
+        r"(?:[A-Za-z][A-Za-z-]*\s+){1,7}?"
+        r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did|"
+        r"becomes?|remains?|depends?|requires?|determines?|calculates?|computes?|"
+        r"establishes?|applies?|imposes?|allows?|arises?|supplies?|provides?)\b"
+        r")",
+        after_last_negative,
+        flags=re.IGNORECASE,
+    )
+    if reset is None:
+        return True
+    reset_scope = after_last_negative[reset.start() :]
+    # A new negative construction after the reset governs the dependency.
+    return bool(
+        re.search(
+            r"\b(?:not|never|neither|nor|cannot|nowhere|prohibit\w*|barred|"
+            r"forbidden|precluded|prevented|excluded|denied|except)\b|"
+            r"\b(?:denies?|rejects?|disclaims?)\b|"
+            r"\b(?:false|untrue|impossible)\s+that\b|"
+            r"\b(?:fails?|refuses?|unable)\s+to\b|"
+            r"\bwithout\s+(?:being\s+)?(?:determin\w*|comput\w*|calculat\w*|"
+            r"appl\w*|impos\w*|aris\w*)\b",
+            reset_scope,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_disclaimer_governs_reference(local_before: str) -> bool:
+    """Bind a contextual disclaimer to its citation, not an earlier preamble."""
+
+    disclaimers = tuple(
+        re.finditer(
+            r"\b(?:without\s+prejudice\s+to|remain\w*\s+unaffected|"
+            r"unaffected\s+by|does\s+not\s+affect|notwithstanding)\b",
+            local_before,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not disclaimers:
+        return False
+    disclaimer = disclaimers[-1]
+    after_disclaimer = local_before[disclaimer.end() :]
+    separator = re.search(r"(?:,|:|[-\u2013\u2014])", after_disclaimer)
+    if separator is None:
+        return True
+    disclaimer_object = after_disclaimer[: separator.start()]
+    reset_scope = after_disclaimer[separator.end() :]
+    disclaimer_is_context_preamble = _louisiana_disclaimer_object_is_context_preamble(
+        disclaimer_object
+    )
+    relative_reset = re.match(
+        r"\s*(?:(?:by|to|through|under|pursuant\s+to|in|according\s+to)\s+which|"
+        r"which|who|whom|whose|where|whereby|wherein|that)\b",
+        reset_scope,
+        flags=re.IGNORECASE,
+    )
+    if relative_reset:
+        independent_boundaries = []
+        for boundary in re.finditer(
+            r"\b(?:although|and|because|but|or|while|whereas|yet)\b|,",
+            reset_scope,
+            re.IGNORECASE,
+        ):
+            candidate = reset_scope[boundary.end() :]
+            if not _louisiana_scope_starts_independent_finite_clause(candidate):
+                continue
+            if boundary.group(0) == "," and not _louisiana_relative_prefix_is_closed(
+                reset_scope[: boundary.start()]
+            ):
+                continue
+            independent_boundaries.append(boundary)
+        if not independent_boundaries:
+            return True
+        reset_candidates = [
+            reset_scope[boundary.end() :] for boundary in independent_boundaries
+        ]
+    else:
+        reset_candidates = [reset_scope]
+        reset_candidates.extend(
+            after_disclaimer[boundary.end() :]
+            for boundary in re.finditer(r"(?:,|:|[-\u2013\u2014])", after_disclaimer)
+            if boundary.end() > separator.end()
+        )
+    for candidate in reversed(reset_candidates):
+        if re.match(
+            r"\s*(?:(?:although|and|because|but|or|since|when|while|whereas|yet)\s+)?"
+            r"(?:under\s+which|in\s+which|which|who|whom|whose|where|that)\b",
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        operative = _LOUISIANA_POSITIVE_OPERATIVE_PREDICATE.search(candidate)
+        if operative is None:
+            continue
+        has_independent_connector = bool(
+            re.match(
+                r"\s*(?:although|and|because|but|or|since|when|while|whereas|yet)\b",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not disclaimer_is_context_preamble and not has_independent_connector:
+            continue
+        introduction = candidate[: operative.start()]
+        if re.search(
+            r"\b(?:alleges?|asserts?|claims?|declares?|indicates?|notes?|observes?|"
+            r"opines?|proclaims?|recites?|reports?|says?|states?|stipulates?|"
+            r"testifies?)"
+            r"\b",
+            introduction,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if re.match(
+            r"\s*(?:(?:although|and|because|but|or|since|when|while|whereas|yet)\s+)?"
+            r"(?:(?:the|a|an|this|that|final|applicable)\s+)?"
+            r"(?:[A-Za-z][A-Za-z-]*\s+){0,7}"
+            r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did|"
+            r"becomes?|remains?|allows?|assesses?|calculates?|computes?|derives?|"
+            r"determines?|establishes?|fixes?|imposes?|levies?|prescribes?|sets?|"
+            r"specifies?)\b",
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            return False
+    if not disclaimer_is_context_preamble:
+        return True
+    before_disclaimer = local_before[: disclaimer.start()]
+    reset_is_relative = bool(
+        re.match(
+            r"\s*(?:(?:although|and|because|but|or|since|when|while|whereas|yet)\s+)?"
+            r"(?:(?:by|to|through|under|pursuant\s+to|in|according\s+to)\s+which|"
+            r"which|who|whom|whose|where|whereby|wherein|that)\b",
+            reset_scope,
+            flags=re.IGNORECASE,
+        )
+    )
+    if reset_is_relative:
+        return True
+    return not bool(
+        (
+            not reset_is_relative
+            and _LOUISIANA_POSITIVE_OPERATIVE_PREDICATE.search(reset_scope)
+        )
+        or _LOUISIANA_POSITIVE_OPERATIVE_PREDICATE.search(before_disclaimer)
+    )
+
+
+def _louisiana_scope_starts_independent_finite_clause(scope: str) -> bool:
+    """Require an explicit subject before a disclaimer reset predicate."""
+
+    return bool(
+        re.match(
+            r"\s*(?:(?:the|a|an|this|that|final|applicable)\s+)?"
+            r"(?:[A-Za-z][A-Za-z-]*\s+){1,7}"
+            r"(?:is|are|was|were|shall|may|must|will|would|can|could|does|do|did|"
+            r"becomes?|remains?|allows?|assesses?|calculates?|computes?|derives?|"
+            r"determines?|establishes?|fixes?|imposes?|levies?|prescribes?|sets?|"
+            r"specifies?)\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_relative_prefix_is_closed(prefix: str) -> bool:
+    """Return whether a relative clause has a finite predicate before a comma."""
+
+    relative = re.match(
+        r"\s*(?:(?:by|to|through|under|pursuant\s+to|in|according\s+to)\s+which|"
+        r"which|who|whom|whose|where|whereby|wherein|that)\b",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    if relative is None:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:is|are|was|were|has|have|had|does|do|did|applies?|continues?|"
+            r"exists?|remains?|governs?|controls?|requires?|provides?|states?)\b",
+            prefix[relative.end() :],
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_disclaimer_object_is_context_preamble(disclaimer_object: str) -> bool:
+    """Recognize a self-contained external-law preamble object."""
+
+    return bool(
+        re.search(
+            r"(?:\b(?:applicable|federal|louisiana|other|state)\s+"
+            r"(?:law|rights?|return\s+rule|statute)|"
+            r"\bthe\s+law\s+of\s+this\s+state|"
+            r"\bany\s+law\s+(?:to\s+the\s+)?contrary|"
+            r"\bany\s+other\s+provision\s+of\s+law|"
+            r"\b\d+\s+U\.?\s*S\.?\s*C\.?\s+\d+[A-Za-z0-9.\-]*|"
+            r"\bR\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+[A-Za-z0-9.\-]*)\s*$",
+            disclaimer_object,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_strip_inline_context_preamble(scope: str) -> str:
+    """Remove a bounded inline external-law preamble before attachment checks."""
+
+    return re.sub(
+        r"(?:,\s*|[-\u2013\u2014]\s*)"
+        r"(?:notwithstanding|without\s+prejudice\s+to)\s+"
+        r"(?:(?:applicable|federal|other|state)\s+"
+        r"(?:law|rights?|return\s+rule|statute)|"
+        r"any\s+other\s+provision\s+of\s+law|"
+        r"\d+\s+U\.?\s*S\.?\s*C\.?\s+\d+[A-Za-z0-9.\-]*|"
+        r"R\.?\s*S\.?\s*\d+[A-Za-z]?\s*:\s*\d+[A-Za-z0-9.\-]*)\s*"
+        r"(?:,|[-\u2013\u2014])\s*",
+        " ",
+        scope,
+        flags=re.IGNORECASE,
+    )
+
+
 def _usc_dependency_fragments(match: re.Match[str]) -> tuple[str, ...]:
     return tuple(
         fragment.lower()
         for fragment in re.findall(
-            r"\(\s*([A-Za-z0-9]+)\s*\)",
+            r"\(\s*([A-Za-z0-9]+(?:[-\u2013][A-Za-z0-9]+)*)\s*\)",
             match.group("tail") or "",
         )
     )
+
+
+def _louisiana_rs_tail_identity(match: re.Match[str]) -> str:
+    """Preserve connector and legal-label semantics in an R.S. citation tail."""
+
+    tail = (match.group("tail") or "").lower()
+    tail = re.sub(r"[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]", "-", tail)
+    tail = re.sub(r"\s+", " ", tail)
+    tail = re.sub(r",\s*(?:and\s+)?(?=\()", " and ", tail)
+    tail = re.sub(r"&", " and ", tail)
+    tail = re.sub(
+        r"\b(?:clauses?|divisions?|items?|lines?|paragraphs?|parts?|"
+        r"schedules?|subclauses?|subdivisions?|subitems?|subparagraphs?|"
+        r"subparts?)\b",
+        lambda item: item.group(0).removesuffix("s"),
+        tail,
+    )
+    tail = re.sub(r"\bsubsections?\s+(?=\()", "", tail)
+    tail = re.sub(r"\bread\s+together\s+with\b", "read with", tail)
+    tail = re.sub(r"\b(?:through|to)\b|-(?=\s*\()", " range ", tail)
+    tail = re.sub(r"\s*([(),])\s*", r"\1", tail)
+    tail = re.sub(r"\s+", " ", tail)
+    return tail.strip()
 
 
 def _qualified_usc_dependencies(text: str) -> tuple[re.Match[str], ...]:
@@ -4738,6 +6480,79 @@ def _qualified_usc_dependencies(text: str) -> tuple[re.Match[str], ...]:
             key=lambda match: (match.start(), match.end()),
         )
     )
+
+
+def _qualified_louisiana_rs_dependencies(text: str) -> tuple[re.Match[str], ...]:
+    """Return exact R.S. citations, excluding natural fragment continuations."""
+
+    return tuple(
+        match
+        for match in _LOUISIANA_RS_DEFERRAL_DEPENDENCY.finditer(text)
+        if not _louisiana_rs_match_has_unsupported_fragment_tail(text, match)
+    )
+
+
+def _louisiana_rs_match_has_detached_structural_subject(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Reject a labeled parenthetical that is the subject of following prose."""
+
+    tail = match.group("tail") or ""
+    if not re.search(
+        r"\b(?:clause|division|item|line|paragraph|part|schedule|subsection)s?\s+"
+        r"\(",
+        tail,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if _louisiana_citation_list_completes_outer_subject(text[: match.start()]):
+        return False
+    return _louisiana_reference_starts_finite_clause(text[match.end() :])
+
+
+def _louisiana_rs_match_has_unsupported_fragment_tail(
+    text: str,
+    match: re.Match[str],
+) -> bool:
+    """Reject only parenthetical fragments structurally continuing a citation."""
+
+    same_clause_tail = re.split(r"[.;\n]", text[match.end() :], maxsplit=1)[0]
+    previous_end = 0
+    for parenthetical in re.finditer(
+        r"\(\s*[A-Za-z0-9]+(?:[-\u2013][A-Za-z0-9]+)*\s*\)",
+        same_clause_tail,
+        flags=re.IGNORECASE,
+    ):
+        prefix = same_clause_tail[previous_end : parenthetical.start()]
+        following = same_clause_tail[parenthetical.end() :]
+        previous_end = parenthetical.end()
+        if re.match(
+            r"\s+(?:filers?\b|of\s+(?:the\s+)?(?:calculation|explanatory\s+report|"
+            r"form|report|return|tax\s+return|worksheet)\b)",
+            following,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if re.fullmatch(
+            r"\s*,?\s*(?:"
+            r"(?:and|or|plus|as\s+well\s+as|together\s+with|as\s+supplemented\s+by|"
+            r"combined\s+with|in\s+addition\s+to|as\s+amended\s+by|including|"
+            r"through|to|&|[-\u2013\u2014])|"
+            r"followed\s+by(?:\s+(?:clause|division|item|line|paragraph|schedule|"
+            r"subclause|subdivision|subitem|subparagraph|subpart|subsection))?|"
+            r"as\s+enumerated\s+in|as\s+also\s+set\s+forth\s+at|alongside|"
+            r"as\s+extended\s+from|"
+            r"(?:as\s+[^,.;]{0,100}|together\s+with\s+[^,.;]{0,100})|"
+            r"(?:clause|division|item|paragraph|schedule|subclause|subdivision|"
+            r"subitem|subparagraph|subpart|subsection))\s*",
+            prefix,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if re.fullmatch(r"\s*,\s*", prefix):
+            return True
+    return False
 
 
 def _citation_instrument_identity(
@@ -4796,7 +6611,11 @@ def _reason_dependency_is_source_bound(
 ) -> bool:
     """Require one external dependency citation to bind to the deferred source."""
 
-    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason):
+    louisiana_dependencies = _qualified_louisiana_rs_dependencies(reason)
+    if not _MISSING_DEPENDENCY_LANGUAGE.search(reason) and not any(
+        _reason_match_has_bounded_insufficiency(reason, dependency)
+        for dependency in louisiana_dependencies
+    ):
         return False
     try:
         current_citation = parse_usc_citation(corpus_citation_path)
@@ -4824,6 +6643,27 @@ def _reason_dependency_is_source_bound(
                 current_citation is not None
                 and current_citation.title.lower() == match.group("title").lower()
             ),
+        ):
+            return True
+
+    for match in louisiana_dependencies:
+        if not _reason_match_names_missing_dependency(
+            reason,
+            match,
+            source_scope_text=source_scope_text,
+            current_usc_title=None,
+            allow_bounded_insufficiency=True,
+        ) or not _louisiana_rs_dependency_is_external(
+            match,
+            corpus_citation_path=corpus_citation_path,
+        ):
+            continue
+        if _source_scope_cites_louisiana_rs_dependency(
+            source_scope_text,
+            title=match.group("title"),
+            section=match.group("section"),
+            fragments=_usc_dependency_fragments(match),
+            tail_identity=_louisiana_rs_tail_identity(match),
         ):
             return True
 
@@ -4886,6 +6726,7 @@ def _reason_match_names_missing_dependency(
     *,
     source_scope_text: str,
     current_usc_title: str | None,
+    allow_bounded_insufficiency: bool = False,
 ) -> bool:
     clause_start, clause_end = _reason_clause_bounds(reason, match)
     clause = reason[clause_start:clause_end]
@@ -4914,6 +6755,10 @@ def _reason_match_names_missing_dependency(
         after,
         flags=re.IGNORECASE,
     )
+    if allow_bounded_insufficiency and _reason_match_has_bounded_insufficiency(
+        reason, match
+    ):
+        return True
     direct_signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
     direct_signal_text = direct_signals[-1].group(0) if direct_signals else ""
     if (
@@ -5008,6 +6853,1751 @@ def _reason_match_names_missing_dependency(
     return True
 
 
+def _reason_match_has_bounded_insufficiency(
+    reason: str,
+    match: re.Match[str],
+) -> bool:
+    """Recognize one citation-local statement that a supplied dependency is incomplete."""
+
+    _clause_start, clause_end = _reason_clause_bounds(reason, match)
+    if clause_end < len(reason) and clause_end - match.end() <= 240:
+        later_stop = re.search(r"[.;\n]", reason[clause_end + 1 :])
+        clause_end = (
+            min(len(reason), clause_end + 1 + later_stop.end())
+            if later_stop is not None
+            else len(reason)
+        )
+    after = reason[match.end() : clause_end]
+    insufficiency = re.match(
+        r"\s*(?:(?:dependency|context|module|output|provision|rulespec)\s+)?"
+        r"(?:(?:provides?|exports?)\s+only\b(?P<limited>[^.;\n]{1,200}?)"
+        r"\s+and\s+)?(?P<verb>lacks?|does\s+not\s+provide)\s+",
+        after,
+        flags=re.IGNORECASE,
+    )
+    if insufficiency is None:
+        return False
+    limited = insufficiency.group("limited") or ""
+    if _has_adversative_language(limited):
+        return False
+    dependencies_after = tuple(
+        dependency
+        for dependency in _reason_dependencies(after)
+        if not (
+            re.search(
+                r"\b(?:both|those)\s*$",
+                after[: dependency.start()],
+                flags=re.IGNORECASE,
+            )
+            and re.match(
+                r"\s+[A-Za-z][A-Za-z-]*\b",
+                after[dependency.end() :],
+            )
+        )
+    )
+    if any(
+        dependency.start() < insufficiency.end() for dependency in dependencies_after
+    ):
+        return False
+    missing_tail = after[insufficiency.end() :]
+    if re.match(r"\s*(?:no|not|none|without)\b", missing_tail, flags=re.IGNORECASE):
+        return False
+    current_family = _dependency_citation_family(match)
+    current_identity = (
+        match.groupdict().get("title", "").lower(),
+        normalize_rulespec_path_segment(match.group("section").lower()),
+        _usc_dependency_fragments(match),
+    )
+    foreign_dependency_starts = []
+    for dependency in dependencies_after:
+        dependency_groups = dependency.groupdict()
+        if not dependency_groups.get("section"):
+            foreign_dependency_starts.append(dependency.start())
+            continue
+        dependency_identity = (
+            (dependency_groups.get("title") or "").lower(),
+            normalize_rulespec_path_segment(dependency_groups["section"].lower()),
+            _usc_dependency_fragments(dependency),
+        )
+        if (
+            _dependency_citation_family(dependency) != current_family
+            or dependency_identity != current_identity
+        ):
+            foreign_dependency_starts.append(dependency.start())
+    missing_end = min(foreign_dependency_starts, default=len(after))
+    missing_scope = after[insufficiency.end() : missing_end]
+    missing_scope = _louisiana_normalize_parenthetical_aspect(missing_scope)
+    missing_scope = re.sub(
+        r"\b(?:(?:although|even\s+though|though|while)\s+"
+        r"(?:it|this|that)\s+(?:is|was)\s+(?:[A-Za-z][A-Za-z-]*ly\s+)?|"
+        r"(?:despite|notwithstanding)\s+(?:the\s+fact\s+)?that\s+"
+        r"(?:it|this|that)\s+(?:is|was)\s+|despite\s+(?:itself\s+)?)"
+        r"not\s+(?:being\s+)?(?=(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)\b)",
+        "not ",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    missing_scope = re.sub(
+        r"\b(?:although|even\s+though|though|while)\s+"
+        r"(?:[A-Za-z][A-Za-z-]*ly\s+)?"
+        r"(?=not\s+(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)\b)",
+        "",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        len(missing_scope) <= 240
+        and _missing_scope_starts_with_executable_object(missing_scope)
+        and not _missing_scope_reverses_insufficiency(missing_scope)
+    )
+
+
+_LOUISIANA_DOCUMENTARY_HEAD = re.compile(
+    r"\b(?:abstracts?|annotations?|appendices|appendix|articles?|audits?|background|"
+    r"bibliograph(?:y|ies)|briefs?|catalogs?|charts?|commentary|comparisons?|"
+    r"descriptions?|digests?|documents?|documentation|examples?|exhibits?|"
+    r"explanations?|guidance|illustrations?|index(?:es)?|indices|labels?|legends?|manuals?|"
+    r"materials?|memos?|memoranda|memorandums?|metadata|narratives?|notes?|overviews?|"
+    r"reports?|summaries|summary|synopses|synopsis|transcripts?|worksheets?)\b",
+    flags=re.IGNORECASE,
+)
+
+_LOUISIANA_SUPPLY_VERB_PATTERN = (
+    r"(?:suppl(?:y|ies|ied|ying)|provid(?:e[sd]?|ing)|export(?:s|ed|ing)?|"
+    r"contain(?:s|ed|ing)?|includ(?:e[sd]?|ing)|furnish(?:es|ed|ing)?|"
+    r"implement(?:s|ed|ing)?|deliver(?:s|ed|ing)?|return(?:s|ed|ing)?|"
+    r"produc(?:e[sd]?|ing)|yield(?:s|ed|ing)?|deriv(?:e[sd]?|ing)|"
+    r"expos(?:e[sd]?|ing)|generat(?:e[sd]?|ing)|possess(?:es|ed|ing)?|"
+    r"retain(?:s|ed|ing)?|offers?|lists?|reproduces?|computes?|calculates?|"
+    r"determines?|defines?|encodes?|publishes?|gives?|"
+    r"outputs(?=\s+(?:(?:a|an|the|this|that)\s+)?[A-Za-z])|stores?|holds?|"
+    r"specifies?|displays?|emits?|retrieves?|access(?:es|ed|ing)?|uses?|reads?|"
+    r"loads?|imports?|keeps?|ship(?:s|ped|ping)?|has|have|makes?|renders?|"
+    r"gave|sent|made|kept|had)"
+)
+
+
+def _louisiana_supply_verb_is_completed(verb: str) -> bool:
+    """Recognize regular and common irregular completed supply predicates."""
+
+    normalized = verb.lower()
+    return normalized.endswith("ed") or normalized in {
+        "gave",
+        "had",
+        "kept",
+        "made",
+        "sent",
+    }
+
+
+def _missing_scope_starts_with_executable_object(missing_scope: str) -> bool:
+    """Require the direct missing object's semantic head to be executable."""
+
+    primary_object_scope = re.split(
+        r"\b(?:and|but|while|yet)\b", missing_scope, maxsplit=1, flags=re.IGNORECASE
+    )[0]
+    if _LOUISIANA_DOCUMENTARY_HEAD.search(primary_object_scope) or re.search(
+        r"\b(?:candidate|conceptual|draft|fictional|hypothetical|illustrative|mock|"
+        r"notional|placeholder|proposed|prototype|purported|sample|specimen|suggested)\b|"
+        r"\b(?:provisional|tentative)\s+(?:amount|calculation|computation|formula|"
+        r"method)\b",
+        primary_object_scope,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\brecords?\b[^.;\n]{0,100}\b(?:containing|detailing|discussing|"
+        r"documenting|that|which|whose)\b",
+        primary_object_scope,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    direct_object = re.split(
+        r"\b(?:and|but|while|yet|that|which|who|whose|about|against|among|around|at|"
+        r"before|behind|below|beneath|beside|between|beyond|by|concerning|"
+        r"considering|covering|despite|down|during|except|following|for|from|in|inside|"
+        r"into|like|near|of|off|on|onto|opposite|outside|over|past|regarding|"
+        r"round|since|through|throughout|to|toward|under|underneath|unlike|"
+        r"until|up|upon|via|with|within|without|contain\w*|detail\w*|describ\w*|"
+        r"discuss\w*|document\w*|explain\w*|illustrat\w*|outline\w*|"
+        r"demonstrat\w*|summariz\w*|"
+        r"includ\w*|support\w*|needed|used|intended|required\s+to|"
+        r"necessary\s+to)\b|,",
+        missing_scope,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    direct_object = _LOUISIANA_RS_DEFERRAL_DEPENDENCY.sub(" ", direct_object)
+    tokens = re.findall(r"[A-Za-z]+", direct_object.lower())
+    while tokens and tokens[0] in {"a", "an", "the"}:
+        tokens.pop(0)
+    if not tokens:
+        return False
+    if _louisiana_object_signature(tokens[-1]) is not None:
+        return True
+    return bool(
+        tokens[-1] in {"set", "sets"}
+        and len(tokens) > 1
+        and _louisiana_object_signature(tokens[-2]) is not None
+    )
+
+
+def _missing_scope_reverses_insufficiency(missing_scope: str) -> bool:
+    """Reject a positive coordinated assertion supplying the missing object."""
+
+    missing_scope = re.sub(
+        r",\s*which\s*,\s*(?:"
+        r"(?:although|even\s+though|though|while)\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly)(?:\s+and\s+"
+        r"[A-Za-z][A-Za-z-]*ly)*\s+)?not\s+(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)|"
+        r"despite\s+[^,.;]{0,80}\bnot\s+being\s+(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)|"
+        r"(?:far\s+from|nowhere\s+near|anything\s+but|the\s+opposite\s+of)\s+"
+        r"(?:merely\s+)?"
+        r"(?:hypothetical|proposed)|"
+        r"being\s+(?:actual|real)\s+rather\s+than\s+"
+        r"(?:hypothetical|proposed))\s*,\s*",
+        " ",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    missing_scope = re.sub(
+        r"(?P<relative>\b(?:that|which)\b[^,.;]{1,100}),\s*"
+        r"(?:if|unless|provided\s+that|so\s+long\s+as)\b[^,.;]{1,80},"
+        r"(?=\s*(?:and|as\s+well\s+as|but|or|yet)\s+"
+        r"[A-Za-z][A-Za-z-]*\b)",
+        r"\g<relative>",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+
+    coordinators = tuple(
+        re.finditer(
+            r"\b(?:although|and|despite|however|notwithstanding|since|then|while)\b|"
+            r"(?<!anything )(?<!nothing )\bbut\b|"
+            r"(?<!not )\byet\b|"
+            r"\bin\s+spite\s+of\b|\beven\s+though\b|[.;]\s*|"
+            rf",(?!\s*(?:because|so)\b)\s*(?=(?:then\s+)?[^,.;]{{0,80}}\b"
+            rf"(?:(?:(?:can|could|does|may|might|must|shall|should|will|would)\s+)?"
+            rf"{_LOUISIANA_SUPPLY_VERB_PATTERN}|"
+            r"(?:is|are|was|were|becomes?|remains?)\s+(?:available|complete|present|"
+            r"supplied|provided|implemented|accessible))\b)",
+            missing_scope,
+            re.IGNORECASE,
+        )
+    )
+    if not coordinators:
+        return False
+    missing_head = _missing_scope_semantic_head(
+        missing_scope[: coordinators[0].start()]
+    )
+    if missing_head is None:
+        return False
+    missing_object = missing_scope[: coordinators[0].start()]
+    coordinated_list_supplies_missing = _louisiana_coordinated_list_supplies_object(
+        missing_scope, missing_object=missing_object
+    )
+    last_supply_assertion = False
+    last_explicit_signature: tuple[str, frozenset[str]] | None = None
+    numbered_explicit_signatures: dict[str, tuple[str, frozenset[str]]] = {}
+    pending_conditional_context = False
+    for index, coordinator in enumerate(coordinators):
+        segment_end = (
+            coordinators[index + 1].start()
+            if index + 1 < len(coordinators)
+            else len(missing_scope)
+        )
+        segment = missing_scope[coordinator.end() : segment_end]
+        assertions = tuple(
+            assertion
+            for assertion in re.finditer(
+                rf"\b(?P<verb>{_LOUISIANA_SUPPLY_VERB_PATTERN})\b",
+                segment,
+                flags=re.IGNORECASE,
+            )
+            if not (
+                assertion.group("verb").lower().startswith("return")
+                and re.search(
+                    r"\b(?:for|of)\s*$",
+                    segment[: assertion.start()],
+                    flags=re.IGNORECASE,
+                )
+            )
+            and not (
+                assertion.group("verb").lower() == "provided"
+                and not segment[: assertion.start()].strip()
+                and re.match(
+                    r"\s+that\b",
+                    segment[assertion.end() :],
+                    flags=re.IGNORECASE,
+                )
+            )
+            and not (
+                _louisiana_supply_verb_is_completed(assertion.group("verb"))
+                and (
+                    re.search(
+                        r"\b(?:is|are|was|were|be|been|being)\s*$",
+                        segment[: assertion.start()],
+                        flags=re.IGNORECASE,
+                    )
+                    or not segment[assertion.end() :].strip()
+                    or (
+                        not re.search(
+                            r",\s*(?:because|so)\b",
+                            segment[assertion.end() :],
+                            flags=re.IGNORECASE,
+                        )
+                        and re.match(
+                            rf"\s+[A-Za-z][A-Za-z-]*\s+[^,.;]{{0,40}}\b"
+                            rf"{_LOUISIANA_SUPPLY_VERB_PATTERN}\b",
+                            segment[assertion.end() :],
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                )
+            )
+            and not (
+                assertion.group("verb").lower().startswith(("contain", "includ"))
+                and re.search(
+                    r"\b[A-Za-z][A-Za-z-]*(?:s|ed)\s+(?:a|an|the)\s+"
+                    r"[^,.;]{1,60}\s+$",
+                    segment[: assertion.start()],
+                    flags=re.IGNORECASE,
+                )
+            )
+        )
+        if not assertions and last_supply_assertion:
+            shared_object = re.sub(r"^\s*(?:then\s+)?", "", segment)
+            demonstrative = re.match(
+                r"\s*(?:this|that|those|it|them|both|the\s+same|same)\b",
+                shared_object,
+                flags=re.IGNORECASE,
+            )
+            antecedent_signature = _louisiana_demonstrative_antecedent_signature(
+                shared_object,
+                last_explicit_signature=last_explicit_signature,
+                numbered_signatures=numbered_explicit_signatures,
+            )
+            if not (
+                demonstrative
+                and antecedent_signature is not None
+                and not _louisiana_signatures_corefer(
+                    antecedent_signature,
+                    _louisiana_object_signature(missing_object),
+                )
+            ) and _louisiana_assertion_object_corefers(
+                shared_object,
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+        if not assertions and re.match(
+            r"\s*(?:if|unless|provided(?:\s+that)?|so\s+long\s+as|in\s+case|"
+            r"subject\s+to|dependent\s+on|contingent\s+(?:on|upon)|"
+            r"conditioned\s+(?:on|upon)|pending(?:\s+receipt)?|"
+            r"(?:on|upon|following)\s+(?:approval|receipt))\b",
+            segment,
+            flags=re.IGNORECASE,
+        ):
+            pending_conditional_context = True
+        for assertion_index, assertion in enumerate(assertions):
+            prefix_signature = _louisiana_pre_supply_antecedent_signature(
+                segment[: assertion.start()]
+            )
+            if prefix_signature is not None:
+                last_explicit_signature = prefix_signature
+                prefix_number = _louisiana_object_number(segment[: assertion.start()])
+                if prefix_number is not None:
+                    numbered_explicit_signatures[prefix_number] = prefix_signature
+            assertion_end = (
+                assertions[assertion_index + 1].start()
+                if assertion_index + 1 < len(assertions)
+                else len(segment)
+            )
+            object_scope = segment[assertion.end() : assertion_end]
+            if re.match(
+                r"\s*(?:this|that|those|it|them|both|the\s+same|same)\b",
+                object_scope,
+                flags=re.IGNORECASE,
+            ):
+                direct_object = object_scope
+            else:
+                direct_object = re.split(
+                    r",\s*(?:then\s+)?|\b(?:after|and|because|before|but|"
+                    r"concerning|describing|once|that|then|to|used|when|which|"
+                    r"while|whose|yet)\b",
+                    object_scope,
+                    maxsplit=1,
+                    flags=re.IGNORECASE,
+                )[0]
+            if _louisiana_supply_assertion_has_nonoperative_framing(
+                segment, assertion
+            ) or _louisiana_assertion_is_negative(segment, assertion.start()):
+                last_supply_assertion = False
+                continue
+            if pending_conditional_context and not _louisiana_supply_verb_is_completed(
+                assertion.group("verb")
+            ):
+                pending_conditional_context = False
+                last_supply_assertion = False
+                continue
+            pending_conditional_context = False
+            if re.match(
+                r"\s*(?:absolutely\s+)?(?:(?:no|none|not)\b|an?\s+incomplete\b|"
+                r"only\s+(?:part\s+of|an?\s+(?:draft|incomplete|partial))|"
+                r"(?:hardly|barely|scarcely)\s+any|almost\s+no|"
+                r"(?:(?:merely\s+)?(?:some|half(?:\s+of)?)|"
+                r"an?\s+(?:draft|fragment|partial|subset|fraction)|"
+                r"(?:an?\s+few|merely)?\s*(?:pieces?|portions?|fragments?|excerpt)\s+of|"
+                r"less\s+than\s+all(?:\s+of)?|most\b))",
+                direct_object,
+                flags=re.IGNORECASE,
+            ):
+                last_supply_assertion = False
+                continue
+            direct_signature = _louisiana_nearest_object_signature(
+                direct_object, allow_opaque=True
+            )
+            demonstrative = bool(
+                re.match(
+                    r"\s*(?:this|that|those|it|them|both|the\s+same|same)\b",
+                    direct_object,
+                    flags=re.IGNORECASE,
+                )
+            )
+            antecedent_signature = _louisiana_demonstrative_antecedent_signature(
+                direct_object,
+                last_explicit_signature=last_explicit_signature,
+                numbered_signatures=numbered_explicit_signatures,
+            )
+            if (
+                demonstrative
+                and re.match(
+                    r"\s*(?:them|those|both)\b",
+                    direct_object,
+                    flags=re.IGNORECASE,
+                )
+                and coordinated_list_supplies_missing
+            ):
+                return True
+            if (
+                demonstrative
+                and antecedent_signature is not None
+                and not _louisiana_signatures_corefer(
+                    antecedent_signature,
+                    _louisiana_object_signature(missing_object),
+                )
+            ):
+                last_supply_assertion = True
+                continue
+            if _louisiana_assertion_object_corefers(
+                direct_object,
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+            if direct_signature is not None:
+                if not re.search(
+                    r"\b(?:choice|alternative|option)\b",
+                    direct_object,
+                    flags=re.IGNORECASE,
+                ):
+                    last_explicit_signature = direct_signature
+                    direct_number = _louisiana_object_number(direct_object)
+                    if direct_number is not None:
+                        numbered_explicit_signatures[direct_number] = direct_signature
+            last_supply_assertion = True
+            if (
+                assertion.group("verb").lower().startswith("return")
+                and missing_head in {"calculation", "computation", "formula"}
+                and re.search(r"\bamount\b", direct_object, flags=re.IGNORECASE)
+            ):
+                return True
+
+        precontrast_states = re.finditer(
+            r"\b(?P<object>(?:the\s+)?[A-Za-z][A-Za-z -]{0,60}?)\s*"
+            r"(?:,\s*(?:which|that)\s*)?"
+            r"(?:,\s*|\(\s*|[—–]\s*)"
+            r"(?:(?:although|even\s+though|though|while)\s+)?not\s+"
+            r"(?:merely\s+)?(?:an?\s+)?"
+            r"(?:hypothetical|proposed)(?:\s+[A-Za-z-]+)?"
+            r"(?:,\s*|\)\s*|[—–]\s*)"
+            r"(?:is|are|was|were|became|becomes?|remains?)\s+"
+            r"(?:available|present|complete|accessible|usable|ready|extant|installed|"
+            r"released|posted|deployed|in\s+place|on\s+file|on\s+hand|at\s+hand)\b",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        for assertion in precontrast_states:
+            if _louisiana_assertion_object_corefers(
+                assertion.group("object"),
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+
+        state_assertions = tuple(
+            re.finditer(
+                r"\b(?P<object>this|that|those|it|them|both|the\s+same|"
+                r"(?:the\s+)?[A-Za-z][A-Za-z -]{0,60}?)\s*"
+                r"(?:(?:,\s*|\(\s*|[—–]\s*)"
+                r"(?:(?:although|even\s+though|though|while)\s+)?not\s+"
+                r"(?:merely\s+)?"
+                r"(?:an?\s+)?(?:hypothetical|proposed)(?:\s+[A-Za-z-]+)?"
+                r"(?:,\s*|\)\s*|[—–]\s*))?"
+                r"(?P<state>exists?|(?:(?:can|could|may|might|must|shall|should|will|would)\s+"
+                r"(?:(?:[A-Za-z][A-Za-z-]*ly|already|always|just|now|still)\s+)*be|"
+                r"(?:has|have|had)\s+"
+                r"(?:(?:[A-Za-z][A-Za-z-]*ly|already|always|just|now|still)\s+)*been|"
+                r"(?:has|have|had)\s+become|came\s+to\s+be|"
+                r"(?:is|are|was|were)\s+(?:being|made)|"
+                r"(?:is|are|was|were|became|becomes?|remains?))\s+"
+                r"(?:(?:not\s+(?:just|merely)|[A-Za-z][A-Za-z-]*ly|already|always|"
+                r"just|now|still)\s+)*"
+                r"(?:available|present|supplied|provided|implemented|"
+                r"computed|calculated|determined|encoded|defined|accessible|accessed|"
+                r"displayed|emitted|retrieved|complete|obtainable|retained|included|"
+                r"loaded|imported|stored|obtained|furnished|delivered|published|"
+                r"returned|produced|generated|exported|held|given|"
+                r"made\s+(?:available|obtainable)|rendered\s+(?:available|accessible)|"
+                r"put\s+on\s+hand|ready\s+for\s+use|retrievable|downloadable|"
+                r"recoverable|operational|usable|ready|extant|installed|released|posted|"
+                r"deployed|downloaded|recovered|found|in\s+place|on\s+file|"
+                r"at\s+the\s+ready|on\s+hand|at\s+hand))\b",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        )
+        for assertion in state_assertions:
+            if (
+                _louisiana_assertion_is_negative(segment, assertion.start("state"))
+                or re.match(
+                    r"(?:may|might|should|could|would)\b",
+                    assertion.group("state"),
+                    flags=re.IGNORECASE,
+                )
+                or _louisiana_state_assertion_has_nonoperative_framing(
+                    segment, assertion
+                )
+                or pending_conditional_context
+                or re.match(
+                    r"\s*(?:if|unless|provided\s+that|so\s+long\s+as|in\s+case|"
+                    r"subject\s+to|dependent\s+on|contingent\s+(?:on|upon)|"
+                    r"conditioned\s+(?:on|upon)|pending(?:\s+receipt)?|"
+                    r"(?:on|upon|following)\s+(?:approval|receipt))\b",
+                    segment[: assertion.start()],
+                    flags=re.IGNORECASE,
+                )
+                or _louisiana_suffix_has_clause_level_condition(
+                    segment[assertion.end() :], include_temporal=False
+                )
+                or (
+                    not re.match(
+                        r"(?:was|were|became|has|have|had|came)\b",
+                        assertion.group("state"),
+                        flags=re.IGNORECASE,
+                    )
+                    and re.search(
+                        r"\bwhenever\b|\bas\s+soon\s+as\b|"
+                        r"\bonly\s+(?:after|when)\b|\bafter\b",
+                        segment[assertion.end() :],
+                        flags=re.IGNORECASE,
+                    )
+                )
+            ):
+                continue
+            state_object = assertion.group("object")
+            if state_object.lower() in {"that", "which"}:
+                relative_antecedent = re.search(
+                    r"(?P<object>(?:the\s+)?[A-Za-z][A-Za-z -]{0,60}?)\s*,\s*$",
+                    segment[: assertion.start()],
+                    flags=re.IGNORECASE,
+                )
+                if relative_antecedent is not None:
+                    state_object = relative_antecedent.group("object")
+            antecedent_signature = _louisiana_demonstrative_antecedent_signature(
+                state_object,
+                last_explicit_signature=last_explicit_signature,
+                numbered_signatures=numbered_explicit_signatures,
+            )
+            if (
+                re.fullmatch(
+                    r"(?:this|that|those|it|them|both|the\s+same)",
+                    state_object.strip(),
+                    flags=re.IGNORECASE,
+                )
+                and antecedent_signature is not None
+                and not _louisiana_signatures_corefer(
+                    antecedent_signature,
+                    _louisiana_object_signature(missing_object),
+                )
+            ):
+                continue
+            if _louisiana_assertion_object_corefers(
+                state_object,
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+        if state_assertions:
+            pending_conditional_context = False
+
+        actual_presence = re.finditer(
+            r"\b(?P<object>this|that|those|it|them|the\s+same|"
+            r"(?:the\s+)?[A-Za-z][A-Za-z -]{0,60}?)\s+"
+            r"(?:has|have|had)\s+arrived\b|"
+            r"\b(?P<located_object>this|that|those|it|them|the\s+same|"
+            r"(?:the\s+)?[A-Za-z][A-Za-z -]{0,60}?)\s+resides?\s+in\s+"
+            r"(?:the\s+)?repository\b",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        for assertion in actual_presence:
+            state_object = assertion.group("object") or assertion.group(
+                "located_object"
+            )
+            if _louisiana_assertion_object_corefers(
+                state_object,
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+
+        if not assertions:
+            explicit_signature = _louisiana_coordinated_antecedent_signature(segment)
+            if (
+                explicit_signature is None
+                and re.match(
+                    r"\s*(?:a|an|the|this|that)\s+[A-Za-z]",
+                    segment,
+                    flags=re.IGNORECASE,
+                )
+                and not re.match(
+                    r"\s*(?:the|this|that)?\s*(?:encoder|implementation|module|"
+                    r"package|runtime|service|source|system)\b",
+                    segment,
+                    flags=re.IGNORECASE,
+                )
+            ):
+                explicit_signature = _louisiana_nearest_object_signature(
+                    segment, allow_opaque=True
+                )
+            if explicit_signature is not None and not re.fullmatch(
+                r"\s*(?:the|this|that)?\s*(?:encoder|implementation|module|"
+                r"package|runtime|service|source|system)\s*",
+                segment,
+                flags=re.IGNORECASE,
+            ):
+                previous_signature = last_explicit_signature
+                last_explicit_signature = explicit_signature
+                explicit_number = _louisiana_object_number(segment)
+                if explicit_number is not None:
+                    numbered_explicit_signatures[explicit_number] = explicit_signature
+                if (
+                    coordinator.group(0).strip().lower() == "and"
+                    and previous_signature is not None
+                    and explicit_number == "singular"
+                    and "plural" not in numbered_explicit_signatures
+                ):
+                    missing_signature = _louisiana_object_signature(missing_object)
+                    if _louisiana_signatures_corefer(
+                        previous_signature, missing_signature
+                    ) or _louisiana_signatures_corefer(
+                        explicit_signature, missing_signature
+                    ):
+                        numbered_explicit_signatures["plural"] = missing_signature
+
+        existential = re.finditer(
+            r"\bthere\s+(?:is|are|was|were)\s+(?P<object>[^,.;]{1,80})",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        for assertion in existential:
+            if _louisiana_assertion_is_negative(segment, assertion.start()):
+                continue
+            if _louisiana_assertion_object_corefers(
+                assertion.group("object"),
+                missing_head=missing_head,
+                missing_object=missing_object,
+            ):
+                return True
+
+        capability = re.search(
+            r"\b(?:is|are)\s+(?:able\s+to|capable\s+of)\s+"
+            r"(?:provid\w*|suppl\w*|comput\w*|calculat\w*|determin\w*)"
+            r"(?P<object>[^,.;]{0,80})",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        if capability and _louisiana_assertion_object_corefers(
+            capability.group("object"),
+            missing_head=missing_head,
+            missing_object=missing_object,
+        ):
+            return True
+    return False
+
+
+def _louisiana_coordinated_list_supplies_object(
+    missing_scope: str, *, missing_object: str
+) -> bool:
+    """Recognize a plural pronoun that supplies every member of an object list."""
+
+    missing_scope = re.sub(
+        r"\b(?P<pronoun>both|those)\s*[\(\[]\s*(?:"
+        r"[A-Za-z][A-Za-z-]*ly|in\s+fact|as\s+expected|with\s+success)\s*[\)\]]",
+        r"\g<pronoun>",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    missing_scope = re.sub(
+        r"\b(?P<pronoun>both|those)\s+in\s+fact(?=\s*[,.;])",
+        r"\g<pronoun>",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    listed = re.search(
+        r"\b(?:identif(?:y|ies|ied)|lists?|finds?|creates?|records?|selects?)\s+"
+        r"(?P<objects>(?:not\s+only\s+[^.;]{1,100}\bbut\s+also\b[^.;]{1,100}|"
+        r"[^:.;]{1,40}:\s*[^.;]{1,160},[^.;]{1,100}?|"
+        r"[^.;]{1,80}\b(?:along\s+with|as\s+well\s+as|in\s+addition\s+to|"
+        r"plus|together\s+with)\b"
+        r"[^.;]{1,80}?(?:\band\b[^.;]{1,80}?)?|"
+        r"(?:[^,.;]{1,80},){2}[^.;]{1,100}?))"
+        r",?\s*(?:then\s+)?(?:provid(?:e[sd]?|ing)|suppl(?:y|ies|ied|ying)|"
+        r"giv(?:e[sd]?|ing)|gave)\s+"
+        r"(?P<pronoun>them|"
+        r"those(?!\s*(?:[^\w\s,.;:!?—–]\s*)?[A-Za-z0-9])|"
+        r"both(?!\s*(?:[^\w\s,.;:!?—–]\s*)?[A-Za-z0-9]))\b",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    if listed is None:
+        return False
+    objects = re.sub(
+        r"^\s*(?:not\s+only\s+|[^:]{1,40}:\s*)",
+        "",
+        listed.group("objects"),
+        flags=re.IGNORECASE,
+    )
+    additive_coordination = bool(
+        re.search(
+            r"\b(?:along\s+with|as\s+well\s+as|but\s+also|"
+            r"in\s+addition\s+to|plus|together\s+with)\b",
+            objects,
+            flags=re.IGNORECASE,
+        )
+    )
+    objects = re.sub(r",?\s*then\s*$", "", objects, flags=re.IGNORECASE)
+    objects = re.sub(
+        r"\bprofit\s+and\s+loss\b", "profit-and-loss", objects, flags=re.IGNORECASE
+    )
+    objects = re.sub(
+        r"\b(?:along\s+with|as\s+well\s+as|but\s+also|in\s+addition\s+to|"
+        r"plus|together\s+with)\b",
+        ",",
+        objects,
+        flags=re.IGNORECASE,
+    )
+    missing_signature = _louisiana_object_signature(missing_object)
+    member_separator = r"\s*,\s*" if additive_coordination else r"\s*,\s*|\s+and\s+"
+    members = tuple(
+        member for member in re.split(member_separator, objects) if member.strip()
+    )
+    if listed.group("pronoun").lower() == "both" and len(members) != 2:
+        return False
+    return any(
+        _louisiana_signatures_corefer(
+            _louisiana_object_signature(member), missing_signature
+        )
+        for member in members
+    )
+
+
+def _louisiana_supply_assertion_has_nonoperative_framing(
+    segment: str, assertion: re.Match[str]
+) -> bool:
+    """Bind evidential framing to the supply clause it actually governs."""
+
+    prefix = _louisiana_normalize_parenthetical_aspect(segment[: assertion.end()])
+    prefix = re.sub(
+        r"\bno\s+(?:fewer|less)\s+than\b", "at least", prefix, flags=re.IGNORECASE
+    )
+    local_prefix = re.split(r"[,.;]", prefix)[-1]
+    main_subjects = tuple(
+        re.finditer(
+            r"\b(?:the|this|that)\s+(?:encoder|implementation|module|package|"
+            r"runtime|service|source|system)\b",
+            local_prefix,
+            flags=re.IGNORECASE,
+        )
+    )
+    if main_subjects:
+        local_prefix = local_prefix[main_subjects[-1].start() :]
+    if _louisiana_text_has_nonoperative_framing(local_prefix):
+        return True
+    verb = assertion.group(0).lower()
+    habitual = bool(
+        re.search(
+            r"\b(?:always|regularly|routinely|usually)\b",
+            local_prefix[: -len(assertion.group(0))],
+            flags=re.IGNORECASE,
+        )
+    )
+    zero_duration = bool(
+        re.search(
+            r"\bfor\s+(?:(?:an?\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
+            r"(?:duration|period|total)\s+"
+            r"(?:of|totaling|equal\s+to|amounting\s+to)\s+)?"
+            r"(?:exactly\s+|precisely\s+)?"
+            r"(?:0|nil|no(?!\s+(?:fewer|less)\s+than\b)|none\s+of|zero)\b"
+            r"\s+(?:the\s+)?(?:(?:aggregate|calendar|cumulative|elapsed|filing|"
+            r"fiscal|taxable|total)\s+){0,2}"
+            r"(?:centur(?:y|ies)|days?|decades?|durations?|generations?|hours?|"
+            r"minutes?|months?|periods?|quarters?|seconds?|time|weeks?|years?)\b",
+            local_prefix[: -len(assertion.group(0))],
+            flags=re.IGNORECASE,
+        )
+    )
+    actual_progressive = bool(
+        verb.endswith("ing")
+        and not zero_duration
+        and re.search(
+            r"\b(?:"
+            r"(?:am|is|are|was|were|will)\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly|already|always|just|now|still|"
+            r"in\s+fact|at\s+the\s+time|for\s+(?!(?:0|no|zero)\b)"
+            r"[A-Za-z0-9-]+(?:\s+[A-Za-z0-9-]+)*)\s+)*"
+            r"(?:be\s+)?|"
+            r"(?:has|have|had)\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly|already|always|just|now|still|"
+            r"in\s+fact|at\s+the\s+time|for\s+(?!(?:0|no|zero)\b)"
+            r"[A-Za-z0-9-]+(?:\s+[A-Za-z0-9-]+)*)\s+)*"
+            r"been\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly|already|always|just|now|still|"
+            r"in\s+fact|at\s+the\s+time|for\s+(?!(?:0|no|zero)\b)"
+            r"[A-Za-z0-9-]+(?:\s+[A-Za-z0-9-]+)*)\s+)*"
+            r")$",
+            local_prefix[: -len(assertion.group(0))],
+            flags=re.IGNORECASE,
+        )
+    )
+    if (
+        not _louisiana_supply_verb_is_completed(verb)
+        and not habitual
+        and not actual_progressive
+    ):
+        suffix = segment[assertion.end() :]
+        if _louisiana_suffix_has_clause_level_condition(suffix):
+            return True
+    return bool(
+        re.search(
+            r"\b(?:appears?|appeared|seems?|seemed)\s+to(?:\s+have)?\s+$|"
+            r"\b(?:is|was)\s+(?:believed|expected|likely|projected|reported|"
+            r"said|scheduled|supposed)\s+to(?:\s+have)?\s+$|"
+            r"\b(?:aims?|aimed|attempts?|attempted|claims?|claimed|declines?|"
+            r"declined|endeavors?|endeavored|expects?|expected|forgets?|forgot|"
+            r"hopes?|hoped|intends?|intended|neglects?|neglected|plans?|planned|"
+            r"pretends?|pretended|promises?|promised|seeks?|sought|struggles?|"
+            r"struggled|threatens?|threatened|tries?|tried)\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly|in\s+vain|without\s+success)\s+)*"
+            r"to(?:\s+have)?\s+$|"
+            r"\b(?:(?:am|is|are|was|were|will)\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*(?:be\s+)?|"
+            r"(?:has|have|had)\s+(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*been\s+)"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*(?:aiming|attempting|claiming|declining|"
+            r"endeavoring|expecting|forgetting|hoping|intending|neglecting|planning|"
+            r"pretending|promising|seeking|struggling|threatening|trying)\s+"
+            r"(?:(?:[A-Za-z][A-Za-z-]*ly|in\s+vain|without\s+success)\s+)*to"
+            r"(?:\s+have)?\s+$|"
+            r"\b(?:has|have|had)\s+(?:aimed|attempted|claimed|declined|endeavored|"
+            r"expected|forgotten|hoped|intended|neglected|planned|pretended|"
+            r"promised|sought|struggled|threatened|tried)\s+to(?:\s+have)?\s+$|"
+            r"\bwould\s+prefer\s+to\s+$|"
+            r"\b(?:is|was)\s+(?:about|preparing)\s+to\s+$|"
+            r"\b(?:is|was)\s+hardly\s+able\s+to\s+$",
+            local_prefix[: -len(assertion.group(0))],
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _louisiana_state_assertion_has_nonoperative_framing(
+    segment: str, assertion: re.Match[str]
+) -> bool:
+    """Keep an entailed availability state across explicit contrast."""
+
+    scope = segment[assertion.start() :]
+    if re.search(
+        r"\b(?:actually\s+)?(?:available|present|supplied|provided|implemented|"
+        r"computed|calculated|determined|encoded|defined|accessible|complete|"
+        r"obtainable|retained|included|loaded|imported|stored|furnished|delivered|"
+        r"published|returned|produced|generated|exported|held|given|retrievable|"
+        r"downloadable|recoverable|operational|usable|ready|extant|installed|"
+        r"released|posted|deployed|downloaded|recovered|found|in\s+place|"
+        r"on\s+file|at\s+the\s+ready|on\s+hand|at\s+hand|ready\s+for\s+use|"
+        r"made\s+(?:available|obtainable)|rendered\s+(?:available|accessible)|"
+        r"put\s+on\s+hand)\b[^.;]{0,80}"
+        r"(?:(?:,\s*|\(\s*|[—–]\s*)"
+        r"(?:(?:although|even\s+though|though|while)\s+)?not\s+"
+        r"(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)"
+        r"(?:\s+[A-Za-z][A-Za-z-]*)?|rather\s+than\s+"
+        r"(?:merely\s+)?(?:hypothetical|proposed))\b",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"(?:(?:,\s*|\(\s*|[—–]\s*)"
+        r"(?:(?:although|even\s+though|though|while)\s+)?not\s+"
+        r"(?:merely\s+)?(?:an?\s+)?"
+        r"(?:hypothetical|proposed)(?:\s+[A-Za-z-]+)?"
+        r"(?:,\s*|\)\s*|[—–]\s*))[^.;]{0,40}\b"
+        r"(?:is|are|was|were|became|becomes?|remains?)\s+"
+        r"(?:available|present|complete|accessible|usable|ready|extant|installed|"
+        r"released|posted|deployed|in\s+place|on\s+file|on\s+hand|at\s+hand)\b",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return _louisiana_text_has_nonoperative_framing(scope)
+
+
+def _louisiana_normalize_parenthetical_aspect(text: str) -> str:
+    """Remove delimiters around bounded aspect and attempt adjuncts."""
+
+    def normalized(match: re.Match[str]) -> str:
+        content = match.group("content")
+        if re.search(
+            r"\b(?:anything\s+but|in\s+no\s+(?:respect|sense)|no\s+longer|"
+            r"not(?:\s+(?:at\s+all|ever))?)\s+"
+            r"in\s+vain\b",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            return " with success "
+        if re.search(
+            r"\b(?:at\s+no\s+point\s+|by\s+no\s+means\s*,?\s+|"
+            r"in\s+no\s+way\s*,?\s+|under\s+no\s+circumstances\s+|"
+            r"never\s*,?\s+|no\s+longer\s*,?\s+|"
+            r"not\s+(?:at\s+all|[A-Za-z][A-Za-z-]*ly)\s+)"
+            r"in\s+fact\b",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            return " never "
+        if re.search(r"\bno\s+longer\s+in\s+vain\b", content, flags=re.IGNORECASE):
+            return " with success "
+        if re.search(
+            r"\b(?:never\s*,?\s+|no\s+longer\s+)in\s+fact\b",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            return " never "
+        if re.search(r"\bnever\s+in\s+vain\b", content, flags=re.IGNORECASE):
+            return " with success "
+        if re.search(r"\bnot\s+without\s+success\b", content, flags=re.IGNORECASE):
+            return " with success "
+        if re.search(r"\bnot\s+in\s+vain\b", content, flags=re.IGNORECASE):
+            return " with success "
+        if re.search(r"\bnot\s*,?\s+in\s+fact\b", content, flags=re.IGNORECASE):
+            return " not "
+        if re.search(r"\bin\s+vain\b", content, flags=re.IGNORECASE):
+            return " in vain "
+        if re.search(r"\bwithout\s+success\b", content, flags=re.IGNORECASE):
+            return " without success "
+        if re.search(r"\bin\s+fact\b", content, flags=re.IGNORECASE):
+            return " in fact "
+        if re.search(r"\bfor\s+", content, flags=re.IGNORECASE):
+            return " " + re.sub(r"\s*[:,;—–]\s*", " ", content) + " "
+        return f" {content} "
+
+    text = re.sub(
+        r"\(\s*without\s+interruption\s*\)",
+        " without interruption ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\(\s*(?P<content>[^()]{0,120}(?:in\s+vain|without\s+success|"
+        r"in\s+fact|at\s+the\s+time|for\s+[^()]{1,100})[^()]{0,60})\s*\)",
+        normalized,
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?:,|\(|\[|[—–])\s*(?P<content>[^()\[\]—–]{0,60}"
+        r"(?:in\s+vain|without\s+success|in\s+fact|at\s+the\s+time|"
+        r"for\s+[^()\[\]—–,]{1,100})[^()\[\]—–]{0,60})\s*"
+        r"(?:,|\)|\]|[—–])",
+        normalized,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+def _louisiana_suffix_has_clause_level_condition(
+    suffix: str, *, include_temporal: bool = True
+) -> bool:
+    """Recognize a condition on the assertion, not one inside its object NP."""
+
+    temporal = (
+        r"when|after|whenever|as\s+soon\s+as|"
+        r"once(?!\s+(?:each|every|per)\b)|"
+        if include_temporal
+        else ""
+    )
+    condition = re.search(
+        rf"\b(?:{temporal}unless|if|provided\s+that|"
+        r"so\s+long\s+as|in\s+case|"
+        r"(?:on|upon|pending|following)\s+(?:approval|receipt)|"
+        r"subject\s+to|dependent\s+on|contingent\s+(?:on|upon)|"
+        r"conditioned\s+(?:on|upon)|to\s+the\s+extent|on\s+paper)\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    if condition is None:
+        return False
+    object_prefix = suffix[: condition.start()]
+    relative_before_comma = re.search(
+        r"\b(?:that|which)\b(?P<body>[^,]*)[,]\s*$",
+        object_prefix,
+        flags=re.IGNORECASE,
+    )
+    relative_is_completed = bool(
+        relative_before_comma
+        and re.search(
+            r"(?:\b(?:am|are|is|was|were|be|been|being)\s+"
+            r"[A-Za-z][A-Za-z-]*(?:ed|en)|\b[A-Za-z][A-Za-z-]*ed|"
+            r"\b(?:began|bought|brought|built|caught|chose|came|did|drew|felt|"
+            r"found|gave|got|had|heard|held|kept|knew|left|lost|made|met|paid|"
+            r"ran|read|said|saw|sent|set|sold|spoke|taught|told|took|understood|"
+            r"went|won|wrote))"
+            r"(?:\s+(?:at|by|for|from|in|on|to|under|with)\s+"
+            r"(?:(?:a|an|the)\s+)?(?:[A-Za-z][A-Za-z-]*\s+){0,4}"
+            r"[A-Za-z][A-Za-z-]*)?"
+            r"(?:\s+(?:earlier|last\s+(?:day|month|week|year)|today|yesterday))?\s*$",
+            relative_before_comma.group("body"),
+            flags=re.IGNORECASE,
+        )
+    )
+    if (
+        relative_before_comma
+        and not relative_is_completed
+        and not re.search(
+            r"\b(?:am|are|is|was|were|becomes?|remains?|applies?|uses?|"
+            r"requested|completed|selected|specified)\b",
+            relative_before_comma.group("body"),
+            flags=re.IGNORECASE,
+        )
+    ):
+        return False
+    if relative_before_comma and re.search(
+        r"^[^.;]{0,80},\s*(?:and|as\s+well\s+as|both|but|or|yet)\s+"
+        r"[A-Za-z][A-Za-z-]*\b",
+        suffix[condition.end() :],
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if relative_before_comma and re.search(
+        r"^[^.;]{0,80},\s*(?:after|at|before|by|during|for|in|on|"
+        r"pursuant\s+to|"
+        r"through|throughout|under|until|using|via|while|with|without)\b",
+        suffix[condition.end() :],
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if (
+        relative_before_comma
+        and not relative_is_completed
+        and re.search(
+            r"^[^.;]{0,80},\s*(?:because|so)\b",
+            suffix[condition.end() :],
+            flags=re.IGNORECASE,
+        )
+    ):
+        return False
+    if re.search(r",\s*$", object_prefix):
+        return True
+    return not re.search(
+        r"\b(?:for\s+use|note\b[^,.;]{0,50}\b(?:saying|stating)|that|which)\b",
+        object_prefix,
+        flags=re.IGNORECASE,
+    )
+
+
+def _louisiana_pre_supply_antecedent_signature(
+    prefix: str,
+) -> tuple[str, frozenset[str]] | None:
+    """Return an object introduced by a finite predicate before a supply verb."""
+
+    return _louisiana_explicit_transitive_object_signature(
+        prefix, terminal=r"(?:before|prior\s+to)"
+    )
+
+
+def _louisiana_coordinated_antecedent_signature(
+    segment: str,
+) -> tuple[str, frozenset[str]] | None:
+    """Track an explicit object introduced in an ordinary coordinated clause."""
+
+    return _louisiana_explicit_transitive_object_signature(segment, terminal=None)
+
+
+def _louisiana_explicit_transitive_object_signature(
+    text: str,
+    *,
+    terminal: str | None,
+) -> tuple[str, frozenset[str]] | None:
+    """Extract the direct object of a bounded finite transitive predicate."""
+
+    ending = rf"\s+{terminal}\s*$" if terminal is not None else r"\s*$"
+    antecedent = re.search(
+        r"\b(?:(?:can|could|may|might|must|shall|should|will|would)\s+)?"
+        r"[A-Za-z][A-Za-z-]*\s+"
+        r"(?P<object>(?:a|an|the|this|that)\s+[^,.;]{1,60}?)" + ending,
+        text,
+        flags=re.IGNORECASE,
+    )
+    if antecedent is None:
+        antecedent = re.search(
+            r"\b(?:(?:can|could|may|might|must|shall|should|will|would)\s+"
+            r"[A-Za-z][A-Za-z-]*|[A-Za-z][A-Za-z-]*(?:s|ed)|brought|built|"
+            r"bought|caught|chose|drew|found|gave|got|heard|held|hid|kept|laid|"
+            r"left|lost|made|met|paid|put|ran|read|saw|sent|set|sold|taught|told|"
+            r"took|won|wrote)\s+"
+            r"(?P<object>(?:[A-Za-z][A-Za-z-]*\s+){0,5}[A-Za-z][A-Za-z-]*?)" + ending,
+            text,
+            flags=re.IGNORECASE,
+        )
+    if antecedent is None:
+        return None
+    object_text = re.sub(
+        r"\s+(?:aside|later)\s*$", "", antecedent.group("object"), flags=re.IGNORECASE
+    )
+    object_text = re.split(
+        r"\b(?:containing|covering|describing|displaying|including|with)\b",
+        object_text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return _louisiana_nearest_object_signature(object_text, allow_opaque=True)
+
+
+def _louisiana_assertion_is_negative(segment: str, assertion_start: int) -> bool:
+    """Return the scoped polarity of one supply assertion."""
+
+    prefix = re.split(r"[,.;]", segment[:assertion_start])[-1]
+    prefix = re.sub(r"\bwithout\s+delay\b", " ", prefix, flags=re.IGNORECASE)
+    prefix = re.sub(
+        r"\bno\s+(?:fewer|less)\s+than\b", "at least", prefix, flags=re.IGNORECASE
+    )
+    prefix = re.sub(
+        r"\b(?:no\s+interruptions?|none\s+of\s+(?:the\s+)?"
+        r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}interruptions?)\b",
+        " ",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"\b(?:before|prior\s+to)\s*$", prefix, flags=re.IGNORECASE):
+        return False
+    if re.search(
+        r"\bnot\s+(?:surprisingly|unexpectedly)\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\b(?:may|might|should|could|would)\s+"
+        r"(?:(?:[A-Za-z][A-Za-z-]*ly)\s+)*$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:unable|incapable)\b[^,.;]{0,40}\bnot\s+(?:to\s+)?$|"
+        r"\b(?:fails?|refuses?|unable|incapable|hesitates?)\b[^,.;]{0,40}\b"
+        r"(?:avoid|stop|refrain)\w*\s+(?:from\s+|to\s+)?$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\b(?:can|does?)\s+(?:do\s+)?nothing\s+(?:but|except)\s*$|"
+        r"\bcannot\s+do\s+otherwise\s+than\s*$|"
+        r"\b(?:is|are|was|were)\s+powerless\s+to\s+avoid\s*$|"
+        r"\b(?:has|have|had|is|are|was|were)\b[^,.;]{0,40}"
+        r"\bno\s+(?:alternative|option)\s+(?:except\s+to|other\s+than)\s*$|"
+        r"\b(?:has|have|had)\s+little\s+choice\s+other\s+than\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(
+        r"\b(?:cannot|can['’]t)\s+help\s*$|"
+        r"\b(?:has|have|had)\s+no\s+(?:difficulty|trouble)\s*$|"
+        r"\bno\s+doubt\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return False
+
+    negative_complement = re.search(
+        r"\b(?:lacks?\s+(?:the\s+)?ability|fails?|refuses?|avoids?|delays?|"
+        r"hesitates?|ceases?|stops?|refrains?|unable|incapable)\b"
+        r"(?P<tail>[^,.;]{0,80}?)(?:to|before)?\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    if negative_complement:
+        if re.search(
+            r"\b(?:anything\s+but|far\s+from)\s*$",
+            prefix[: negative_complement.start()],
+            flags=re.IGNORECASE,
+        ):
+            return False
+        reversals = tuple(
+            re.finditer(
+                r"\b(?:cannot|never|nothing|neither|no|not)\b|n['’]t\b",
+                prefix[: negative_complement.start()],
+                flags=re.IGNORECASE,
+            )
+        )
+        if not reversals:
+            return True
+        if reversals[-1].group(0).lower() == "not" and re.search(
+            r"\b(?:may|might)\b[^,.;]*$",
+            prefix[: reversals[-1].start()],
+            flags=re.IGNORECASE,
+        ):
+            return True
+        between = prefix[reversals[-1].end() : negative_complement.start()]
+        if re.search(
+            r"\b(?:necessarily|always|ordinarily|inevitably|consistently|reliably)\b",
+            between,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    direct_negators = tuple(
+        re.finditer(
+            r"\b(?:cannot|never|nothing|neither|not|no(?!\s+later\b))\b|n['’]t\b",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+    )
+    return len(direct_negators) % 2 == 1
+
+
+def _louisiana_assertion_object_corefers(
+    object_text: str,
+    *,
+    missing_head: str,
+    missing_object: str,
+) -> bool:
+    """Match a direct assertion object to the missing grammatical object."""
+
+    normalized = object_text.strip().lower()
+    if re.match(
+        r"(?:(?:it|them)\b|both\s*$|"
+        r"(?:this|that(?:\s+same)?|those|the\s+same|same)\s*$)",
+        normalized,
+    ):
+        if _louisiana_text_has_nonoperative_framing(normalized) or re.search(
+            r"\b(?:if|conditionally)\b|\bin\s+theory\b|"
+            r"\bnot\s+in\s+practice\b|\baccording\s+to\b|"
+            r"\bmerely\s+as\b|\b(?:only\s+)?in\s+the\s+event\b|"
+            r"\bonly\s+upon\b|\bsubject\s+to\b|\bassuming\b|"
+            r"\bon\s+(?:the\s+)?condition(?:\s+that)?\b|\bcontingently\b|"
+            r"\bwere\b[^.;]{0,40}\bsupplied\b|\bonly\s+after\b",
+            normalized,
+            flags=re.IGNORECASE,
+        ):
+            return False
+        return not re.search(
+            r"\b(?:different|draft|excerpt|fraction|fragment|incomplete|outline|"
+            r"part|partial|piece|portion|provisional|separate|subset|unrelated)\b|"
+            r"\b(?:barely|hardly|scarcely)\s+any\b|\balmost\s+no\b|"
+            r"\b(?:less\s+than\s+all|most\s+but\s+not\s+all)\b",
+            normalized,
+        )
+    if re.search(
+        r"\b(?:different|draft|excerpt|fraction|fragment|incomplete|outline|part|"
+        r"partial|piece|portion|provisional|separate|subset|unrelated)\b|"
+        r"\b(?:barely|hardly|scarcely)\s+any\b|\balmost\s+no\b|"
+        r"\b(?:less\s+than\s+all|most\s+but\s+not\s+all)\b|"
+        r"\b(?:a\s+few|merely)\s+(?:fragments?|pieces?|portions?)\b",
+        normalized,
+    ):
+        return False
+    object_signature = _louisiana_object_signature(normalized)
+    missing_signature = _louisiana_object_signature(missing_object)
+    if object_signature is None or missing_signature is None:
+        return False
+    object_family, object_modifiers = object_signature
+    missing_family, missing_modifiers = missing_signature
+    expected_family = _louisiana_object_family(missing_head)
+    if object_family != missing_family or missing_family != expected_family:
+        return False
+    return object_modifiers == missing_modifiers
+
+
+def _louisiana_object_number(text: str) -> str | None:
+    """Infer the grammatical number of the nearest explicit object head."""
+
+    outer_np = re.split(
+        r"\b(?:accompanied\s+by|containing|of|that|which|with)\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    determiners = tuple(
+        re.finditer(
+            r"\b(?P<determiner>a|an|one|each|every|this|that|these|those|"
+            r"many|several|two|three|four|five|six|seven|eight|nine|ten)\s+",
+            outer_np,
+            flags=re.IGNORECASE,
+        )
+    )
+    if determiners:
+        determiner = determiners[0].group("determiner").lower()
+        if determiner in {"a", "an", "one", "each", "every", "this", "that"}:
+            return "singular"
+        return "plural"
+    tokens = re.findall(r"[A-Za-z][A-Za-z-]*", outer_np.lower())
+    while tokens and tokens[-1] in {
+        "aside",
+        "later",
+        "same",
+        "successfully",
+    }:
+        tokens.pop()
+    if not tokens:
+        return None
+    head = tokens[-1]
+    if head in {"them", "those", "these"}:
+        return "plural"
+    if head in {"it", "this", "that"}:
+        return "singular"
+    if head in {"children", "data", "men", "people", "women"}:
+        return "plural"
+    if head in {"analysis", "basis", "means", "process", "series", "status"}:
+        return "singular"
+    if head.endswith("s") and not head.endswith(("ss", "us", "is")):
+        return "plural"
+    return "singular"
+
+
+def _louisiana_demonstrative_antecedent_signature(
+    text: str,
+    *,
+    last_explicit_signature: tuple[str, frozenset[str]] | None,
+    numbered_signatures: dict[str, tuple[str, frozenset[str]]],
+) -> tuple[str, frozenset[str]] | None:
+    """Resolve a demonstrative to the nearest antecedent of matching number."""
+
+    pronoun = re.match(
+        r"\s*(?P<pronoun>this|that|those|it|them|both|the\s+same|same)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if pronoun is None:
+        return last_explicit_signature
+    normalized = pronoun.group("pronoun").lower()
+    number = (
+        "plural"
+        if normalized in {"those", "them", "both"}
+        else "singular"
+        if normalized in {"this", "that", "it"}
+        else None
+    )
+    if number is not None and number in numbered_signatures:
+        return numbered_signatures[number]
+    return last_explicit_signature
+
+
+def _louisiana_object_family(head: str) -> str:
+    """Normalize synonymous executable object heads."""
+
+    signature = _louisiana_object_signature(head)
+    return signature[0] if signature is not None else head
+
+
+def _louisiana_object_signature(text: str) -> tuple[str, frozenset[str]] | None:
+    """Return an executable synonym family and its meaningful modifiers."""
+
+    text = re.split(
+        r"\bwith\s+(?:a|an|the)\s+(?:annotation|comment|description|note|report)\b|"
+        r"\baccompanied\s+by\s+(?:a|an|the)\s+"
+        r"(?:annotation|comment|description|note|report)\b|"
+        r"(?<=\w)\s+(?:that|which)\b|\bfor\s+use\s+if\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    text = re.sub(r"\btwice\s+per\s+year\b", "semiannual", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:each|every)\s+two\s+weeks\b", "biweekly", text, flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r"\b(?:(?:for\s+)?(?:each|every)|per)\s+year\b|\bper\s+annum\b",
+        "annual",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b(?:(?:for\s+)?(?:each|every)|per)\s+month\b",
+        "monthly",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for period, normalized in (
+        ("quarter", "quarterly"),
+        ("week", "weekly"),
+        ("day", "daily"),
+    ):
+        text = re.sub(
+            rf"\b(?:(?:for\s+)?(?:each|every)|per)\s+{period}\b",
+            normalized,
+            text,
+            flags=re.IGNORECASE,
+        )
+    tokens = re.findall(r"[a-z0-9]+", text.lower().replace("’s", "").replace("'s", ""))
+    ignored = {
+        "a",
+        "an",
+        "available",
+        "complete",
+        "completely",
+        "directly",
+        "delay",
+        "fully",
+        "hand",
+        "immediately",
+        "on",
+        "only",
+        "same",
+        "successfully",
+        "with",
+        "that",
+        "the",
+        "this",
+        "those",
+    }
+    tokens = [token for token in tokens if token not in ignored]
+    if "resident" in tokens and "taxpayer" in tokens:
+        tokens.remove("taxpayer")
+    if "individual" in tokens and "income" in tokens:
+        tokens.remove("income")
+    modifier_normalization = {
+        "corporation": "corporate",
+        "corporations": "corporate",
+        "criteria": "criterion",
+        "data": "datum",
+        "individuals": "individual",
+        "annually": "annual",
+        "media": "medium",
+        "residents": "resident",
+        "spousal": "spouse",
+        "taxpayers": "taxpayer",
+        "yearly": "annual",
+    }
+    tokens = [modifier_normalization.get(token, token) for token in tokens]
+    family_members = {
+        "algorithm": "algorithm",
+        "algorithms": "algorithm",
+        "amount": "amount",
+        "amounts": "amount",
+        "base": "base",
+        "bases": "base",
+        "calculation": "calculation",
+        "calculations": "calculation",
+        "capability": "capability",
+        "capabilities": "capability",
+        "classification": "classification",
+        "classifications": "classification",
+        "computation": "calculation",
+        "computations": "calculation",
+        "condition": "condition",
+        "conditions": "condition",
+        "credit": "credit",
+        "credits": "credit",
+        "data": "data",
+        "datum": "data",
+        "deduction": "deduction",
+        "deductions": "deduction",
+        "definition": "definition",
+        "definitions": "definition",
+        "determination": "determination",
+        "determinations": "determination",
+        "document": "document",
+        "documents": "document",
+        "equation": "formula",
+        "equations": "formula",
+        "fact": "fact",
+        "facts": "fact",
+        "formula": "formula",
+        "formulas": "formula",
+        "implementation": "implementation",
+        "implementations": "implementation",
+        "input": "input",
+        "inputs": "input",
+        "instruction": "instruction",
+        "instructions": "instruction",
+        "liability": "liability",
+        "liabilities": "liability",
+        "logic": "logic",
+        "lookup": "lookup",
+        "lookups": "lookup",
+        "mapping": "mapping",
+        "mappings": "mapping",
+        "matrix": "matrix",
+        "matrices": "matrix",
+        "mechanics": "mechanics",
+        "mechanism": "mechanism",
+        "mechanisms": "mechanism",
+        "method": "method",
+        "methods": "method",
+        "output": "output",
+        "outputs": "output",
+        "parameter": "parameter",
+        "parameters": "parameter",
+        "percentage": "percentage",
+        "percentages": "percentage",
+        "procedure": "procedure",
+        "procedures": "procedure",
+        "process": "process",
+        "processes": "process",
+        "protocol": "protocol",
+        "protocols": "protocol",
+        "rate": "rate",
+        "rates": "rate",
+        "record": "record",
+        "records": "record",
+        "requirement": "requirement",
+        "requirements": "requirement",
+        "rule": "rule",
+        "rules": "rule",
+        "schedule": "rate",
+        "schedules": "rate",
+        "sequence": "sequence",
+        "sequences": "sequence",
+        "specification": "specification",
+        "specifications": "specification",
+        "standard": "standard",
+        "standards": "standard",
+        "status": "status",
+        "statuses": "status",
+        "step": "step",
+        "steps": "step",
+        "structure": "structure",
+        "structures": "structure",
+        "table": "rate",
+        "tables": "rate",
+        "tax": "tax",
+        "taxes": "tax",
+        "threshold": "threshold",
+        "thresholds": "threshold",
+        "workflow": "workflow",
+        "workflows": "workflow",
+    }
+    family_positions = [
+        (index, family_members[token])
+        for index, token in enumerate(tokens)
+        if token in family_members
+    ]
+    if not family_positions:
+        return None
+    relation_positions = [
+        index for index, token in enumerate(tokens) if token in {"for", "of"}
+    ]
+    if relation_positions:
+        before_relation = [
+            item for item in family_positions if item[0] < relation_positions[0]
+        ]
+        head_position, family = (before_relation or family_positions)[-1]
+    else:
+        head_position, family = family_positions[-1]
+    modifier_sequence = tuple(
+        _louisiana_normalize_modifier_token(token)
+        for index, token in enumerate(tokens)
+        if index != head_position
+        and token not in {"for", "of", "tax"}
+        and (token not in family_members or family_members[token] != family)
+    )
+    modifier_tokens = set(modifier_sequence)
+    relational_modifiers = {
+        "appeal",
+        "beneficiary",
+        "borrower",
+        "buyer",
+        "creditor",
+        "debtor",
+        "denial",
+        "destination",
+        "donee",
+        "donor",
+        "employee",
+        "employer",
+        "executor",
+        "grantee",
+        "grantor",
+        "guardian",
+        "heir",
+        "landlord",
+        "lender",
+        "lessee",
+        "lessor",
+        "licensee",
+        "licensor",
+        "owner",
+        "origin",
+        "parent",
+        "partner",
+        "partnership",
+        "payer",
+        "principal",
+        "recipient",
+        "renter",
+        "representative",
+        "seller",
+        "subsidiary",
+        "taxpayer",
+        "tenant",
+        "testator",
+        "trustee",
+        "ward",
+        "trust",
+        "decedent",
+    }
+
+    ordered_sequence = tuple(
+        token
+        for token in modifier_sequence
+        if not re.fullmatch(r"(?:19|20)\d{2}", token)
+    )
+    inverse_role_stems: dict[str, set[str]] = {}
+    for token in ordered_sequence:
+        suffix = next(
+            (ending for ending in ("ee", "or", "er", "ed") if token.endswith(ending)),
+            None,
+        )
+        if suffix is not None and len(token) > len(suffix) + 2:
+            inverse_role_stems.setdefault(token[: -len(suffix)], set()).add(suffix)
+    inverse_stems = {
+        stem
+        for stem, suffixes in inverse_role_stems.items()
+        if bool(suffixes & {"ee", "ed"}) and bool(suffixes & {"or", "er"})
+    }
+    relational_sequence = tuple(
+        token for token in ordered_sequence if token in relational_modifiers
+    )
+    person_descriptor_sequence = tuple(
+        token
+        for token in ordered_sequence
+        if token in relational_modifiers or token in {"dependent", "student", "widow"}
+    )
+    inverse_sequence = tuple(
+        token
+        for token in ordered_sequence
+        if any(
+            token.startswith(stem) and token[len(stem) :] in {"ee", "or", "er", "ed"}
+            for stem in inverse_stems
+        )
+    )
+    order_sensitive = set(inverse_sequence)
+    if relational_sequence and len(person_descriptor_sequence) >= 2:
+        order_sensitive.update(person_descriptor_sequence)
+    ordered_roles = tuple(
+        token for token in ordered_sequence if token in order_sensitive
+    )
+    if len(ordered_roles) >= 2:
+        modifier_tokens.add("order:" + ">".join(ordered_roles))
+    return family, frozenset(modifier_tokens)
+
+
+def _louisiana_normalize_modifier_token(token: str) -> str:
+    """Normalize ordinary singular/plural variation in object modifiers."""
+
+    irregular = {
+        "analyses": "analysis",
+        "bonuses": "bonus",
+        "children": "child",
+        "leaves": "leaf",
+        "matrices": "matrix",
+        "means": "means",
+        "monies": "money",
+        "people": "person",
+        "men": "man",
+        "wives": "wife",
+        "women": "woman",
+    }
+    if token in irregular:
+        return irregular[token]
+    if token.endswith("statuses"):
+        return token[:-2]
+    if token.endswith("ies") and len(token) > 3:
+        return token[:-3] + "y"
+    if token.endswith(("sses", "shes", "ches", "xes", "zes")):
+        return token[:-2]
+    if token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+    return token
+
+
+def _louisiana_nearest_object_signature(
+    text: str,
+    *,
+    allow_opaque: bool = False,
+) -> tuple[str, frozenset[str]] | None:
+    """Return the nearest executable or documentary antecedent signature."""
+
+    executable = _louisiana_object_signature(text)
+    documentary_heads = tuple(_LOUISIANA_DOCUMENTARY_HEAD.finditer(text))
+    if not documentary_heads:
+        if executable is not None or not allow_opaque:
+            return executable
+        opaque_tokens = re.findall(r"[A-Za-z][A-Za-z-]*", text.lower())
+        if not opaque_tokens:
+            return None
+        return (
+            f"other:{_louisiana_normalize_modifier_token(opaque_tokens[-1])}",
+            frozenset(),
+        )
+    executable_heads = tuple(
+        match
+        for match in re.finditer(r"\b[A-Za-z]+\b", text)
+        if _louisiana_object_signature(match.group(0)) is not None
+    )
+    if (
+        executable_heads
+        and executable_heads[-1].start() > documentary_heads[-1].start()
+    ):
+        return executable
+    return (f"other:{documentary_heads[-1].group(0).lower()}", frozenset())
+
+
+def _louisiana_signatures_corefer(
+    first: tuple[str, frozenset[str]] | None,
+    second: tuple[str, frozenset[str]] | None,
+) -> bool:
+    """Compare executable identity without discarding meaningful modifiers."""
+
+    return first is not None and second is not None and first == second
+
+
+def _missing_scope_semantic_head(scope: str) -> str | None:
+    """Return the final executable semantic head of a direct missing object."""
+
+    signature = _louisiana_object_signature(scope)
+    return signature[0] if signature is not None else None
+
+
 def _reason_dependency_occurrence_is_contextual(
     reason: str,
     match: re.Match[str],
@@ -5024,6 +8614,7 @@ def _reason_dependency_occurrence_is_contextual(
         candidates = (
             *_qualified_usc_dependencies(reason),
             *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
+            *_qualified_louisiana_rs_dependencies(reason),
         )
         for candidate in candidates:
             if _usc_dependency_occurrences_match(
@@ -5065,6 +8656,7 @@ def _reason_dependencies(reason: str) -> list[re.Match[str]]:
         (
             *_qualified_usc_dependencies(reason),
             *_RELATIVE_USC_DEFERRAL_DEPENDENCY.finditer(reason),
+            *_qualified_louisiana_rs_dependencies(reason),
             *_PRECISE_DEFERRAL_DEPENDENCY.finditer(reason),
         ),
         key=lambda dependency: (dependency.start(), -dependency.end()),
@@ -5105,11 +8697,18 @@ def _reason_dependency_local_context(
     return before + after
 
 
+def _dependency_citation_family(match: re.Match[str]) -> str:
+    if match.re is _LOUISIANA_RS_DEFERRAL_DEPENDENCY:
+        return "louisiana-rs"
+    return "usc"
+
+
 def _usc_dependencies_match(left: re.Match[str], right: re.Match[str]) -> bool:
     left_groups = left.groupdict()
     right_groups = right.groupdict()
     return bool(
-        left_groups.get("title")
+        _dependency_citation_family(left) == _dependency_citation_family(right)
+        and left_groups.get("title")
         and right_groups.get("title")
         and left_groups["title"].lower() == right_groups["title"].lower()
         and normalize_rulespec_path_segment(left_groups["section"])
@@ -5154,7 +8753,10 @@ def _reason_clause_bounds(
     match: re.Match[str],
 ) -> tuple[int, int]:
     masked = list(reason)
-    for dependency in _qualified_usc_dependencies(reason):
+    for dependency in (
+        *_qualified_usc_dependencies(reason),
+        *_qualified_louisiana_rs_dependencies(reason),
+    ):
         for position in range(dependency.start(), dependency.end()):
             if masked[position] in {".", ";"}:
                 masked[position] = " "
@@ -5972,6 +9574,39 @@ def _usc_dependency_is_external(
     ).lower() != current_citation.title.lower() or normalize_rulespec_path_segment(
         match.group("section").lower()
     ) != normalize_rulespec_path_segment(current_citation.section.lower())
+
+
+def _louisiana_rs_dependency_is_external(
+    match: re.Match[str],
+    *,
+    corpus_citation_path: str,
+) -> bool:
+    """Reject current-section Louisiana citations masquerading as dependencies."""
+
+    citation_parts = [
+        part for part in corpus_citation_path.strip("/").split("/") if part
+    ]
+    if (
+        len(citation_parts) < 3
+        or citation_parts[0].lower() != "us-la"
+        or citation_parts[1].lower() != "statute"
+    ):
+        return False
+    statute_tail = citation_parts[2:]
+    if ":" in statute_tail[0]:
+        title_section = statute_tail[0].split(":")
+        if len(title_section) != 2 or not all(title_section):
+            return False
+        current_title, current_section = title_section
+    elif len(statute_tail) >= 2:
+        current_title, current_section = statute_tail[:2]
+    else:
+        return False
+    return match.group(
+        "title"
+    ).lower() != current_title.lower() or normalize_rulespec_path_segment(
+        match.group("section").lower()
+    ) != normalize_rulespec_path_segment(current_section.lower())
 
 
 def _prose_dependency_is_external(
