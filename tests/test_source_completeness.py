@@ -1593,6 +1593,48 @@ B. End.
     ]
 
 
+def test_arbitrarily_alternating_outline_depth_preserves_each_sibling_level():
+    source = """\
+A. Outer.
+(a) L1.
+(1) N1.
+(a) L2.
+(1) N2.
+(2) N2 sibling.
+(b) L2 sibling.
+(2) N1 sibling.
+(b) L1 sibling.
+B. End.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "1", "a"),
+        ("a", "a", "1", "a", "1"),
+        ("a", "a", "1", "a", "2"),
+        ("a", "a", "1", "b"),
+        ("a", "a", "2"),
+        ("a", "b"),
+        ("b",),
+    ]
+
+
+def test_deep_roman_outline_children_preserve_alternating_ancestors():
+    source = "A. Outer.\n(a) L1.\n(1) N1.\n(a) L2.\n(i) R1.\n(ii) R2.\nB. End."
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "1", "a"),
+        ("a", "a", "1", "a", "i"),
+        ("a", "a", "1", "a", "ii"),
+        ("b",),
+    ]
+
+
 def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
     source = """\
 A. There shall be a credit from the tax imposed by this Part for child care expenses for which a resident individual is eligible pursuant to the federal income tax credit provided by Internal Revenue Code Section 21 for the same taxable year. The credit shall be calculated using the following percentages :
@@ -1947,6 +1989,10 @@ B. End.
         "The credit shall be computed as income multiplied by the applicable rate",
         "The credit shall be determined by applying the ratio to income",
         "The credit shall be calculated through application of the rate to the base",
+        "The credit shall be determined by application of the rate to income",
+        "The credit shall be determined through applying the rate to income",
+        "The amount shall be determined by applying the statutory formula to income",
+        "The amount shall be determined by applying the multiplier to income",
         "The credit shall be computed by combining the base and supplement",
         "The credit equals twice the base",
         "The credit is half of income",
@@ -2311,10 +2357,20 @@ def test_semicolon_following_operands_remain_one_complete_formula_clause():
     assert "wages; interest." in formula_branches[0].text
 
 
-def test_semicolon_following_operands_stop_before_proviso_control():
+@pytest.mark.parametrize(
+    "terminator",
+    (
+        "provided that the credit shall",
+        "provided, however, that the credit shall",
+        "provided further that the credit shall",
+        "on condition that the credit shall",
+        "the credit shall",
+    ),
+)
+def test_semicolon_following_operands_stop_before_proviso_control(terminator: str):
     source = (
         "A. The assessment is the sum of the following amounts: wages; interest; "
-        "provided that the credit shall not exceed the cap.\nB. End."
+        f"{terminator} not exceed the cap.\nB. End."
     )
     branches = recognize_source_structure(source)
     formula_branches = completeness_module._source_formula_branches(
@@ -2439,6 +2495,9 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The status is determined through application of the governing law.",
         "The classification is determined by application of agency policy.",
         "The award is determined by applying the statutory criteria.",
+        "The eligibility is computed by applying the requirements of section 5.",
+        "The status is calculated through application of the governing law.",
+        "The classification is computed by application of agency policy.",
     ),
 )
 def test_delegated_determinations_are_not_computations(source: str):
@@ -2461,6 +2520,26 @@ def test_determined_by_arithmetic_remains_a_computation():
 )
 def test_rounded_out_administrative_prose_is_not_a_computation(source: str):
     assert not source_states_explicit_computation(source)
+
+
+def test_bare_round_noun_is_not_a_computation():
+    assert not source_states_explicit_computation(
+        "The credit round is administered annually by the department."
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The amount shall be rounded down.",
+        "The credit is rounded up.",
+        "The result shall be rounded to four decimal places.",
+        "Any fraction shall be rounded to the nearest whole number.",
+        "The count must be rounded to the nearest whole number.",
+    ),
+)
+def test_numeric_rounding_directive_is_a_computation(source: str):
+    assert source_states_explicit_computation(source)
 
 
 def test_rounding_only_detection_preserves_contextual_arithmetic():
@@ -2742,6 +2821,12 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The allocation equals five-twelfths of annual income",
         "The allocation equals one-eleventh of annual income",
         "The allocation equals two-sixths of annual income",
+        "The allocation equals one-sixteenth of annual income",
+        "The allocation equals one twenty-fourth of annual income",
+        "The tax equals one-half per cent of taxable income",
+        "The tax equals one-half percent of taxable income",
+        "The tax equals two and one-half percent of taxable income",
+        "The tax equals one and one-quarter percent of taxable income",
         "The deductible amount is the sum of contributions made by the employer and "
         "contributions made by the employee",
         "The assessment is the sum of amounts withheld from wages and credits claimed "
@@ -2762,6 +2847,11 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, whichever may be less",
         "The credit is the lesser of the base or the cap, whichever would be less",
         "The credit is the lesser of the base or the cap, but not less than zero",
+        "The credit is the lesser of the base or the cap, but in no event less than zero",
+        "The credit is the lesser of the base or the cap, but not below zero",
+        "The credit is the lesser of the base or the cap, except that it shall not be "
+        "less than zero",
+        "The credit is the lesser of the base or the cap, with a minimum of zero",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
