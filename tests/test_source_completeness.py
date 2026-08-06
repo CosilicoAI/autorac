@@ -1881,6 +1881,34 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
     assert interval.upper_inclusive is upper_inclusive
 
 
+@pytest.mark.parametrize(
+    ("lower", "lower_inclusive", "connector", "upper", "upper_inclusive"),
+    (
+        ("greater than", False, "but", "not exceeding", True),
+        ("greater than", False, "but", "not to exceed", True),
+        ("at least", True, "and", "less than", False),
+        ("at least", True, "but", "not more than", True),
+    ),
+)
+def test_formula_interval_composes_lower_and_upper_comparator_families(
+    lower: str,
+    lower_inclusive: bool,
+    connector: str,
+    upper: str,
+    upper_inclusive: bool,
+):
+    interval = completeness_module._formula_interval_from_text(
+        f"income is {lower} 25000 {connector} {upper} 35000",
+        extract_numeric_occurrences=EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 25000
+    assert interval.lower_inclusive is lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 35000
+    assert interval.upper_inclusive is upper_inclusive
+
+
 def test_formula_interval_rejects_long_nonmatching_upper_gap_with_bounded_runtime():
     source = "income greater than 1" + (" " * 10_000) + "x 2"
 
@@ -2140,6 +2168,8 @@ B. End.
         "The credit shall be determined by application of the rate to income",
         "The credit shall be determined through applying the rate to income",
         "The amount shall be determined by applying the statutory formula to income",
+        "The amount shall be determined by applying Formula A",
+        "The amount shall be determined by applying Index A",
         "The amount shall be determined by applying the multiplier to income",
         "The amount shall be determined by applying the coefficient to income",
         "The amount shall be determined by applying the index to income",
@@ -2166,6 +2196,8 @@ B. End.
         "The tax shall be determined by applying the rate to that portion of taxable income that exceeds $10,000",
         "The tax shall be determined by applying the rate to that portion of taxable income which is greater than $10,000",
         "The tax shall be determined by applying the rate to that part of taxable income which exceeds $10,000",
+        "The tax shall be determined by applying the rate to that portion of taxable income not exceeding $10,000",
+        "The tax shall be determined by applying the rate to that part of taxable income not exceeding $10,000",
         "The tax shall be determined by applying the rate to that portion of taxable income which does not exceed $10,000",
         "The tax shall be determined by applying the rate to the excess of taxable income above $10,000",
         "The tax shall be determined by applying the rate to so much of taxable income as is in excess of $10,000",
@@ -2223,6 +2255,8 @@ B. End.
         "A. The tax is determined by applying the rate to that part of taxable income which exceeds $10,000.",
         "A. The tax is determined by applying the rate to that portion of taxable income which does not exceed $10,000.",
         "A. The tax is determined by applying the rate to so much of taxable income as does not exceed $10,000.",
+        "A. The tax is determined by applying the rate to that portion of taxable income not exceeding $10,000.",
+        "A. The tax is determined by applying the rate to that part of taxable income not exceeding $10,000.",
     ),
 )
 def test_bracket_computation_cannot_be_encoded_as_parameter_only(source: str):
@@ -2765,6 +2799,9 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
         "The benefit is determined by applying Index Requirements.",
         "The amount is determined by applying Index Methodology Guide.",
         "The amount is determined by applying Index Publication.",
+        "The amount is determined by applying Formula Administration Manual to income.",
+        "The amount is determined by applying the Tax Index Methodology Guide.",
+        "The amount is determined by applying the Benefit Formula Administration Manual.",
         "The credit is determined by applying Credit Requirements.",
         "The credit is determined by applying CREDIT REQUIREMENTS.",
         "The amount is determined by applying Amount Guidelines.",
@@ -2772,6 +2809,32 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
 )
 def test_delegated_determinations_are_not_computations(source: str):
     assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize("identifier", ("Formula A", "Index A"))
+def test_code_like_formula_identifier_requires_derived_output(identifier: str):
+    source = f"A. The amount is determined by applying {identifier}."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+    assert _has_issue(result, "formula-output")
 
 
 @pytest.mark.parametrize(
@@ -2920,6 +2983,10 @@ def test_directional_rounding_policy_noun_is_not_a_computation(source: str):
         "For each return, promptly round the amount.",
         "If necessary, then round the amount.",
         "After determining the amount, the department shall round it down.",
+        "After determining the amounts, the department shall round them down.",
+        "After calculating the credits, the department shall round them down.",
+        "Once the amounts are determined, the department shall round them down.",
+        "After the amount is determined, the department shall round it down.",
         "Round the weighted average to the nearest whole number.",
         "Round the amount down.",
         "Round the amount to the nearest whole number.",
@@ -2943,9 +3010,44 @@ def test_numeric_rounding_directive_is_a_computation(source: str):
 
 
 def test_rounding_pronoun_requires_a_numeric_antecedent_not_a_policy_word():
-    assert not source_states_explicit_computation(
-        "After reviewing the Benefit Policy, the department shall round it down."
+    for source in (
+        "After reviewing the Benefit Policy, the department shall round it down.",
+        "After calculating the Benefit Policy, the department shall round it down.",
+    ):
+        assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "directive",
+    (
+        "After determining the amounts, the department shall round them down.",
+        "After calculating the credits, the department shall round them down.",
+        "Once the amounts are determined, the department shall round them down.",
+        "After the amount is determined, the department shall round it down.",
+    ),
+)
+def test_strong_rounding_pronoun_antecedent_requires_formula_output(directive: str):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:294
+rules: []
+"""
+    result = analyze_complete_source_unit(
+        content,
+        f"A. {directive}",
+        corpus_citation_path="us-la/statute/47:294",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+        extract_named_scalars=extract_named_scalar_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
     )
+
+    assert _has_issue(result, "formula-output")
 
 
 def test_rounding_only_detection_preserves_contextual_arithmetic():
@@ -3298,6 +3400,11 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The credit is the lesser of the base or the cap, but shall be deemed zero when negative",
         "The amount is the difference of income and deduction and shall not be negative",
         "The amount is the difference between income and deduction and shall not be negative",
+        "The amount is the difference of income and deduction and shall not result in a negative amount",
+        "The amount is the difference of income and deduction and shall not fall below zero",
+        "The amount is the difference of income and deduction and shall be at least zero",
+        "The amount is the difference of income and deduction and shall be no less than zero",
+        "The amount is the difference of income and deduction and shall be greater than or equal to zero",
         "The income taxable in this state is the sum of wages and interest",
         "The assessment is the difference between income taxable in this state and "
         "deductions allowable under this section",
@@ -3323,6 +3430,11 @@ def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
     (
         "A. The amount is the difference of income and deduction and shall not be negative.",
         "A. The amount is the difference between income and deduction and shall not be negative.",
+        "A. The amount is the difference of income and deduction and shall not result in a negative amount.",
+        "A. The amount is the difference of income and deduction and shall not fall below zero.",
+        "A. The amount is the difference of income and deduction and shall be at least zero.",
+        "A. The amount is the difference of income and deduction and shall be no less than zero.",
+        "A. The amount is the difference of income and deduction and shall be greater than or equal to zero.",
     ),
 )
 def test_coordinated_nonnegative_floor_still_requires_formula_output(source: str):
