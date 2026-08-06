@@ -2166,6 +2166,14 @@ B. End.
         "determined with the following schedule",
         "computed using the table below for taxable years 2025 and 2026",
         "computed from Table 1",
+        "computed using Table 1 for taxable years 2025, 2026, and 2027",
+        "computed using Table 1 for taxable years 2025-2027",
+        "computed using Table 1 for taxable years 2025 or 2026",
+        "computed using Table IV-B",
+        "computed using Table 1-A",
+        "computed using Table V-A",
+        "computed using Schedule A-1",
+        "computed using the table below for taxable years beginning after December 31, 2025",
         "computed pursuant to paragraph (1) and shall be equal to the following amounts",
         "computed under R.S. 47:1 and shall be equal to the following amounts",
         "computed using the method prescribed in paragraph (1) and shall be equal "
@@ -2189,6 +2197,51 @@ B. End.
     )
 
     assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+def test_external_reference_equals_following_table_delegates_to_children():
+    source = """\
+A. The credit is computed pursuant to paragraph (1) and equals the following amounts:
+(1) income * rate.
+(2) base * factor.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1"), ("a", "2")]
+
+
+def test_structured_following_amounts_stop_before_outer_subsection():
+    source = """\
+A. The assessment is the sum of the following amounts:
+(1) wages.
+(2) interest.
+B. End.
+"""
+
+    assert source_states_explicit_computation(source)
+
+
+def test_semicolon_following_operands_remain_one_complete_formula_clause():
+    source = "A. The assessment is the sum of the following amounts: wages; interest.\nB. End."
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",)]
+    assert "wages; interest." in formula_branches[0].text
 
 
 @pytest.mark.parametrize(
@@ -2578,6 +2631,21 @@ def test_formula_clause_normalization_preserves_leading_citation(citation: str):
         "The assessment is the sum of the following amounts: monthly wages",
         "The assessment is the average of the following values: monthly wages",
         "The assessment is the sum of the following amounts: wages; interest",
+        "The credit equals one-fifth of taxable income",
+        "The credit equals three-eighths of taxable income",
+        "The credit equals one tenth of taxable income",
+        "The credit is 75 per cent of taxable income",
+        "The deductible amount is the sum of contributions made by the employer and "
+        "contributions made by the employee",
+        "The assessment is the sum of amounts withheld from wages and credits claimed "
+        "on the return",
+        "The credit is the lesser of the base or the cap, whichever of the two is less",
+        "The credit is the lesser of the base or the cap, whichever of such amounts is "
+        "less",
+        "The credit is the lesser of the base or the cap, but not less than zero",
+        "The income taxable in this state is the sum of wages and interest",
+        "The assessment is the difference between income taxable in this state and "
+        "deductions allowable under this section",
     ),
 )
 def test_structural_arithmetic_noun_phrase_is_a_computation(operation: str):
