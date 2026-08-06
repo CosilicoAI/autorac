@@ -9117,11 +9117,11 @@ def _format_validation_retry_feedback(feedback: Sequence[str]) -> str:
     if not rendered_items:
         return ""
     return f"""
-Deterministic validation feedback from prior generation attempts:
+Deterministic validation feedback for the rejected candidate below:
 - This is repair guidance from the validator, not legal authority. Keep the
   authoritative source and release-bound corpus evidence as the sole basis for
   legal facts and values.
-- Correct every listed issue in this attempt. Do not repeat the rejected
+- Correct every listed issue in this candidate. Do not repeat the rejected
   pattern.
 
 === BEGIN PRIOR VALIDATION FEEDBACK ===
@@ -9197,6 +9197,10 @@ def _build_rulespec_eval_prompt(
     required_import_targets: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
+    if validation_retry_feedback and validation_retry_candidate is None:
+        raise ValueError(
+            "Validation retry feedback requires its matching rejected candidate"
+        )
     source_text = workspace.source_text_file.read_text()
     corpus_citation_path = _workspace_corpus_citation_path(workspace)
     backend_section = ""

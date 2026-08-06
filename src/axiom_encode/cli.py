@@ -25128,6 +25128,7 @@ class _FailedEncodeAttempt(NamedTuple):
     result: Any
     error: str
     candidate: ValidationRetryCandidate | None = None
+    validation_issues: Sequence[str] = ()
 
 
 def _capture_validation_retry_candidate(
@@ -25278,70 +25279,100 @@ def _latest_validation_retry_candidate(
     return prior_attempts[-1].candidate if prior_attempts else None
 
 
+def _validation_retry_issue_snapshot(
+    *issue_groups: object,
+) -> tuple[str, ...]:
+    """Snapshot bounded validator issues that match one captured candidate."""
+
+    issues: list[str] = []
+    seen: set[str] = set()
+    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
+    for issue_group in issue_groups:
+        if not isinstance(issue_group, Sequence) or isinstance(
+            issue_group, (str, bytes)
+        ):
+            continue
+        inspected = 0
+        issue_iterator = iter(issue_group)
+        while (
+            len(issues) < VALIDATION_RETRY_FEEDBACK_MAX_ITEMS
+            and inspected < inspection_limit
+        ):
+            try:
+                issue = next(issue_iterator)
+            except StopIteration:
+                break
+            inspected += 1
+            if not isinstance(issue, str):
+                continue
+            item = bounded_validation_retry_feedback_item(issue)
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            issues.append(item)
+        if len(issues) >= VALIDATION_RETRY_FEEDBACK_MAX_ITEMS:
+            break
+    return tuple(issues)
+
+
 def _encode_validation_retry_feedback(
     prior_attempts: Sequence[_FailedEncodeAttempt],
 ) -> tuple[str, ...]:
-    """Interleave bounded validator guidance across recent failed attempts."""
+    """Return bounded validator guidance for the immediately preceding candidate."""
+
+    if not prior_attempts:
+        return ()
 
     feedback_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS
-    attempt_feedback: list[list[str]] = []
-
-    for failed_attempt in reversed(prior_attempts[-feedback_limit:]):
-        items: list[str] = []
-        seen_in_attempt: set[str] = set()
-
-        def add_attempt_item(raw_item: object) -> None:
-            if len(items) >= feedback_limit or not isinstance(raw_item, str):
-                return
-            item = bounded_validation_retry_feedback_item(raw_item)
-            if not item or item in seen_in_attempt:
-                return
-            seen_in_attempt.add(item)
-            items.append(item)
-
-        add_attempt_item(failed_attempt.error)
-        metrics = getattr(failed_attempt.result, "metrics", None)
-        inspected_issues = 0
-        for attribute in ("compile_issues", "ci_issues"):
-            issues = getattr(metrics, attribute, ())
-            if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
-                issue_iterator = iter(issues)
-                for _ in range(feedback_limit - inspected_issues):
-                    try:
-                        issue = next(issue_iterator)
-                    except StopIteration:
-                        break
-                    inspected_issues += 1
-                    add_attempt_item(issue)
-            if inspected_issues >= feedback_limit:
-                break
-        if items:
-            attempt_feedback.append(items)
-
     feedback: list[str] = []
     feedback_chars = 0
     seen: set[str] = set()
 
-    def add(raw_item: str) -> None:
+    def add(raw_item: object) -> None:
         nonlocal feedback_chars
+        if not isinstance(raw_item, str):
+            return
+        item = bounded_validation_retry_feedback_item(raw_item)
         if (
             len(feedback) >= feedback_limit
-            or raw_item in seen
-            or feedback_chars + len(raw_item)
-            > VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS
+            or not item
+            or item in seen
+            or feedback_chars + len(item) > VALIDATION_RETRY_FEEDBACK_MAX_TOTAL_CHARS
         ):
             return
-        seen.add(raw_item)
-        feedback.append(raw_item)
-        feedback_chars += len(raw_item)
+        seen.add(item)
+        feedback.append(item)
+        feedback_chars += len(item)
 
-    for item_index in range(max((len(items) for items in attempt_feedback), default=0)):
-        for items in attempt_feedback:
-            if item_index < len(items):
-                add(items[item_index])
-        if len(feedback) >= feedback_limit:
-            break
+    failed_attempt = prior_attempts[-1]
+    add(failed_attempt.error)
+    issues = failed_attempt.validation_issues
+    if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)):
+        issue_iterator = iter(issues)
+        for _ in range(feedback_limit):
+            try:
+                issue = next(issue_iterator)
+            except StopIteration:
+                break
+            add(issue)
     return tuple(feedback)
+
+
+def _encode_validation_retry_context(
+    prior_attempts: Sequence[_FailedEncodeAttempt],
+    *,
+    initial_retry_candidate: ValidationRetryCandidate | None,
+) -> tuple[tuple[str, ...], ValidationRetryCandidate | None]:
+    """Bind validator feedback to the exact candidate that produced it."""
+
+    if not prior_attempts:
+        return (), initial_retry_candidate
+    candidate = _latest_validation_retry_candidate(prior_attempts)
+    if candidate is None:
+        raise RuntimeError(
+            "Immediately preceding validator-rejected candidate is unavailable"
+        )
+    return _encode_validation_retry_feedback(prior_attempts), candidate
 
 
 class _EncodeAttemptExecution(NamedTuple):
@@ -25349,6 +25380,7 @@ class _EncodeAttemptExecution(NamedTuple):
     outcome: dict[str, Any]
     apply_passed: bool
     logged_run: EncodingRun | None
+    validation_issues: tuple[str, ...]
 
 
 class _EncodeReplacementTarget(NamedTuple):
@@ -27264,6 +27296,7 @@ def _run_encode_attempts_with_retries(
                     result=execution.result,
                     error=retry_error,
                     candidate=candidate,
+                    validation_issues=execution.validation_issues,
                 )
         if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
@@ -27475,6 +27508,12 @@ def _run_encode_attempt(
     if replacement_target is not None:
         extra_context_paths.extend(replacement_target.context_paths)
     extra_context_paths.extend(required_import_paths)
+    validation_retry_feedback, validation_retry_candidate = (
+        _encode_validation_retry_context(
+            prior_attempts,
+            initial_retry_candidate=initial_retry_candidate,
+        )
+    )
     results = run_model_eval(
         citations=[args.citation],
         runner_specs=[runner],
@@ -27497,12 +27536,8 @@ def _run_encode_attempt(
             if replacement_target is not None
             else None
         ),
-        validation_retry_feedback=_encode_validation_retry_feedback(prior_attempts),
-        validation_retry_candidate=(
-            initial_retry_candidate
-            if initial_retry_candidate is not None
-            else _latest_validation_retry_candidate(prior_attempts)
-        ),
+        validation_retry_feedback=validation_retry_feedback,
+        validation_retry_candidate=validation_retry_candidate,
         required_import_targets=required_import_targets,
         legacy_replacement=(
             replacement_target.legacy_replacement
@@ -27592,6 +27627,13 @@ def _run_encode_attempt(
 
     outcome = _initial_encode_outcome(result, apply_requested=apply_requested)
     apply_passed = False
+    retry_validation_issues: tuple[str, ...] = ()
+    metrics = getattr(result, "metrics", None)
+    if metrics is not None:
+        retry_validation_issues = _validation_retry_issue_snapshot(
+            getattr(metrics, "compile_issues", ()),
+            getattr(metrics, "ci_issues", ()),
+        )
     if apply_requested:
         if not _can_attempt_apply(result):
             detail = str(getattr(result, "error", None) or "generation failed")
@@ -30212,6 +30254,7 @@ def _run_encode_attempt(
                     )
                     outcome["overlay_validation_success"] = bool(can_apply)
             if not can_apply:
+                retry_validation_issues = _validation_retry_issue_snapshot(apply_issues)
                 detail = (
                     apply_issues[0]
                     if apply_issues
@@ -30302,6 +30345,9 @@ def _run_encode_attempt(
                         apply_issues = required_import_issues
                         outcome["overlay_validation_success"] = False
                 if not can_apply:
+                    retry_validation_issues = _validation_retry_issue_snapshot(
+                        apply_issues
+                    )
                     detail = (
                         apply_issues[0]
                         if apply_issues
@@ -30343,6 +30389,7 @@ def _run_encode_attempt(
         outcome=outcome,
         apply_passed=apply_passed,
         logged_run=logged_run,
+        validation_issues=retry_validation_issues,
     )
 
 
