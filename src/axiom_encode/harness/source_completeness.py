@@ -2390,7 +2390,10 @@ def _formula_operand_is_numeric(operand: str) -> bool:
             ):
                 return True
             if normalized_word in {"coefficient", "formula", "index"} and all(
-                re.fullmatch(r"(?:[A-Z][A-Za-z0-9]*|\d+|[IVXLCDM]+)", candidate)
+                re.fullmatch(
+                    r"(?:[A-Z0-9]+(?:-[A-Z0-9]+)*|[IVXLCDM]+)",
+                    candidate,
+                )
                 is not None
                 for candidate in trailing
             ):
@@ -2506,34 +2509,32 @@ def _applied_operation_match_is_numeric(text: str, match: re.Match[str]) -> bool
     target_match = re.search(r"\s+to\s+", operands, flags=re.IGNORECASE)
     applied = operands[: target_match.start()] if target_match is not None else operands
     target = operands[target_match.end() :] if target_match is not None else ""
-    applied_words = re.findall(r"[A-Za-z]+(?:[-'][A-Za-z]+)*", applied)
-    # Inspect a named formula/index independently of earlier numeric-looking
-    # modifiers ("Tax Index Methodology Guide").  Multiword prose titles are
-    # administrative references even when followed by a numeric target.  A
-    # single code-like identifier is a bounded formula reference; a named
-    # coefficient or a single targeted proper name is also numeric.
-    named_head = next(
-        (
-            (index, normalized)
-            for index, word in enumerate(applied_words)
-            if (normalized := _normalize_formula_operand_head(word))
-            in {"coefficient", "formula", "index"}
-        ),
-        None,
+    # A named formula or index must end in a bounded code identifier, including
+    # hyphenated codes such as CPI-U.  Prose document titles remain
+    # administrative even when they name a numeric target.  Coefficients also
+    # permit one targeted proper name ("coefficient Alpha to income").
+    named_match = re.search(
+        r"\b(?P<head>coefficient|formula|index)\b(?P<tail>.*)\Z",
+        applied,
+        flags=re.IGNORECASE,
     )
-    if named_head is not None:
-        head_index, normalized_named_head = named_head
-        identifier_tail = applied_words[head_index + 1 :]
-        if identifier_tail and not (
-            len(identifier_tail) == 1
-            and (
-                re.fullmatch(r"(?:[A-Z]|[A-Z][A-Z0-9]+|[IVXLCDM]+)", identifier_tail[0])
-                or normalized_named_head == "coefficient"
-                or target_match is not None
+    named_reference_is_numeric = False
+    if named_match is not None:
+        identifier_tail = named_match.group("tail").strip()
+        if identifier_tail:
+            code_like = re.fullmatch(
+                r"[A-Z0-9]+(?:-[A-Z0-9]+)*",
+                identifier_tail,
             )
-        ):
-            return False
-    return _formula_operand_is_numeric(applied) and (
+            targeted_coefficient_name = (
+                named_match.group("head").lower() == "coefficient"
+                and target_match is not None
+                and re.fullmatch(r"[A-Z][A-Za-z0-9]*", identifier_tail)
+            )
+            if not (code_like or targeted_coefficient_name):
+                return False
+            named_reference_is_numeric = True
+    return (named_reference_is_numeric or _formula_operand_is_numeric(applied)) and (
         target_match is None or _formula_operand_is_numeric(target)
     )
 
@@ -2556,6 +2557,68 @@ def _without_unproven_applied_operations(text: str) -> str:
             continue
         characters[match.start() : match.end()] = " " * (match.end() - match.start())
     return "".join(characters)
+
+
+def _formula_numeric_noun_phrase_head(phrase: str) -> str:
+    """Return the normalized numeric result head of a bounded noun phrase."""
+
+    return _normalize_formula_result_head(_formula_subject_segment_head(phrase))
+
+
+def _formula_rounding_antecedent_is_numeric(prefix: str) -> bool:
+    """Recognize a bounded numeric antecedent before a rounding pronoun."""
+
+    gerund = re.search(
+        r"\b(?:after|before|once|upon|when)\s+"
+        r"(?:calculating|computing|determining)\s+"
+        r"(?P<noun_phrase>[^,.;:\n]{1,80})\s*,",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    passive = re.search(
+        r"\b(?:after|before|once|upon|when)\s+"
+        r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s+"
+        r"(?:(?:is|are)\s+|(?:has|have)\s+been\s+)"
+        r"(?:calculated|computed|determined)\s*,",
+        prefix,
+        flags=re.IGNORECASE,
+    )
+    return any(
+        candidate is not None
+        and bool(_formula_numeric_noun_phrase_head(candidate.group("noun_phrase")))
+        for candidate in (gerund, passive)
+    )
+
+
+def _formula_nonnegative_floor_tail_start(clause: str) -> int | None:
+    """Return the final coordinated zero-floor start for a numeric result."""
+
+    connectors = tuple(
+        re.finditer(r"(?:,\s*)?\bbut\b|\s+\band\b", clause, flags=re.IGNORECASE)
+    )
+    for connector in reversed(connectors):
+        tail = clause[connector.end() :].strip()
+        if re.fullmatch(
+            _FORMULA_NONNEGATIVE_FLOOR_CONTROL,
+            tail,
+            flags=re.IGNORECASE,
+        ) or re.fullmatch(
+            rf"it\s+{_FORMULA_NONNEGATIVE_FLOOR_CONTROL}",
+            tail,
+            flags=re.IGNORECASE,
+        ):
+            return connector.start()
+        subject_floor = re.fullmatch(
+            rf"(?P<subject>(?:the\s+)?[A-Za-z][A-Za-z '-]{{0,40}}?)\s+"
+            rf"{_FORMULA_NONNEGATIVE_FLOOR_CONTROL}",
+            tail,
+            flags=re.IGNORECASE,
+        )
+        if subject_floor is not None and _formula_numeric_noun_phrase_head(
+            subject_floor.group("subject")
+        ):
+            return connector.start()
+    return None
 
 
 def _rounding_language_is_computational(text: str) -> bool:
@@ -2600,8 +2663,18 @@ def _rounding_language_is_computational(text: str) -> bool:
                 active_prefix,
                 flags=re.IGNORECASE,
             )
+            coordinated_directive = re.search(
+                r"\b(?:can|may|must|shall|should|will)\s+"
+                r"(?:calculate|compute|determine)\s+"
+                r"(?P<noun_phrase>[^,.;:\n]{1,80}?)\s+and\s*$",
+                active_prefix,
+                flags=re.IGNORECASE,
+            )
             if active_prefix and not (
-                modal_directive or to_directive or conditional_directive
+                modal_directive
+                or to_directive
+                or conditional_directive
+                or coordinated_directive
             ):
                 continue
             target_match = re.match(
@@ -2659,29 +2732,18 @@ def _rounding_language_is_computational(text: str) -> bool:
                 antecedent_head = _normalize_formula_result_head(
                     _formula_result_subject_head(prefix_without_modal)
                 )
-                gerund_antecedent = re.search(
-                    r"\b(?:after|before|once|upon|when)\s+"
-                    r"(?:calculating|computing|determining)\s+(?:the\s+)?"
-                    r"(?P<head>[A-Za-z]+)\s*,",
-                    prefix_without_modal,
-                    flags=re.IGNORECASE,
+                coordinated_antecedent_head = (
+                    _formula_numeric_noun_phrase_head(
+                        coordinated_directive.group("noun_phrase")
+                    )
+                    if coordinated_directive is not None
+                    else ""
                 )
-                passive_antecedent = re.search(
-                    r"\b(?:after|before|once|upon|when)\s+(?:the\s+)?"
-                    r"(?P<head>[A-Za-z]+)\s+(?:is|are)\s+"
-                    r"(?:calculated|computed|determined)\s*,",
-                    prefix_without_modal,
-                    flags=re.IGNORECASE,
-                )
-                computed_antecedent_head = next(
-                    (
-                        _normalize_formula_result_head(candidate.group("head"))
-                        for candidate in (gerund_antecedent, passive_antecedent)
-                        if candidate is not None
-                    ),
-                    "",
-                )
-                if antecedent_head or computed_antecedent_head:
+                if (
+                    antecedent_head
+                    or _formula_rounding_antecedent_is_numeric(prefix_without_modal)
+                    or coordinated_antecedent_head
+                ):
                     return True
         clause_start = max(
             text.rfind(".", 0, match.start()),
@@ -2757,16 +2819,12 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
         return True
 
     clause = re.split(r"[.;:\n]", without_parentheticals, maxsplit=1)[0]
-    clause = re.sub(
-        rf"\s+and\s+(?:(?:it|(?:the\s+)?(?:amount|balance|credit|result))\s+)?"
-        rf"{_FORMULA_NONNEGATIVE_FLOOR_CONTROL}\s*$",
-        "",
-        clause,
-        flags=re.IGNORECASE,
-    )
+    floor_tail_start = _formula_nonnegative_floor_tail_start(clause)
+    if floor_tail_start is not None:
+        clause = clause[:floor_tail_start]
     clause = re.sub(
         r",\s*(?:whichever[^,]{0,80}\b(?:is|shall\s+be|may\s+be|would\s+be)\s+[^,]+|as\s+applicable|"
-        rf"if\s+applicable|but\s+{_FORMULA_NONNEGATIVE_FLOOR_CONTROL}|"
+        r"if\s+applicable|"
         r"(?:in\s+)?no\s+case\s+(?:less\s+than|below)\s+"
         r"(?:zero|\$?\s*0(?:\.0+)?)|except\s+that\s+it\s+"
         r"(?:shall|must|may)\s+not\s+be\s+less\s+than\s+"
@@ -10049,7 +10107,9 @@ def _formula_conjoined_upper_bound(
         r"(?:is )?less than or equal to|(?:is )?less than|"
         r"(?:is )?below|(?:is )?at most|(?:is )?(?:not|no) more than|"
         r"(?:is )?not greater than|does not exceed|not exceeding|"
-        r"not to exceed|(?:is )?not exceeding|"
+        r"not to exceed|(?:is )?not exceeding|up to|"
+        r"(?:shall |must )?not exceed|"
+        r"(?:shall |must )?not be greater than|"
         r"weniger als oder gleich|weniger als|höchstens"
         r")",
         normalized_upper_gap,
@@ -10089,7 +10149,7 @@ def _formula_interval_from_text(
         r"mehr\s+als|weniger\s+als|"
         r"von(?!\s+(?:mehr\s+als|weniger\s+als|höchstens|mindestens|"
         r"nicht\s+mehr\s+als|über|unter))|"
-        r"from|unter|less\s+than|below|"
+        r"from|unter|no\s+less\s+than|not\s+less\s+than|less\s+than|below|"
         r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|"
         r"at\s+most|über|more\s+than|greater\s+than|"
         r"exceeds?|exceeding|above|ab|at\s+least|mindestens)\b",
@@ -10159,7 +10219,8 @@ def _formula_interval_from_text(
             return _NumericInterval(occurrences[0], False, upper[0], upper[1])
         return _NumericInterval(occurrences[0], False, None, False)
     if re.match(
-        r"(?:von|ab|from|at\s+least|mindestens)\b",
+        r"(?:von|ab|from|at\s+least|no\s+less\s+than|"
+        r"not\s+less\s+than|mindestens)\b",
         lowered_range,
     ):
         upper = _formula_conjoined_upper_bound(text, occurrences)
