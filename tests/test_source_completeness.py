@@ -1535,6 +1535,19 @@ def test_parenthesized_letters_nest_under_active_numeric_paragraph():
     }
 
 
+def test_parenthesized_numeric_items_nest_under_active_letter_parent():
+    source = "A. Outer.\n(a) Letter.\n(1) First.\n(2) Second.\n(b) Next.\nB. End."
+
+    assert {branch.path for branch in recognize_source_structure(source)} == {
+        ("a",),
+        ("a", "a"),
+        ("a", "a", "1"),
+        ("a", "a", "2"),
+        ("a", "b"),
+        ("b",),
+    }
+
+
 def test_louisiana_compound_dotted_outline_preserves_full_hierarchy():
     source = """\
 A. There shall be a credit from the tax imposed by this Part for child care expenses for which a resident individual is eligible pursuant to the federal income tax credit provided by Internal Revenue Code Section 21 for the same taxable year. The credit shall be calculated using the following percentages :
@@ -2268,6 +2281,94 @@ def test_ordinary_operator_noun_phrase_is_not_a_computation(source: str):
 
     assert not source_states_explicit_computation(source)
     assert formula_branches == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The eligibility is determined by the commissioner.",
+        "The status is determined in accordance with section 5.",
+        "The award is determined without regard to income.",
+        "The amount is determined on the basis of the agency's findings.",
+        "The classification is determined in the manner provided by rule.",
+        "The eligibility is determined annually.",
+        "The status is determined as provided in R.S. 47:1.",
+        "The award is determined on a per-capita basis.",
+        "The amount is determined at the time the return is filed.",
+        "The credit is determined separately for each spouse.",
+    ),
+)
+def test_delegated_determinations_are_not_computations(source: str):
+    assert not source_states_explicit_computation(source)
+
+
+def test_determined_by_arithmetic_remains_a_computation():
+    assert source_states_explicit_computation(
+        "The credit is determined by adding the base and the supplement."
+    )
+
+
+def test_rounding_only_detection_preserves_contextual_arithmetic():
+    source = (
+        "The sum of the amounts in paragraphs (1) and (2) shall be rounded "
+        "downward to the nearest dollar."
+    )
+
+    assert completeness_module._rounding_only_direction(source) is None
+
+
+def test_mixed_following_operands_keep_the_chapeau_obligation():
+    source = """\
+A. The credit shall be the greater of the following amounts:
+(1) income * rate.
+(2) an equitable adjustment.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a",), ("a", "1")]
+
+
+def test_table_heading_with_mixed_rows_delegates_to_computational_rows():
+    source = """\
+A. The credit shall be computed using the following table:
+(1) income * rate.
+(2) an equitable adjustment.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+
+    assert [branch.path for branch in formula_branches] == [("a", "1")]
+
+
+def test_formula_dependency_identifiers_ignore_comments():
+    masked = completeness_module._mask_formula_strings_and_comments(
+        "base_amount # ignored_parameter\n+ supplement"
+    )
+
+    assert set(completeness_module._FORMULA_IDENTIFIER.findall(masked)) == {
+        "base_amount",
+        "supplement",
+    }
+
+
+@pytest.mark.parametrize("citation", ("R.S. 47:1621", "U.S. Code title 7"))
+def test_formula_clause_normalization_preserves_leading_citation(citation: str):
+    assert completeness_module._strip_source_clause_marker(citation) == citation
 
 
 @pytest.mark.parametrize(

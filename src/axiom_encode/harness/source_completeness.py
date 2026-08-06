@@ -344,16 +344,19 @@ _ENGLISH_WORDED_PERCENTAGE_OF = re.compile(
     flags=re.IGNORECASE,
 )
 _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
-    r"\b\d+(?:[.,]\d+)?\s*(?:%|percent)\s+of\b",
+    r"\b\d+(?:[.,]\d+)?\s*(?:%|per\s+cent|percent)\s+of\b",
     flags=re.IGNORECASE,
 )
 _ENGLISH_FRACTION_OF = re.compile(
     r"\b(?:half|one[-\s]+half|one[-\s]+third|two[-\s]+thirds?|"
     r"one[-\s]+fourth|three[-\s]+fourths?|one[-\s]+quarter|"
-    r"three[-\s]+quarters?)\s+of\b",
+    r"three[-\s]+quarters?|(?:one|two|three|four)[-\s]+fifths?|"
+    r"(?:one|five)[-\s]+sixths?|(?:one|two|three|four|five|six)[-\s]+sevenths?|"
+    r"(?:one|three|five|seven)[-\s]+eighths?|(?:one|two|four|five|seven|eight)"
+    r"[-\s]+ninths?|(?:one|three|seven|nine)[-\s]+tenths?)\s+of\b",
     flags=re.IGNORECASE,
 )
-_FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+)?"
+_FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+(?:-[A-Z0-9]+)*)?"
 _FORMULA_GENERIC_TABLE_TARGET = (
     r"(?:the\s+)?(?:"
     r"following\s+(?:amounts?|percentages?|rates?|values?|tables?|schedules?)"
@@ -379,15 +382,16 @@ _FORMULA_NONOPERATIVE_TABLE_HEADING = re.compile(
     rf"{_FORMULA_GENERIC_TABLE_TARGET}"
     rf"|based\s+on\s+[^.;:\n]{{1,240}}?\band\s+(?:\w+\s+)?"
     rf"(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET}"
-    rf")|\b(?:be\s+)?equal\s+to\s+{_FORMULA_GENERIC_TABLE_TARGET})"
+    rf")|\b(?:equals?|(?:be\s+)?equal\s+to)\s+{_FORMULA_GENERIC_TABLE_TARGET})"
     r"(?:\s+for\s+(?:taxable|tax|calendar|fiscal)\s+years?\s+"
-    r"\d{4}(?:\s*(?:,|and|through|to)\s*\d{4})*)?"
+    r"(?:\d{4}(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or|through|to)\s+|"
+    r"\s*[-–]\s*)\d{4})*|beginning\s+[^.;:\n]{0,80}\b\d{4}))?"
     r"\s*:\s*$",
     flags=re.IGNORECASE,
 )
 _FORMULA_COMPUTED_OPERATION_LANGUAGE = re.compile(
     r"\b(?:calculated|computed|determined)\s+(?:"
-    r"(?:by|through)\s+(?:adding|addition|subtracting|subtraction|dividing|"
+    r"(?:by|through)\s+(?:applying|application|adding|addition|subtracting|subtraction|dividing|"
     r"division|multiplying|multiplication|reducing|reduction|deducting|"
     r"deduction|increasing|increase|decreasing|decrease)\b|"
     r"as\s+(?:the\s+)?(?:addition|average|difference|mean|median|ratio|"
@@ -403,13 +407,21 @@ _FORMULA_RESULT_PREDICATE = (
     r"may\s+be|means|constitutes?)"
 )
 _FORMULA_UNCONDITIONAL_OPERATOR_LANGUAGE = re.compile(
-    rf"\b(?:calculated|computed|determined)\s+"
+    rf"\b(?:calculated|computed)\s+"
     rf"(?!(?:using|according\s+to|under|as\s+follows|based\s+on|"
+    rf"by|in|with|without|pursuant\s+to|on\s+the\s+basis\s+of|"
+    rf"in\s+the\s+manner|"
     rf"{_FORMULA_GENERIC_TABLE_REFERENCE})\b)|"
     r"\b(?:sum|product)\s+of\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
     r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b|"
     r"\bdifference\s+between\b[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
     r"\b(?:is|equals?|shall\s+be)\s+\d+(?:[.,]\d+)?\b",
+    flags=re.IGNORECASE,
+)
+_FORMULA_ROUNDED_OPERATION_LANGUAGE = re.compile(
+    r"\b(?:(?:sum|product)\s+of|difference\s+between)\b"
+    r"[^.;:\n]{1,120}\band\b[^.;:\n]{1,120}"
+    r"\b(?:shall|must|may|is|are)\s+(?:be\s+)?rounded\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_RESULT_OPERATION_LANGUAGE = re.compile(
@@ -538,6 +550,7 @@ _FORMULA_SUBJECT_TRAILING_MODIFIERS = frozenset(
         "specified",
         "set",
         "subject",
+        "taxable",
         "forth",
         "then",
         "thereon",
@@ -1902,7 +1915,18 @@ def _nested_parenthesized_outline_markers(
 
         label = labels[0]
         if label[0].isdigit():
-            active = [label]
+            numeric_depth = next(
+                (
+                    position
+                    for position, active_label in enumerate(active)
+                    if active_label[0].isdigit()
+                ),
+                None,
+            )
+            if numeric_depth is None:
+                active = [*active, label] if active else [label]
+            else:
+                active = [*active[:numeric_depth], label]
             active_roman = False
         else:
             next_labels = (
@@ -1928,9 +1952,8 @@ def _nested_parenthesized_outline_markers(
                 active = [*active[:2], label]
                 active_roman = True
             else:
-                numeric_parent = next(
-                    (item for item in active if item[0].isdigit()),
-                    None,
+                numeric_parent = (
+                    active[0] if active and active[0][0].isdigit() else None
                 )
                 active = [numeric_parent, label] if numeric_parent else [label]
                 active_roman = False
@@ -2104,7 +2127,9 @@ def _formula_operand_is_numeric(operand: str) -> bool:
             continue
         trailing = words[index + 1 :]
         if trailing and all(
-            candidate.lower().endswith(("ed", "en")) or candidate.lower().endswith("ly")
+            candidate.lower().endswith(("ed", "en"))
+            or candidate.lower().endswith("ly")
+            or candidate.lower() in {"made", "withheld"}
             for candidate in trailing
         ):
             return True
@@ -2187,6 +2212,7 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
             tail = tail.lstrip()[1:]
         elif tail.startswith(","):
             tail = tail[1:]
+        tail = re.split(r"\n(?=\s*[A-Z]\.)", tail, maxsplit=1)[0]
         marker = re.search(r"(?m)^\s*(?:\([^)]+\)|\d+\.)\s*", tail)
         if marker is not None:
             entries = [
@@ -2210,8 +2236,8 @@ def _formula_operation_has_numeric_operands(text: str) -> bool:
 
     clause = re.split(r"[.;:\n]", without_parentheticals, maxsplit=1)[0]
     clause = re.sub(
-        r",\s*(?:whichever(?:\s+\w+){0,2}\s+is\s+[^,]+|as\s+applicable|"
-        r"if\s+applicable)\s*$",
+        r",\s*(?:whichever[^,]{0,80}\bis\s+[^,]+|as\s+applicable|"
+        r"if\s+applicable|but\s+not\s+less\s+than\s+zero)\s*$",
         "",
         clause,
         flags=re.IGNORECASE,
@@ -2327,8 +2353,26 @@ def source_states_explicit_computation(source_text: str) -> bool:
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
         or _ENGLISH_FRACTION_OF.search(computation_text)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(computation_text)
+        or _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(computation_text)
         or _formula_states_contextual_operator(computation_text)
         or _ROUNDING_LANGUAGE.search(computation_text)
+    )
+
+
+def _source_states_nonrounding_computation(source_text: str) -> bool:
+    """Return whether text states a computation other than rounding."""
+
+    computation_text = _without_stated_conversion_results(source_text)
+    return bool(
+        _has_substantive_arithmetic_expression(computation_text)
+        or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
+        or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
+        or _ENGLISH_FRACTION_OF.search(computation_text)
+        or _FORMULA_COMPUTED_OPERATION_LANGUAGE.search(computation_text)
+        or _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(computation_text)
+        or _formula_states_contextual_operator(computation_text)
     )
 
 
@@ -2393,8 +2437,7 @@ def _stated_conversion_candidate_contains_formula(
     characters[verb_start:verb_end] = " " * (verb_end - verb_start)
     candidate = "".join(characters)
     return bool(
-        _has_substantive_arithmetic_expression(candidate)
-        or _COMPUTATION_LANGUAGE.search(candidate)
+        _source_states_nonrounding_computation(candidate)
         or _ROUNDING_LANGUAGE.search(candidate)
     )
 
@@ -2888,7 +2931,7 @@ def _formula_dependency_source_excerpts(
         for version in versions
         if isinstance(version, dict) and isinstance(version.get("formula"), str)
         for identifier in _FORMULA_IDENTIFIER.findall(
-            _mask_formula_strings(version["formula"])
+            _mask_formula_strings_and_comments(version["formula"])
         )
     }
     for dependency_name in dependency_names:
@@ -2924,7 +2967,7 @@ def _strip_source_clause_marker(text: str) -> str:
             return text[compound.end() :].lstrip()
     return re.sub(
         r"^\s*(?:"
-        r"(?-i:[A-Z])\.|"
+        r"(?-i:[A-Z])\.(?!\s*(?-i:[A-Z])\.)|"
         r"\d+[a-z]?\.|"
         r"[a-z]\)|"
         r"satz\s+\d+[a-z]?\s*:?\s*|"
@@ -2953,10 +2996,10 @@ def _rounding_only_direction(text: str) -> str | None:
     direction = _rounding_direction(text)
     if direction is None:
         return None
+    if _FORMULA_ROUNDED_OPERATION_LANGUAGE.search(text):
+        return None
     without_rounding = _ROUNDING_LANGUAGE.sub("", text)
-    if _has_substantive_arithmetic_expression(
-        without_rounding
-    ) or _COMPUTATION_LANGUAGE.search(without_rounding):
+    if _source_states_nonrounding_computation(without_rounding):
         return None
     return direction
 
@@ -5554,7 +5597,7 @@ def _formula_clause_has_nonnumeric_inline_following_operands(
     leaves = tuple(
         branch for branch in descendants if branch.path not in non_leaf_paths
     )
-    return bool(leaves) and not all(
+    return bool(leaves) and not any(
         source_states_explicit_computation(branch.text)
         or _formula_inline_operands_are_numeric(
             _strip_source_clause_marker(branch.text)
@@ -5616,7 +5659,8 @@ def _formula_clause_states_substantive_operation(clause: str) -> bool:
         match.start()
         for match in re.finditer(r",?\s+and\s+", clause, flags=re.IGNORECASE)
         if re.match(
-            r"(?:(?![,.;:\n]).){0,80}\b(?:shall|must|may)\s+(?:be\s+)?equal\b",
+            r"(?:(?![,.;:\n]).){0,80}\b(?:"
+            r"(?:shall|must|may)\s+(?:be\s+)?equal|is\s+equal|equals?)\b",
             clause[match.end() :],
             flags=re.IGNORECASE,
         )
@@ -5783,6 +5827,13 @@ def _source_clause_spans(
         match
         for match in boundary.finditer(source_text)
         if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+        and not (
+            match.group() == ";"
+            and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(
+                source_text[max(0, match.start() - 300) : match.start()]
+            )
+            and ":" in source_text[max(0, match.start() - 300) : match.start()]
+        )
     )
     split_points = {
         0,
@@ -8454,6 +8505,22 @@ def _mask_formula_strings(text: str) -> str:
             escaped = True
         elif character == quote:
             quote = None
+    return "".join(masked)
+
+
+def _mask_formula_strings_and_comments(text: str) -> str:
+    """Blank quoted content and comments while preserving source offsets."""
+
+    masked = list(_mask_formula_strings(text))
+    in_comment = False
+    for index, character in enumerate(masked):
+        if character == "\n":
+            in_comment = False
+        elif in_comment:
+            masked[index] = " "
+        elif character == "#":
+            in_comment = True
+            masked[index] = " "
     return "".join(masked)
 
 
