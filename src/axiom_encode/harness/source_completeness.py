@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import bisect
 import contextlib
+import functools
 import heapq
 import itertools
 import math
@@ -18,7 +19,14 @@ import re
 import textwrap
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from datetime import date
+from decimal import (
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    Decimal,
+    InvalidOperation,
+    localcontext,
+)
 from typing import Any, Protocol
 
 import yaml
@@ -11487,7 +11495,7 @@ def _formula_interval_subject_values(
 
     def numeric_value(node: ast.expr) -> float | None:
         value = _evaluate_condition_expression(node, environment)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if _rulespec_runtime_decimal(value) is not None:
             return float(value)
         return None
 
@@ -12620,9 +12628,9 @@ def _simplify_formula_expression(
 def _known_numeric_formula_value(
     expression: ast.expr,
     environment: dict[str, Any],
-) -> int | float | None:
+) -> int | float | Decimal | None:
     value = _evaluate_condition_expression(expression, environment)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if _rulespec_runtime_decimal(value) is not None:
         return value
     return None
 
@@ -12786,7 +12794,10 @@ def _case_input_formula_environment(
         boolean_value = _boolean_value(value)
         normalized_value = boolean_value if boolean_value is not None else value
         for name in _input_key_names(key):
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)*",
+                name,
+            ):
                 continue
             if name in input_environment and not _same_formula_value(
                 input_environment[name],
@@ -12884,18 +12895,10 @@ def _formula_runtime_values_equal(left: Any, right: Any) -> bool:
     right_boolean = _boolean_value(right)
     if left_boolean is not None or right_boolean is not None:
         return left_boolean is not None and left_boolean == right_boolean
-    if (
-        isinstance(left, (int, float))
-        and not isinstance(left, bool)
-        and isinstance(right, (int, float))
-        and not isinstance(right, bool)
-    ):
-        return math.isclose(
-            float(left),
-            float(right),
-            rel_tol=1e-12,
-            abs_tol=1e-12,
-        )
+    left_number = _rulespec_runtime_decimal(left)
+    right_number = _rulespec_runtime_decimal(right)
+    if left_number is not None and right_number is not None:
+        return left_number == right_number
     return type(left) is type(right) and left == right
 
 
@@ -12915,6 +12918,8 @@ def _execute_formula_text(
             if _rule_text_has_branching_formula(selected_text):
                 return None
             leaf = selected_text.strip()
+            if not _formula_leaf_has_executable_syntax(leaf):
+                return None
             evaluated = _evaluate_formula_selector(leaf, environment)
             value_signature = (
                 None
@@ -12925,9 +12930,8 @@ def _execute_formula_text(
                 evaluated is None
                 or evaluated is False
                 or (
-                    isinstance(evaluated, (int, float))
-                    and not isinstance(evaluated, bool)
-                    and evaluated == 0
+                    (number := _rulespec_runtime_decimal(evaluated)) is not None
+                    and number == 0
                 )
                 or _formula_expression_is_definitely_zero(
                     leaf,
@@ -12941,13 +12945,27 @@ def _execute_formula_text(
                 evaluates_to_zero,
                 constant_environment,
             )
-        selected = _select_formula_branch(node, environment=environment)
+        if not all(
+            _formula_text_has_executable_branch_tree(selector)
+            for selector in node.selectors
+        ):
+            return None
+        if not all(
+            _formula_text_has_executable_branch_tree(choice) for choice in node.choices
+        ):
+            return None
+        selected = _select_formula_branch(
+            node,
+            environment=environment,
+            constant_environment=constant_environment,
+        )
         if selected is None:
             return None
-        choice, evaluated_selectors = selected
+        choice, evaluated_selectors, selector_trace = selected
         selected_body = textwrap.dedent(node.choices[choice]).strip()
         if not selected_body:
             return None
+        trace.extend(selector_trace)
         trace.append(
             _FormulaTraceStep(
                 node.kind,
@@ -12993,25 +13011,36 @@ def _formula_line_records(
 
 def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
     lines = _formula_line_records(text)
-    masked_lines = _formula_line_records(_mask_formula_strings(text))
-    for index, (start, _content_end, _full_end, line) in enumerate(lines):
-        masked_line = masked_lines[index][3]
-        header = re.match(
-            r"^(?P<indent>[ \t]*)if[ \t]+"
-            r"(?P<condition>[^:\n]+):[ \t]*$",
-            masked_line,
+    masked_text = _mask_formula_strings_and_comments(text)
+    masked_lines = _formula_line_records(masked_text)
+    for index, (start, _content_end, _full_end, _line) in enumerate(lines):
+        if not _formula_branch_is_at_expression_entry(masked_text, start):
+            continue
+        header = _multiline_condition_header(
+            lines,
+            masked_lines,
+            index=index,
+            keyword="if",
         )
         if header is None:
             continue
-        base_indent = _formula_indent_width(header.group("indent"))
-        headers: list[tuple[int, str, str]] = [
-            (
-                index,
-                "if",
-                line[header.start("condition") : header.end("condition")].strip(),
-            )
+        base_indent, header_end, condition, inline_body = header
+        inline_node = _continued_header_inline_if_node(
+            inline_body,
+            condition=condition,
+            start=start,
+            end=lines[header_end][1],
+            trailing_body=text[lines[header_end][1] :],
+            trailing_end=len(text),
+        )
+        if inline_node is not None:
+            return inline_node
+        headers: list[tuple[int, int, str, str, str]] = [
+            (index, header_end, "if", condition, inline_body)
         ]
-        cursor = index + 1
+        valid_chain = True
+        saw_else = False
+        cursor = header_end + 1
         while cursor < len(lines):
             candidate = lines[cursor][3]
             masked_candidate = masked_lines[cursor][3]
@@ -13024,50 +13053,91 @@ def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
             if indent > base_indent:
                 cursor += 1
                 continue
-            chain_header = (
+            chain_header = None
+            if indent == base_indent:
+                chain_header = _multiline_condition_header(
+                    lines,
+                    masked_lines,
+                    index=cursor,
+                    keyword="elif",
+                )
+            if chain_header is not None and chain_header[0] == base_indent:
+                if saw_else:
+                    valid_chain = False
+                    break
+                _indent, chain_end, chain_condition, chain_inline_body = chain_header
+                headers.append(
+                    (cursor, chain_end, "elif", chain_condition, chain_inline_body)
+                )
+                cursor = chain_end + 1
+                continue
+            else_header = (
                 re.match(
-                    r"^[ \t]*elif[ \t]+(?P<condition>[^:\n]+):[ \t]*$",
+                    r"^[ \t]*else:(?P<body>.*)$",
                     masked_candidate,
                 )
                 if indent == base_indent
                 else None
             )
-            if chain_header is not None:
-                headers.append(
-                    (
-                        cursor,
-                        "elif",
-                        candidate[
-                            chain_header.start("condition") : chain_header.end(
-                                "condition"
-                            )
-                        ].strip(),
-                    )
-                )
-                cursor += 1
-                continue
-            if indent == base_indent and re.match(
-                r"^[ \t]*else:[ \t]*$",
-                masked_candidate,
-            ):
-                headers.append((cursor, "else", ""))
+            if else_header is not None:
+                if saw_else:
+                    valid_chain = False
+                    break
+                inline_body = candidate[else_header.start("body") :].strip()
+                if not _mask_formula_comments(inline_body).strip():
+                    inline_body = ""
+                headers.append((cursor, cursor, "else", "", inline_body))
+                saw_else = True
                 cursor += 1
                 continue
             break
+        if not valid_chain or not saw_else or headers[-1][2] != "else":
+            continue
         chain_end = lines[cursor][0] if cursor < len(lines) else len(text)
+        final_body_start = lines[headers[-1][1]][2]
+        chain_end = _formula_expression_end(
+            text,
+            body_start=final_body_start,
+            branch_start=start,
+            limit=len(text),
+        )
         conditions = tuple(
-            condition for _line_index, kind, condition in headers if kind != "else"
+            condition
+            for _start_line, _end_line, kind, condition, _inline_body in headers
+            if kind != "else"
         )
         choices: list[str] = []
-        for header_index, (line_index, _kind, _condition) in enumerate(headers):
-            body_start = lines[line_index][2]
+        for header_index, (
+            _line_index,
+            line_end_index,
+            _kind,
+            _condition,
+            inline_body,
+        ) in enumerate(headers):
+            body_start = lines[line_end_index][2]
             body_end = (
                 lines[headers[header_index + 1][0]][0]
                 if header_index + 1 < len(headers)
                 else chain_end
             )
-            choices.append(text[body_start:body_end])
-        if not conditions or not choices:
+            trailing_body = text[body_start:body_end]
+            choices.append(
+                "\n".join(part for part in (inline_body, trailing_body) if part.strip())
+            )
+        if (
+            not conditions
+            or not choices
+            or any(
+                not _mask_formula_comments(choice).strip()
+                or (
+                    not _rule_text_has_branching_formula(choice)
+                    and not _formula_leaf_has_executable_syntax(
+                        textwrap.dedent(choice).strip()
+                    )
+                )
+                for choice in choices
+            )
+        ):
             continue
         return _FormulaBranchNode(
             start,
@@ -13080,21 +13150,168 @@ def _first_multiline_if_node(text: str) -> _FormulaBranchNode | None:
     return None
 
 
+def _continued_header_inline_if_node(
+    inline_body: str,
+    *,
+    condition: str,
+    start: int,
+    end: int,
+    trailing_body: str,
+    trailing_end: int,
+) -> _FormulaBranchNode | None:
+    if not inline_body:
+        return None
+    masked_body = _mask_formula_strings_and_comments(inline_body)
+    chain_headers = _find_inline_chain_headers(
+        masked_body,
+        body_start=0,
+        limit=len(inline_body),
+    )
+    if not chain_headers or chain_headers[-1][0] != "else":
+        return None
+    conditions = [condition]
+    conditions.extend(
+        inline_body[condition_start:condition_end].strip()
+        for kind, _header_start, _body_start, condition_start, condition_end in chain_headers
+        if kind == "elif"
+    )
+    body_boundaries = [
+        header_start
+        for _kind, header_start, _body_start, _condition_start, _condition_end in chain_headers
+    ]
+    body_starts = [
+        0,
+        *(
+            header_body_start
+            for kind, _header_start, header_body_start, _start, _end in chain_headers
+            if kind == "elif"
+        ),
+    ]
+    choices = [
+        inline_body[body_start:body_end]
+        for body_start, body_end in zip(body_starts, body_boundaries)
+    ]
+    else_body_start = chain_headers[-1][2]
+    complete_body = inline_body + trailing_body
+    inline_end = _formula_expression_end(
+        complete_body,
+        body_start=else_body_start,
+        branch_start=0,
+        limit=len(complete_body),
+    )
+    choices.append(complete_body[else_body_start:inline_end])
+    node_end = end - (len(inline_body) - inline_end)
+    if (
+        not _mask_formula_comments(choices[-1]).strip()
+        and _mask_formula_comments(trailing_body).strip()
+    ):
+        choices[-1] = trailing_body
+        node_end = trailing_end
+    if any(not _mask_formula_comments(choice).strip() for choice in choices):
+        return None
+    return _FormulaBranchNode(
+        start,
+        node_end,
+        "if",
+        tuple(conditions),
+        (),
+        tuple(choices),
+    )
+
+
+def _multiline_condition_header(
+    lines: tuple[tuple[int, int, int, str], ...],
+    masked_lines: tuple[tuple[int, int, int, str], ...],
+    *,
+    index: int,
+    keyword: str,
+) -> tuple[int, int, str, str] | None:
+    """Parse one possibly continued ``if`` or ``elif`` header."""
+
+    line = lines[index][3]
+    masked_line = masked_lines[index][3]
+    header = re.match(
+        rf"^(?P<indent>[ \t]*){keyword}[ \t]+",
+        line,
+    )
+    if header is None:
+        return None
+    base_indent = _formula_indent_width(header.group("indent"))
+    source_parts: list[str] = []
+    masked_parts: list[str] = []
+    cursor = index
+    while cursor < len(lines) and cursor - index < 32:
+        if cursor == index:
+            source_part = line[header.end() :]
+            masked_part = masked_line[header.end() :]
+        else:
+            source_line = lines[cursor][3]
+            masked_source_line = masked_lines[cursor][3]
+            if not source_line.strip():
+                return None
+            indent_text = source_line[: len(source_line) - len(source_line.lstrip())]
+            if _formula_indent_width(indent_text) < base_indent:
+                return None
+            content_start = len(source_line) - len(source_line.lstrip())
+            source_part = source_line[content_start:]
+            masked_part = masked_source_line[content_start:]
+            previous = "\n".join(masked_parts).rstrip()
+            if not (
+                _formula_bracket_stack(previous)
+                or re.search(r"\b(?:and|or)\s*$", previous)
+                or re.match(r"^(?:and|or)\b", masked_part)
+            ):
+                return None
+
+        colon = masked_part.find(":")
+        if colon >= 0:
+            source_parts.append(source_part[:colon].rstrip())
+            condition = "\n".join(source_parts).strip()
+            if (
+                not condition
+                or _formula_bracket_stack(condition)
+                or (
+                    not _rule_text_has_branching_formula(condition)
+                    and not _formula_leaf_has_executable_syntax(condition)
+                )
+            ):
+                return None
+            inline_body = source_part[colon + 1 :].strip()
+            if not _mask_formula_comments(inline_body).strip():
+                inline_body = ""
+            return base_indent, cursor, condition, inline_body
+
+        source_parts.append(source_part.rstrip())
+        masked_parts.append(masked_part.rstrip())
+        cursor += 1
+    return None
+
+
 def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
     lines = _formula_line_records(text)
     masked_lines = _formula_line_records(_mask_formula_strings(text))
+    structural_text = _mask_formula_strings_and_comments(text)
     for index, (start, _content_end, _full_end, line) in enumerate(lines):
+        if not _formula_branch_is_at_expression_entry(structural_text, start):
+            continue
         masked_line = masked_lines[index][3]
         header = re.match(
-            r"^(?P<indent>[ \t]*)match[ \t]+"
-            r"(?P<selector>[^:\n]+):[ \t]*$",
-            masked_line,
+            r"^(?P<indent>[ \t]*)match[ \t]+",
+            line,
         )
         if header is None:
+            continue
+        masked_selector = masked_line[header.end() :].rstrip()
+        if not masked_selector.endswith(":"):
+            continue
+        selector_colon = header.end() + len(masked_selector) - 1
+        selector = line[header.end() : selector_colon].strip()
+        if not selector or _rule_text_has_branching_formula(selector):
             continue
         base_indent = _formula_indent_width(header.group("indent"))
         arm_headers: list[tuple[int, str, str]] = []
         arm_indent: int | None = None
+        valid_arms = True
         cursor = index + 1
         while cursor < len(lines):
             candidate = lines[cursor][3]
@@ -13108,7 +13325,16 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
                 break
             arrow = masked_candidate.find("=>", len(indent_text))
             pattern = candidate[len(indent_text) : arrow].strip()
-            is_arm = arrow >= 0 and bool(pattern)
+            if arrow >= 0 and not _rulespec_match_pattern_has_executable_syntax(
+                pattern
+            ):
+                valid_arms = False
+                break
+            is_arm = (
+                arrow >= 0
+                and bool(pattern)
+                and _rulespec_match_pattern_has_executable_syntax(pattern)
+            )
             if arm_indent is None and is_arm:
                 arm_indent = indent
             if is_arm and indent == arm_indent:
@@ -13120,9 +13346,15 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
                     )
                 )
             cursor += 1
-        chain_end = lines[cursor][0] if cursor < len(lines) else len(text)
-        if not arm_headers:
+        if not valid_arms or not arm_headers:
             continue
+        final_body_start = lines[arm_headers[-1][0]][2]
+        chain_end = _formula_expression_end(
+            text,
+            body_start=final_body_start,
+            branch_start=start,
+            limit=len(text),
+        )
         choices: list[str] = []
         for arm_index, (line_index, _pattern, inline_body) in enumerate(arm_headers):
             body_end = (
@@ -13138,7 +13370,7 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
             start,
             chain_end,
             "match",
-            (line[header.start("selector") : header.end("selector")].strip(),),
+            (selector,),
             tuple(pattern for _line_index, pattern, _body in arm_headers),
             tuple(choices),
         )
@@ -13146,21 +13378,28 @@ def _first_multiline_match_node(text: str) -> _FormulaBranchNode | None:
 
 
 def _first_inline_if_node(text: str) -> _FormulaBranchNode | None:
-    masked_text = _mask_formula_strings(text)
-    for candidate in re.finditer(
-        r"(?<![A-Za-z0-9_])if[ \t]+",
-        masked_text,
-    ):
-        line_end = text.find("\n", candidate.start())
-        if line_end < 0:
-            line_end = len(text)
-        colon = masked_text.find(":", candidate.end(), line_end)
-        if colon < 0 or not text[colon + 1 : line_end].strip():
+    masked_text = _mask_formula_strings_and_comments(text)
+    tokens = _rulespec_formula_tokens(masked_text)
+    if tokens is None:
+        return None
+    for kind, _source, candidate_start, candidate_end in tokens:
+        if kind != "IF":
+            continue
+        if not _formula_branch_is_at_expression_entry(masked_text, candidate_start):
+            continue
+        colon = _formula_header_colon(
+            masked_text,
+            start=candidate_end,
+            limit=len(text),
+        )
+        if colon < 0 or not text[colon + 1 :].strip():
+            continue
+        if _rule_text_has_branching_formula(text[candidate_end:colon]):
             continue
         chain_headers = _find_inline_chain_headers(
             masked_text,
             body_start=colon + 1,
-            limit=line_end,
+            limit=len(text),
         )
         if not chain_headers or chain_headers[-1][0] != "else":
             continue
@@ -13168,10 +13407,10 @@ def _first_inline_if_node(text: str) -> _FormulaBranchNode | None:
         end = _formula_expression_end(
             text,
             body_start=else_body_start,
-            branch_start=candidate.start(),
-            limit=line_end,
+            branch_start=candidate_start,
+            limit=len(text),
         )
-        conditions = [text[candidate.end() : colon].strip()]
+        conditions = [text[candidate_end:colon].strip()]
         conditions.extend(
             text[condition_start:condition_end].strip()
             for kind, _start, _body_start, condition_start, condition_end in chain_headers
@@ -13194,7 +13433,7 @@ def _first_inline_if_node(text: str) -> _FormulaBranchNode | None:
         ]
         choices.append(text[else_body_start:end])
         return _FormulaBranchNode(
-            candidate.start(),
+            candidate_start,
             end,
             "if",
             tuple(conditions),
@@ -13212,19 +13451,30 @@ def _find_inline_chain_headers(
 ) -> tuple[tuple[str, int, int, int, int], ...]:
     nested_if_depth = 0
     headers: list[tuple[str, int, int, int, int]] = []
-    for token in re.finditer(
-        r"\b(?:if|elif|else)\b",
-        masked_text[body_start:limit],
-    ):
-        token_start = body_start + token.start()
-        token_end = body_start + token.end()
-        kind = token.group(0)
+    tokens = _rulespec_formula_tokens(masked_text[body_start:limit])
+    if tokens is None:
+        return ()
+    token_names = {"IF": "if", "ELIF": "elif", "ELSE": "else"}
+    for token_kind, _source, relative_start, relative_end in tokens:
+        kind = token_names.get(token_kind)
+        if kind is None:
+            continue
+        token_start = body_start + relative_start
+        token_end = body_start + relative_end
         if kind == "if":
-            colon = masked_text.find(":", token_end, limit)
+            colon = _formula_header_colon(
+                masked_text,
+                start=token_end,
+                limit=limit,
+            )
             if colon >= 0:
                 nested_if_depth += 1
             continue
-        colon = masked_text.find(":", token_end, limit)
+        colon = _formula_header_colon(
+            masked_text,
+            start=token_end,
+            limit=limit,
+        )
         if colon < 0:
             continue
         if kind == "elif":
@@ -13232,7 +13482,7 @@ def _find_inline_chain_headers(
                 headers.append(("elif", token_start, colon + 1, token_end, colon))
             continue
         cursor = token_end
-        while cursor < limit and masked_text[cursor] in " \t":
+        while cursor < limit and masked_text[cursor] in " \t\n\r\x0b\x0c":
             cursor += 1
         if cursor >= limit or masked_text[cursor] != ":":
             continue
@@ -13245,73 +13495,119 @@ def _find_inline_chain_headers(
 
 
 def _first_inline_match_node(text: str) -> _FormulaBranchNode | None:
-    masked_text = _mask_formula_strings(text)
-    for candidate in re.finditer(
-        r"(?<![A-Za-z0-9_])match[ \t]+",
-        masked_text,
-    ):
-        line_end = text.find("\n", candidate.start())
-        if line_end < 0:
-            line_end = len(text)
-        colon = masked_text.find(":", candidate.end(), line_end)
-        if colon < 0 or not text[colon + 1 : line_end].strip():
+    masked_text = _mask_formula_strings_and_comments(text)
+    tokens = _rulespec_formula_tokens(masked_text)
+    if tokens is None:
+        return None
+    for kind, _source, candidate_start, candidate_end in tokens:
+        if kind != "MATCH":
+            continue
+        if not _formula_branch_is_at_expression_entry(masked_text, candidate_start):
+            continue
+        colon = _formula_header_colon(
+            masked_text,
+            start=candidate_end,
+            limit=len(text),
+        )
+        if colon < 0 or not text[colon + 1 :].strip():
+            continue
+        selector = text[candidate_end:colon].strip()
+        if not selector or _rule_text_has_branching_formula(selector):
             continue
         end = _formula_expression_end(
             text,
             body_start=colon + 1,
-            branch_start=candidate.start(),
-            limit=line_end,
+            branch_start=candidate_start,
+            limit=len(text),
             stop_at_semicolon=False,
         )
-        patterns: list[str] = []
-        choices: list[str] = []
-        for arm in _split_formula_arms(text[colon + 1 : end]):
-            pattern, separator, body = arm.partition("=>")
-            if not separator or not pattern.strip() or not body.strip():
-                patterns = []
-                choices = []
-                break
-            patterns.append(pattern.strip())
-            choices.append(body)
-        if not patterns:
+        arms = _split_inline_formula_match_arms(text[colon + 1 : end])
+        if not arms:
             continue
         return _FormulaBranchNode(
-            candidate.start(),
+            candidate_start,
             end,
             "match",
-            (text[candidate.end() : colon].strip(),),
-            tuple(patterns),
-            tuple(choices),
+            (selector,),
+            tuple(pattern for pattern, _body in arms),
+            tuple(body for _pattern, body in arms),
         )
     return None
 
 
-def _split_formula_arms(text: str) -> tuple[str, ...]:
-    arms: list[str] = []
-    start = 0
-    stack: list[str] = []
-    quote: str | None = None
-    escaped = False
+def _formula_branch_is_at_expression_entry(masked_text: str, start: int) -> bool:
+    prefix = masked_text[:start].rstrip()
+    return not prefix or prefix[-1] in "([,"
+
+
+def _formula_header_colon(masked_text: str, *, start: int, limit: int) -> int:
+    stack = list(_formula_bracket_stack(masked_text[:start]))
+    initial_depth = len(stack)
     pairs = {")": "(", "]": "[", "}": "{"}
-    for index, character in enumerate(text):
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = None
-            continue
-        if character in {'"', "'"}:
-            quote = character
-        elif character in "([{":
+    for index in range(start, limit):
+        character = masked_text[index]
+        if character in "([{":
             stack.append(character)
         elif character in pairs and stack and stack[-1] == pairs[character]:
             stack.pop()
-        elif character == ";" and not stack:
-            arms.append(text[start:index])
-            start = index + 1
-    arms.append(text[start:])
+        elif character == ":" and len(stack) == initial_depth:
+            return index
+    return -1
+
+
+def _split_inline_formula_match_arms(text: str) -> tuple[tuple[str, str], ...]:
+    tokens = _rulespec_formula_tokens(text)
+    if tokens is None:
+        return ()
+    significant = tokens[:-1]
+    depths: list[int] = []
+    depth = 0
+    for token in significant:
+        if token[0] in {"RPAREN", "RBRACKET"}:
+            depth -= 1
+        if depth < 0:
+            return ()
+        depths.append(depth)
+        if token[0] in {"LPAREN", "LBRACKET"}:
+            depth += 1
+    if depth != 0:
+        return ()
+    if any(
+        token[0] == "MATCH" and depths[index] == 0
+        for index, token in enumerate(significant)
+    ):
+        return ()
+    arrow_indexes = [
+        index
+        for index, token in enumerate(significant)
+        if token[0] == "ARROW" and depths[index] == 0
+    ]
+    if not arrow_indexes:
+        return ()
+    pattern_indexes = [index - 1 for index in arrow_indexes]
+    if pattern_indexes[0] != 0 or any(index < 0 for index in pattern_indexes):
+        return ()
+    if not all(
+        _rulespec_match_pattern_token_is_executable(significant[index])
+        for index in pattern_indexes
+    ):
+        return ()
+
+    arms: list[tuple[str, str]] = []
+    for arm_index, (pattern_index, arrow_index) in enumerate(
+        zip(pattern_indexes, arrow_indexes)
+    ):
+        body_start = significant[arrow_index][3]
+        body_end = (
+            significant[pattern_indexes[arm_index + 1]][2]
+            if arm_index + 1 < len(pattern_indexes)
+            else len(text)
+        )
+        body = text[body_start:body_end].strip()
+        if not body:
+            return ()
+        pattern_token = significant[pattern_index]
+        arms.append((text[pattern_token[2] : pattern_token[3]], body))
     return tuple(arms)
 
 
@@ -13383,18 +13679,31 @@ def _select_formula_branch(
     node: _FormulaBranchNode,
     *,
     environment: dict[str, Any],
-) -> tuple[int, tuple[str, ...]] | None:
+    constant_environment: dict[str, Any],
+) -> tuple[int, tuple[str, ...], tuple[_FormulaTraceStep, ...]] | None:
     if node.kind == "if":
         evaluated: list[str] = []
+        selector_trace: list[_FormulaTraceStep] = []
         for index, condition in enumerate(node.selectors):
             evaluated.append(condition)
-            value = _evaluate_formula_selector(condition, environment)
+            reduced_condition = condition
+            if _rule_text_has_branching_formula(condition):
+                condition_execution = _execute_formula_text(
+                    condition,
+                    environment=environment,
+                    constant_environment=constant_environment,
+                )
+                if condition_execution is None:
+                    return None
+                selector_trace.extend(condition_execution.trace)
+                reduced_condition = condition_execution.leaf
+            value = _evaluate_formula_selector(reduced_condition, environment)
             if not isinstance(value, bool):
                 return None
             if value:
-                return index, tuple(evaluated)
+                return index, tuple(evaluated), tuple(selector_trace)
         if len(node.choices) > len(node.selectors):
-            return len(node.selectors), tuple(evaluated)
+            return len(node.selectors), tuple(evaluated), tuple(selector_trace)
         return None
 
     selector = _evaluate_formula_selector(node.selectors[0], environment)
@@ -13407,27 +13716,866 @@ def _select_formula_branch(
         if expected is _UNRESOLVED_CONDITION_VALUE:
             return None
         if _same_formula_value(selector, expected):
-            return index, node.selectors
-    return len(node.patterns) - 1, node.selectors
+            return index, node.selectors, ()
+    return len(node.patterns) - 1, node.selectors, ()
 
 
 def _evaluate_formula_selector(
     selector: str,
     environment: dict[str, Any],
 ) -> Any:
-    expression = _parse_formula_expression(selector)
-    if expression is None:
-        return _UNRESOLVED_CONDITION_VALUE
-    return _evaluate_condition_expression(expression, environment)
+    return _evaluate_rulespec_formula(selector, environment=environment)
 
 
 def _rule_text_has_branching_formula(formula_text: str) -> bool:
+    masked_text = _mask_formula_strings_and_comments(formula_text)
+    tokens = _rulespec_formula_tokens(masked_text)
+    if tokens is not None:
+        return any(kind in {"IF", "ELIF", "ELSE", "MATCH"} for kind, *_ in tokens)
     return bool(
         re.search(
             r"(?<![A-Za-z0-9_])(?:if|elif|else|match)(?![A-Za-z0-9_])",
-            _mask_formula_strings(formula_text),
+            masked_text,
         )
     )
+
+
+@functools.lru_cache(maxsize=4096)
+def _formula_text_has_executable_branch_tree(formula_text: str) -> bool:
+    """Validate every branch subtree without enumerating branch combinations."""
+
+    def validate(candidate: str, *, depth: int) -> bool:
+        candidate = textwrap.dedent(candidate).strip()
+        if depth > 32:
+            return False
+        node = _first_formula_branch_node(candidate)
+        if node is None:
+            return not _rule_text_has_branching_formula(
+                candidate
+            ) and _formula_leaf_has_executable_syntax(candidate)
+        if not all(validate(selector, depth=depth + 1) for selector in node.selectors):
+            return False
+        if node.kind == "match" and not all(
+            _rulespec_match_pattern_has_executable_syntax(pattern)
+            for pattern in node.patterns
+        ):
+            return False
+        without_branch = candidate[: node.start] + "0" + candidate[node.end :]
+        if not validate(without_branch, depth=depth + 1):
+            return False
+        return all(validate(choice, depth=depth + 1) for choice in node.choices)
+
+    return validate(formula_text, depth=0)
+
+
+def _formula_leaf_has_executable_syntax(text: str) -> bool:
+    """Parse a reduced leaf with the pinned RuleSpec expression grammar."""
+
+    tokens = _rulespec_formula_tokens(text)
+    if tokens is None:
+        return False
+    position = 0
+
+    def peek() -> str:
+        return tokens[position][0]
+
+    def consume(expected: str) -> bool:
+        nonlocal position
+        if peek() != expected:
+            return False
+        position += 1
+        return True
+
+    def parse_expression() -> bool:
+        return parse_or()
+
+    def parse_or() -> bool:
+        if not parse_and():
+            return False
+        while peek() == "OR":
+            consume("OR")
+            if not parse_and():
+                return False
+        return True
+
+    def parse_and() -> bool:
+        if not parse_comparison():
+            return False
+        while peek() == "AND":
+            consume("AND")
+            if not parse_comparison():
+                return False
+        return True
+
+    def parse_comparison() -> bool:
+        if not parse_addition():
+            return False
+        if peek() in {"LT", "GT", "LE", "GE", "EQ", "NE"}:
+            operator = peek()
+            consume(operator)
+            if not parse_addition():
+                return False
+        return True
+
+    def parse_addition() -> bool:
+        if not parse_multiplication():
+            return False
+        while peek() in {"PLUS", "MINUS"}:
+            operator = peek()
+            consume(operator)
+            if not parse_multiplication():
+                return False
+        return True
+
+    def parse_multiplication() -> bool:
+        if not parse_unary():
+            return False
+        while peek() in {"STAR", "SLASH"}:
+            operator = peek()
+            consume(operator)
+            if not parse_unary():
+                return False
+        return True
+
+    def parse_unary() -> bool:
+        if peek() in {"MINUS", "NOT"}:
+            operator = peek()
+            consume(operator)
+            return parse_unary()
+        return parse_postfix()
+
+    def parse_postfix() -> bool:
+        primary_start = position
+        if not parse_primary():
+            return False
+        primary_end = position
+        while (
+            primary_end - primary_start >= 3
+            and tokens[primary_start][0] == "LPAREN"
+            and tokens[primary_end - 1][0] == "RPAREN"
+        ):
+            primary_start += 1
+            primary_end -= 1
+        callable_variable = primary_end - primary_start == 1 and tokens[primary_start][
+            0
+        ] in {"IDENT", "PATH"}
+        while True:
+            if peek() == "LPAREN":
+                if not callable_variable:
+                    return False
+                consume("LPAREN")
+                if peek() != "RPAREN":
+                    if not parse_expression():
+                        return False
+                    while peek() == "COMMA":
+                        consume("COMMA")
+                        if not parse_expression():
+                            return False
+                if not consume("RPAREN"):
+                    return False
+                callable_variable = False
+                continue
+            if peek() == "DOT":
+                consume("DOT")
+                if not consume("IDENT"):
+                    return False
+                callable_variable = False
+                continue
+            if peek() == "LBRACKET":
+                consume("LBRACKET")
+                if not parse_expression() or not consume("RBRACKET"):
+                    return False
+                callable_variable = False
+                continue
+            break
+        return True
+
+    def parse_primary() -> bool:
+        nonlocal position
+        if peek() in {"INT", "FLOAT"}:
+            if not _rulespec_numeric_token_is_executable(tokens[position]):
+                return False
+            position += 1
+            return True
+        if peek() == "STRING":
+            if not _rulespec_string_token_is_executable(tokens[position][1]):
+                return False
+            position += 1
+            return True
+        if peek() in {"TRUE", "FALSE", "IDENT", "PATH"}:
+            position += 1
+            return True
+        if consume("LPAREN"):
+            if not parse_expression() or not consume("RPAREN"):
+                return False
+            return True
+        return False
+
+    try:
+        return parse_expression() and peek() == "EOF"
+    except RecursionError:
+        return False
+
+
+def _evaluate_rulespec_formula(
+    text: str,
+    *,
+    environment: dict[str, Any],
+) -> Any:
+    """Evaluate the pinned expression subset without Python lexer semantics."""
+
+    if not _formula_leaf_has_executable_syntax(text):
+        return _UNRESOLVED_CONDITION_VALUE
+    tokens = _rulespec_formula_tokens(text)
+    if tokens is None:
+        return _UNRESOLVED_CONDITION_VALUE
+    position = 0
+    reference_marker = object()
+
+    def peek() -> str:
+        return tokens[position][0]
+
+    def consume(expected: str) -> tuple[str, str, int, int] | None:
+        nonlocal position
+        if peek() != expected:
+            return None
+        token = tokens[position]
+        position += 1
+        return token
+
+    def reference(name: str) -> tuple[object, str]:
+        return reference_marker, name
+
+    def is_reference(value: Any) -> bool:
+        return (
+            isinstance(value, tuple)
+            and len(value) == 2
+            and value[0] is reference_marker
+        )
+
+    def resolve(value: Any) -> Any:
+        if is_reference(value):
+            return environment.get(value[1], _UNRESOLVED_CONDITION_VALUE)
+        return value
+
+    def parse_expression() -> Any:
+        return parse_or()
+
+    def parse_or() -> Any:
+        value = parse_and()
+        while peek() == "OR":
+            consume("OR")
+            right = parse_and()
+            left_value = resolve(value)
+            right_value = resolve(right)
+            if left_value is _UNRESOLVED_CONDITION_VALUE:
+                value = left_value
+            elif not isinstance(left_value, bool):
+                value = _UNRESOLVED_CONDITION_VALUE
+            elif left_value:
+                value = True
+            elif right_value is _UNRESOLVED_CONDITION_VALUE:
+                value = right_value
+            elif not isinstance(right_value, bool):
+                value = _UNRESOLVED_CONDITION_VALUE
+            else:
+                value = right_value
+        return value
+
+    def parse_and() -> Any:
+        value = parse_comparison()
+        while peek() == "AND":
+            consume("AND")
+            right = parse_comparison()
+            left_value = resolve(value)
+            right_value = resolve(right)
+            if left_value is _UNRESOLVED_CONDITION_VALUE:
+                value = left_value
+            elif not isinstance(left_value, bool):
+                value = _UNRESOLVED_CONDITION_VALUE
+            elif not left_value:
+                value = False
+            elif right_value is _UNRESOLVED_CONDITION_VALUE:
+                value = right_value
+            elif not isinstance(right_value, bool):
+                value = _UNRESOLVED_CONDITION_VALUE
+            else:
+                value = right_value
+        return value
+
+    def parse_comparison() -> Any:
+        value = parse_addition()
+        if peek() not in {"LT", "GT", "LE", "GE", "EQ", "NE"}:
+            return value
+        operator = peek()
+        consume(operator)
+        right = parse_addition()
+        left_value = resolve(value)
+        right_value = resolve(right)
+        if (
+            left_value is _UNRESOLVED_CONDITION_VALUE
+            or right_value is _UNRESOLVED_CONDITION_VALUE
+        ):
+            return _UNRESOLVED_CONDITION_VALUE
+        left_number = _rulespec_runtime_decimal(left_value)
+        right_number = _rulespec_runtime_decimal(right_value)
+        if left_number is not None or right_number is not None:
+            if left_number is None or right_number is None:
+                return _UNRESOLVED_CONDITION_VALUE
+            left_value = left_number
+            right_value = right_number
+        else:
+            left_date = _rulespec_runtime_date(left_value)
+            right_date = _rulespec_runtime_date(right_value)
+            if left_date is not None or right_date is not None:
+                if left_date is None or right_date is None:
+                    return _UNRESOLVED_CONDITION_VALUE
+                left_value = left_date
+                right_value = right_date
+            elif not (
+                type(left_value) is type(right_value)
+                and isinstance(left_value, (bool, str))
+                and operator in {"EQ", "NE"}
+            ):
+                return _UNRESOLVED_CONDITION_VALUE
+        try:
+            if operator == "EQ":
+                return left_value == right_value
+            if operator == "NE":
+                return left_value != right_value
+            if operator == "LT":
+                return left_value < right_value
+            if operator == "GT":
+                return left_value > right_value
+            if operator == "LE":
+                return left_value <= right_value
+            return left_value >= right_value
+        except (TypeError, ValueError):
+            return _UNRESOLVED_CONDITION_VALUE
+
+    def parse_addition() -> Any:
+        value = parse_multiplication()
+        while peek() in {"PLUS", "MINUS"}:
+            operator = peek()
+            consume(operator)
+            right = parse_multiplication()
+            left_value = resolve(value)
+            right_value = resolve(right)
+            if (
+                left_value is _UNRESOLVED_CONDITION_VALUE
+                or right_value is _UNRESOLVED_CONDITION_VALUE
+            ):
+                value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            left_value = _rulespec_runtime_decimal(left_value)
+            right_value = _rulespec_runtime_decimal(right_value)
+            if left_value is None or right_value is None:
+                value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            try:
+                value = _rulespec_decimal_binary_operation(
+                    left_value,
+                    right_value,
+                    operator,
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                value = _UNRESOLVED_CONDITION_VALUE
+        return value
+
+    def parse_multiplication() -> Any:
+        value = parse_unary()
+        while peek() in {"STAR", "SLASH"}:
+            operator = peek()
+            consume(operator)
+            right = parse_unary()
+            left_value = resolve(value)
+            right_value = resolve(right)
+            if (
+                left_value is _UNRESOLVED_CONDITION_VALUE
+                or right_value is _UNRESOLVED_CONDITION_VALUE
+            ):
+                value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            left_value = _rulespec_runtime_decimal(left_value)
+            right_value = _rulespec_runtime_decimal(right_value)
+            if left_value is None or right_value is None:
+                value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            try:
+                value = _rulespec_decimal_binary_operation(
+                    left_value,
+                    right_value,
+                    operator,
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                value = _UNRESOLVED_CONDITION_VALUE
+        return value
+
+    def parse_unary() -> Any:
+        if peek() == "MINUS":
+            consume("MINUS")
+            value = resolve(parse_unary())
+            number = _rulespec_runtime_decimal(value)
+            if number is not None:
+                return -number
+            return _UNRESOLVED_CONDITION_VALUE
+        if peek() == "NOT":
+            consume("NOT")
+            value = resolve(parse_unary())
+            if value is _UNRESOLVED_CONDITION_VALUE:
+                return value
+            return not value if isinstance(value, bool) else _UNRESOLVED_CONDITION_VALUE
+        return parse_postfix()
+
+    def parse_postfix() -> Any:
+        value = parse_primary()
+        while True:
+            if peek() == "LPAREN":
+                consume("LPAREN")
+                arguments: list[Any] = []
+                if peek() != "RPAREN":
+                    arguments.append(resolve(parse_expression()))
+                    while peek() == "COMMA":
+                        consume("COMMA")
+                        arguments.append(resolve(parse_expression()))
+                consume("RPAREN")
+                function_name = value[1] if is_reference(value) else ""
+                value = evaluate_call(function_name, arguments)
+                continue
+            if peek() == "DOT":
+                consume("DOT")
+                consume("IDENT")
+                value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            if peek() == "LBRACKET":
+                consume("LBRACKET")
+                index = resolve(parse_expression())
+                consume("RBRACKET")
+                base = resolve(value)
+                if (
+                    base is _UNRESOLVED_CONDITION_VALUE
+                    or index is _UNRESOLVED_CONDITION_VALUE
+                ):
+                    value = _UNRESOLVED_CONDITION_VALUE
+                    continue
+                try:
+                    value = base[index]
+                except (IndexError, KeyError, TypeError):
+                    value = _UNRESOLVED_CONDITION_VALUE
+                continue
+            break
+        return value
+
+    def parse_primary() -> Any:
+        kind = peek()
+        if kind == "INT":
+            token = consume("INT")
+            if token is None:
+                return 0
+            digits = token[1].replace("_", "").lstrip("0") or "0"
+            return int(digits)
+        if kind == "FLOAT":
+            token = consume("FLOAT")
+            return (
+                _rulespec_decimal_token_value(token[1])
+                if token is not None
+                else Decimal(0)
+            )
+        if kind == "STRING":
+            token = consume("STRING")
+            return _rulespec_string_token_value(token[1]) if token is not None else ""
+        if kind == "TRUE":
+            consume("TRUE")
+            return True
+        if kind == "FALSE":
+            consume("FALSE")
+            return False
+        if kind in {"IDENT", "PATH"}:
+            token = consume(kind)
+            return reference(token[1]) if token is not None else reference("")
+        consume("LPAREN")
+        value = parse_expression()
+        consume("RPAREN")
+        return value
+
+    def evaluate_call(function_name: str, arguments: list[Any]) -> Any:
+        if any(value is _UNRESOLVED_CONDITION_VALUE for value in arguments):
+            return _UNRESOLVED_CONDITION_VALUE
+        numbers = [_rulespec_runtime_decimal(value) for value in arguments]
+        try:
+            if (
+                function_name == "min"
+                and numbers
+                and all(number is not None for number in numbers)
+            ):
+                return min(numbers)
+            if (
+                function_name == "max"
+                and numbers
+                and all(number is not None for number in numbers)
+            ):
+                return max(numbers)
+            if (
+                function_name == "floor"
+                and len(numbers) == 1
+                and numbers[0] is not None
+            ):
+                return math.floor(numbers[0])
+            if function_name == "ceil" and len(numbers) == 1 and numbers[0] is not None:
+                return math.ceil(numbers[0])
+        except (ArithmeticError, TypeError, ValueError):
+            pass
+        return _UNRESOLVED_CONDITION_VALUE
+
+    return resolve(parse_expression())
+
+
+def _rulespec_runtime_decimal(value: Any) -> Decimal | None:
+    """Apply pinned scalar numeric coercion without conflating booleans."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        candidate = value
+    elif isinstance(value, int):
+        candidate = Decimal(value)
+    elif isinstance(value, float) and math.isfinite(value):
+        candidate = Decimal(str(value))
+    else:
+        return None
+    if not candidate.is_finite():
+        return None
+    components = candidate.as_tuple()
+    exponent = components.exponent
+    if not isinstance(exponent, int):
+        return None
+    coefficient = components.digits
+    if not any(coefficient):
+        return Decimal(0)
+    trailing_zeros = 0
+    if exponent < 0:
+        trailing_zeros = next(
+            (index for index, digit in enumerate(reversed(coefficient)) if digit != 0),
+            len(coefficient),
+        )
+        if trailing_zeros:
+            coefficient = coefficient[:-trailing_zeros]
+            exponent += trailing_zeros
+            candidate = Decimal((components.sign, coefficient, exponent))
+    if exponent < -28:
+        return None
+    maximum = Decimal("79228162514264337593543950335")
+    if candidate.copy_abs() > maximum:
+        return None
+    maximum_coefficient = maximum.as_tuple().digits
+    if exponent < 0:
+        if len(coefficient) > len(maximum_coefficient) or (
+            len(coefficient) == len(maximum_coefficient)
+            and coefficient > maximum_coefficient
+        ):
+            return None
+    return candidate
+
+
+def _rulespec_runtime_date(value: Any) -> date | None:
+    """Preserve typed RuleSpec dates without retyping ordinary text."""
+
+    if type(value) is date:
+        return value
+    return None
+
+
+def _rulespec_decimal_binary_operation(
+    left: Decimal,
+    right: Decimal,
+    operator: str,
+) -> Decimal:
+    """Evaluate one rust_decimal-style operation without context truncation."""
+
+    with localcontext() as context:
+        context.prec = 64
+        if operator == "PLUS":
+            value = left + right
+        elif operator == "MINUS":
+            value = left - right
+        elif operator == "STAR":
+            value = left * right
+        else:
+            value = left / right
+        return _rulespec_decimal_result_value(value)
+
+
+def _rulespec_decimal_result_value(value: Decimal) -> Decimal:
+    """Fit an arithmetic result into the pinned 96-bit Decimal envelope."""
+
+    maximum = Decimal("79228162514264337593543950335")
+    if not value.is_finite():
+        raise InvalidOperation
+    with localcontext() as context:
+        context.prec = 64
+        for scale in range(28, -1, -1):
+            quantum = Decimal(1).scaleb(-scale)
+            rounded = value.quantize(quantum, rounding=ROUND_HALF_EVEN)
+            if abs(rounded.scaleb(scale)) <= maximum:
+                return rounded
+    raise InvalidOperation
+
+
+def _rulespec_decimal_token_value(source: str) -> Decimal:
+    """Round a valid literal as pinned rust_decimal ``FromStr`` does."""
+
+    normalized = source.replace("_", "")
+    precision = max(64, len(normalized) + 2)
+    maximum = Decimal("79228162514264337593543950335")
+    with localcontext() as context:
+        context.prec = precision
+        value = Decimal(normalized)
+        for scale in range(min(28, len(normalized.partition(".")[2])), -1, -1):
+            quantum = Decimal(1).scaleb(-scale)
+            rounded = value.quantize(quantum, rounding=ROUND_HALF_UP)
+            coefficient = rounded.scaleb(scale)
+            if coefficient <= maximum:
+                return rounded
+    return value
+
+
+def _rulespec_string_token_value(source: str) -> str:
+    """Decode exactly the escape set recognized by the pinned lexer."""
+
+    escapes = {
+        "\\": "\\",
+        '"': '"',
+        "'": "'",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    value: list[str] = []
+    cursor = 1
+    while cursor < len(source) - 1:
+        character = source[cursor]
+        if character == "\\" and cursor + 1 < len(source) - 1:
+            cursor += 1
+            escaped = source[cursor]
+            character = escapes.get(escaped, escaped)
+        value.append(character)
+        cursor += 1
+    return "".join(value)
+
+
+def _rulespec_string_token_is_executable(source: str) -> bool:
+    """Fail closed on the pinned lexer's escaped non-ASCII panic edge."""
+
+    return not any(
+        source[index] == "\\" and not source[index + 1].isascii()
+        for index in range(1, len(source) - 2)
+    )
+
+
+def _rulespec_formula_tokens(
+    text: str,
+) -> tuple[tuple[str, str, int, int], ...] | None:
+    """Tokenize the pinned RuleSpec formula language while preserving offsets."""
+
+    keywords = {
+        "entity": "ENTITY",
+        "amend": "AMEND",
+        "from": "FROM",
+        "to": "TO",
+        "match": "MATCH",
+        "if": "IF",
+        "elif": "ELIF",
+        "else": "ELSE",
+        "and": "AND",
+        "or": "OR",
+        "not": "NOT",
+        "true": "TRUE",
+        "True": "TRUE",
+        "false": "FALSE",
+        "False": "FALSE",
+    }
+    multi = {
+        "=>": "ARROW",
+        "<=": "LE",
+        ">=": "GE",
+        "==": "EQ",
+        "!=": "NE",
+        "->": "FK",
+    }
+    single = {
+        ":": "COLON",
+        ",": "COMMA",
+        ".": "DOT",
+        "=": "ASSIGN",
+        "+": "PLUS",
+        "-": "MINUS",
+        "*": "STAR",
+        "/": "SLASH",
+        "<": "LT",
+        ">": "GT",
+        "(": "LPAREN",
+        ")": "RPAREN",
+        "[": "LBRACKET",
+        "]": "RBRACKET",
+    }
+    tokens: list[tuple[str, str, int, int]] = []
+    cursor = 0
+    while cursor < len(text):
+        if text.startswith('"""', cursor):
+            end = text.find('"""', cursor + 3)
+            cursor = len(text) if end < 0 else end + 3
+            continue
+        character = text[cursor]
+        if character == "#":
+            newline = text.find("\n", cursor)
+            cursor = len(text) if newline < 0 else newline
+            continue
+        if character in " \t\n\r\x0b\x0c":
+            cursor += 1
+            continue
+        if (
+            character.isascii()
+            and character.isdigit()
+            and cursor + 10 <= len(text)
+            and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}",
+                text[cursor : cursor + 10],
+            )
+        ):
+            tokens.append(("DATE", text[cursor : cursor + 10], cursor, cursor + 10))
+            cursor += 10
+            continue
+        if character.isascii() and character.isdigit():
+            end = cursor
+            while end < len(text) and (
+                (text[end].isascii() and text[end].isdigit()) or text[end] == "_"
+            ):
+                end += 1
+            kind = "INT"
+            if end + 1 < len(text) and text[end] == "." and text[end + 1].isdigit():
+                kind = "FLOAT"
+                end += 1
+                while end < len(text) and (
+                    (text[end].isascii() and text[end].isdigit()) or text[end] == "_"
+                ):
+                    end += 1
+            tokens.append((kind, text[cursor:end], cursor, end))
+            cursor = end
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            end = cursor + 1
+            escaped = False
+            while end < len(text):
+                candidate = text[end]
+                if escaped:
+                    escaped = False
+                elif candidate == "\\":
+                    escaped = True
+                elif candidate == quote:
+                    end += 1
+                    break
+                end += 1
+            else:
+                return None
+            tokens.append(("STRING", text[cursor:end], cursor, end))
+            cursor = end
+            continue
+        if character.isascii() and (character.isalpha() or character == "_"):
+            end = cursor + 1
+            while (
+                end < len(text)
+                and text[end].isascii()
+                and (text[end].isalnum() or text[end] == "_")
+            ):
+                end += 1
+            path_end = end
+            is_path = False
+            while path_end < len(text) and text[path_end] == "/":
+                part_start = path_end + 1
+                if (
+                    part_start >= len(text)
+                    or not text[part_start].isascii()
+                    or not (text[part_start].isalpha() or text[part_start] == "_")
+                ):
+                    break
+                is_path = True
+                path_end = part_start + 1
+                while (
+                    path_end < len(text)
+                    and text[path_end].isascii()
+                    and (text[path_end].isalnum() or text[path_end] == "_")
+                ):
+                    path_end += 1
+            end = path_end if is_path else end
+            value = text[cursor:end]
+            tokens.append(
+                (
+                    "PATH" if is_path else keywords.get(value, "IDENT"),
+                    value,
+                    cursor,
+                    end,
+                )
+            )
+            cursor = end
+            continue
+        pair = text[cursor : cursor + 2]
+        if pair in multi:
+            tokens.append((multi[pair], pair, cursor, cursor + 2))
+            cursor += 2
+            continue
+        if character not in single:
+            return None
+        tokens.append((single[character], character, cursor, cursor + 1))
+        cursor += 1
+    tokens.append(("EOF", "", len(text), len(text)))
+    return tuple(tokens)
+
+
+def _rulespec_match_pattern_has_executable_syntax(text: str) -> bool:
+    tokens = _rulespec_formula_tokens(text)
+    return (
+        tokens is not None
+        and len(tokens) == 2
+        and _rulespec_match_pattern_token_is_executable(tokens[0])
+    )
+
+
+def _rulespec_match_pattern_token_is_executable(
+    token: tuple[str, str, int, int],
+) -> bool:
+    if token[0] in {"INT", "FLOAT"}:
+        return _rulespec_numeric_token_is_executable(token)
+    if token[0] == "STRING":
+        return _rulespec_string_token_is_executable(token[1])
+    return token[0] in {"TRUE", "FALSE", "IDENT"}
+
+
+def _rulespec_numeric_token_is_executable(
+    token: tuple[str, str, int, int],
+) -> bool:
+    """Check pinned i64/rust_decimal bounds without unbounded int parsing."""
+
+    kind, source, _start, _end = token
+    value = source.replace("_", "")
+    if kind == "INT":
+        digits = value.lstrip("0") or "0"
+        maximum = str(2**63 - 1)
+        return len(digits) < len(maximum) or (
+            len(digits) == len(maximum) and digits <= maximum
+        )
+    if kind != "FLOAT":
+        return False
+    whole, separator, fraction = value.partition(".")
+    if not separator:
+        return False
+    maximum = "79228162514264337593543950335"
+    whole = whole.lstrip("0") or "0"
+    if len(whole) != len(maximum):
+        return len(whole) < len(maximum)
+    if whole != maximum:
+        return whole < maximum
+    return not fraction or fraction[0] < "5"
 
 
 def _formula_execution_outcome(execution: _FormulaExecution) -> str:
@@ -13464,6 +14612,14 @@ def _formula_execution_references_names(
 
 
 def _same_formula_value(left: Any, right: Any) -> bool:
+    left_number = _rulespec_runtime_decimal(left)
+    right_number = _rulespec_runtime_decimal(right)
+    if left_number is not None or right_number is not None:
+        return (
+            left_number is not None
+            and right_number is not None
+            and left_number == right_number
+        )
     return type(left) is type(right) and left == right
 
 
@@ -13473,11 +14629,22 @@ def _mask_formula_strings(text: str) -> str:
     masked = list(text)
     quote: str | None = None
     escaped = False
-    for index, character in enumerate(text):
+    index = 0
+    while index < len(text):
+        if quote is None and text.startswith('"""', index):
+            end = text.find('"""', index + 3)
+            stop = len(text) if end < 0 else end + 3
+            for comment_index in range(index, stop):
+                if text[comment_index] != "\n":
+                    masked[comment_index] = " "
+            index = stop
+            continue
+        character = text[index]
         if quote is None:
             if character in {'"', "'"}:
                 quote = character
                 masked[index] = " "
+            index += 1
             continue
         if character != "\n":
             masked[index] = " "
@@ -13487,6 +14654,7 @@ def _mask_formula_strings(text: str) -> str:
             escaped = True
         elif character == quote:
             quote = None
+        index += 1
     return "".join(masked)
 
 
@@ -13503,6 +14671,51 @@ def _mask_formula_strings_and_comments(text: str) -> str:
         elif character == "#":
             in_comment = True
             masked[index] = " "
+    return "".join(masked)
+
+
+def _mask_formula_comments(text: str) -> str:
+    """Blank comments but preserve quoted content, offsets, and newlines."""
+
+    masked = list(text)
+    quote: str | None = None
+    escaped = False
+    in_comment = False
+    index = 0
+    while index < len(text):
+        if quote is None and not in_comment and text.startswith('"""', index):
+            end = text.find('"""', index + 3)
+            stop = len(text) if end < 0 else end + 3
+            for comment_index in range(index, stop):
+                if text[comment_index] != "\n":
+                    masked[comment_index] = " "
+            index = stop
+            continue
+        character = text[index]
+        if character == "\n":
+            in_comment = False
+            escaped = False
+            index += 1
+            continue
+        if in_comment:
+            masked[index] = " "
+            index += 1
+            continue
+        if quote is None:
+            if character in {'"', "'"}:
+                quote = character
+            elif character == "#":
+                in_comment = True
+                masked[index] = " "
+            index += 1
+            continue
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            quote = None
+        index += 1
     return "".join(masked)
 
 
@@ -13527,14 +14740,27 @@ def _match_arm_value(
     *,
     environment: dict[str, Any],
 ) -> Any:
-    if value == "true":
+    tokens = _rulespec_formula_tokens(value)
+    if (
+        tokens is None
+        or len(tokens) != 2
+        or not _rulespec_match_pattern_token_is_executable(tokens[0])
+    ):
+        return _UNRESOLVED_CONDITION_VALUE
+    kind, source, _start, _end = tokens[0]
+    if kind == "TRUE":
         return True
-    if value == "false":
+    if kind == "FALSE":
         return False
-    with contextlib.suppress(SyntaxError, ValueError):
-        return ast.literal_eval(value)
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-        return environment.get(value, _UNRESOLVED_CONDITION_VALUE)
+    if kind == "INT":
+        digits = source.replace("_", "").lstrip("0") or "0"
+        return int(digits)
+    if kind == "FLOAT":
+        return _rulespec_decimal_token_value(source)
+    if kind == "STRING":
+        return _rulespec_string_token_value(source)
+    if kind == "IDENT":
+        return environment.get(source, _UNRESOLVED_CONDITION_VALUE)
     return _UNRESOLVED_CONDITION_VALUE
 
 
@@ -13550,11 +14776,8 @@ def _formula_expression_is_definitely_zero(
             environment=environment,
         )
         value = _evaluate_condition_expression(simplified, environment)
-        return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and value == 0
-        )
+        number = _rulespec_runtime_decimal(value)
+        return number is not None and number == 0
     return False
 
 
@@ -13801,8 +15024,7 @@ def _formula_execution_binds_boundary(
     boundary_names = {
         name
         for name, value in formula_environment.items()
-        if isinstance(value, (int, float))
-        and not isinstance(value, bool)
+        if _rulespec_runtime_decimal(value) is not None
         and (
             numeric_value_is_grounded(float(value), (boundary,))
             or _is_adjacent_integral_boundary(float(value), boundary)
@@ -13966,7 +15188,7 @@ def _formula_node_boundary_value(
 ) -> float | None:
     if isinstance(node, ast.Name) and node.id in boundary_names:
         value = formula_environment.get(node.id)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if _rulespec_runtime_decimal(value) is not None:
             return float(value)
     if (
         isinstance(node, ast.Constant)
@@ -16708,11 +17930,8 @@ def _cases_differ_by_one_input(
 
 
 def _exception_effect_is_zero(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isclose(float(value), 0.0, abs_tol=1e-12)
-    )
+    number = _rulespec_runtime_decimal(value)
+    return number is not None and math.isclose(float(number), 0.0, abs_tol=1e-12)
 
 
 def _case_formula_execution_with_boolean_selector(
@@ -16751,7 +17970,10 @@ def _case_formula_execution_with_boolean_selector(
 
 def _formula_execution_runtime_value(execution: _FormulaExecution) -> Any:
     if execution.evaluated_value is not None:
-        _value_type, raw_value = execution.evaluated_value
+        value_type, raw_value = execution.evaluated_value
+        if value_type == "Decimal" and raw_value.startswith("Decimal('"):
+            with contextlib.suppress(InvalidOperation, ValueError):
+                return Decimal(raw_value[9:-2])
         with contextlib.suppress(SyntaxError, ValueError):
             return ast.literal_eval(raw_value)
     leaf_boolean = _boolean_value(execution.leaf.strip())
@@ -16780,10 +18002,8 @@ def _exception_effect_is_blocking(ordinary: Any, blocking: Any) -> bool:
     if ordinary_boolean is not None or blocking_boolean is not None:
         return ordinary_boolean is True and blocking_boolean is False
     if (
-        isinstance(ordinary, (int, float))
-        and not isinstance(ordinary, bool)
-        and isinstance(blocking, (int, float))
-        and not isinstance(blocking, bool)
+        _rulespec_runtime_decimal(ordinary) is not None
+        and _rulespec_runtime_decimal(blocking) is not None
     ):
         return float(blocking) < float(ordinary)
     return False
@@ -16823,10 +18043,10 @@ def _formula_execution_effect_signature(
     execution: _FormulaExecution,
 ) -> tuple[str, Any]:
     if execution.evaluated_value is not None:
-        value_type, raw_value = execution.evaluated_value
-        if value_type in {"int", "float"}:
-            with contextlib.suppress(InvalidOperation):
-                return "evaluated-number", Decimal(raw_value)
+        runtime_value = _formula_execution_runtime_value(execution)
+        numeric_value = _rulespec_runtime_decimal(runtime_value)
+        if numeric_value is not None:
+            return "evaluated-number", numeric_value
         return "evaluated", execution.evaluated_value
     return "leaf", _collapse_text(execution.leaf).lower()
 
@@ -17040,8 +18260,7 @@ def _fractional_rounding_case_witnesses(
                 evaluation_environment,
             )
             if (
-                not isinstance(operand_value, (int, float))
-                or isinstance(operand_value, bool)
+                _rulespec_runtime_decimal(operand_value) is None
                 or float(operand_value).is_integer()
                 or not _fractional_input_materially_affects_operand(
                     case,
@@ -17223,7 +18442,7 @@ def _fractional_input_materially_affects_operand(
     operand_names = set(_FORMULA_IDENTIFIER.findall(operand))
     uses_derived_operand = bool(operand_names & dependency_names)
     for key, value in inputs.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if _rulespec_runtime_decimal(value) is None:
             continue
         aliases = _input_key_names(key) & operand_names
         if not aliases and not uses_derived_operand:
@@ -17257,10 +18476,8 @@ def _fractional_input_materially_affects_operand(
             operand,
             changed_environment,
         )
-        if (
-            isinstance(changed_value, (int, float))
-            and not isinstance(changed_value, bool)
-            and not math.isclose(float(changed_value), operand_value)
+        if _rulespec_runtime_decimal(changed_value) is not None and not math.isclose(
+            float(changed_value), operand_value
         ):
             return True
     return False
@@ -17503,7 +18720,7 @@ def _numeric_test_input_values(value: Any) -> tuple[float, ...]:
     values: list[float] = []
     if isinstance(value, bool):
         return ()
-    if isinstance(value, (int, float)):
+    if _rulespec_runtime_decimal(value) is not None:
         return (float(value),)
     if isinstance(value, dict):
         for item in value.values():

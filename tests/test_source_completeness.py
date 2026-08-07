@@ -3,6 +3,8 @@ from __future__ import annotations
 import functools
 import hashlib
 import time
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -13911,7 +13913,7 @@ def test_match_formula_branches_require_distinct_arm_executions(inline: bool):
 (2) Bei Alleinstehenden ist der Betrag Einkommen * 3.
 """
     match_formula = (
-        'match filing_status: "married" => income * married_multiplier; '
+        'match filing_status: "married" => income * married_multiplier '
         '"single" => income * single_multiplier'
         if inline
         else """\
@@ -14088,6 +14090,1537 @@ def test_inline_elif_formula_reports_each_reachable_branch():
     )
 
 
+@pytest.mark.parametrize(
+    ("selector", "inputs", "expected_outcome"),
+    [
+        ("(if second: 1 else: 0) == 1", {"second": True}, "if:0/if:1"),
+        (
+            '(match status: "open" => 1 _ => 0) == 1',
+            {"status": "open"},
+            "match:0/if:1",
+        ),
+    ],
+)
+def test_inline_elif_reduces_nested_selector_before_outer_chain(
+    selector: str,
+    inputs: dict[str, object],
+    expected_outcome: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": (
+                        f"if first: first_amount elif ({selector}): "
+                        "second_amount else: fallback"
+                    )
+                }
+            ]
+        },
+        {"input": {"first": False, **inputs}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == expected_outcome
+    assert execution.leaf == "second_amount"
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "(if missing_gate: 1 else: 0) == 1",
+        '(match missing_status: "open" => 1 _ => 0) == 1',
+    ],
+)
+def test_inline_elif_does_not_evaluate_nested_selector_after_true_guard(
+    selector: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": (
+                        f"if first: first_amount elif ({selector}): "
+                        "second_amount else: fallback"
+                    )
+                }
+            ]
+        },
+        {"input": {"first": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+    assert execution.leaf == "first_amount"
+
+
+def test_multiline_condition_continuations_reach_both_formula_branches():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if individual_is_resident
+and eligible_for_federal_credit
+and adjusted_gross_income <= low_income_limit:
+  low_income_percentage * unreduced_federal_credit
+else: 0""",
+            }
+        ]
+    }
+    inputs = {
+        "individual_is_resident": True,
+        "eligible_for_federal_credit": True,
+        "adjusted_gross_income": 25000,
+        "low_income_limit": 25000,
+        "low_income_percentage": 0.25,
+        "unreduced_federal_credit": 1000,
+    }
+
+    reached = completeness_module._case_formula_execution(
+        rule,
+        {"input": inputs},
+    )
+    bypassed = completeness_module._case_formula_execution(
+        rule,
+        {"input": {**inputs, "individual_is_resident": False}},
+    )
+
+    assert reached is not None
+    assert completeness_module._formula_execution_outcome(reached) == "if:0"
+    assert reached.leaf == ("low_income_percentage * unreduced_federal_credit")
+    assert bypassed is not None
+    assert completeness_module._formula_execution_outcome(bypassed) == "if:1"
+    assert bypassed.leaf == "0"
+    assert bypassed.evaluates_to_zero
+
+
+def test_multiline_elif_condition_continuation_reaches_each_branch():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if first_gate
+and first_limit:
+  first_amount
+elif second_gate
+or fallback_gate:
+  second_amount
+else:
+  third_amount""",
+            }
+        ]
+    }
+
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {
+                "input": {
+                    "first_gate": True,
+                    "first_limit": True,
+                    "second_gate": False,
+                    "fallback_gate": False,
+                }
+            },
+        )
+        == "if:0"
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {
+                "input": {
+                    "first_gate": False,
+                    "first_limit": True,
+                    "second_gate": False,
+                    "fallback_gate": True,
+                }
+            },
+        )
+        == "if:1"
+    )
+    assert (
+        completeness_module._case_formula_branch_outcome(
+            rule,
+            {
+                "input": {
+                    "first_gate": False,
+                    "first_limit": True,
+                    "second_gate": False,
+                    "fallback_gate": False,
+                }
+            },
+        )
+        == "if:2"
+    )
+
+
+@pytest.mark.parametrize(
+    ("else_body", "expected_leaf"),
+    [
+        ('"zero"', '"zero"'),
+        ('"x" + suffix', '"x" + suffix'),
+    ],
+)
+def test_multiline_inline_else_preserves_quoted_body_offsets(
+    else_body: str,
+    expected_leaf: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": f"""\
+if enabled
+and eligible:
+  amount
+else: {else_body}""",
+                }
+            ]
+        },
+        {
+            "input": {
+                "enabled": False,
+                "eligible": True,
+                "suffix": "-amount",
+            }
+        },
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:1"
+    assert execution.leaf == expected_leaf
+
+
+def test_multiline_inline_else_allows_nested_rulespec_control_flow():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if enabled
+and eligible:
+  amount
+else: if inner: nested_amount else: fallback""",
+            }
+        ]
+    }
+
+    outer_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": True, "eligible": True}},
+    )
+    nested_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": False, "eligible": True, "inner": True}},
+    )
+
+    assert outer_execution is not None
+    assert completeness_module._formula_execution_outcome(outer_execution) == "if:0"
+    assert outer_execution.leaf == "amount"
+    assert nested_execution is not None
+    assert completeness_module._formula_execution_outcome(nested_execution) == (
+        "if:1/if:0"
+    )
+    assert nested_execution.leaf == "nested_amount"
+
+
+def test_multiline_inline_else_allows_nested_rulespec_match():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if enabled
+and eligible:
+  amount
+else: match status:
+  "open" => open_amount
+  _ => fallback""",
+            }
+        ]
+    }
+
+    outer_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": True, "eligible": True}},
+    )
+    nested_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": False, "eligible": True, "status": "open"}},
+    )
+
+    assert outer_execution is not None
+    assert completeness_module._formula_execution_outcome(outer_execution) == "if:0"
+    assert outer_execution.leaf == "amount"
+    assert nested_execution is not None
+    assert completeness_module._formula_execution_outcome(nested_execution) == (
+        "if:1/match:0"
+    )
+    assert nested_execution.leaf == "open_amount"
+
+
+def test_multiline_inline_else_allows_comment_before_indented_body():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+if enabled
+and eligible:
+  amount
+else: # explanatory comment
+  fallback""",
+                }
+            ]
+        },
+        {"input": {"enabled": False, "eligible": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:1"
+    assert execution.leaf == "fallback"
+
+
+def test_multiline_condition_allows_inline_then_body():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if enabled
+and eligible: amount
+else: fallback""",
+            }
+        ]
+    }
+
+    execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": True, "eligible": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+    assert execution.leaf == "amount"
+
+
+def test_multiline_condition_allows_nested_inline_then_with_newline_else():
+    rule = {
+        "versions": [
+            {
+                "formula": """\
+if outer:
+  if inner: nested_amount
+  else: inner_fallback
+else: outer_fallback""",
+            }
+        ]
+    }
+
+    outer_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"outer": False}},
+    )
+    nested_execution = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"outer": True, "inner": True}},
+    )
+
+    assert outer_execution is not None
+    assert completeness_module._formula_execution_outcome(outer_execution) == "if:1"
+    assert outer_execution.leaf == "outer_fallback"
+    assert nested_execution is not None
+    assert completeness_module._formula_execution_outcome(nested_execution) == (
+        "if:0/if:0"
+    )
+    assert nested_execution.leaf == "nested_amount"
+
+
+@pytest.mark.parametrize(
+    ("formula", "inputs", "expected_leaf"),
+    [
+        (
+            'if "open:case" == status: amount\nelse: fallback',
+            {"status": "open:case"},
+            "amount",
+        ),
+        (
+            'if enabled and\n"open" == status: amount\nelse: fallback',
+            {"enabled": True, "status": "open"},
+            "amount",
+        ),
+        (
+            "if not blocked\nand eligible: amount else: fallback",
+            {"blocked": False, "eligible": True},
+            "amount",
+        ),
+    ],
+)
+def test_multiline_condition_preserves_literal_offsets_and_inline_chain(
+    formula: str,
+    inputs: dict[str, object],
+    expected_leaf: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": inputs},
+    )
+
+    assert execution is not None
+    assert execution.leaf == expected_leaf
+
+
+def test_multiline_match_preserves_literal_selector_offset():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+match "open":
+  "open" => amount
+  _ => fallback"""
+                }
+            ]
+        },
+        {"input": {}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "match:0"
+    assert execution.leaf == "amount"
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        """\
+if enabled
+and eligible:
+  amount
+else: # no value""",
+        """\
+if enabled
+and eligible:
+  amount
+else: + suffix""",
+        """\
+if enabled
+and eligible:
+  amount""",
+        """\
+if enabled
+and eligible:
+  amount
+else:""",
+        """\
+if enabled
+and eligible:
+else: fallback""",
+        """\
+if enabled
+and eligible:
+  # no formula value
+else: fallback""",
+        """\
+if enabled
+and eligible:
+  amount
+elif alternate:
+  # no formula value
+else: fallback""",
+        """\
+if enabled
+and eligible:
+  amount another_amount
+else: fallback""",
+        """\
+if enabled
+and eligible:
+  amount
+else:
+  fallback another_fallback""",
+        """\
+if enabled
+and eligible:
+  amount
+else:
+  fallback
+elif alternate:
+  alternate_amount
+else:
+  final_amount""",
+        """\
+if enabled
+and eligible:
+  amount
+else:
+  fallback
+else:
+  final_amount""",
+    ],
+)
+def test_multiline_condition_execution_rejects_invalid_chains(formula: str):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {
+                "input": {
+                    "enabled": True,
+                    "eligible": True,
+                    "alternate": False,
+                    "suffix": 1,
+                }
+            },
+        )
+        is None
+    )
+
+
+def test_multiline_condition_execution_ignores_colons_in_comments():
+    formula = """\
+if enabled
+and eligible #:
+  amount
+else: fallback"""
+
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"enabled": True, "eligible": True}},
+        )
+        is None
+    )
+
+
+def test_formula_syntax_validation_scales_across_independent_conditionals():
+    formula = " + ".join(
+        f"(if flag_{index}: amount_{index} else: fallback_{index})"
+        for index in range(8)
+    )
+    inputs = {f"flag_{index}": True for index in range(8)}
+
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": inputs},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "/".join(
+        "if:0" for _index in range(8)
+    )
+    assert execution.leaf == " + ".join(f"(amount_{index})" for index in range(8))
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "base + if enabled: bonus else: 0",
+        "base * if enabled: factor else: 1",
+        "not if enabled: affirmative else: negative",
+    ],
+)
+def test_formula_execution_rejects_control_flow_outside_expression_entry(
+    formula: str,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        """\
+base +
+if enabled:
+  bonus
+else: 0""",
+        """\
+not
+if enabled:
+  affirmative
+else: negative""",
+        """\
+base +
+match status:
+  "open" => amount
+  _ => fallback""",
+    ],
+)
+def test_formula_execution_rejects_multiline_control_flow_outside_expression_entry(
+    formula: str,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"enabled": True, "status": "open"}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("formula", "inputs", "expected_outcome"),
+    [
+        (
+            "# explanation\nif enabled: amount else: fallback",
+            {"enabled": True},
+            "if:0",
+        ),
+        (
+            '# explanation\nmatch status: "open" => amount _ => fallback',
+            {"status": "open"},
+            "match:0",
+        ),
+    ],
+)
+def test_inline_control_flow_allows_leading_comment(
+    formula: str,
+    inputs: dict[str, object],
+    expected_outcome: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": inputs},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == expected_outcome
+
+
+def test_formula_execution_accepts_pinned_inline_match_arm_boundaries():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": ('match status: "open" => open_amount _ => fallback')}
+            ]
+        },
+        {"input": {"status": "open"}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "match:0"
+    assert execution.leaf == "open_amount"
+
+
+def test_formula_execution_preserves_parenthesized_nested_match_arms():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": (
+                        "match status: "
+                        '"open" => (match inner: true => inner_amount '
+                        "false => inner_fallback) _ => fallback"
+                    )
+                }
+            ]
+        },
+        {"input": {"status": "open", "inner": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == (
+        "match:0/match:0"
+    )
+    assert execution.leaf == "(inner_amount)"
+
+
+def test_formula_execution_rejects_semicolon_separated_match_arms():
+    assert (
+        completeness_module._case_formula_execution(
+            {
+                "versions": [
+                    {"formula": ('match status: "open" => open_amount; _ => fallback')}
+                ]
+            },
+            {"input": {"status": "open"}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("formula", "inputs"),
+    [
+        (
+            "if amount % divisor == 0: even_amount else: odd_amount",
+            {"amount": 4, "divisor": 2},
+        ),
+        (
+            "if status in allowed_statuses: amount else: 0",
+            {"status": "open", "allowed_statuses": ["open"]},
+        ),
+        (
+            "if minimum < income <= maximum: amount else: 0",
+            {"minimum": 0, "income": 5, "maximum": 10},
+        ),
+        (
+            """\
+if amount % divisor == 0
+and enabled:
+  even_amount
+else: odd_amount""",
+            {"amount": 4, "divisor": 2, "enabled": True},
+        ),
+        (
+            "match status in allowed_statuses: true => amount false => 0",
+            {"status": "open", "allowed_statuses": ["open"]},
+        ),
+    ],
+)
+def test_formula_execution_rejects_selectors_outside_pinned_grammar(
+    formula: str,
+    inputs: dict[str, object],
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": inputs},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("invalid_pattern", ["bad + pattern", "bad()", "1 + 2"])
+def test_formula_syntax_validation_rejects_invalid_match_patterns(
+    invalid_pattern: str,
+):
+    formula = f"""\
+match status:
+  "open" => open_amount
+  {invalid_pattern} => fallback"""
+
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"status": "closed"}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_leaf",
+    [
+        "1e3",
+        "1.2e3",
+        "0x10",
+        'r"quoted"',
+        "2025-10-10",
+        "f(value,)",
+        '"a" "b"',
+        "entity",
+        "amend",
+        "to",
+    ],
+)
+def test_formula_syntax_validation_rejects_python_only_lexemes(invalid_leaf: str):
+    formula = f"if enabled: {invalid_leaf} else: fallback"
+
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("valid_leaf", ["01", "1_"])
+def test_formula_execution_accepts_pinned_noncanonical_integer_lexemes(
+    valid_leaf: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if enabled: {valid_leaf} else: fallback"}]},
+        {"input": {"enabled": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+    assert execution.leaf == valid_leaf
+
+
+@pytest.mark.parametrize(
+    ("leaf", "accepted"),
+    [
+        ("9223372036854775807", True),
+        ("9223372036854775808", False),
+    ],
+)
+def test_formula_execution_enforces_pinned_numeric_literal_ranges(
+    leaf: str,
+    accepted: bool,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if enabled: {leaf} else: fallback"}]},
+        {"input": {"enabled": True}},
+    )
+
+    assert (execution is not None) is accepted
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "match status: 9223372036854775808 => amount _ => fallback",
+        "match status: 1 => amount 9223372036854775808 => fallback",
+        "match status: 79228162514264337593543950336.0 => amount _ => fallback",
+        "match status: 1 => amount 79228162514264337593543950335.6 => fallback",
+    ],
+)
+def test_formula_execution_enforces_pinned_match_pattern_numeric_ranges(
+    formula: str,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"status": 1}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "rounded",
+    [
+        "0.11111111111111111111111111111",
+        "0." + "9" * 5000,
+    ],
+    ids=["scale-29", "scale-5000"],
+)
+def test_formula_execution_accepts_pinned_rounded_decimal_precision(rounded: str):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if enabled: {rounded} else: fallback"}]},
+        {"input": {"enabled": True}},
+    )
+
+    assert execution is not None
+    assert execution.leaf == rounded
+
+
+def test_formula_execution_uses_exact_pinned_decimal_arithmetic():
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": "if 0.1 + 0.2 == 0.3: matched else: fallback"}]},
+        {"input": {}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        ("79228162514264337593543950335.0 - 1 == 79228162514264337593543950334.0"),
+        ("79228162514264337593543950334.0 + 1 == 79228162514264337593543950335.0"),
+        ("79228162514264337593543950335.0 / 1 == 79228162514264337593543950335.0"),
+    ],
+)
+def test_formula_execution_preserves_pinned_decimal_boundary_precision(
+    condition: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if {condition}: matched else: fallback"}]},
+        {"input": {}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        (date(2025, 1, 1), date(2026, 1, 1)),
+    ],
+)
+def test_formula_execution_orders_typed_rulespec_dates(start: date, end: date):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": "if start < end: matched else: fallback"}]},
+        {"input": {"start": start, "end": end}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+def test_formula_execution_does_not_retype_canonical_text_as_dates():
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": "if start < end: matched else: fallback"}]},
+            {"input": {"start": "2025-01-01", "end": "2026-01-01"}},
+        )
+        is None
+    )
+
+
+def test_formula_execution_rejects_datetime_as_pinned_date_scalar():
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": "if start < end: matched else: fallback"}]},
+            {
+                "input": {
+                    "start": datetime(2025, 1, 1),
+                    "end": datetime(2026, 1, 1),
+                }
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("0.0000000000000000000000000001 / 2 == 0", "if:0"),
+        (
+            "0.0000000000000000000000000003 * 0.5 == 0.0000000000000000000000000002",
+            "if:0",
+        ),
+    ],
+)
+def test_formula_execution_uses_pinned_decimal_arithmetic_tie_to_even(
+    condition: str,
+    expected: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if {condition}: matched else: fallback"}]},
+        {"input": {}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == expected
+
+
+def test_formula_effect_signature_normalizes_equal_decimal_scales():
+    rule = {"versions": [{"formula": "if enabled: 1.0 else: 1.00"}]}
+    left = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": True}},
+    )
+    right = completeness_module._case_formula_execution(
+        rule,
+        {"input": {"enabled": False}},
+    )
+
+    assert left is not None
+    assert right is not None
+    assert completeness_module._formula_execution_effect_signature(
+        left
+    ) == completeness_module._formula_execution_effect_signature(right)
+
+
+def test_formula_runtime_numeric_equality_is_exact():
+    assert completeness_module._formula_runtime_values_equal(1, 1.0)
+    assert not completeness_module._formula_runtime_values_equal(
+        0,
+        Decimal("0.0000000000001"),
+    )
+
+
+@pytest.mark.parametrize(
+    "runtime_value",
+    [
+        10**100,
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("0.00000000000000000000000000001"),
+    ],
+)
+def test_formula_execution_rejects_runtime_numbers_outside_pinned_decimal(
+    runtime_value: int | Decimal,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": "if amount > 0: matched else: fallback"}]},
+            {"input": {"amount": runtime_value}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("runtime_value", "literal"),
+    [
+        (
+            Decimal("79228162514264337593543950335"),
+            "79228162514264337593543950335.0",
+        ),
+        (
+            Decimal("79228162514264337593543950335.0"),
+            "79228162514264337593543950335.0",
+        ),
+        (Decimal("1.23000000000000000000000000000"), "1.23"),
+    ],
+)
+def test_formula_execution_accepts_exactly_normalizable_runtime_decimals(
+    runtime_value: Decimal,
+    literal: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if amount == {literal}: matched else: fallback"}]},
+        {"input": {"amount": runtime_value}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+@pytest.mark.parametrize(
+    ("runtime_value", "literal"),
+    [
+        (1, "1.0"),
+        (1.0, "1"),
+        (0.1, "0.1000000000000000000000000001"),
+    ],
+)
+def test_formula_execution_uses_pinned_numeric_comparison_coercion(
+    runtime_value: int | float,
+    literal: str,
+):
+    condition = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if amount == {literal}: matched else: fallback"}]},
+        {"input": {"amount": runtime_value}},
+    )
+    matched = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": (f"match amount: {literal} => matched _ => fallback")}
+            ]
+        },
+        {"input": {"amount": runtime_value}},
+    )
+    expected = "if:1" if literal.startswith("0.100") else "if:0"
+    match_expected = "match:1" if literal.startswith("0.100") else "match:0"
+
+    assert condition is not None
+    assert completeness_module._formula_execution_outcome(condition) == expected
+    assert matched is not None
+    assert completeness_module._formula_execution_outcome(matched) == match_expected
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "if amount == true: matched else: fallback",
+        "if amount != true: matched else: fallback",
+        "if text == 1: matched else: fallback",
+        'if "a" < "b": matched else: fallback',
+        "if false < 1: matched else: fallback",
+        "if false + 1 == 1: matched else: fallback",
+        'if "a" + "b" == "ab": matched else: fallback',
+        "if abs(amount) > 1: matched else: fallback",
+    ],
+)
+def test_formula_execution_rejects_pinned_runtime_type_errors(formula: str):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"amount": 1, "text": "1"}},
+        )
+        is None
+    )
+
+
+def test_formula_execution_rejects_bare_field_access_in_scalar_condition():
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": "if person.age >= 18: adult else: child"}]},
+            {"input": {"person": {"age": 20}}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("integer", ["01", "1_"])
+@pytest.mark.parametrize("multiline", [False, True])
+def test_formula_execution_evaluates_pinned_integer_selector_lexemes(
+    integer: str,
+    multiline: bool,
+):
+    condition = f"amount == {integer}"
+    formula = (
+        f"if {condition}\nand enabled: matched else: fallback"
+        if multiline
+        else f"if {condition}: matched else: fallback"
+    )
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": {"amount": 1, "enabled": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+    assert execution.leaf == "matched"
+
+
+@pytest.mark.parametrize("integer", ["01", "1_"])
+def test_formula_execution_evaluates_pinned_integer_match_patterns(integer: str):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": f"match amount: {integer} => matched _ => fallback"}
+            ]
+        },
+        {"input": {"amount": 1}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "match:0"
+    assert execution.leaf == "matched"
+
+
+@pytest.mark.parametrize(
+    ("literal", "runtime_value"),
+    [
+        (r'"\q"', "q"),
+        (r'"\x41"', "x41"),
+        (r'"\b"', "b"),
+    ],
+)
+def test_formula_execution_uses_pinned_string_escape_semantics(
+    literal: str,
+    runtime_value: str,
+):
+    condition = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if code == {literal}: matched else: fallback"}]},
+        {"input": {"code": runtime_value}},
+    )
+    matched = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": (f"match code: {literal} => matched _ => fallback")}
+            ]
+        },
+        {"input": {"code": runtime_value}},
+    )
+
+    assert condition is not None
+    assert completeness_module._formula_execution_outcome(condition) == "if:0"
+    assert matched is not None
+    assert completeness_module._formula_execution_outcome(matched) == "match:0"
+
+
+@pytest.mark.parametrize(
+    ("runtime_value", "expected_outcome"),
+    [
+        ("é", "match:0"),
+        ("Ã©", "match:1"),
+    ],
+)
+def test_formula_execution_preserves_pinned_utf8_string_semantics(
+    runtime_value: str,
+    expected_outcome: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": 'match code: "é" => matched _ => fallback'}]},
+        {"input": {"code": runtime_value}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == expected_outcome
+
+
+def test_formula_execution_fails_closed_on_escaped_non_ascii_string():
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": r'if code == "\é": matched else: fallback'}]},
+            {"input": {"code": "é"}},
+        )
+        is None
+    )
+
+
+def test_formula_execution_resolves_pinned_path_selector():
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": "if person/eligible: matched else: fallback"}]},
+        {"input": {"person/eligible": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+    assert execution.leaf == "matched"
+
+
+@pytest.mark.parametrize(
+    "path", ["foo/if", "foo/else", "foo/elif", "foo/match", "if/foo"]
+)
+def test_formula_execution_does_not_treat_path_segments_as_control_flow(path: str):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": path}]},
+        {"input": {path: 3}},
+    )
+
+    assert execution is not None
+    assert execution.leaf == path
+
+
+@pytest.mark.parametrize(
+    ("formula", "inputs", "expected"),
+    [
+        ("if(enabled): matched else: fallback", {"enabled": True}, "if:0"),
+        ("match(status): 1 => matched _ => fallback", {"status": 1}, "match:0"),
+    ],
+)
+def test_formula_execution_allows_parenthesized_selector_without_whitespace(
+    formula: str,
+    inputs: dict[str, object],
+    expected: str,
+):
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": inputs},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == expected
+
+
+def test_formula_execution_reduces_conditional_inside_match_selector_first():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": ("match (if inner: 1 else: 2): 1 => matched _ => fallback")}
+            ]
+        },
+        {"input": {"inner": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0/match:0"
+
+
+def test_formula_execution_allows_parenthesized_function_reference_call():
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": "if ((max))(1, 2) == 2: matched else: fallback"}]},
+        {"input": {}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+@pytest.mark.parametrize("whitespace", ["\u00a0", "\u2003", "\u2028"])
+def test_formula_execution_rejects_non_ascii_whitespace(whitespace: str):
+    formula = f"if enabled: amount{whitespace}+{whitespace}bonus else: fallback"
+
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
+def test_formula_execution_masks_pinned_triple_quoted_comments():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": (
+                        'if enabled: """ comment " if hidden: x else: y """ '
+                        "amount else: fallback"
+                    )
+                }
+            ]
+        },
+        {"input": {"enabled": True}},
+    )
+
+    assert execution is not None
+    assert completeness_module._formula_execution_outcome(execution) == "if:0"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_parenthesized_continued_if_header_stops_before_delimiter(enabled: bool):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+(if gate
+and eligible: then_amount else: else_amount)
++ adjustment"""
+                }
+            ]
+        },
+        {
+            "input": {
+                "gate": enabled,
+                "eligible": True,
+                "then_amount": 10,
+                "else_amount": 20,
+                "adjustment": 1,
+            }
+        },
+    )
+
+    assert execution is not None
+    expected = "then_amount" if enabled else "else_amount"
+    assert execution.leaf == f"({expected})\n+ adjustment"
+
+
+@pytest.mark.parametrize("parenthesized", [False, True])
+def test_formula_execution_allows_ascii_newline_after_if_keyword(
+    parenthesized: bool,
+):
+    branch = "if\n gate: matched else: fallback"
+    formula = f"({branch})\n+ adjustment" if parenthesized else branch
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": {"gate": True}},
+    )
+
+    assert execution is not None
+    assert "matched" in execution.leaf
+
+
+@pytest.mark.parametrize("parenthesized", [False, True])
+def test_formula_execution_allows_continued_match_header(parenthesized: bool):
+    branch = "match status\n: 1 => matched _ => fallback"
+    formula = f"({branch})\n+ adjustment" if parenthesized else branch
+    execution = completeness_module._case_formula_execution(
+        {"versions": [{"formula": formula}]},
+        {"input": {"status": 1}},
+    )
+
+    assert execution is not None
+    assert "matched" in execution.leaf
+
+
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        "9" * 5000,
+    ],
+)
+def test_formula_execution_rejects_unbounded_numeric_literals_without_error(
+    leaf: str,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": f"if enabled: {leaf} else: fallback"}]},
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
+def test_formula_execution_accepts_bounded_integer_with_many_leading_zeros():
+    integer = "0" * 5000 + "1"
+    selected = completeness_module._case_formula_execution(
+        {"versions": [{"formula": f"if enabled: {integer} else: fallback"}]},
+        {"input": {"enabled": True}},
+    )
+    matched = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": f"match amount: {integer} => matched _ => fallback"}
+            ]
+        },
+        {"input": {"amount": 1}},
+    )
+
+    assert selected is not None
+    assert matched is not None
+    assert completeness_module._formula_execution_outcome(matched) == "match:0"
+
+
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        "(" * 5000 + "1" + ")" * 5000,
+        "not " * 5000 + "true",
+    ],
+    ids=["parentheses", "unary"],
+)
+def test_formula_execution_rejects_excessive_expression_depth_without_error(
+    leaf: str,
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": f"if enabled: {leaf} else: fallback"}]},
+            {"input": {"enabled": True}},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("formula", "inputs"),
+    [
+        ("if enabled: amount else: fallback another", {"enabled": True}),
+        ("if enabled: amount another else: fallback", {"enabled": False}),
+        ("if enabled: amount else: fallback if broken", {"enabled": True}),
+        ("if enabled: amount else: match broken", {"enabled": True}),
+        ("if enabled: amount else: if broken", {"enabled": True}),
+        (
+            "if enabled: amount else: fallback + if broken: x else: y",
+            {"enabled": True},
+        ),
+        (
+            """\
+if outer:
+  amount
+else:
+  if inner: nested_amount else: fallback another""",
+            {"outer": True},
+        ),
+    ],
+)
+def test_formula_execution_rejects_invalid_unselected_branch_subtrees(
+    formula: str,
+    inputs: dict[str, object],
+):
+    assert (
+        completeness_module._case_formula_execution(
+            {"versions": [{"formula": formula}]},
+            {"input": inputs},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_inline_if_newline_continuation_belongs_to_else_expression(enabled: bool):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+if gate
+and eligible: then_amount else: else_amount
++ adjustment"""
+                }
+            ]
+        },
+        {
+            "input": {
+                "gate": enabled,
+                "eligible": True,
+                "then_amount": 10,
+                "else_amount": 20,
+                "adjustment": 1,
+            }
+        },
+    )
+
+    assert execution is not None
+    assert execution.leaf == ("then_amount" if enabled else "else_amount\n+ adjustment")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_parenthesized_inline_if_newline_continuation_is_outside_branch(
+    enabled: bool,
+):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+(if gate: then_amount else: else_amount)
++ adjustment"""
+                }
+            ]
+        },
+        {
+            "input": {
+                "gate": enabled,
+                "then_amount": 10,
+                "else_amount": 20,
+                "adjustment": 1,
+            }
+        },
+    )
+
+    assert execution is not None
+    expected_branch = "then_amount" if enabled else "else_amount"
+    assert execution.leaf == f"({expected_branch})\n+ adjustment"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_multiline_if_inside_parentheses_stops_before_closing_delimiter(enabled: bool):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+base + (if enabled:
+  bonus
+else:
+  0)"""
+                }
+            ]
+        },
+        {"input": {"enabled": enabled}},
+    )
+
+    assert execution is not None
+    selected = "bonus" if enabled else "0"
+    assert execution.leaf == f"base + ({selected})"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_multiline_if_newline_continuation_belongs_to_final_else(enabled: bool):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+if enabled:
+  yes
+else:
+  no
++ adjustment"""
+                }
+            ]
+        },
+        {"input": {"enabled": enabled}},
+    )
+
+    assert execution is not None
+    assert execution.leaf == ("yes" if enabled else "no\n+ adjustment")
+
+
+@pytest.mark.parametrize("status", [1, 2])
+def test_multiline_match_newline_continuation_belongs_to_final_arm(status: int):
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {
+                    "formula": """\
+match status:
+  1 => yes
+  _ => no
++ adjustment"""
+                }
+            ]
+        },
+        {"input": {"status": status}},
+    )
+
+    assert execution is not None
+    assert execution.leaf == ("yes" if status == 1 else "no\n+ adjustment")
+
+
+def test_formula_execution_marks_pinned_decimal_underflow_as_zero():
+    execution = completeness_module._case_formula_execution(
+        {
+            "versions": [
+                {"formula": "if enabled: 0.00000000000000000000000000001 else: 1"}
+            ]
+        },
+        {"input": {"enabled": True}},
+    )
+
+    assert execution is not None
+    assert execution.evaluates_to_zero
+
+
 def test_formula_execution_fails_closed_on_non_boolean_guard_and_alias_conflict():
     rule = {
         "versions": [
@@ -14118,7 +15651,7 @@ def test_match_uses_last_arm_as_runtime_fallback():
         "versions": [
             {
                 "formula": (
-                    'match filing_status: "married" => joint_amount; '
+                    'match filing_status: "married" => joint_amount '
                     '"single" => single_amount'
                 ),
             }
@@ -14149,7 +15682,7 @@ def test_bare_match_patterns_resolve_as_runtime_names(
         "versions": [
             {
                 "formula": (
-                    f"match status: {pattern} => married_amount; "
+                    f"match status: {pattern} => married_amount "
                     '"fallback" => fallback_amount'
                 ),
             }
@@ -16427,7 +17960,7 @@ rules:
     versions:
       - effective_from: '2026-01-01'
         formula: >-
-          match status: special_status => income * first_multiplier;
+          match status: special_status => income * first_multiplier
           "single" => income * second_multiplier
 """
     cases = [
@@ -17144,12 +18677,12 @@ def test_judgment_boundary_polarity_is_checked(
     ("formula", "endpoint_output", "expected_issue"),
     [
         (
-            "match income <= income_limit: true => true; false => false",
+            "match income <= income_limit: true => true false => false",
             True,
             False,
         ),
         (
-            "match income <= income_limit: true => false; false => true",
+            "match income <= income_limit: true => false false => true",
             False,
             True,
         ),
@@ -18984,13 +20517,13 @@ def test_conditional_nonapplicability_still_requires_paired_cases():
     ("formula", "ordinary_output", "exception_output", "expected_issue"),
     [
         (
-            "match exemption_applies: true => false; false => true",
+            "match exemption_applies: true => false false => true",
             True,
             False,
             False,
         ),
         (
-            "match exemption_applies: true => true; false => false",
+            "match exemption_applies: true => true false => false",
             False,
             True,
             True,
@@ -19103,7 +20636,7 @@ def test_positive_ordinary_selector_is_false_active_for_ineligibility(
         (
             "(1) Der Anspruch gilt nicht, wenn eine Befreiung vorliegt.",
             "eligible",
-            "match eligible: true => false; false => true",
+            "match eligible: true => false false => true",
             True,
             False,
         ),
