@@ -13061,7 +13061,6 @@ b) Von 74 Euro an: Einkommen * 3.
         active_branches=branches,
         deferred_paths=set(),
     )
-
     obligations = completeness_module._source_boundary_obligations(
         branches,
         narrative_formula_branches=formula_branches,
@@ -16879,6 +16878,37 @@ rules:
     assert _has_issue(continuation_missing, "boundary", "test")
     assert _has_issue(bypassed_comparator, "boundary", "test")
     assert _has_issue(unused_boundary_input, "boundary", "test")
+
+
+def test_nested_child_boundaries_are_not_duplicated_on_parent_chapeaux():
+    source = """\
+A.(1)(a) If adjusted gross income is at most $25,000, the credit is 50 percent of the federal credit.
+(b) The credit is allowed whether or not the federal credit was claimed.
+(2) If adjusted gross income is more than $25,000 and at most $35,000, the credit is 30 percent of the federal credit.
+B. End.
+"""
+    branches = recognize_source_structure(source)
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    boundary_branches = tuple(
+        branch for branch in branches if branch.path != ("a", "1")
+    )
+
+    obligations = completeness_module._source_boundary_obligations(
+        boundary_branches,
+        narrative_formula_branches=formula_branches,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert [(branch.path, occurrence.value) for branch, occurrence in obligations] == [
+        (("a", "1", "a"), 25000.0),
+        (("a", "2"), 25000.0),
+        (("a", "2"), 35000.0),
+    ]
 
 
 def test_exception_toggle_must_change_the_reached_formula_effect():
@@ -20824,6 +20854,247 @@ def test_arithmetic_if_clause_is_formula_evidence_not_exception_toggle():
 
     assert len(formula_branches) == 1
     assert not exception_branches
+
+
+def test_boundary_witness_follows_asserted_reached_local_dependency():
+    text = "B.(1) The credit applies when income is at most 100 dollars."
+    branch = completeness_module.SourceStructureBranch(
+        ("b", "1"),
+        "paragraph",
+        "B.(1)",
+        text,
+        0,
+        len(text),
+    )
+    boundary = next(
+        occurrence
+        for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(branch.text)
+        if occurrence.value == 100
+    )
+    principal_rules = {
+        "low_income_applies": {
+            "name": "low_income_applies",
+            "kind": "derived",
+            "dtype": "Judgment",
+            "versions": [{"formula": "income <= income_limit"}],
+        },
+        "credit_amount": {
+            "name": "credit_amount",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [{"formula": "if low_income_applies: base_credit else: 0"}],
+        },
+    }
+    case = {
+        "name": "endpoint",
+        "period": "2026",
+        "input": {"income": 100, "base_credit": 50},
+        "output": {"low_income_applies": "holds", "credit_amount": 50},
+    }
+    common = {
+        "principal_rules": principal_rules,
+        "principal_rule_paths": {
+            "low_income_applies": {("a", "1")},
+            "credit_amount": {("b", "1")},
+        },
+        "numeric_value_is_grounded": numeric_value_is_grounded,
+        "formula_environment": {"income_limit": 100},
+        "extract_numeric_occurrences": EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    }
+
+    witnessed = completeness_module._branch_boundary_test_witnesses(
+        branch,
+        boundary,
+        asserted_by_rule={
+            "low_income_applies": [case],
+            "credit_amount": [case],
+        },
+        **common,
+    )
+    missing_dependency_assertion = {
+        **case,
+        "output": {"credit_amount": 50},
+    }
+    unwitnessed = completeness_module._branch_boundary_test_witnesses(
+        branch,
+        boundary,
+        asserted_by_rule={
+            "low_income_applies": [],
+            "credit_amount": [missing_dependency_assertion],
+        },
+        **common,
+    )
+
+    assert witnessed
+    assert not unwitnessed
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "if refund_applies: max(0, credit_amount - tax_liability) else: 0",
+        ("if credit_amount > tax_liability: credit_amount - tax_liability else: 0"),
+    ],
+)
+def test_credit_exceeds_liability_pair_witnesses_relational_trigger(
+    formula: str,
+):
+    witnesses, branch = _credit_liability_exception_witnesses(formula=formula)
+
+    assert any(
+        completeness_module._numeric_exception_witness_matches_source(
+            branch,
+            witness,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )
+        for witness in witnesses
+    )
+
+
+def test_relational_exception_witness_rejects_reversed_source_operands():
+    witnesses, branch = _credit_liability_exception_witnesses()
+    text = "B.(1) If the tax liability exceeds the credit, no refund is due."
+    reversed_branch = completeness_module.SourceStructureBranch(
+        branch.path,
+        branch.kind,
+        branch.label,
+        text,
+        0,
+        len(text),
+    )
+
+    assert not any(
+        completeness_module._numeric_exception_witness_matches_source(
+            reversed_branch,
+            witness,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )
+        for witness in witnesses
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "period_mismatch",
+        "key_mismatch",
+        "output_key_mismatch",
+        "two_inputs",
+        "missing_affected_output",
+        "missing_asserted_dependency",
+        "wrong_runtime",
+        "unchanged_runtime",
+        "irrelevant_input",
+        "same_side_relation",
+    ],
+)
+def test_credit_liability_relational_witness_preserves_pair_guards(
+    mutation: str,
+):
+    witnesses, branch = _credit_liability_exception_witnesses(mutation=mutation)
+
+    assert not any(
+        completeness_module._numeric_exception_witness_matches_source(
+            branch,
+            witness,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )
+        for witness in witnesses
+    )
+
+
+def _credit_liability_exception_witnesses(
+    *,
+    formula: str = ("if refund_applies: max(0, credit_amount - tax_liability) else: 0"),
+    mutation: str | None = None,
+):
+    principal_rules = {
+        "credit_amount": {
+            "name": "credit_amount",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [{"formula": "raw_credit"}],
+        },
+        "refund_amount": {
+            "name": "refund_amount",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [{"formula": formula}],
+        },
+    }
+    left = {
+        "name": "positive excess",
+        "period": "2026",
+        "input": {
+            "refund_applies": True,
+            "raw_credit": 500,
+            "tax_liability": 300,
+        },
+        "output": {"credit_amount": 500, "refund_amount": 200},
+    }
+    right = {
+        "name": "equality",
+        "period": "2026",
+        "input": {
+            "refund_applies": True,
+            "raw_credit": 500,
+            "tax_liability": 500,
+        },
+        "output": {"credit_amount": 500, "refund_amount": 0},
+    }
+    right = {
+        **right,
+        "input": dict(right["input"]),
+        "output": dict(right["output"]),
+    }
+    if mutation == "period_mismatch":
+        right["period"] = "2027"
+    elif mutation == "key_mismatch":
+        right["input"]["extra"] = 1
+    elif mutation == "output_key_mismatch":
+        right["output"].pop("credit_amount")
+    elif mutation == "two_inputs":
+        right["input"]["refund_applies"] = False
+    elif mutation == "missing_affected_output":
+        left["output"].pop("refund_amount")
+        right["output"].pop("refund_amount")
+    elif mutation == "missing_asserted_dependency":
+        left["output"].pop("credit_amount")
+        right["output"].pop("credit_amount")
+    elif mutation == "wrong_runtime":
+        right["output"]["refund_amount"] = 1
+    elif mutation == "unchanged_runtime":
+        principal_rules["refund_amount"]["versions"][0]["formula"] = (
+            "if refund_applies: 10 + (0 * tax_liability) else: 0"
+        )
+        left["output"]["refund_amount"] = 10
+        right["output"]["refund_amount"] = 10
+    elif mutation == "irrelevant_input":
+        right["input"]["tax_liability"] = 300
+        right["input"]["raw_credit"] = 600
+        right["output"] = {"credit_amount": 600, "refund_amount": 300}
+    elif mutation == "same_side_relation":
+        right["input"]["tax_liability"] = 400
+        right["output"]["refund_amount"] = 100
+
+    witnesses = completeness_module._toggled_formula_numeric_selectors(
+        principal_rules,
+        asserted_by_rule={"refund_amount": [left, right]},
+        formula_environment={},
+    )
+    text = (
+        "B.(1) If the credit exceeds the amount of the individual's tax "
+        "liability, the excess shall constitute an overpayment."
+    )
+    branch = completeness_module.SourceStructureBranch(
+        ("b", "1"),
+        "paragraph",
+        "B.(1)",
+        text,
+        0,
+        len(text),
+    )
+    return witnesses, branch
 
 
 def test_formula_clause_with_explicit_carveout_keeps_exception_obligation():

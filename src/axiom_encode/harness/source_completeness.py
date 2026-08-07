@@ -195,6 +195,7 @@ class _ExceptionWitness:
     boolean_effect: bool
     zeroes: bool
     numeric_transition: tuple[float, float] | None
+    relational_transitions: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -15395,9 +15396,6 @@ def _branch_boundary_test_witnesses(
     )
     for rule_name in _rules_covering_branch(branch, principal_rule_paths):
         rule = principal_rules[rule_name]
-        selector_names = _rule_numeric_selector_names(rule)
-        if not selector_names:
-            continue
         for case in asserted_by_rule.get(rule_name, ()):
             dependency_environment = _case_asserted_dependency_environment(
                 principal_rules,
@@ -15410,45 +15408,101 @@ def _branch_boundary_test_witnesses(
                 formula_environment=formula_environment,
                 dependency_environment=dependency_environment,
             )
-            if execution is not None and any(
-                numeric_value_is_grounded(value, (boundary,))
-                and _formula_execution_references_names(
-                    execution,
-                    input_names,
-                )
-                and _formula_execution_binds_boundary(
-                    execution,
-                    boundary,
-                    input_names=input_names,
-                    formula_environment=execution.constant_environment,
-                    source_interval=source_interval,
-                    source_boolean_polarity=source_boolean_polarity,
-                    extract_numeric_occurrences=(extract_numeric_occurrences),
-                    numeric_value_is_grounded=(numeric_value_is_grounded),
-                )
-                and _boundary_case_changes_formula_effect(
-                    rule,
-                    case,
-                    input_key=input_key,
-                    selector_names=input_names,
-                    boundary_value=value,
-                    execution=execution,
-                    principal_rules=principal_rules,
-                    dependency_names=set(dependency_environment),
-                    formula_environment=formula_environment or {},
-                    source_interval=source_interval,
-                    source_boolean_polarity=source_boolean_polarity,
-                )
-                for input_key, input_names, value in (
-                    _case_numeric_selector_evidence(
-                        case,
-                        selector_names,
-                        dependency_environment=dependency_environment,
-                    )
-                )
+            if execution is None:
+                continue
+            for (
+                controller_rule,
+                controller_execution,
+            ) in _asserted_reached_rule_executions(
+                rule,
+                execution,
+                principal_rules=principal_rules,
+                case=case,
+                dependency_environment=dependency_environment,
+                formula_environment=formula_environment or {},
             ):
-                witnesses.add((rule_name, f"case:{id(case)}"))
+                selector_names = _rule_numeric_selector_names(controller_rule)
+                if selector_names and any(
+                    numeric_value_is_grounded(value, (boundary,))
+                    and _formula_execution_references_names(
+                        controller_execution,
+                        input_names,
+                    )
+                    and _formula_execution_binds_boundary(
+                        controller_execution,
+                        boundary,
+                        input_names=input_names,
+                        formula_environment=(controller_execution.constant_environment),
+                        source_interval=source_interval,
+                        source_boolean_polarity=source_boolean_polarity,
+                        extract_numeric_occurrences=(extract_numeric_occurrences),
+                        numeric_value_is_grounded=(numeric_value_is_grounded),
+                    )
+                    and _boundary_case_changes_formula_effect(
+                        controller_rule,
+                        case,
+                        input_key=input_key,
+                        selector_names=input_names,
+                        boundary_value=value,
+                        execution=controller_execution,
+                        principal_rules=principal_rules,
+                        dependency_names=set(dependency_environment),
+                        formula_environment=formula_environment or {},
+                        source_interval=source_interval,
+                        source_boolean_polarity=source_boolean_polarity,
+                    )
+                    for input_key, input_names, value in (
+                        _case_numeric_selector_evidence(
+                            case,
+                            selector_names,
+                            dependency_environment=dependency_environment,
+                        )
+                    )
+                ):
+                    witnesses.add((rule_name, f"case:{id(case)}"))
+                    break
     return witnesses
+
+
+def _asserted_reached_rule_executions(
+    root_rule: dict[str, Any],
+    root_execution: _FormulaExecution,
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    case: dict[str, Any],
+    dependency_environment: dict[str, Any],
+    formula_environment: dict[str, Any],
+) -> tuple[tuple[dict[str, Any], _FormulaExecution], ...]:
+    """Return the root and asserted local dependencies its reached path uses."""
+
+    reached: list[tuple[dict[str, Any], _FormulaExecution]] = [
+        (root_rule, root_execution)
+    ]
+    pending = [root_execution]
+    seen_names: set[str] = set()
+    while pending:
+        parent_execution = pending.pop()
+        for name in sorted(set(dependency_environment) - seen_names):
+            if not _formula_execution_references_names(parent_execution, {name}):
+                continue
+            dependency_rule = principal_rules.get(name)
+            if dependency_rule is None:
+                continue
+            dependency_execution = _case_formula_execution(
+                dependency_rule,
+                case,
+                formula_environment=formula_environment,
+                dependency_environment=dependency_environment,
+            )
+            if dependency_execution is None or not _formula_runtime_values_equal(
+                _formula_execution_runtime_value(dependency_execution),
+                dependency_environment[name],
+            ):
+                continue
+            seen_names.add(name)
+            reached.append((dependency_rule, dependency_execution))
+            pending.append(dependency_execution)
+    return tuple(reached)
 
 
 def _branch_boundary_has_test_evidence(
@@ -17899,6 +17953,17 @@ def _numeric_exception_witness_matches_source(
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> bool:
+    condition_text = _source_exception_condition_text(branch.text)
+    if any(
+        _source_relational_exception_matches(
+            condition_text,
+            left_name=left_name,
+            relation=relation,
+            right_name=right_name,
+        )
+        for left_name, relation, right_name in witness.relational_transitions
+    ):
+        return True
     transition = witness.numeric_transition
     if transition is None:
         return False
@@ -17912,6 +17977,65 @@ def _numeric_exception_witness_matches_source(
     return not _interval_contains(interval, ordinary_value) and _interval_contains(
         interval, exception_value
     )
+
+
+def _source_relational_exception_matches(
+    text: str,
+    *,
+    left_name: str,
+    relation: str,
+    right_name: str,
+) -> bool:
+    """Match a reached formula relation to a source-stated relational trigger."""
+
+    if relation == "<":
+        left_name, relation, right_name = right_name, ">", left_name
+    elif relation == "<=":
+        left_name, relation, right_name = right_name, ">=", left_name
+    collapsed = _collapse_text(text).lower()
+    relation_match = re.search(
+        r"\b(?:exceeds?\s+or\s+equals?|is\s+(?:greater|more)\s+than\s+or\s+equal\s+to)\b",
+        collapsed,
+    )
+    source_relation = ">=" if relation_match is not None else None
+    if relation_match is None:
+        relation_match = re.search(
+            r"\b(?:exceeds?|is\s+(?:greater|more)\s+than|übersteigt)\b",
+            collapsed,
+        )
+        source_relation = ">" if relation_match is not None else None
+    if relation_match is None:
+        return False
+    left_matches = _source_relational_operand_matches(collapsed, left_name)
+    right_matches = _source_relational_operand_matches(collapsed, right_name)
+    return source_relation == relation and any(
+        left.end() <= relation_match.start()
+        and relation_match.end() <= right.start()
+        and relation_match.start() - left.end() <= 240
+        and right.start() - relation_match.end() <= 240
+        for left in left_matches
+        for right in right_matches
+    )
+
+
+def _source_relational_operand_matches(
+    text: str,
+    name: str,
+) -> tuple[re.Match[str], ...]:
+    normalized = _normalized_selector_name(name)
+    aliases = {
+        "credit": r"\bcredit\b",
+        "liability": r"\b(?:liabilit\w*|tax(?:es)?\s+(?:due|owed)|amount\s+of\s+(?:the\s+)?tax)\b",
+    }
+    matches = list(_source_selector_concept_matches(text, normalized))
+    matches.extend(
+        match
+        for concept, pattern in aliases.items()
+        for match in re.finditer(pattern, text)
+        if concept in normalized
+    )
+    unique = {(match.start(), match.end(), match.group(0)): match for match in matches}
+    return tuple(unique[key] for key in sorted(unique))
 
 
 def _normalized_selector_name(name: str) -> str:
@@ -18119,9 +18243,12 @@ def _toggled_formula_numeric_selectors(
         selector_names = _rule_numeric_selector_names(rule)
         for left_index, left_case in enumerate(asserted_by_rule.get(rule_name, ())):
             for right_case in asserted_by_rule[rule_name][left_index + 1 :]:
-                if _normalized_case_period(left_case) != _normalized_case_period(
-                    right_case
-                ) or not _cases_differ_by_one_input(left_case, right_case):
+                if (
+                    _normalized_case_period(left_case)
+                    != _normalized_case_period(right_case)
+                    or not _cases_differ_by_one_input(left_case, right_case)
+                    or not _cases_have_same_output_keys(left_case, right_case)
+                ):
                     continue
                 left_inputs = left_case.get("input")
                 right_inputs = right_case.get("input")
@@ -18160,6 +18287,23 @@ def _toggled_formula_numeric_selectors(
                     right_case,
                     formula_environment=formula_environment,
                 )
+                stable_asserted_dependencies = (
+                    _case_pair_stable_asserted_formula_dependencies(
+                        rule_name,
+                        rule,
+                        principal_rules=principal_rules,
+                        left_case=left_case,
+                        right_case=right_case,
+                    )
+                )
+                left_dependencies = {
+                    **stable_asserted_dependencies,
+                    **left_dependencies,
+                }
+                right_dependencies = {
+                    **stable_asserted_dependencies,
+                    **right_dependencies,
+                }
                 left_execution = _case_formula_execution(
                     rule,
                     left_case,
@@ -18174,14 +18318,35 @@ def _toggled_formula_numeric_selectors(
                 )
                 if left_execution is None or right_execution is None:
                     continue
+                (
+                    left_to_right_relations,
+                    right_to_left_relations,
+                ) = _formula_relational_transitions(
+                    left_execution,
+                    right_execution,
+                    left_case=left_case,
+                    right_case=right_case,
+                    left_dependencies=left_dependencies,
+                    right_dependencies=right_dependencies,
+                    formula_environment=formula_environment,
+                    changed_names=changed_names,
+                )
+                positive_part_relations = _formula_positive_part_relation_descriptors(
+                    left_execution.leaf
+                ) | _formula_positive_part_relation_descriptors(right_execution.leaf)
                 if (
-                    left_execution.trace or right_execution.trace
-                ) and _formula_leaf_semantic_key(
-                    left_execution.leaf,
-                    formula_environment=left_execution.constant_environment,
-                ) == _formula_leaf_semantic_key(
-                    right_execution.leaf,
-                    formula_environment=right_execution.constant_environment,
+                    (left_execution.trace or right_execution.trace)
+                    and _formula_leaf_semantic_key(
+                        left_execution.leaf,
+                        formula_environment=left_execution.constant_environment,
+                    )
+                    == _formula_leaf_semantic_key(
+                        right_execution.leaf,
+                        formula_environment=right_execution.constant_environment,
+                    )
+                    and not positive_part_relations.intersection(
+                        (*left_to_right_relations, *right_to_left_relations)
+                    )
                 ):
                     continue
                 left_runtime = _formula_execution_runtime_value(left_execution)
@@ -18213,13 +18378,22 @@ def _toggled_formula_numeric_selectors(
                     continue
                 for selector_name in changed_names:
                     if not (
-                        _formula_execution_reaches_selector(
-                            left_execution,
-                            selector_name,
+                        (
+                            _formula_execution_reaches_selector(
+                                left_execution,
+                                selector_name,
+                            )
+                            and _formula_execution_reaches_selector(
+                                right_execution,
+                                selector_name,
+                            )
                         )
-                        and _formula_execution_reaches_selector(
-                            right_execution,
-                            selector_name,
+                        or any(
+                            selector_name in {left_name, right_name}
+                            for left_name, _relation, right_name in (
+                                *left_to_right_relations,
+                                *right_to_left_relations,
+                            )
                         )
                     ):
                         continue
@@ -18228,18 +18402,21 @@ def _toggled_formula_numeric_selectors(
                         exception_runtime,
                         ordinary_value,
                         exception_value,
+                        relational_transitions,
                     ) in (
                         (
                             left_runtime,
                             right_runtime,
                             float(left_value),
                             float(right_value),
+                            left_to_right_relations,
                         ),
                         (
                             right_runtime,
                             left_runtime,
                             float(right_value),
                             float(left_value),
+                            right_to_left_relations,
                         ),
                     ):
                         witnesses.add(
@@ -18257,9 +18434,247 @@ def _toggled_formula_numeric_selectors(
                                 ),
                                 _exception_effect_is_zero(exception_runtime),
                                 (ordinary_value, exception_value),
+                                relational_transitions,
                             )
                         )
     return witnesses
+
+
+def _case_pair_stable_asserted_formula_dependencies(
+    rule_name: str,
+    rule: dict[str, Any],
+    *,
+    principal_rules: dict[str, dict[str, Any]],
+    left_case: dict[str, Any],
+    right_case: dict[str, Any],
+) -> dict[str, Any]:
+    """Return reached upstream outputs asserted identically by both cases."""
+
+    dependencies: dict[str, Any] = {}
+    referenced_names = set(_FORMULA_IDENTIFIER.findall(_rule_formula_text(rule)))
+    for name in sorted(referenced_names & set(principal_rules) - {rule_name}):
+        left_value = _test_case_asserted_output_value(left_case, name)
+        right_value = _test_case_asserted_output_value(right_case, name)
+        if (
+            left_value is _UNRESOLVED_CONDITION_VALUE
+            or right_value is _UNRESOLVED_CONDITION_VALUE
+            or not _formula_runtime_values_equal(left_value, right_value)
+        ):
+            continue
+        boolean_value = _boolean_value(left_value)
+        dependencies[name] = boolean_value if boolean_value is not None else left_value
+    return dependencies
+
+
+def _formula_relational_transitions(
+    left_execution: _FormulaExecution,
+    right_execution: _FormulaExecution,
+    *,
+    left_case: dict[str, Any],
+    right_case: dict[str, Any],
+    left_dependencies: dict[str, Any],
+    right_dependencies: dict[str, Any],
+    formula_environment: dict[str, Any],
+    changed_names: set[str],
+) -> tuple[
+    tuple[tuple[str, str, str], ...],
+    tuple[tuple[str, str, str], ...],
+]:
+    """Return reached relations that cross false-to-true in each direction."""
+
+    left_environment = _formula_case_runtime_environment(
+        left_case,
+        dependency_environment=left_dependencies,
+        formula_environment=formula_environment,
+    )
+    right_environment = _formula_case_runtime_environment(
+        right_case,
+        dependency_environment=right_dependencies,
+        formula_environment=formula_environment,
+    )
+    if left_environment is None or right_environment is None:
+        return (), ()
+    left_relations = _formula_execution_relational_values(
+        left_execution,
+        environment=left_environment,
+        changed_names=changed_names,
+    )
+    right_relations = _formula_execution_relational_values(
+        right_execution,
+        environment=right_environment,
+        changed_names=changed_names,
+    )
+    shared = set(left_relations) & set(right_relations)
+    return (
+        tuple(
+            sorted(
+                relation
+                for relation in shared
+                if left_relations[relation] is False
+                and right_relations[relation] is True
+            )
+        ),
+        tuple(
+            sorted(
+                relation
+                for relation in shared
+                if right_relations[relation] is False
+                and left_relations[relation] is True
+            )
+        ),
+    )
+
+
+def _formula_case_runtime_environment(
+    case: dict[str, Any],
+    *,
+    dependency_environment: dict[str, Any],
+    formula_environment: dict[str, Any],
+) -> dict[str, Any] | None:
+    environment = _formula_environment_for_case(formula_environment, case)
+    inputs = _case_input_formula_environment(case)
+    if inputs is None:
+        return None
+    for name, value in (*dependency_environment.items(), *inputs.items()):
+        if name in environment and not _formula_runtime_values_equal(
+            environment[name], value
+        ):
+            return None
+        environment[name] = value
+    return environment
+
+
+def _formula_execution_relational_values(
+    execution: _FormulaExecution,
+    *,
+    environment: dict[str, Any],
+    changed_names: set[str],
+) -> dict[tuple[str, str, str], bool]:
+    values: dict[tuple[str, str, str], bool] = {}
+    texts = [selector for step in execution.trace for selector in step.selectors]
+    texts.append(execution.leaf)
+    for text in texts:
+        expression = _parse_formula_expression(text)
+        if expression is None:
+            continue
+        for left, relation, right in _formula_relational_expressions(expression):
+            referenced_names = {
+                node.id
+                for operand in (left, right)
+                for node in ast.walk(operand)
+                if isinstance(node, ast.Name)
+            }
+            if not referenced_names & changed_names:
+                continue
+            left_name = _formula_operand_concept_name(left)
+            right_name = _formula_operand_concept_name(right)
+            if left_name is None or right_name is None:
+                continue
+            comparison = ast.Compare(
+                left=left,
+                ops=[
+                    {
+                        ">": ast.Gt(),
+                        ">=": ast.GtE(),
+                        "<": ast.Lt(),
+                        "<=": ast.LtE(),
+                    }[relation]
+                ],
+                comparators=[right],
+            )
+            value = _evaluate_condition_expression(comparison, environment)
+            if isinstance(value, bool):
+                values[(left_name, relation, right_name)] = value
+    return values
+
+
+def _formula_relational_expressions(
+    expression: ast.AST,
+) -> Iterable[tuple[ast.expr, str, ast.expr]]:
+    for node in ast.walk(expression):
+        if isinstance(node, ast.Compare):
+            operands = (node.left, *node.comparators)
+            for operator, left, right in zip(node.ops, operands, operands[1:]):
+                relation = {
+                    ast.Gt: ">",
+                    ast.GtE: ">=",
+                    ast.Lt: "<",
+                    ast.LtE: "<=",
+                }.get(type(operator))
+                if relation is not None:
+                    yield left, relation, right
+    for left, right in _formula_positive_part_operands(expression):
+        yield left, ">", right
+
+
+def _formula_positive_part_operands(
+    expression: ast.AST,
+) -> Iterable[tuple[ast.expr, ast.expr]]:
+    """Yield operands from reached ``max(0, left - right)`` forms."""
+
+    for node in ast.walk(expression):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "max"
+            and len(node.args) == 2
+            and not node.keywords
+        ):
+            continue
+        zero_index = next(
+            (
+                index
+                for index, argument in enumerate(node.args)
+                if _formula_ast_numeric_literal(argument) == 0
+            ),
+            None,
+        )
+        if zero_index is None:
+            continue
+        positive_part = node.args[1 - zero_index]
+        if isinstance(positive_part, ast.BinOp) and isinstance(
+            positive_part.op, ast.Sub
+        ):
+            yield positive_part.left, positive_part.right
+
+
+def _formula_positive_part_relation_descriptors(
+    text: str,
+) -> set[tuple[str, str, str]]:
+    expression = _parse_formula_expression(text)
+    if expression is None:
+        return set()
+    descriptors: set[tuple[str, str, str]] = set()
+    for left, right in _formula_positive_part_operands(expression):
+        left_name = _formula_operand_concept_name(left)
+        right_name = _formula_operand_concept_name(right)
+        if left_name is not None and right_name is not None:
+            descriptors.add((left_name, ">", right_name))
+    return descriptors
+
+
+def _formula_ast_numeric_literal(node: ast.AST) -> float | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+    ):
+        return -float(node.operand.value)
+    return None
+
+
+def _formula_operand_concept_name(node: ast.AST) -> str | None:
+    names = sorted(
+        {
+            candidate.id
+            for candidate in ast.walk(node)
+            if isinstance(candidate, ast.Name)
+        }
+    )
+    return "_".join(names) if names else None
 
 
 def _exception_witness_for_case_pair(
@@ -18394,6 +18809,19 @@ def _cases_differ_by_one_input(
             for key in left_inputs
         )
         == 1
+    )
+
+
+def _cases_have_same_output_keys(
+    left_case: dict[str, Any],
+    right_case: dict[str, Any],
+) -> bool:
+    left_outputs = left_case.get("output")
+    right_outputs = right_case.get("output")
+    return (
+        isinstance(left_outputs, dict)
+        and isinstance(right_outputs, dict)
+        and set(left_outputs) == set(right_outputs)
     )
 
 
@@ -19118,7 +19546,9 @@ def _source_boundary_obligations(
             "source-unit",
         }:
             continue
-        direct_text = authoritative_numeric_recall_text(branch.text)
+        direct_text = authoritative_numeric_recall_text(
+            _source_branch_direct_text(branch, branches=branches)
+        )
         direct_inventory = tuple(extract_numeric_occurrences(direct_text))
         for fragment_start, fragment in _source_boundary_fragments(direct_text):
             range_fragment = fragment.split(":", 1)[0]
@@ -19182,6 +19612,36 @@ def _source_boundary_obligations(
             for branch, occurrence in obligations
         }.values()
     )
+
+
+def _source_branch_direct_text(
+    branch: SourceStructureBranch,
+    *,
+    branches: Sequence[SourceStructureBranch],
+) -> str:
+    """Return one branch's own chapeau without nested child bodies.
+
+    ``SourceStructureBranch.text`` intentionally spans descendants so structural
+    and formula analysis can retain parent context. Boundary inventory is
+    different: counting descendant thresholds again on every ancestor creates
+    impossible parent-level obligations and obscures the child rule that owns
+    each comparator. Preserve the original prefix offsets while stopping at the
+    first descendant; leaf branches continue to use their complete text. Using
+    any descendant is necessary because callers may already have removed
+    marker-only intermediate containers from the candidate branch sequence.
+    """
+
+    descendant_starts = [
+        candidate.start
+        for candidate in branches
+        if len(candidate.path) > len(branch.path)
+        and candidate.path[: len(branch.path)] == branch.path
+        and branch.start <= candidate.start < branch.end
+    ]
+    if not descendant_starts:
+        return branch.text
+    direct_end = max(0, min(descendant_starts) - branch.start)
+    return branch.text[:direct_end]
 
 
 def _numeric_test_input_values(value: Any) -> tuple[float, ...]:
