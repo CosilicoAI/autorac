@@ -21009,6 +21009,166 @@ def test_credit_exceeds_liability_pair_witnesses_relational_trigger(
     )
 
 
+def test_positive_part_selector_survives_unrelated_formula_comparison():
+    witnesses, branch = _credit_liability_exception_witnesses(
+        formula=(
+            "if income <= income_limit: max(0, credit_amount - tax_liability) else: 0"
+        ),
+        stable_inputs={"income": 100, "income_limit": 100},
+    )
+
+    assert any(
+        completeness_module._numeric_exception_witness_matches_source(
+            branch,
+            witness,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )
+        for witness in witnesses
+    )
+
+
+def test_exception_branch_accepts_principal_rule_grounded_to_descendant():
+    text = (
+        "A.(1)(a) If income is equal to or less than 25000 dollars, "
+        "the credit shall be calculated using the following amounts."
+    )
+    branch = completeness_module.SourceStructureBranch(
+        ("a", "1", "a"),
+        "letter",
+        "A.(1)(a)",
+        text,
+        0,
+        len(text),
+    )
+    witness = completeness_module._ExceptionWitness(
+        "low_income_credit_amount",
+        "income",
+        True,
+        False,
+        False,
+        False,
+        (25001, 25000),
+        (),
+    )
+
+    candidates = completeness_module._exception_witnesses_for_branch(
+        branch,
+        principal_rule_paths={
+            "low_income_credit_amount": {("a", "1", "a", "i")},
+        },
+        toggled_exception_selectors={witness},
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert candidates == {witness}
+
+
+def test_numeric_transition_propagates_through_asserted_judgment_dependency():
+    principal_rules = {
+        "low_income_applies": {
+            "name": "low_income_applies",
+            "kind": "derived",
+            "dtype": "Judgment",
+            "versions": [{"formula": "income <= income_limit"}],
+        },
+        "low_income_credit_amount": {
+            "name": "low_income_credit_amount",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [{"formula": "if low_income_applies: base_credit else: 0"}],
+        },
+    }
+
+    def case(income: int, applies: bool) -> dict[str, object]:
+        return {
+            "name": f"income={income}",
+            "period": "2026",
+            "input": {"income": income, "base_credit": 50},
+            "output": {
+                "low_income_applies": "holds" if applies else "not_holds",
+                "low_income_credit_amount": 50 if applies else 0,
+            },
+        }
+
+    cases = [case(100, True), case(101, False)]
+    witnesses = completeness_module._toggled_formula_boolean_selectors(
+        principal_rules,
+        asserted_by_rule={name: cases for name in principal_rules},
+        formula_environment={"income_limit": 100},
+    )
+    text = (
+        "A.(1)(a) If income is equal to or less than 100 dollars, "
+        "the credit is calculated using the following amounts."
+    )
+    branch = completeness_module.SourceStructureBranch(
+        ("a", "1", "a"),
+        "letter",
+        "A.(1)(a)",
+        text,
+        0,
+        len(text),
+    )
+
+    candidates = completeness_module._exception_witnesses_for_branch(
+        branch,
+        principal_rule_paths={
+            "low_income_applies": {("a", "1", "b")},
+            "low_income_credit_amount": {("a", "1", "a", "i")},
+        },
+        toggled_exception_selectors=witnesses,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert any(
+        witness.rule_name == "low_income_credit_amount"
+        and witness.selector_name == "income"
+        and witness.numeric_transition == (101, 100)
+        for witness in candidates
+    )
+
+
+def test_numeric_dependency_witness_composition_requires_same_case_pair():
+    boolean_witness = completeness_module._ExceptionWitness(
+        "credit_amount",
+        "income_eligible",
+        True,
+        False,
+        False,
+        False,
+        None,
+        case_pair_identity=(1, 2),
+    )
+    unrelated_numeric_witness = completeness_module._ExceptionWitness(
+        "income_eligible",
+        "income",
+        True,
+        False,
+        True,
+        False,
+        (101, 100),
+        case_pair_identity=(3, 4),
+    )
+    matching_numeric_witness = completeness_module._ExceptionWitness(
+        "income_eligible",
+        "income",
+        True,
+        False,
+        True,
+        False,
+        (101, 100),
+        case_pair_identity=(1, 2),
+    )
+
+    assert not completeness_module._composed_numeric_dependency_witnesses(
+        {boolean_witness},
+        {unrelated_numeric_witness},
+    )
+    assert completeness_module._composed_numeric_dependency_witnesses(
+        {boolean_witness},
+        {matching_numeric_witness},
+    )
+
+
 def test_relational_exception_witness_rejects_reversed_source_operands():
     witnesses, branch = _credit_liability_exception_witnesses()
     text = "B.(1) If the tax liability exceeds the credit, no refund is due."
@@ -21578,6 +21738,7 @@ def _credit_liability_exception_witnesses(
     *,
     formula: str = ("if refund_applies: max(0, credit_amount - tax_liability) else: 0"),
     mutation: str | None = None,
+    stable_inputs: dict[str, int] | None = None,
 ):
     principal_rules = {
         "credit_amount": {
@@ -21600,6 +21761,7 @@ def _credit_liability_exception_witnesses(
             "refund_applies": True,
             "raw_credit": 500,
             "tax_liability": 300,
+            **(stable_inputs or {}),
         },
         "output": {"credit_amount": 500, "refund_amount": 200},
     }
@@ -21610,6 +21772,7 @@ def _credit_liability_exception_witnesses(
             "refund_applies": True,
             "raw_credit": 500,
             "tax_liability": 500,
+            **(stable_inputs or {}),
         },
         "output": {"credit_amount": 500, "refund_amount": 0},
     }
