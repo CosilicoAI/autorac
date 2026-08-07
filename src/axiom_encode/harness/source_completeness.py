@@ -17854,6 +17854,26 @@ def _source_exception_effect_requirement(text: str) -> str:
     return "change"
 
 
+def _source_states_negative_refund_effect(text: str) -> bool:
+    """Recognize express prohibitions on a refund or refundable excess."""
+
+    return bool(
+        re.search(
+            r"\b(?:"
+            r"no\s+refund\b|"
+            r"refund\w*\b[^.;]{0,48}\b(?:disallowed|forbidden|prohibited|"
+            r"barred|not\s+(?:allowed|permitted))\b|"
+            r"refund\w*\b[^.;]{0,48}\b(?:shall|may|does?|is|are)\s+not\s+"
+            r"(?:be\s+)?(?:allowed|paid|permitted|refund\w*)\b|"
+            r"(?:shall|may|does?)\s+not\s+(?:be\s+)?(?:paid|refund\w*)\b|"
+            r"not\s+refundable\b"
+            r")",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _notwithstanding_exemption_effect_requirement(text: str) -> str | None:
     """Recognize the direct certification duty in an exemption override."""
 
@@ -17969,20 +17989,32 @@ def _numeric_exception_witness_matches_source(
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> bool:
-    condition_text = _source_exception_condition_text(branch.text)
-    if any(
-        _source_relational_exception_matches(
-            condition_text,
+    source_text = _collapse_text(_strip_source_clause_marker(branch.text)).lower()
+    matched_source_relation = False
+    for left_name, relation, right_name in witness.relational_transitions:
+        relation_indices = _source_relational_exception_match_indices(
+            source_text,
             left_name=left_name,
             relation=relation,
             right_name=right_name,
         )
-        for left_name, relation, right_name in witness.relational_transitions
-    ):
-        return _relational_exception_witness_has_source_effect(
-            condition_text,
-            witness,
+        if not relation_indices:
+            continue
+        matched_source_relation = True
+        effect_matches = tuple(
+            _relational_exception_witness_has_source_effect(
+                source_text,
+                witness,
+                relation_index=relation_index,
+            )
+            for relation_index in relation_indices
         )
+        if len(set(effect_matches)) > 1:
+            return False
+        if effect_matches[0]:
+            return True
+    if matched_source_relation:
+        return False
     transition = witness.numeric_transition
     if transition is None:
         return False
@@ -18007,6 +18039,25 @@ def _source_relational_exception_matches(
 ) -> bool:
     """Match a reached formula relation to a source-stated relational trigger."""
 
+    return bool(
+        _source_relational_exception_match_indices(
+            text,
+            left_name=left_name,
+            relation=relation,
+            right_name=right_name,
+        )
+    )
+
+
+def _source_relational_exception_match_indices(
+    text: str,
+    *,
+    left_name: str,
+    relation: str,
+    right_name: str,
+) -> tuple[int, ...]:
+    """Return source relation indices matching one reached formula transition."""
+
     if relation == "<":
         left_name, relation, right_name = right_name, ">", left_name
     elif relation == "<=":
@@ -18022,6 +18073,7 @@ def _source_relational_exception_matches(
             collapsed,
         )
     )
+    matched_indices: list[int] = []
     for index, relation_match in enumerate(relation_matches):
         source_relation = ">=" if relation_match.group("inclusive") else ">"
         if source_relation != relation:
@@ -18041,8 +18093,8 @@ def _source_relational_exception_matches(
             for left in left_matches
             for right in right_matches
         ):
-            return True
-    return False
+            matched_indices.append(index)
+    return tuple(matched_indices)
 
 
 def _source_relation_operand_bounds(
@@ -18068,21 +18120,17 @@ def _source_relation_operand_bounds(
     )
     if index:
         previous = relation_matches[index - 1]
-        separators = tuple(
-            re.finditer(
-                r"\b(?:and|or|und|oder)\b",
-                text[previous.end() : relation_match.start()],
-            )
+        separator = _source_relation_clause_separator(
+            text[previous.end() : relation_match.start()]
         )
-        if separators:
+        if separator is not None:
             left_bound = max(
                 left_bound,
-                previous.end() + separators[-1].end(),
+                previous.end() + separator.end(),
             )
     if index + 1 < len(relation_matches):
         following = relation_matches[index + 1]
-        separator = re.search(
-            r"\b(?:and|or|und|oder)\b",
+        separator = _source_relation_clause_separator(
             text[relation_match.end() : following.start()],
         )
         if separator is not None:
@@ -18093,13 +18141,38 @@ def _source_relation_operand_bounds(
     return left_bound, right_bound
 
 
+def _source_relation_clause_separator(text: str) -> re.Match[str] | None:
+    """Choose the clause break without splitting compound relation operands."""
+
+    for pattern in (
+        r"\b(?:although|but|though|while|whereas|yet)\b",
+        r",",
+        r"\b(?:and|or|und|oder)\b",
+    ):
+        matches = tuple(re.finditer(pattern, text))
+        if matches:
+            return matches[-1]
+    return None
+
+
 def _relational_exception_witness_has_source_effect(
     text: str,
     witness: _ExceptionWitness,
+    *,
+    relation_index: int,
 ) -> bool:
     """Require the relation-active side to have the source-directed effect."""
 
-    requirement = _source_exception_effect_requirement(text)
+    effect_text = _source_relational_effect_text(text, relation_index=relation_index)
+    if _source_relational_exception_reverses_negative_refund(
+        text,
+        relation_index=relation_index,
+    ):
+        requirement = "enable"
+    elif _source_states_negative_refund_effect(effect_text):
+        requirement = "exclude"
+    else:
+        requirement = _source_exception_effect_requirement(effect_text)
     if requirement == "zero":
         return witness.zeroes
     if requirement == "exclude":
@@ -18109,12 +18182,125 @@ def _relational_exception_witness_has_source_effect(
     return bool(
         re.search(
             r"\b(?:excess\w*|overpayment\w*|refund\w*)\b",
-            text,
+            effect_text,
             flags=re.IGNORECASE,
         )
         and not witness.blocks
         and not witness.zeroes
     )
+
+
+def _source_relational_exception_reverses_negative_refund(
+    text: str,
+    *,
+    relation_index: int,
+) -> bool:
+    """Recognize an exception condition that lifts a stated refund prohibition."""
+
+    relation_matches = tuple(
+        re.finditer(
+            r"\b(?:exceeds?\s+or\s+equals?|"
+            r"is\s+(?:greater|more)\s+than(?:\s+or\s+equal\s+to)?|"
+            r"exceeds?|übersteigt)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not 0 <= relation_index < len(relation_matches):
+        return False
+    condition_prefix = text[: relation_matches[relation_index].start()]
+    condition_cues = tuple(
+        re.finditer(
+            r"\b(?P<reversal>unless|except(?:\s+(?:if|when))?)\b|"
+            r"\b(?P<ordinary>falls|if|sofern|soweit|wenn|when)\b",
+            condition_prefix,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not condition_cues or condition_cues[-1].group("reversal") is None:
+        return False
+    reversal = condition_cues[-1]
+    return _source_states_negative_refund_effect(condition_prefix[: reversal.start()])
+
+
+def _source_relational_effect_text(text: str, *, relation_index: int) -> str:
+    """Return the effect associated with one matched relational condition."""
+
+    relation_matches = tuple(
+        re.finditer(
+            r"\b(?:exceeds?\s+or\s+equals?|"
+            r"is\s+(?:greater|more)\s+than(?:\s+or\s+equal\s+to)?|"
+            r"exceeds?|übersteigt)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not 0 <= relation_index < len(relation_matches):
+        return text
+    relation_match = relation_matches[relation_index]
+    condition_cues = tuple(
+        re.finditer(
+            r"\b(?:except\s+(?:if|when)|unless|falls|if|sofern|soweit|wenn|when)\b",
+            text[: relation_match.start()],
+            flags=re.IGNORECASE,
+        )
+    )
+    if condition_cues:
+        condition_cue = condition_cues[-1]
+        proposition_start = 0
+        if relation_index:
+            strong_boundary = tuple(
+                re.finditer(r"[.;:]", text[: condition_cue.start()])
+            )
+            if strong_boundary:
+                proposition_start = strong_boundary[-1].end()
+            elif relation_matches[relation_index - 1].end() < condition_cue.start():
+                between_start = relation_matches[relation_index - 1].end()
+                coordinate_boundaries = tuple(
+                    re.finditer(
+                        r"\b(?:although|but|though|while|whereas|yet)\b",
+                        text[between_start : condition_cue.start()],
+                        flags=re.IGNORECASE,
+                    )
+                )
+                if not coordinate_boundaries:
+                    coordinate_boundaries = tuple(
+                        re.finditer(
+                            r"\b(?:and|or)\b(?=[^,;:.]{0,120}"
+                            r"\b(?:excess\w*|overpayment\w*|refund\w*)\b)",
+                            text[between_start : condition_cue.start()],
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                proposition_start = (
+                    between_start + coordinate_boundaries[-1].end()
+                    if coordinate_boundaries
+                    else condition_cue.start()
+                )
+        proposition = text[proposition_start : condition_cue.start()].strip(" ,;:")
+        if proposition and re.search(
+            r"\b(?:excess\w*|overpayment\w*|refund\w*)\b",
+            proposition,
+            flags=re.IGNORECASE,
+        ):
+            return proposition
+    tail_start = relation_match.end()
+    tail = text[tail_start:]
+    then_cue = re.search(r"\bthen\b", tail, flags=re.IGNORECASE)
+    if then_cue is not None:
+        return tail[then_cue.end() :]
+    consequence = re.search(r"[,;:]", tail)
+    if consequence is None:
+        return tail
+    effect = tail[consequence.end() :]
+    secondary_boundary = re.search(r"[,;:]", effect)
+    if secondary_boundary is not None and re.match(
+        r"\s*(?:(?:and|or)\s+)?(?:if|when|unless|provided\b|no\b|without\b)",
+        effect[: secondary_boundary.start()],
+        flags=re.IGNORECASE,
+    ):
+        return effect[secondary_boundary.end() :]
+    return effect
 
 
 def _source_relational_operand_matches(
