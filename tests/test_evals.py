@@ -207,6 +207,12 @@ def _mock_generalist_reviewer(monkeypatch):
 
 _TEST_CORPUS_RELEASE_NAME = "eval-test-release"
 _TEST_CORPUS_VERSION = "2026-eval-test"
+_DK_FULL_PARITY_AMENDMENT_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "dk_full_parity_amendment_discovery.json"
+)
+_DK_FULL_PARITY_CORPUS_SHA256 = (
+    "5c348870772b2e79cc10a978f63380ec4e814c9ed13e570930fcf4c5643eaca0"
+)
 
 
 def _canonical_rulespec_content_root(base: Path, jurisdiction: str) -> Path:
@@ -326,6 +332,21 @@ def _write_test_corpus_provision(
         tmp_path,
         [{"citation_path": citation_path, "body": body}],
     )
+
+
+def _dk_full_parity_amendment_fixture_rows() -> list[dict[str, object]]:
+    """Load the trimmed 48+3 amendment-act discovery corpus."""
+
+    payload = json.loads(_DK_FULL_PARITY_AMENDMENT_FIXTURE.read_text())
+    assert payload["provenance"]["source_sha256"] == _DK_FULL_PARITY_CORPUS_SHA256
+    amendment_rows = payload["amendment_rows"]
+    assert len(amendment_rows) == 51
+    rows: list[dict[str, object]] = []
+    for fixture_row in [*payload["target_rows"], *amendment_rows]:
+        row = dict(fixture_row)
+        row.pop("source_line")
+        rows.append(row)
+    return rows
 
 
 def _write_test_source_unit(
@@ -986,6 +1007,61 @@ def test_provision_inherits_document_identifiers_for_de_amendment_discovery(tmp_
     assert provision.amendment_documents == document.amendment_documents
 
 
+def test_dk_full_parity_structured_amendment_timelines_are_exhaustive(tmp_path):
+    """Pin every relevant structured match among the live 48+3 amendment acts."""
+
+    release = _write_test_corpus_release(
+        tmp_path,
+        _dk_full_parity_amendment_fixture_rows(),
+    )
+    target_724 = "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven"
+    target_603 = "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven"
+    expected_724 = [
+        "dk/statute/lov-665-2024/aendringslov/aendringcentreretparagraf-1",
+        "dk/statute/lov-632-2024/aendringslov/aendringcentreretparagraf-1",
+        ("dk/statute/lov-482-2024/reform-af-personskat/aendringcentreretparagraf-1"),
+        "dk/statute/lov-1389-2022/aendringslov/aendringcentreretparagraf-1",
+    ]
+    expected_603 = [
+        (
+            "dk/statute/lov-303-2026/aendring-af-social-pension-mv/"
+            "aendringcentreretparagraf-1"
+        ),
+        (
+            "dk/statute/lov-1642-2025/aendring-af-boerne-og-ungeydelsesloven-mv/"
+            "aendringcentreretparagraf-1"
+        ),
+        *expected_724,
+    ]
+
+    root_724 = resolve_corpus_source_unit(target_724, release)
+    provision_724 = resolve_corpus_source_unit(
+        f"{target_724}/paragraf-1-a",
+        release,
+    )
+    root_603 = resolve_corpus_source_unit(target_603, release)
+
+    for source_unit, expected in (
+        (root_724, expected_724),
+        (provision_724, expected_724),
+        (root_603, expected_603),
+    ):
+        assert [
+            (document.citation_path, document.match_tier)
+            for document in source_unit.amendment_documents
+        ] == [(citation_path, "structured") for citation_path in expected]
+        workspace, _prompt = _workspace_prompt_for_source_unit(tmp_path, source_unit)
+        assert [
+            item.citation_path
+            for item in workspace.context_files
+            if item.kind == "corpus_amendment_act"
+        ] == expected
+
+    # Issue #1275 inheritance must expose the document timeline to a provision
+    # at the same depth as the shallowest active sibling row.
+    assert provision_724.amendment_documents == root_724.amendment_documents
+
+
 def test_provision_identifier_inheritance_does_not_cross_source_documents(tmp_path):
     release = _write_test_corpus_release(
         tmp_path,
@@ -1482,6 +1558,123 @@ def test_workspace_without_manifest_metadata_stays_minimal(tmp_path):
     assert prompt == prompt_without_injection_feature
 
 
+def test_name_tier_workspace_remains_byte_identical_at_legacy_two_document_cap(
+    tmp_path,
+):
+    amendments = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"dk/statute/amendment-{year}",
+            title=f"Name Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={"source_note": f"note-{year}"},
+            body=f"Body {year}.",
+            match_tier="name",
+        )
+        for year in (2027, 2026, 2025, 2024)
+    )
+    workspace = prepare_eval_workspace(
+        citation="dk/statute/benefit/section-1",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Provision.",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "dk"),
+        mode="cold",
+        provision_metadata={"title": "Target"},
+        amendment_documents=amendments,
+        extra_context_paths=[],
+    )
+    amendment_items = [
+        item for item in workspace.context_files if item.kind == "corpus_amendment_act"
+    ]
+    manifest_bytes = workspace.manifest_file.read_bytes()
+    manifest = json.loads(manifest_bytes)
+
+    assert [item.citation_path for item in amendment_items] == [
+        "dk/statute/amendment-2027",
+        "dk/statute/amendment-2026",
+    ]
+    assert workspace.amendment_documents == amendments[:2]
+    expected_drops = tuple(
+        {
+            "citation_path": f"dk/statute/amendment-{year}",
+            "expression_date": f"{year}-01-01",
+            "match_tier": "name",
+            "reason": "document_count_limit",
+        }
+        for year in (2025, 2024)
+    )
+    assert workspace.dropped_amendment_documents == expected_drops
+    assert manifest["dropped_amendment_documents"] == list(expected_drops)
+    assert hashlib.sha256(manifest_bytes).hexdigest() == (
+        "17e2f84c82ccc1a3944e83348d6d125408e919126b629c6c9104b4f639bb532c"
+    )
+    assert [
+        hashlib.sha256((workspace.root / item.workspace_path).read_bytes()).hexdigest()
+        for item in amendment_items
+    ] == [
+        "f50ca5de1f2a93844982fa10b160cca5239d911a31452a4ae05b2aed71599ea6",
+        "613163fdb740b3f32deeafb1019f502ac9ac5e359b9d53c2d91c1489a876e591",
+    ]
+
+
+def test_name_tier_legacy_budget_records_sliced_document_without_changing_bytes():
+    first_two = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"n{year}",
+            title=f"Name Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={"detail": letter * 6_500},
+            body=letter * 11_500,
+            match_tier="name",
+        )
+        for year, letter in ((2027, "N"), (2026, "O"))
+    )
+    omitted = CorpusAmendmentDocument(
+        citation_path="n2025",
+        title="Name Amendment 2025",
+        expression_date="2025-01-01",
+        metadata={"detail": "P" * 6_500},
+        body="P" * 11_500,
+        match_tier="name",
+    )
+
+    rendered = evals_module._render_injected_context({}, (*first_two, omitted))
+    legacy_provision, legacy_texts, _ = evals_module._render_legacy_name_tier_context(
+        {}, first_two
+    )
+
+    assert rendered.provision_text == legacy_provision
+    assert rendered.amendment_texts == tuple(legacy_texts)
+    assert rendered.amendment_documents == first_two
+    assert rendered.dropped_amendment_documents == (
+        {
+            "citation_path": "n2025",
+            "expression_date": "2025-01-01",
+            "match_tier": "name",
+            "reason": "aggregate_context_limit",
+        },
+    )
+
+
+def test_name_tier_exactly_two_documents_records_no_omissions():
+    amendments = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"n{year}",
+            title=f"Name Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={},
+            body="Body.",
+            match_tier="name",
+        )
+        for year in (2027, 2026)
+    )
+
+    rendered = evals_module._render_injected_context({}, amendments)
+
+    assert rendered.amendment_documents == amendments
+    assert rendered.dropped_amendment_documents == ()
+
+
 def test_injected_context_enforces_aggregate_character_cap_newest_last(tmp_path):
     amendments = tuple(
         CorpusAmendmentDocument(
@@ -1520,6 +1713,205 @@ def test_injected_context_enforces_aggregate_character_cap_newest_last(tmp_path)
         "amendment body truncated to satisfy aggregate context cap"
         in amendment_texts[1]
     )
+
+
+def test_structured_aggregate_cap_drops_oldest_document_and_records_manifest(
+    tmp_path,
+):
+    amendments = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"dk/statute/amendment-{year}",
+            title=f"Structured Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={},
+            body=letter * 11_500,
+            match_tier="structured",
+        )
+        for year, letter in ((2027, "N"), (2026, "O"), (2025, "P"))
+    )
+    workspace = prepare_eval_workspace(
+        citation="dk/statute/benefit/section-1",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Provision.",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "dk"),
+        mode="cold",
+        amendment_documents=amendments,
+        extra_context_paths=[],
+    )
+    amendment_items = [
+        item for item in workspace.context_files if item.kind == "corpus_amendment_act"
+    ]
+    amendment_texts = [
+        (workspace.root / item.workspace_path).read_text().rstrip("\n")
+        for item in amendment_items
+    ]
+    manifest = json.loads(workspace.manifest_file.read_text())
+    expected_drop = {
+        "citation_path": "dk/statute/amendment-2025",
+        "expression_date": "2025-01-01",
+        "match_tier": "structured",
+        "reason": "aggregate_context_limit",
+    }
+
+    assert [item.citation_path for item in amendment_items] == [
+        "dk/statute/amendment-2027",
+        "dk/statute/amendment-2026",
+    ]
+    assert (
+        len((workspace.provision_metadata_text or "").encode("utf-8"))
+        + sum(len(text.encode("utf-8")) for text in amendment_texts)
+        <= 32_000
+    )
+    assert "N" * 11_500 in amendment_texts[0]
+    assert "O" * 11_500 in amendment_texts[1]
+    assert all("aggregate context cap" not in text for text in amendment_texts)
+    assert workspace.dropped_amendment_documents == (expected_drop,)
+    assert manifest["dropped_amendment_documents"] == [expected_drop]
+    assert (
+        evals_module._amendment_documents_visible_in_context_manifest(
+            amendments,
+            workspace.manifest_file,
+        )
+        == amendments[:2]
+    )
+
+
+def test_structured_aggregate_cap_drops_name_tier_before_structured(tmp_path):
+    amendments = (
+        CorpusAmendmentDocument(
+            citation_path="dk/statute/structured-2025",
+            title="Structured Amendment 2025",
+            expression_date="2025-01-01",
+            metadata={"detail": "S" * 6_500},
+            body="S" * 11_500,
+            match_tier="structured",
+        ),
+        CorpusAmendmentDocument(
+            citation_path="dk/statute/name-2027",
+            title="Name Amendment 2027",
+            expression_date="2027-01-01",
+            metadata={"detail": "N" * 6_500},
+            body="N" * 11_500,
+            match_tier="name",
+        ),
+    )
+    workspace = prepare_eval_workspace(
+        citation="dk/statute/benefit/section-1",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Provision.",
+        axiom_rules_path=_canonical_rulespec_content_root(tmp_path, "dk"),
+        mode="cold",
+        amendment_documents=amendments,
+        extra_context_paths=[],
+    )
+
+    assert [
+        item.citation_path
+        for item in workspace.context_files
+        if item.kind == "corpus_amendment_act"
+    ] == ["dk/statute/structured-2025"]
+    assert workspace.dropped_amendment_documents == (
+        {
+            "citation_path": "dk/statute/name-2027",
+            "expression_date": "2027-01-01",
+            "match_tier": "name",
+            "reason": "aggregate_context_limit",
+        },
+    )
+
+
+def test_structured_aggregate_cap_never_retains_name_after_structured_drop():
+    amendments = (
+        CorpusAmendmentDocument(
+            citation_path="dk/statute/structured-2025",
+            title="Structured Amendment 2025",
+            expression_date="2025-01-01",
+            metadata={"detail": "S" * 6_500},
+            body="S" * 11_500,
+            match_tier="structured",
+        ),
+        CorpusAmendmentDocument(
+            citation_path="dk/statute/name-2027",
+            title="Name Amendment 2027",
+            expression_date="2027-01-01",
+            metadata={"detail": "N" * 6_500},
+            body="N" * 11_500,
+            match_tier="name",
+        ),
+        CorpusAmendmentDocument(
+            citation_path="dk/statute/structured-2024",
+            title="Structured Amendment 2024",
+            expression_date="2024-01-01",
+            metadata={"detail": "O" * 6_500},
+            body="O" * 11_500,
+            match_tier="structured",
+        ),
+    )
+
+    rendered = evals_module._render_injected_context({}, amendments)
+    dropped_structured = any(
+        item["match_tier"] == "structured"
+        for item in rendered.dropped_amendment_documents
+    )
+    retained_name = any(
+        document.match_tier == "name" for document in rendered.amendment_documents
+    )
+
+    assert dropped_structured
+    assert not retained_name
+    assert rendered.dropped_amendment_documents[0]["match_tier"] == "name"
+
+
+def test_structured_aggregate_cap_accounts_for_prompt_join_separator():
+    first_two = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"dk/statute/amendment-{year}",
+            title=f"Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={},
+            body=letter * 10_000,
+            match_tier="structured",
+        )
+        for year, letter in ((2027, "A"), (2026, "B"))
+    )
+    rendered_first_two = tuple(
+        evals_module._render_amendment_document(document, body=document.body)
+        for document in first_two
+    )
+    empty_third = CorpusAmendmentDocument(
+        citation_path="dk/statute/amendment-2025",
+        title="Amendment 2025",
+        expression_date="2025-01-01",
+        metadata={},
+        body="",
+        match_tier="structured",
+    )
+    empty_third_text = evals_module._render_amendment_document(empty_third, body="")
+    third_body_bytes = (
+        31_997 - sum(map(len, rendered_first_two)) - len(empty_third_text)
+    )
+    assert 0 < third_body_bytes <= 12_000
+    third = replace(empty_third, body="C" * third_body_bytes)
+    amendments = (*first_two, third)
+    pre_fix_texts = tuple(
+        evals_module._render_amendment_document(document, body=document.body)
+        for document in amendments
+    )
+    assert sum(len(text.encode("utf-8")) for text in pre_fix_texts) == 31_997
+    assert (
+        len(evals_module._AMENDMENT_CONTEXT_SEPARATOR.join(pre_fix_texts).encode())
+        == 32_001
+    )
+
+    rendered = evals_module._render_injected_context({}, amendments)
+    post_join = evals_module._AMENDMENT_CONTEXT_SEPARATOR.join(rendered.amendment_texts)
+
+    assert len(post_join.encode("utf-8")) <= 32_000
+    assert [item["citation_path"] for item in rendered.dropped_amendment_documents] == [
+        "dk/statute/amendment-2025"
+    ]
 
 
 def test_provision_metadata_rendering_enforces_character_cap(tmp_path):
@@ -21428,6 +21820,9 @@ def _run_case_revalidation(
     fresh: EvalArtifactMetrics | None,
     *,
     require_complete_source_unit: bool = False,
+    amendment_documents: tuple[CorpusAmendmentDocument, ...] = (),
+    visible_amendment_citations: tuple[str, ...] = (),
+    historical_amendment_manifest: bool = False,
     **result_overrides,
 ):
     case = evals_module.EvalSuiteCase(
@@ -21439,33 +21834,67 @@ def _run_case_revalidation(
     )
     source_unit = SimpleNamespace(
         body="The rate of VAT is 20 percent.",
-        amendment_documents=(),
+        amendment_documents=amendment_documents,
     )
-    with (
-        patch.object(
-            evals_module, "resolve_corpus_source_unit", return_value=source_unit
-        ),
-        patch.object(
-            evals_module, "_source_metadata_with_attestation", return_value={}
-        ),
-        patch.object(
-            evals_module,
-            "_source_metadata_citation_path",
-            return_value="uk/statute/ukpga/1994/23/2",
-        ),
-        patch.object(
-            evals_module, "evaluate_artifact", return_value=fresh
-        ) as evaluate_mock,
-    ):
-        evals_module._revalidate_persisted_eval_suite_case_results(
-            case,
-            [_revalidation_result(persisted, **result_overrides)],
-            policy_repo_root=Path("/nonexistent/policy"),
-            axiom_rules_path=Path("/nonexistent/engine"),
-            corpus_release=SimpleNamespace(),
-            policyengine_runtime=None,
-            rulespec_dependency_roots=(),
+    with tempfile.TemporaryDirectory() as tmpdir:
+        context_manifest = Path(tmpdir) / "context.json"
+        context_manifest.write_text(
+            json.dumps(
+                {
+                    "context_files": [
+                        (
+                            {
+                                "kind": "corpus_amendment_act",
+                                "source_path": citation,
+                                "workspace_path": "context/amendment-act-1.txt",
+                                "import_path": citation,
+                            }
+                            if historical_amendment_manifest
+                            else {
+                                "kind": "corpus_amendment_act",
+                                "citation_path": citation,
+                            }
+                        )
+                        for citation in visible_amendment_citations
+                    ],
+                    "dropped_amendment_documents": [
+                        {
+                            "citation_path": document.citation_path,
+                            "reason": "aggregate_context_limit",
+                        }
+                        for document in amendment_documents
+                        if document.citation_path not in visible_amendment_citations
+                    ],
+                }
+            )
         )
+        result = _revalidation_result(persisted, **result_overrides)
+        result.context_manifest_file = str(context_manifest)
+        with (
+            patch.object(
+                evals_module, "resolve_corpus_source_unit", return_value=source_unit
+            ),
+            patch.object(
+                evals_module, "_source_metadata_with_attestation", return_value={}
+            ),
+            patch.object(
+                evals_module,
+                "_source_metadata_citation_path",
+                return_value="uk/statute/ukpga/1994/23/2",
+            ),
+            patch.object(
+                evals_module, "evaluate_artifact", return_value=fresh
+            ) as evaluate_mock,
+        ):
+            evals_module._revalidate_persisted_eval_suite_case_results(
+                case,
+                [result],
+                policy_repo_root=Path("/nonexistent/policy"),
+                axiom_rules_path=Path("/nonexistent/engine"),
+                corpus_release=SimpleNamespace(),
+                policyengine_runtime=None,
+                rulespec_dependency_roots=(),
+            )
     return evaluate_mock
 
 
@@ -21492,6 +21921,54 @@ def test_persisted_revalidation_keeps_complete_source_unit_mode():
     )
 
     assert evaluate_mock.call_args.kwargs["require_complete_source_unit"] is True
+
+
+def test_persisted_revalidation_uses_only_manifest_visible_amendments():
+    metrics = _revalidation_metrics()
+    amendments = tuple(
+        CorpusAmendmentDocument(
+            citation_path=f"dk/statute/amendment-{year}",
+            title=f"Amendment {year}",
+            expression_date=f"{year}-01-01",
+            metadata={},
+            body="Body.",
+            match_tier="structured",
+        )
+        for year in (2027, 2026, 2025)
+    )
+
+    evaluate_mock = _run_case_revalidation(
+        metrics,
+        metrics,
+        amendment_documents=amendments,
+        visible_amendment_citations=tuple(
+            document.citation_path for document in amendments[:2]
+        ),
+    )
+
+    assert evaluate_mock.call_args.kwargs["amendment_documents"] == amendments[:2]
+
+
+def test_persisted_revalidation_accepts_historical_amendment_manifest_schema():
+    metrics = _revalidation_metrics()
+    amendment = CorpusAmendmentDocument(
+        citation_path="dk/statute/amendment-1",
+        title="Amendment 1",
+        expression_date="2026-01-01",
+        metadata={},
+        body="Body.",
+        match_tier="structured",
+    )
+
+    evaluate_mock = _run_case_revalidation(
+        metrics,
+        metrics,
+        amendment_documents=(amendment,),
+        visible_amendment_citations=(amendment.citation_path,),
+        historical_amendment_manifest=True,
+    )
+
+    assert evaluate_mock.call_args.kwargs["amendment_documents"] == (amendment,)
 
 
 @pytest.mark.parametrize(

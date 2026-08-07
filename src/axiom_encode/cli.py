@@ -171,6 +171,7 @@ from .harness.evals import (
     _EVAL_RESULT_ARTIFACT_SPECS,
     VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES,
     ValidationRetryCandidate,
+    _amendment_documents_visible_in_context_manifest,
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
     _build_eval_suite_manifest_identity,
@@ -57130,7 +57131,10 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             source_citation_path=source_citation_path,
             rulespec_dependency_roots=manifest.rulespec_dependency_roots,
             require_complete_source_unit=case.require_complete_source_unit,
-            amendment_documents=source_unit.amendment_documents,
+            amendment_documents=_amendment_documents_visible_in_context_manifest(
+                source_unit.amendment_documents,
+                Path(result.context_manifest_file),
+            ),
         )
         validation_error = _eval_artifact_validation_error(
             result.metrics,
