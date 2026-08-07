@@ -39,7 +39,7 @@ on:
         required: false
         type: string
       source_bundle_json:
-        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path}]} for an independent refresh transaction
+        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path,review_finding?}]} for an independent refresh transaction
         required: false
         default: "[]"
         type: string
@@ -1478,7 +1478,8 @@ jobs:
               refresh_finding="$REVIEW_FINDING"
               if [ "$refresh_index" -gt 0 ]; then
                 refresh_lane="$(printf 'canonical-refresh-%02d' "$refresh_index")"
-                refresh_finding=""
+                refresh_finding="$(jq -er '.review_finding // ""' \
+                  <<< "$refresh_item")"
               fi
               run_signed_encode \
                 "$refresh_citation" "$refresh_finding" false "$refresh_lane" \
@@ -1614,14 +1615,17 @@ jobs:
         env:
           CITATION: ${{ inputs.citation }}
           DEPENDENT_CITATION: ${{ inputs.dependent_citation }}
+          DEPENDENT_REVIEW_FINDING: ${{ inputs.dependent_review_finding }}
           DEPENDENT_REVIEW_FINDING_PRESENT: ${{ inputs.dependent_review_finding != '' }}
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
+          SECOND_DEPENDENT_REVIEW_FINDING: ${{ inputs.second_dependent_review_finding }}
           SECOND_DEPENDENT_REVIEW_FINDING_PRESENT: ${{ inputs.second_dependent_review_finding != '' }}
           PR_BASE_BRANCH: ${{ inputs.pr_base_branch }}
           QUEUE_ID: ${{ inputs.queue_id }}
           QUEUE_ITEM_ID: ${{ inputs.queue_item_id }}
           QUEUE_ITEM_GENERATION_SHA256: ${{ inputs.queue_item_generation_sha256 }}
           QUEUE_MANIFEST_SHA256: ${{ inputs.queue_manifest_sha256 }}
+          REVIEW_FINDING: ${{ inputs.review_finding }}
           REVIEW_FINDING_PRESENT: ${{ inputs.review_finding != '' }}
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
           REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
@@ -1850,6 +1854,7 @@ jobs:
                   "companion_sha256",
                   "manifest_path",
                   "manifest_sha256",
+                  "review_finding",
               }
               and isinstance(item["citation"], str)
               and item["citation"]
@@ -1857,6 +1862,21 @@ jobs:
               and item["rulespec_path"]
               and isinstance(item["companion_path"], str)
               and item["companion_path"]
+              and (
+                  item["review_finding"] is None
+                  or (
+                      isinstance(item["review_finding"], str)
+                      and item["review_finding"]
+                      and item["review_finding"]
+                      == item["review_finding"].strip()
+                      and "\r" not in item["review_finding"]
+                      and not any(
+                          (ord(char) < 32 and char not in {"\n", "\t"})
+                          or ord(char) == 127
+                          for char in item["review_finding"]
+                      )
+                  )
+              )
               and (
                   item["companion_sha256"] is None
                   or (
@@ -1943,8 +1963,11 @@ jobs:
                   expected.append(
                       (
                           refresh_item["citation"],
-                          refresh_index == 0
-                          and os.environ["REVIEW_FINDING_PRESENT"] == "true",
+                          (
+                              os.environ["REVIEW_FINDING"] or None
+                              if refresh_index == 0
+                              else refresh_item["review_finding"]
+                          ),
                           (
                               Path(sys.argv[1])
                               if refresh_index == 0
@@ -1962,7 +1985,7 @@ jobs:
               expected.append(
                   (
                       os.environ["CITATION"],
-                      os.environ["REVIEW_FINDING_PRESENT"] == "true",
+                      os.environ["REVIEW_FINDING"] or None,
                       Path(sys.argv[1]),
                       "target",
                       normalized_replacement_path or None,
@@ -1977,7 +2000,7 @@ jobs:
               expected.append(
                   (
                       source_citation,
-                      False,
+                      None,
                       Path(sys.argv[1]).with_name(
                           f"{source_lane}-context-manifest.json"
                       ),
@@ -1991,7 +2014,7 @@ jobs:
               expected.append(
                   (
                       dependent_citation,
-                      os.environ["DEPENDENT_REVIEW_FINDING_PRESENT"] == "true",
+                      os.environ["DEPENDENT_REVIEW_FINDING"] or None,
                       Path(sys.argv[1]).with_name("dependent-context-manifest.json"),
                       "dependent",
                       None,
@@ -2003,10 +2026,7 @@ jobs:
               expected.append(
                   (
                       second_dependent_citation,
-                      (
-                          os.environ["SECOND_DEPENDENT_REVIEW_FINDING_PRESENT"]
-                          == "true"
-                      ),
+                      os.environ["SECOND_DEPENDENT_REVIEW_FINDING"] or None,
                       Path(sys.argv[1]).with_name(
                           "dependent-2-context-manifest.json"
                       ),
@@ -2021,7 +2041,7 @@ jobs:
           applied_inventory = []
           for (
               citation,
-              finding_required,
+              expected_review_finding,
               destination,
               lane,
               expected_primary_path,
@@ -2638,8 +2658,23 @@ jobs:
                   raise SystemExit(
                       "context manifest review findings evidence is malformed"
                   )
-              if finding_required and not review_findings:
-                  raise SystemExit("context manifest omits supplied review finding")
+              if expected_review_finding is None and review_findings:
+                  raise SystemExit(
+                      "context manifest contains an unexpected review finding"
+                  )
+              expected_review_content = (
+                  f"{expected_review_finding}\n"
+                  if expected_review_finding is not None
+                  else None
+              )
+              if expected_review_content is not None and (
+                  len(review_findings) != 1
+                  or review_findings[0].get("content")
+                  != expected_review_content
+              ):
+                  raise SystemExit(
+                      "context manifest does not bind the supplied review finding"
+                  )
               for finding in review_findings:
                   if not isinstance(finding, dict):
                       raise SystemExit("context manifest review finding is malformed")
@@ -2652,6 +2687,14 @@ jobs:
                   if "\r" in content:
                       raise SystemExit(
                           "context manifest review finding is not normalized"
+                      )
+                  if any(
+                      (ord(char) < 32 and char not in {"\n", "\t"})
+                      or ord(char) == 127
+                      for char in content
+                  ):
+                      raise SystemExit(
+                          "context manifest review finding contains a forbidden control character"
                       )
                   if hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
                       raise SystemExit(

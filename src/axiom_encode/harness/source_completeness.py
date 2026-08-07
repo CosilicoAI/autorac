@@ -1708,6 +1708,11 @@ _DEPENDENCY_STATE_VALUE = (
     r"issued|needed|obtained|produced|provided|received|required|resolved|set|"
     r"supplied|unavailable|verified)"
 )
+_EXECUTABLE_DEPENDENCY_READY_STATE_VALUE = (
+    r"(?:approved|ascertained|available|calculated|computed|determined|encoded|"
+    r"established|furnished|implemented|known|made\s+available|obtained|produced|"
+    r"provided|received|resolved|set|supplied|verified)"
+)
 _SOURCE_BOUND_RUNTIME_GAP_LANGUAGE = re.compile(
     r"\b(?:"
     r"administrative|calendar|capabilit(?:y|ies)|classification|complaint|"
@@ -4784,6 +4789,10 @@ def _source_scope_cites_louisiana_rs_dependency(
 ) -> bool:
     """Return whether an operative Louisiana clause cites one exact R.S. dependency."""
 
+    # Official Louisiana source prose is hard-wrapped within paragraphs. Preserve
+    # blank-line paragraph boundaries while preventing a visual line wrap from
+    # splitting one operative predicate such as ``shall be\ndetermined``.
+    source_scope_text = re.sub(r"(?<!\n)\n(?![ \t]*\n)", " ", source_scope_text)
     normalized_section = normalize_rulespec_path_segment(section.lower())
     references = tuple(
         reference
@@ -6840,7 +6849,15 @@ def _reason_match_names_missing_dependency(
 
     if signal_text == "until":
         before_reference = clause[:reference_start]
-        if not _reason_reference_introduction_is_bounded(bridge):
+        executable_bridge = bool(
+            match.re is _LOUISIANA_RS_DEFERRAL_DEPENDENCY
+            and re.fullmatch(
+                r"\s*(?:(?:a|an|the)\s+)?executable\s*",
+                bridge,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not (_reason_reference_introduction_is_bounded(bridge) or executable_bridge):
             return False
         operative_reference = _source_clause_links_dependency(
             clause,
@@ -6857,6 +6874,7 @@ def _reason_match_names_missing_dependency(
         return _reason_suffix_has_dependency_state(
             after,
             allow_descriptive_list=operative_reference,
+            allow_executable_object=executable_bridge,
         )
     return True
 
@@ -7050,6 +7068,108 @@ def _missing_scope_starts_with_executable_object(missing_scope: str) -> bool:
         and len(tokens) > 1
         and _louisiana_object_signature(tokens[-2]) is not None
     )
+
+
+def _executable_object_scope_claims_ready(missing_scope: str) -> bool:
+    """Reject a relative or appositive assertion that the object already exists."""
+
+    qualifier = re.search(
+        r"(?P<marker>,|\b(?:that|which)\b)(?P<scope>[^.;\n]{1,180})",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    if qualifier is None:
+        return False
+    scope = qualifier.group("scope")
+    ready_state = (
+        r"(?:accessible|accessed|available|complete|computed|calculated|determined|"
+        r"defined|deployed|downloadable|downloaded|encoded|executed|extant|found|"
+        r"furnished|functional|generated|implemented|in\s+place|installed|live|loaded|"
+        r"made\s+(?:available|obtainable)|obtainable|obtained|on\s+file|on\s+hand|"
+        r"operational|present|produced|provided|published|ready|ready\s+for\s+use|"
+        r"recoverable|recovered|released|rendered\s+(?:available|accessible)|"
+        r"retrievable|retrieved|returned|run|set|stored|supplied|usable|used|verified|"
+        r"working|at\s+(?:hand|the\s+ready))"
+    )
+    affirmative_adverb = (
+        r"(?:actively|actually|already|always|currently|directly|fully|immediately|"
+        r"just|now|presently|previously|readily|still)"
+    )
+    if qualifier.group("marker") == ",":
+        bare_ready = re.match(
+            rf"\s*(?!not\b)"
+            rf"(?:{affirmative_adverb}\s+)*"
+            rf"{ready_state}\b",
+            scope,
+            flags=re.IGNORECASE,
+        )
+        if bare_ready is not None and not re.match(
+            r"\s*(?:(?:only\s+)?(?:after|if|once|unless|upon|when)|provided\s+that)\b",
+            scope[bare_ready.end() :],
+            flags=re.IGNORECASE,
+        ):
+            return True
+    readiness = re.search(
+        rf"\b(?:"
+        rf"(?:is|are|was|were|becomes?|remains?)\s+(?!not\b)"
+        rf"(?:{affirmative_adverb}\s+)*{ready_state}|"
+        rf"(?:has|have|had)\s+"
+        rf"(?:{affirmative_adverb}\s+)*been\s+"
+        rf"(?!not\b)(?:{affirmative_adverb}\s+)*{ready_state}|"
+        rf"(?:can|could|may|might)\s+"
+        rf"(?:{affirmative_adverb}\s+)*be\s+"
+        rf"(?!not\b)(?:{affirmative_adverb}\s+)*{ready_state}|"
+        r"exists?\s+(?:already\s+)?(?:in|within)"
+        r")\b",
+        scope,
+        flags=re.IGNORECASE,
+    )
+    if readiness is not None:
+        readiness_tail = scope[readiness.end() :]
+        if not re.match(
+            r"\s*(?:(?:only\s+)?(?:after|if|once|unless|upon|when)|"
+            r"provided\s+that|in\s+theory(?:\s+only)?|on\s+paper)\b",
+            readiness_tail,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    for assertion in re.finditer(
+        rf"\b{_LOUISIANA_SUPPLY_VERB_PATTERN}\b",
+        scope,
+        flags=re.IGNORECASE,
+    ):
+        supplier = scope[: assertion.start()]
+        supplier = re.sub(
+            r"^\s*,\s*(?:(?:after|if|once|unless|upon|when)\b|provided\s+that\b)"
+            r"[^,.;\n]{1,100},\s*",
+            " ",
+            supplier,
+            flags=re.IGNORECASE,
+        )
+        supplier = re.sub(
+            r"\b(?:[A-Za-z][A-Za-z-]*ly|already|always|directly|itself|just|now|"
+            r"still)\b",
+            " ",
+            supplier,
+            flags=re.IGNORECASE,
+        )
+        implicit_subject = re.fullmatch(
+            r"\s*(?:(?:can|could|may|might|must|shall|should|will|would|to)\s+|"
+            r"(?:is|are|was|were)\s+designed\s+to\s+|"
+            r"(?:accepts?|accesses?|reads?|receives?|takes?|uses?)\b"
+            r"[^,.;\n]{0,100}\b(?:and|then)\s+)*",
+            supplier,
+            flags=re.IGNORECASE,
+        )
+        if (
+            implicit_subject is None
+            and not _louisiana_assertion_is_negative(scope, assertion.start())
+            and not _louisiana_supply_assertion_has_nonoperative_framing(
+                scope, assertion
+            )
+        ):
+            return True
+    return False
 
 
 def _missing_scope_reverses_insufficiency(missing_scope: str) -> bool:
@@ -8789,6 +8909,7 @@ def _reason_suffix_has_dependency_state(
     after: str,
     *,
     allow_descriptive_list: bool,
+    allow_executable_object: bool = False,
 ) -> bool:
     """Require a state predicate for this citation or its coordinated list."""
 
@@ -8828,6 +8949,22 @@ def _reason_suffix_has_dependency_state(
             r"\s*(?:(?:,|\b(?:and|or|both|either|neither)\b)\s*)*",
             remainder,
             flags=re.IGNORECASE,
+        ):
+            return True
+        if (
+            allow_executable_object
+            and len(prefix) <= 240
+            and re.fullmatch(
+                r"(?:is|are)\s+"
+                + _EXECUTABLE_DEPENDENCY_READY_STATE_VALUE
+                + r"|(?:has|have)\s+been\s+"
+                + _EXECUTABLE_DEPENDENCY_READY_STATE_VALUE,
+                state.group(0),
+                flags=re.IGNORECASE,
+            )
+            and _missing_scope_starts_with_executable_object(prefix)
+            and not _executable_object_scope_claims_ready(prefix)
+            and not _missing_scope_reverses_insufficiency(prefix)
         ):
             return True
         if allow_descriptive_list and _reason_descriptive_dependency_list_is_bounded(

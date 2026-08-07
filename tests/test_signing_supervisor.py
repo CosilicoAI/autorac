@@ -1912,7 +1912,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["source_bundle_json"] == {
         "description": (
             "JSON citation array for atomic imports, or "
-            '{"canonical_refresh_bundle":[{citation,replace_rulespec_path}]} '
+            '{"canonical_refresh_bundle":'
+            "[{citation,replace_rulespec_path,review_finding?}]} "
             "for an independent refresh transaction"
         ),
         "required": False,
@@ -2463,8 +2464,15 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert package_step["env"]["REVIEW_FINDING_PRESENT"] == (
         "${{ inputs.review_finding != '' }}"
     )
+    assert package_step["env"]["REVIEW_FINDING"] == "${{ inputs.review_finding }}"
     assert package_step["env"]["DEPENDENT_REVIEW_FINDING_PRESENT"] == (
         "${{ inputs.dependent_review_finding != '' }}"
+    )
+    assert package_step["env"]["DEPENDENT_REVIEW_FINDING"] == (
+        "${{ inputs.dependent_review_finding }}"
+    )
+    assert package_step["env"]["SECOND_DEPENDENT_REVIEW_FINDING"] == (
+        "${{ inputs.second_dependent_review_finding }}"
     )
     assert package_step["env"]["PR_BASE_BRANCH"] == ("${{ inputs.pr_base_branch }}")
     assert package_step["env"]["RULESPEC_REF"] == "${{ inputs.rulespec_ref }}"
@@ -3689,6 +3697,8 @@ def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
     repo, primary_citation, primary_path, additions = _prepare_canonical_refresh_inputs(
         tmp_path
     )
+    additions[0]["review_finding"] = "Preserve the R.S. 47:32 ownership boundary."
+    additions[2]["review_finding"] = "Preserve the five-year carryforward limit."
     normalized = parse_canonical_refresh_bundle(
         repo,
         json.dumps(additions),
@@ -3770,8 +3780,26 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "canonical-refresh-02",
         "canonical-refresh-03",
     ]
-    assert "--review-findings" in encode_args[0]
-    assert all("--review-findings" not in args for args in encode_args[1:])
+    assert ["--review-findings" in args for args in encode_args] == [
+        True,
+        True,
+        False,
+        True,
+    ]
+    supplied_findings = [
+        (
+            Path(args[args.index("--review-findings") + 1]).read_text(encoding="utf-8")
+            if "--review-findings" in args
+            else None
+        )
+        for args in encode_args
+    ]
+    assert supplied_findings == [
+        "Refresh the independent Louisiana modules.\n",
+        "Preserve the R.S. 47:32 ownership boundary.\n",
+        None,
+        "Preserve the five-year carryforward limit.\n",
+    ]
     forbidden = {
         "--apply-target-only",
         "--required-import-rulespec-path",
@@ -4670,6 +4698,7 @@ def test_targeted_artifact_packages_signed_review_context(tmp_path: Path) -> Non
             **os.environ,
             "CITATION": citation,
             "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING": review_content.rstrip("\n"),
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-nz",
@@ -4744,6 +4773,18 @@ def _targeted_metadata_script() -> str:
             "unrelated-companion",
             "canonical refresh apply manifest does not match its exact requested target",
         ),
+        (
+            "wrong-companion-finding",
+            "context manifest does not bind the supplied review finding",
+        ),
+        (
+            "unexpected-companion-finding",
+            "context manifest contains an unexpected review finding",
+        ),
+        (
+            "control-companion-finding",
+            "normalized canonical refresh bundle is malformed",
+        ),
     ],
 )
 def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
@@ -4789,7 +4830,11 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
         rule = rulespec / rulespec_path
         rule.parent.mkdir(parents=True, exist_ok=True)
         rule.write_text(f"format: rulespec/v1\nrules: [{index}]\n", encoding="utf-8")
-        finding = "Preserve the primary semantics.\n" if index == 0 else ""
+        finding = (
+            "Preserve the primary semantics.\n"
+            if index == 0
+            else "Preserve the companion ownership boundary.\n"
+        )
         context = {
             "citation": citation,
             "review_findings_files": (
@@ -4803,6 +4848,14 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
                 else []
             ),
         }
+        if mutation == "control-companion-finding" and index > 0:
+            finding = "Preserve the companion\x00 ownership boundary.\n"
+            context["review_findings_files"] = [
+                {
+                    "content": finding,
+                    "sha256": hashlib.sha256(finding.encode()).hexdigest(),
+                }
+            ]
         context_bytes = json.dumps(context, sort_keys=True).encode()
         context_path = tmp_path / "generated" / lane / "context-manifest.json"
         context_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4825,6 +4878,15 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
         inventory.append(
             {
                 "citation": citation,
+                "review_finding": (
+                    (
+                        "A different companion finding."
+                        if mutation == "wrong-companion-finding"
+                        else finding.rstrip("\n")
+                    )
+                    if index > 0 and mutation != "unexpected-companion-finding"
+                    else None
+                ),
                 "rulespec_path": rulespec_path,
                 "rulespec_sha256": "a" * 64,
                 "companion_path": str(
@@ -4895,6 +4957,7 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
             **os.environ,
             "CITATION": target_rows[0][0],
             "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING": "Preserve the primary semantics.",
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
@@ -5213,6 +5276,7 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
             **os.environ,
             "CITATION": citation,
             "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING": review_content.rstrip("\n"),
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
@@ -5338,6 +5402,7 @@ def test_targeted_artifact_preserves_pre_v4_replacement_receipts(
             **os.environ,
             "CITATION": citation,
             "PYTHONPATH": str(ROOT / "src"),
+            "REVIEW_FINDING": "",
             "REVIEW_FINDING_PRESENT": "false",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
@@ -5499,10 +5564,15 @@ def test_targeted_artifact_enforces_target_and_dependent_context_lanes(
             **os.environ,
             "CITATION": target_citation,
             "DEPENDENT_CITATION": dependent_citation,
+            "DEPENDENT_REVIEW_FINDING": "Preserve the dependent source.",
             "DEPENDENT_REVIEW_FINDING_PRESENT": "true",
             "PYTHONPATH": str(ROOT / "src"),
             "SECOND_DEPENDENT_CITATION": second_dependent_citation,
+            "SECOND_DEPENDENT_REVIEW_FINDING": (
+                "Preserve the second dependent source."
+            ),
             "SECOND_DEPENDENT_REVIEW_FINDING_PRESENT": "true",
+            "REVIEW_FINDING": "Preserve the target source.",
             "REVIEW_FINDING_PRESENT": "true",
             "RUNNER_TEMP": str(tmp_path),
             "RULESPEC_CHECKOUT": "rulespec-us",
