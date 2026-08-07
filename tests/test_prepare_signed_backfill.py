@@ -533,6 +533,9 @@ def test_parse_canonical_refresh_bundle_accepts_tracked_canonical_targets(
                 {
                     "citation": "us-la/statute/47:295",
                     "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                    "review_finding": (
+                        "Preserve the exact R.S. 47:32 ownership boundary."
+                    ),
                 },
                 {
                     "citation": "us-la/statute/47:297.4",
@@ -563,12 +566,60 @@ def test_parse_canonical_refresh_bundle_accepts_tracked_canonical_targets(
             "companion_sha256",
             "manifest_path",
             "manifest_sha256",
+            "review_finding",
         }
         for item in inventory
     )
     assert inventory[0]["companion_path"] == ("us-la/statutes/47/294.test.yaml")
     assert inventory[0]["companion_sha256"] == hashlib.sha256(b"[]\n").hexdigest()
+    assert inventory[0]["review_finding"] is None
+    assert inventory[1]["review_finding"] == (
+        "Preserve the exact R.S. 47:32 ownership boundary."
+    )
     assert inventory[1]["companion_sha256"] is None
+
+
+@pytest.mark.parametrize(
+    "review_finding",
+    ["", " leading", "trailing ", "carriage\rreturn", "control\x00value"],
+)
+def test_parse_canonical_refresh_bundle_rejects_malformed_review_finding(
+    tmp_path: Path,
+    review_finding: str,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="review_finding must be"):
+        parse_canonical_refresh_bundle(
+            repo,
+            json.dumps(
+                [
+                    {
+                        "citation": "us-la/statute/47:295",
+                        "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                        "review_finding": review_finding,
+                    }
+                ]
+            ),
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
+
+
+def test_parse_canonical_refresh_bundle_rejects_unknown_item_field(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="only an optional review_finding"):
+        parse_canonical_refresh_bundle(
+            repo,
+            '[{"citation":"us-la/statute/47:295",'
+            '"replace_rulespec_path":"us-la/statutes/47/295.yaml",'
+            '"untrusted":true}]',
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
 
 
 def test_parse_canonical_refresh_bundle_accepts_empty_default(tmp_path: Path) -> None:

@@ -2,6 +2,12 @@
 
 All notable changes to Axiom Encode will be documented here.
 
+- Carry bounded, source-specific review findings through each canonical-refresh
+  lane and bind their exact content in signed context evidence. Louisiana
+  external-dependency validation now recognizes narrowly scoped executable
+  dependency objects and preserves operative predicates across official prose
+  line wraps.
+
 - Interpret formula-range numeric evidence in source order across numeric
   extraction profiles, so a percentage yielded before word-number thresholds
   cannot hide a valid conjoined lower and upper income interval.

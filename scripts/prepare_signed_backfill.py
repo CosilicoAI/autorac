@@ -517,20 +517,27 @@ def parse_canonical_refresh_bundle(
             "RuleSpec path"
         )
 
-    requested: list[tuple[str, PurePosixPath]] = [(primary_citation, primary_path)]
+    requested: list[tuple[str, PurePosixPath, str | None]] = [
+        (primary_citation, primary_path, None)
+    ]
     seen_citations = {primary_citation}
     seen_paths = {primary_path}
     for index, value in enumerate(payload):
         label = f"canonical refresh addition #{index + 1}"
-        if not isinstance(value, dict) or set(value) != {
-            "citation",
-            "replace_rulespec_path",
-        }:
+        required_fields = {"citation", "replace_rulespec_path"}
+        allowed_fields = {*required_fields, "review_finding"}
+        if (
+            not isinstance(value, dict)
+            or not required_fields.issubset(value)
+            or not set(value).issubset(allowed_fields)
+        ):
             raise ValueError(
-                f"{label} must contain exactly citation and replace_rulespec_path"
+                f"{label} must contain citation and replace_rulespec_path, with "
+                "only an optional review_finding"
             )
         citation = value["citation"]
         raw_path = value["replace_rulespec_path"]
+        review_finding = value.get("review_finding")
         if (
             not isinstance(citation, str)
             or not citation
@@ -545,6 +552,20 @@ def parse_canonical_refresh_bundle(
             )
         ):
             raise ValueError(f"{label} fields must be nonempty canonical strings")
+        if review_finding is not None and (
+            not isinstance(review_finding, str)
+            or not review_finding
+            or review_finding != review_finding.strip()
+            or "\r" in review_finding
+            or any(
+                (ord(character) < 32 and character not in {"\n", "\t"})
+                or ord(character) == 127
+                for character in review_finding
+            )
+        ):
+            raise ValueError(
+                f"{label} review_finding must be a nonempty normalized string"
+            )
         try:
             citation = require_canonical_corpus_citation_path(citation)
         except ValueError as exc:
@@ -565,13 +586,18 @@ def parse_canonical_refresh_bundle(
             )
         if citation in seen_citations or path in seen_paths:
             raise ValueError("canonical refresh citations and paths must be unique")
-        requested.append((citation, path))
+        requested.append((citation, path, review_finding))
         seen_citations.add(citation)
         seen_paths.add(path)
 
     return tuple(
-        _canonical_refresh_target_inventory(repo, citation=citation, path=path)
-        for citation, path in requested
+        _canonical_refresh_target_inventory(
+            repo,
+            citation=citation,
+            path=path,
+            review_finding=review_finding,
+        )
+        for citation, path, review_finding in requested
     )
 
 
@@ -580,6 +606,7 @@ def _canonical_refresh_target_inventory(
     *,
     citation: str,
     path: PurePosixPath,
+    review_finding: str | None,
 ) -> dict[str, str | None]:
     """Bind one refresh target and its untrusted predecessor manifest to HEAD."""
 
@@ -705,6 +732,7 @@ def _canonical_refresh_target_inventory(
         )
     return {
         "citation": citation,
+        "review_finding": review_finding,
         "rulespec_path": path.as_posix(),
         "rulespec_sha256": target_sha256,
         "companion_path": companion_path.as_posix(),
@@ -732,13 +760,14 @@ def verify_canonical_refresh_target(
         "companion_sha256",
         "manifest_path",
         "manifest_sha256",
+        "review_finding",
     }
     if (
         not isinstance(target, dict)
         or set(target) != expected_fields
         or not all(
             isinstance(target[field], str) and target[field]
-            for field in expected_fields - {"companion_sha256"}
+            for field in expected_fields - {"companion_sha256", "review_finding"}
         )
         or (
             target["companion_sha256"] is not None
@@ -749,6 +778,20 @@ def verify_canonical_refresh_target(
         )
         or DIGEST_PATTERN.fullmatch(target["rulespec_sha256"]) is None
         or DIGEST_PATTERN.fullmatch(target["manifest_sha256"]) is None
+        or (
+            target["review_finding"] is not None
+            and (
+                not isinstance(target["review_finding"], str)
+                or not target["review_finding"]
+                or target["review_finding"] != target["review_finding"].strip()
+                or "\r" in target["review_finding"]
+                or any(
+                    (ord(character) < 32 and character not in {"\n", "\t"})
+                    or ord(character) == 127
+                    for character in target["review_finding"]
+                )
+            )
+        )
     ):
         raise ValueError("canonical refresh target inventory is malformed")
     repo = repo.resolve(strict=True)

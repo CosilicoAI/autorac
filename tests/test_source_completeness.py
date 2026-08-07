@@ -6813,6 +6813,359 @@ def test_source_bound_louisiana_rs_dependency_accepts_archived_reasons(reason: s
     assert not _has_issue(result, "source branch a", "neither encoded")
 
 
+def test_archived_louisiana_executable_dependency_with_official_wrap_is_accepted():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295/A#individual_louisiana_income_tax_amount
+      reason: >-
+        R.S. 47:295(A) provides that the amount of the income tax imposed upon
+        the Louisiana income of every individual shall be determined in accordance
+        with R.S. 47:32. The amount cannot be computed until an executable R.S.
+        47:32 tax-amount computation accepting the applicable Louisiana income or
+        net-income tax base is encoded; the available R.S. 47:32 export supplies
+        only the individual income tax rate.
+rules: []
+"""
+    source = """\
+A. There is imposed an income tax for each taxable year upon the Louisiana income
+of every individual, whether resident or nonresident. The amount of the tax shall be
+determined in accordance with the provisions of R.S. 47:32.
+
+B. Reserved.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "(a)", "deferral")
+    assert not _has_issue(result, "source branch a", "neither encoded")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "Cannot compute the tax until an executable fictional R.S. 47:32 "
+            "tax-amount computation is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 explanatory "
+            "report is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is encoded, but the complete computation is already "
+            "available."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is not encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, already encoded in the registry, is available."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that the registry already provides is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is unavailable."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is missing."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is needed."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation is required."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, which is fully implemented, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which is available today is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that is complete and available is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that is on hand is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which is operational is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which is accessible is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which is obtainable is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which exists in the registry is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which can already be used is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which has already been implemented is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which has been provided by the registry is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which was made available by the module is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which remains readily available is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which can be executed is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation which can be run by the runtime is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that the runtime already provides is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that the implementation already contains is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that the database supplies is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that the API returns is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, available now, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, available in the registry, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, implemented and ready, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, on hand today, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, readily available, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation, immediately available, is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that runtime already provides is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that registry supplies is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that our runtime provides is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that its registry supplies is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation that PolicyEngine runtime provides is encoded."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation was encoded."
+        ),
+        (
+            "The tax was not computable until an executable R.S. 47:32 tax-amount "
+            "computation was encoded."
+        ),
+        (
+            "Cannot compute the tax until executable R.S. 47:32 tax-amount "
+            "computations were available."
+        ),
+        (
+            "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+            "computation must be encoded."
+        ),
+    ),
+)
+def test_louisiana_executable_dependency_form_remains_bounded(reason: str):
+    result = _louisiana_external_dependency_deferral(reason)
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+@pytest.mark.parametrize(
+    "description",
+    (
+        "that computes the applicable tax amount",
+        "which calculates liability from the tax base",
+        "that produces the final tax amount",
+        "which returns the tax due",
+        "that uses the applicable tax base",
+        "which accesses the required rate schedule",
+        "that can compute the applicable tax amount",
+        "that will calculate liability",
+        "which must return the tax due",
+        "that is designed to compute the applicable tax amount",
+        "that accepts the income and computes the tax amount",
+        "which receives the base and returns the tax due",
+        ", available only after encoding,",
+        "which is not currently available",
+        ", not currently available,",
+        "which is conditionally available",
+        "which is available only after encoding",
+        "which may be available only after encoding",
+        "which is barely available",
+        "which is hardly available",
+        "which is theoretically available",
+        "which is supposedly available",
+        "which is available in theory only",
+        "which, when the inputs arrive, computes the tax amount",
+        "that, after receiving the base, calculates liability",
+    ),
+)
+def test_louisiana_executable_dependency_allows_capability_description(
+    description: str,
+):
+    reason = (
+        "Cannot compute the tax until an executable R.S. 47:32 tax-amount "
+        f"computation {description} is encoded."
+    )
+
+    result = _louisiana_external_dependency_deferral(reason)
+
+    assert not _has_issue(result, "(a)", "deferral")
+
+
+def test_wrapped_negated_louisiana_source_link_is_not_operative():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295/a#individual_louisiana_income_tax_amount
+      reason: >-
+        Cannot compute the tax until an executable R.S. 47:32 tax-amount
+        computation is encoded.
+rules: []
+"""
+    source = """\
+A. The tax shall not be
+determined in accordance with the provisions of R.S. 47:32.
+
+B. Reserved.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_whitespace_only_paragraph_break_does_not_join_louisiana_source_link():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:295
+  deferred_outputs:
+    - output: us-la:statutes/47/295/a#individual_louisiana_income_tax_amount
+      reason: >-
+        Cannot compute the tax until an executable R.S. 47:32 tax-amount
+        computation is encoded.
+rules: []
+"""
+    source = (
+        "A. The amount of the tax shall be determined in accordance with\n"
+        " \n"
+        "R.S. 47:32 is mentioned only as background.\n"
+    )
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:295",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "(a)", "deferral", "runtime capability")
+
+
+def test_executable_dependency_bridge_does_not_expand_federal_deferrals():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999#tax_amount
+      reason: >-
+        Cannot compute the tax until an executable 26 U.S.C. 1 tax-amount
+        computation is encoded.
+rules: []
+"""
+    source = "The amount shall be determined under 26 U.S.C. 1."
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert _has_issue(
+        result, "[complete-source-unit:deferral]", "module.deferred_outputs[0]"
+    )
+
+
 def test_line_wrapped_source_bound_louisiana_rs_dependency_is_accepted():
     result = _louisiana_external_dependency_deferral(
         "Cannot compute the tax until the calculation required by La. R.S. "
