@@ -41,6 +41,20 @@ _UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT = 32
 _UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT = 8
 _TEMPORAL_WITNESS_NAME_LIMIT = 32
 _TEMPORAL_WITNESS_VERSION_LIMIT = 8
+_PARAMETER_ALIAS_FORMULA_KEYWORDS = {
+    "and",
+    "else",
+    "false",
+    "holds",
+    "if",
+    "match",
+    "none",
+    "not",
+    "not_holds",
+    "null",
+    "or",
+    "true",
+}
 
 
 class NumericOccurrenceLike(Protocol):
@@ -371,7 +385,7 @@ _ENGLISH_ORDINAL_WORD = (
     r"seventieth|eightieth|ninetieth|hundredth|thousandth|millionth|billionth|"
     r"trillionth)"
 )
-_ENGLISH_FRACTION_DENOMINATOR = rf"(?:halves?|quarters?|{_ENGLISH_ORDINAL_WORD}s?)"
+_ENGLISH_FRACTION_DENOMINATOR = rf"(?:half|halves|quarters?|{_ENGLISH_ORDINAL_WORD}s?)"
 _ENGLISH_FRACTION_PHRASE = (
     rf"(?:half|quarter|(?:a|an)[-\s]+(?:half|quarter|{_ENGLISH_ORDINAL_WORD})|"
     rf"{_ENGLISH_CARDINAL_PHRASE}[-\s]+"
@@ -382,9 +396,12 @@ _ENGLISH_FRACTION_OF = re.compile(
     rf"(?P<target>[^.;:\n]+)",
     flags=re.IGNORECASE,
 )
+_ENGLISH_CARDINAL_SEQUENCE = rf"{_ENGLISH_NUMBER_WORD}(?:[-\s]+{_ENGLISH_NUMBER_WORD})*"
 _ENGLISH_FRACTIONAL_PERCENTAGE_OF = re.compile(
-    rf"\b(?:{_ENGLISH_CARDINAL_PHRASE}\s+and\s+)?"
-    rf"{_ENGLISH_FRACTION_PHRASE}\s+(?:percent|per\s+cent)\s+of\b",
+    rf"\b(?:{_ENGLISH_CARDINAL_SEQUENCE}\s+and\s+)?"
+    rf"(?:half|quarter|(?:a|an|{_ENGLISH_CARDINAL_SEQUENCE})[-\s]+"
+    rf"{_ENGLISH_FRACTION_DENOMINATOR})\s+"
+    rf"(?:percent|per\s+cent)\s+of\b",
     flags=re.IGNORECASE,
 )
 _FORMULA_TABLE_NAME = r"(?:table|schedule)(?:\s+[A-Z0-9]+(?:-[A-Z0-9]+)*)?"
@@ -10458,10 +10475,20 @@ def _companion_test_issues(
         formula_branches=formula_branches,
     )
     if exception_branches:
+        independently_covered_paths = {
+            path
+            for paths in principal_rule_paths.values()
+            for path in paths
+            if any(candidate.path == path for candidate in active_branches)
+        }
         paired_exception_branches = tuple(
             branch
             for branch in exception_branches
-            if _source_exception_requires_paired_witness(branch.text)
+            if _source_exception_requires_paired_witness(
+                branch.text,
+                branch_path=branch.path,
+                independently_covered_paths=independently_covered_paths,
+            )
         )
         unconditional_nonapplicability_branches = tuple(
             branch
@@ -11318,17 +11345,87 @@ def _formula_leaf_temporal_bindings(
 
 def _source_worded_percentage_rates(source_text: str) -> tuple[float, ...]:
     rates: list[float] = []
-    for match in _ENGLISH_WORDED_PERCENTAGE_OF.finditer(source_text):
+    matches = sorted(
+        itertools.chain(
+            _ENGLISH_WORDED_PERCENTAGE_OF.finditer(source_text),
+            _ENGLISH_FRACTIONAL_PERCENTAGE_OF.finditer(source_text),
+        ),
+        key=lambda match: (match.start(), -(match.end() - match.start())),
+    )
+    seen_spans: set[tuple[int, int]] = set()
+    for match in matches:
+        if match.span() in seen_spans:
+            continue
+        seen_spans.add(match.span())
         phrase = re.sub(
             r"\s+(?:percent|per\s+cent)\s+of\s*$",
             "",
             match.group(0),
             flags=re.IGNORECASE,
         )
-        value = _english_cardinal_value(phrase)
+        value = _english_fractional_number_value(phrase)
+        if value is None:
+            value = _english_cardinal_value(phrase)
         if value is not None:
             rates.append(value / 100.0)
     return tuple(rates)
+
+
+def _english_fractional_number_value(text: str) -> float | None:
+    """Parse a bounded simple or mixed English fraction."""
+
+    normalized = re.sub(r"[-\s]+", " ", text.strip().lower())
+    whole = 0.0
+    fraction_text = normalized
+    if " and " in normalized:
+        whole_text, fraction_text = normalized.rsplit(" and ", 1)
+        whole_value = _english_cardinal_value(whole_text)
+        if whole_value is None:
+            return None
+        whole = whole_value
+    tokens = fraction_text.split()
+    if tokens and tokens[0] in {"a", "an"}:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    denominator_words = {
+        "half": 2,
+        "halves": 2,
+        "second": 2,
+        "seconds": 2,
+        "quarter": 4,
+        "quarters": 4,
+        "fourth": 4,
+        "fourths": 4,
+        "fifth": 5,
+        "fifths": 5,
+        "sixth": 6,
+        "sixths": 6,
+        "seventh": 7,
+        "sevenths": 7,
+        "eighth": 8,
+        "eighths": 8,
+        "ninth": 9,
+        "ninths": 9,
+        "tenth": 10,
+        "tenths": 10,
+        "eleventh": 11,
+        "elevenths": 11,
+        "twelfth": 12,
+        "twelfths": 12,
+    }
+    denominator = denominator_words.get(tokens[-1])
+    if denominator is None:
+        return None
+    numerator = 1.0
+    if len(tokens) > 1:
+        numerator_value = _english_cardinal_value(" ".join(tokens[:-1]))
+        if numerator_value is None:
+            return None
+        numerator = numerator_value
+    if numerator <= 0 or numerator >= denominator:
+        return None
+    return whole + numerator / denominator
 
 
 def _english_cardinal_value(text: str) -> float | None:
@@ -11478,8 +11575,21 @@ def _formula_branch_computation_occurrences(
     interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> tuple[NumericOccurrenceLike, ...]:
-    source_occurrences = tuple(
-        extract_numeric_occurrences(authoritative_numeric_recall_text(branch.text))
+    recall_text = authoritative_numeric_recall_text(branch.text)
+    fractional_percentages = _source_fractional_percentage_occurrences(recall_text)
+    fractional_spans = tuple(
+        (occurrence.start, occurrence.end) for occurrence in fractional_percentages
+    )
+    source_occurrences = (
+        tuple(
+            occurrence
+            for occurrence in extract_numeric_occurrences(recall_text)
+            if not any(
+                start <= occurrence.start and occurrence.end <= end
+                for start, end in fractional_spans
+            )
+        )
+        + fractional_percentages
     )
     boundaries = (
         ()
@@ -11492,7 +11602,10 @@ def _formula_branch_computation_occurrences(
     )
     return tuple(
         occurrence
-        for occurrence in source_occurrences
+        for occurrence in sorted(
+            source_occurrences,
+            key=lambda occurrence: (occurrence.start, occurrence.end),
+        )
         if not _temporal_occurrence_is_formula_applicability_preface(
             occurrence,
             branch.text,
@@ -11502,6 +11615,40 @@ def _formula_branch_computation_occurrences(
             for boundary in boundaries
         )
     )
+
+
+def _source_fractional_percentage_occurrences(
+    text: str,
+) -> tuple[_NumericOccurrenceView, ...]:
+    """Collapse English mixed-percentage components into one rate occurrence."""
+
+    occurrences: list[_NumericOccurrenceView] = []
+    for match in _ENGLISH_FRACTIONAL_PERCENTAGE_OF.finditer(text):
+        phrase = re.sub(
+            r"\s+(?:percent|per\s+cent)\s+of\s*$",
+            "",
+            match.group(0),
+            flags=re.IGNORECASE,
+        )
+        percentage = _english_fractional_number_value(phrase)
+        if percentage is None:
+            continue
+        occurrences.append(
+            _NumericOccurrenceView(
+                value=percentage / 100.0,
+                start=match.start(),
+                end=match.end(),
+                raw=match.group(0),
+                has_rate_context=True,
+                has_temporal_context=False,
+                has_structural_context=False,
+                source_value=percentage,
+                requires_rate_context=False,
+                is_word_number=True,
+                alternative_values=(),
+            )
+        )
+    return tuple(occurrences)
 
 
 def _formula_execution_is_source_branch_witness(
@@ -12844,6 +12991,7 @@ def _source_contextual_number_word(
 
 
 def _source_describes_half(text: str) -> bool:
+    text = _ENGLISH_FRACTIONAL_PERCENTAGE_OF.sub(" ", text)
     return bool(
         re.search(
             r"\b(?:hälfte|halb(?:e[nsrm]?)?|halbier\w*|halbierung|half)\b|"
@@ -17139,7 +17287,14 @@ def _exception_cues_have_distinct_conditions(between: str) -> bool:
     )
 
 
-def _source_exception_requires_paired_witness(text: str) -> bool:
+def _source_exception_requires_paired_witness(
+    text: str,
+    *,
+    branch_path: tuple[str, ...] = (),
+    independently_covered_paths: set[tuple[str, ...]] | frozenset[tuple[str, ...]] = (
+        frozenset()
+    ),
+) -> bool:
     """Return whether a source condition has two locally testable states.
 
     Cross-reference reservations and unconditional non-applicability rules are
@@ -17153,6 +17308,12 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
         return _notwithstanding_reference_tail_requires_paired_witness(
             notwithstanding_tail
         )
+    if _leading_reference_reservation_is_nonlocal(
+        collapsed,
+        branch_path=branch_path,
+        independently_covered_paths=independently_covered_paths,
+    ):
+        return False
     if re.search(
         r"\bexcept\s+as\s+[^.;]{0,100}\bprovided\b",
         collapsed,
@@ -17168,6 +17329,46 @@ def _source_exception_requires_paired_witness(text: str) -> bool:
     ) and _source_reference_reservation_is_only_references(collapsed):
         return False
     return True
+
+
+def _leading_reference_reservation_is_nonlocal(
+    text: str,
+    *,
+    branch_path: tuple[str, ...],
+    independently_covered_paths: set[tuple[str, ...]] | frozenset[tuple[str, ...]],
+) -> bool:
+    """Exclude one resolved same-subsection override with no local selector."""
+
+    clause = _strip_source_clause_marker(_collapse_text(text)).strip()
+    marker = re.match(
+        r"(?:subject\s+to|vorbehaltlich|except\s+as)\b",
+        clause,
+        flags=re.IGNORECASE,
+    )
+    if marker is None:
+        return False
+    delimiter = re.search(r"[,;]", clause[marker.end() :])
+    if delimiter is None:
+        return False
+    delimiter_start = marker.end() + delimiter.start()
+    reservation = clause[:delimiter_start]
+    tail = clause[delimiter_start + 1 :]
+    target_match = re.search(
+        r"\bparagraph\s*\(?(?P<label>\d+[a-z]?)\)?\s+of\s+this\s+"
+        r"subsection\b",
+        reservation,
+        flags=re.IGNORECASE,
+    )
+    if target_match is None or not branch_path:
+        return False
+    target_path = (*branch_path[:-1], target_match.group("label").lower())
+    return bool(
+        target_path != branch_path
+        and target_path in independently_covered_paths
+        and _source_reference_reservation_is_only_references(reservation)
+        and source_states_explicit_computation(tail)
+        and not _source_exception_or_applicability_matches(tail)
+    )
 
 
 def _louisiana_notwithstanding_reference_tail(text: str) -> str | None:
@@ -20223,7 +20424,7 @@ def _selected_rule_formula_version_index(
 
 
 def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return literal rule values, retaining resolvable temporal variants."""
+    """Return bounded local parameter values and temporal aliases."""
 
     environment: dict[str, Any] = {}
     module = payload.get("module")
@@ -20314,7 +20515,226 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
             for value in values[1:]
         ):
             environment[name] = values[0]
+    pending_aliases = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in rules
+        if isinstance(rule, dict)
+        and rule.get("kind") == "parameter"
+        and str(rule.get("name") or "").strip()
+        and str(rule.get("name") or "").strip() not in environment
+    }
+    if len(pending_aliases) > _TEMPORAL_WITNESS_NAME_LIMIT:
+        return environment
+    for _ in range(_TEMPORAL_WITNESS_NAME_LIMIT):
+        changed = False
+        prior_environment = dict(environment)
+        resolved_round: dict[str, Any] = {}
+        for name, rule in sorted(pending_aliases.items()):
+            value = _resolved_parameter_formula_value(
+                rule,
+                environment=prior_environment,
+                authoritative_citation_path=authoritative_citation_path,
+            )
+            if value is _UNRESOLVED_CONDITION_VALUE:
+                continue
+            resolved_round[name] = value
+            changed = True
+        environment.update(resolved_round)
+        for name in resolved_round:
+            del pending_aliases[name]
+        if not changed:
+            break
     return environment
+
+
+def _resolved_parameter_formula_value(
+    rule: dict[str, Any],
+    *,
+    environment: dict[str, Any],
+    authoritative_citation_path: str,
+) -> Any:
+    """Resolve one input-free parameter alias, failing closed on ambiguity."""
+
+    versions = rule.get("versions")
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or len(versions) > _TEMPORAL_WITNESS_VERSION_LIMIT
+    ):
+        return _UNRESOLVED_CONDITION_VALUE
+    formula_versions = [
+        (index, version)
+        for index, version in enumerate(versions)
+        if isinstance(version, dict) and version.get("formula") is not None
+    ]
+    if not formula_versions:
+        return _UNRESOLVED_CONDITION_VALUE
+    formulas = [str(version["formula"]) for _index, version in formula_versions]
+    referenced_names = set().union(
+        *(_FORMULA_IDENTIFIER.findall(formula) for formula in formulas),
+        set(),
+    )
+    unresolved_names = {
+        name
+        for name in referenced_names
+        if name not in environment
+        and name.lower() not in _PARAMETER_ALIAS_FORMULA_KEYWORDS
+    }
+    if unresolved_names:
+        return _UNRESOLVED_CONDITION_VALUE
+    local_dependencies = {
+        name: environment[name] for name in referenced_names if name in environment
+    }
+    temporal_dependencies = {
+        name: value
+        for name, value in local_dependencies.items()
+        if isinstance(value, _TemporalFormulaValue)
+    }
+    change_points: set[str] = set()
+    has_temporal_metadata = False
+    for _index, version in formula_versions:
+        start = str(version.get("effective_from") or "").strip()
+        end = str(version.get("effective_to") or "").strip()
+        if start or end:
+            has_temporal_metadata = True
+            if (
+                not _is_iso_calendar_date(start)
+                or (end and not _is_iso_calendar_date(end))
+                or (end and end < start)
+            ):
+                return _UNRESOLVED_CONDITION_VALUE
+            change_points.add(start)
+            if end and (after_end := _shift_iso_date(end, 1)) is not None:
+                change_points.add(after_end)
+    for temporal in temporal_dependencies.values():
+        for start, end, _value in temporal.versions:
+            if not _is_iso_calendar_date(start) or (
+                end and not _is_iso_calendar_date(end)
+            ):
+                return _UNRESOLVED_CONDITION_VALUE
+            change_points.add(start)
+            if end and (after_end := _shift_iso_date(end, 1)) is not None:
+                change_points.add(after_end)
+
+    excerpts_by_version: dict[int, list[str]] = {}
+    for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule):
+        if (
+            not authoritative_citation_path
+            or citation_path.strip("/").lower() != authoritative_citation_path
+        ):
+            continue
+        match = re.fullmatch(r"versions\[(\d+)\]\.formula", path)
+        if match is not None:
+            excerpts_by_version.setdefault(int(match.group(1)), []).append(excerpt)
+
+    if not has_temporal_metadata and not temporal_dependencies:
+        formula = _unambiguous_rule_formula_text(rule)
+        if formula is None:
+            return _UNRESOLVED_CONDITION_VALUE
+        resolved = _evaluate_parameter_alias_formula(
+            formula,
+            environment=_formula_environment_for_case(environment, {}),
+        )
+        return resolved
+
+    ordered_points = sorted(change_points)
+    if not ordered_points or len(ordered_points) > _TEMPORAL_WITNESS_VERSION_LIMIT:
+        return _UNRESOLVED_CONDITION_VALUE
+    entries: list[tuple[str, str, Any]] = []
+    entry_excerpts: list[tuple[str, ...]] = []
+    for point_index, point in enumerate(ordered_points):
+        case = {"period": point}
+        version_index = _selected_rule_formula_version_index(rule, case)
+        formula = _rule_formula_text_for_case(rule, case)
+        if version_index is None or formula is None:
+            continue
+        case_environment = _formula_environment_for_case(environment, case)
+        resolved = _evaluate_parameter_alias_formula(
+            formula,
+            environment=case_environment,
+        )
+        if resolved is _UNRESOLVED_CONDITION_VALUE:
+            continue
+        next_point = (
+            ordered_points[point_index + 1]
+            if point_index + 1 < len(ordered_points)
+            else None
+        )
+        if next_point is not None:
+            end = _shift_iso_date(next_point, -1)
+            if end is None:
+                return _UNRESOLVED_CONDITION_VALUE
+        else:
+            selected_version = versions[version_index]
+            end = str(selected_version.get("effective_to") or "").strip()
+        propagated_excerpts = list(excerpts_by_version.get(version_index, ()))
+        execution = _execute_formula_text(
+            formula,
+            environment=case_environment,
+            constant_environment=case_environment,
+        )
+        if execution is None:
+            return _UNRESOLVED_CONDITION_VALUE
+        reached_names = _reached_formula_expression_identifier_names(
+            execution.leaf,
+            environment=case_environment,
+        )
+        reached_names.update(
+            name
+            for step in execution.trace
+            for selector in step.selectors
+            for name in _reached_formula_expression_identifier_names(
+                selector,
+                environment=case_environment,
+            )
+        )
+        for dependency_name in sorted(reached_names):
+            temporal = temporal_dependencies.get(dependency_name)
+            if temporal is None:
+                continue
+            for selected_index in _selected_temporal_version_indexes(temporal, case):
+                if selected_index < len(temporal.version_formula_excerpts):
+                    propagated_excerpts.extend(
+                        temporal.version_formula_excerpts[selected_index]
+                    )
+        entries.append((point, end, resolved))
+        entry_excerpts.append(tuple(dict.fromkeys(propagated_excerpts)))
+    if not entries or len(entries) > _TEMPORAL_WITNESS_VERSION_LIMIT:
+        return _UNRESOLVED_CONDITION_VALUE
+    return _TemporalFormulaValue(tuple(entries), tuple(entry_excerpts))
+
+
+def _evaluate_parameter_alias_formula(
+    formula: str,
+    *,
+    environment: dict[str, Any],
+) -> Any:
+    """Evaluate one bounded parameter formula without inventing inputs."""
+
+    execution = _execute_formula_text(
+        formula,
+        environment=environment,
+        constant_environment=environment,
+    )
+    if execution is None:
+        return _UNRESOLVED_CONDITION_VALUE
+    value = _evaluate_formula_selector(execution.leaf, environment)
+    if (
+        value is _UNRESOLVED_CONDITION_VALUE
+        or not isinstance(value, (str, int, float, bool))
+        or isinstance(value, complex)
+    ):
+        return _UNRESOLVED_CONDITION_VALUE
+    return value
+
+
+def _shift_iso_date(value: str, days: int) -> str | None:
+    """Return one bounded calendar-date shift used for temporal segments."""
+
+    with contextlib.suppress(ValueError, OverflowError):
+        parsed = date.fromisoformat(value)
+        return date.fromordinal(parsed.toordinal() + days).isoformat()
+    return None
 
 
 def _formula_environment_for_case(
