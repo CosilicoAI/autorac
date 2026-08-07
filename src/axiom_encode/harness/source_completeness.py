@@ -39,6 +39,8 @@ from axiom_encode.statute import (
 
 _UNBOUND_FORMULA_DIAGNOSTIC_RULE_LIMIT = 32
 _UNBOUND_FORMULA_DIAGNOSTIC_CASE_LIMIT = 8
+_TEMPORAL_WITNESS_NAME_LIMIT = 32
+_TEMPORAL_WITNESS_VERSION_LIMIT = 8
 
 
 class NumericOccurrenceLike(Protocol):
@@ -167,6 +169,7 @@ class _TemporalFormulaValue:
     """Literal parameter values selectable by a companion case period."""
 
     versions: tuple[tuple[str, str, Any], ...]
+    version_formula_excerpts: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -10313,6 +10316,7 @@ def _companion_test_issues(
     ]
     missing_formula_branches = _unwitnessed_formula_branches(
         formula_branches,
+        corpus_citation_path=corpus_citation_path,
         principal_rules=principal_rules,
         principal_formula_clause_rules=principal_formula_clause_rules,
         asserted_by_rule=asserted_by_rule,
@@ -10327,6 +10331,7 @@ def _companion_test_issues(
         source_location = f"characters {branch.start}:{branch.end}"
         unbound_diagnostic = _unbound_matching_formula_rules(
             branch,
+            corpus_citation_path=corpus_citation_path,
             principal_rules=principal_rules,
             bound_rule_names=principal_formula_clause_rules[branch],
             asserted_by_rule=asserted_by_rule,
@@ -11026,6 +11031,7 @@ def _most_specific_containing_branch(
 def _unwitnessed_formula_branches(
     branches: Sequence[SourceStructureBranch],
     *,
+    corpus_citation_path: str,
     principal_rules: dict[str, dict[str, Any]],
     principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
@@ -11040,6 +11046,7 @@ def _unwitnessed_formula_branches(
     candidate_witnesses = {
         branch: _formula_branch_test_witnesses(
             branch,
+            corpus_citation_path=corpus_citation_path,
             principal_rules=principal_rules,
             rule_names=principal_formula_clause_rules[branch],
             asserted_by_rule=asserted_by_rule,
@@ -11085,6 +11092,7 @@ def _unmatched_evidence_obligations(
 def _formula_branch_test_witnesses(
     branch: SourceStructureBranch,
     *,
+    corpus_citation_path: str,
     principal_rules: dict[str, dict[str, Any]],
     rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
@@ -11107,6 +11115,13 @@ def _formula_branch_test_witnesses(
         if max_cases_per_rule is not None:
             asserted_cases = asserted_cases[:max_cases_per_rule]
         for case in asserted_cases:
+            if not _selected_principal_formula_proves_branch(
+                rule,
+                case=case,
+                branch=branch,
+                corpus_citation_path=corpus_citation_path,
+            ):
+                continue
             case_key = id(case)
             if case_key not in dependency_cache:
                 dependency_cache[case_key] = _case_asserted_dependency_environment(
@@ -11139,12 +11154,33 @@ def _formula_branch_test_witnesses(
             ):
                 continue
             if interval is None:
+                evaluation_environment = _case_formula_identifier_environment(
+                    case,
+                    formula_environment=formula_environment,
+                    dependency_environment=dependency_environment,
+                )
+                if evaluation_environment is None:
+                    continue
+                temporal_bindings = _formula_leaf_temporal_bindings(
+                    execution.leaf,
+                    case=case,
+                    branch=branch,
+                    interval=interval,
+                    formula_environment=formula_environment,
+                    constant_environment=execution.constant_environment,
+                    evaluation_environment=evaluation_environment,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
+                )
+                if temporal_bindings is None:
+                    continue
                 witness = (
                     "leaf:"
                     + _formula_leaf_semantic_key(
                         execution.leaf,
                         formula_environment=execution.constant_environment,
                     )
+                    + (f"|temporal:{temporal_bindings!r}" if temporal_bindings else "")
                     if has_branching_formula
                     else f"case:{id(case)}"
                 )
@@ -11152,6 +11188,318 @@ def _formula_branch_test_witnesses(
                 continue
             witnesses.add((rule_name, f"case:{id(case)}"))
     return witnesses
+
+
+def _selected_principal_formula_proves_branch(
+    rule: dict[str, Any],
+    *,
+    case: dict[str, Any],
+    branch: SourceStructureBranch,
+    corpus_citation_path: str,
+) -> bool:
+    """Keep indexed principal proof evidence on its case-selected version."""
+
+    branch_text = _normalized_formula_clause_text(branch.text)
+    normalized_citation_path = corpus_citation_path.strip("/").lower()
+    matching_atoms = {
+        (int(match.group(1)), citation_path.strip("/").lower())
+        for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
+        if (match := re.fullmatch(r"versions\[(\d+)\]\.formula", path)) is not None
+        and (excerpt_text := _normalized_formula_clause_text(excerpt))
+        and (excerpt_text in branch_text or branch_text in excerpt_text)
+    }
+    if not matching_atoms:
+        return True
+    matching_indexes = {
+        index
+        for index, citation_path in matching_atoms
+        if citation_path == normalized_citation_path
+    }
+    selected_index = _selected_rule_formula_version_index(rule, case)
+    return selected_index is not None and selected_index in matching_indexes
+
+
+def _formula_leaf_temporal_bindings(
+    leaf: str,
+    *,
+    case: dict[str, Any],
+    branch: SourceStructureBranch,
+    interval: _NumericInterval | None,
+    formula_environment: dict[str, Any],
+    constant_environment: dict[str, Any],
+    evaluation_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> tuple[tuple[str, str, str], ...] | None:
+    """Identify reached temporal constants grounded by this source computation."""
+
+    expression = _parse_formula_expression(leaf)
+    if expression is None:
+        return ()
+    computation_occurrences = _formula_branch_computation_occurrences(
+        branch,
+        interval=interval,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+    )
+    source_factor_occurrences = tuple(
+        occurrence
+        for occurrence in computation_occurrences
+        if occurrence.has_rate_context
+        or "multiply" in _formula_operation_kinds(branch.text)
+    )
+    worded_percentage_rates = _source_worded_percentage_rates(branch.text)
+    temporal_names = {
+        node.id
+        for node in ast.walk(expression)
+        if isinstance(node, ast.Name)
+        and isinstance(formula_environment.get(node.id), _TemporalFormulaValue)
+    }
+    if len(temporal_names) > _TEMPORAL_WITNESS_NAME_LIMIT:
+        return None
+    direct_factor_names = {
+        operand.id
+        for node in ast.walk(expression)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+        for operand in (node.left, node.right)
+        if isinstance(operand, ast.Name) and operand.id in temporal_names
+    }
+    varying_direct_factor_names = {
+        name
+        for name in direct_factor_names
+        if _temporal_formula_values_vary(formula_environment[name])
+    }
+    multiplicative_temporal_names = {
+        name
+        for name in varying_direct_factor_names
+        if _temporal_value_has_source_branch_proof(
+            formula_environment[name],
+            current_value=constant_environment.get(
+                name,
+                _UNRESOLVED_CONDITION_VALUE,
+            ),
+            branch=branch,
+            case=case,
+        )
+        and _temporal_name_changes_formula_value(
+            expression,
+            name=name,
+            temporal_value=formula_environment[name],
+            environment=evaluation_environment,
+        )
+    }
+    bindings = tuple(
+        (name, type(value).__name__, repr(value))
+        for name in sorted(multiplicative_temporal_names)
+        if (value := constant_environment.get(name, _UNRESOLVED_CONDITION_VALUE))
+        is not _UNRESOLVED_CONDITION_VALUE
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (
+            any(
+                numeric_value_is_grounded(float(value), (source_occurrence,))
+                for source_occurrence in source_factor_occurrences
+            )
+            or any(
+                math.isclose(float(value), expected)
+                for expected in worded_percentage_rates
+            )
+        )
+    )
+    if (
+        (source_factor_occurrences or worded_percentage_rates)
+        and varying_direct_factor_names
+        and not bindings
+    ):
+        return None
+    return bindings
+
+
+def _source_worded_percentage_rates(source_text: str) -> tuple[float, ...]:
+    rates: list[float] = []
+    for match in _ENGLISH_WORDED_PERCENTAGE_OF.finditer(source_text):
+        phrase = re.sub(
+            r"\s+(?:percent|per\s+cent)\s+of\s*$",
+            "",
+            match.group(0),
+            flags=re.IGNORECASE,
+        )
+        value = _english_cardinal_value(phrase)
+        if value is not None:
+            rates.append(value / 100.0)
+    return tuple(rates)
+
+
+def _english_cardinal_value(text: str) -> float | None:
+    units = {
+        "zero": 0,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+        "thirteen": 13,
+        "fourteen": 14,
+        "fifteen": 15,
+        "sixteen": 16,
+        "seventeen": 17,
+        "eighteen": 18,
+        "nineteen": 19,
+        "twenty": 20,
+        "thirty": 30,
+        "forty": 40,
+        "fifty": 50,
+        "sixty": 60,
+        "seventy": 70,
+        "eighty": 80,
+        "ninety": 90,
+    }
+    tokens = [token for token in re.split(r"[-\s]+", text.lower()) if token != "and"]
+    if not tokens or any(token not in units and token != "hundred" for token in tokens):
+        return None
+    total = 0
+    current = 0
+    for token in tokens:
+        if token == "hundred":
+            current = max(current, 1) * 100
+        else:
+            current += units[token]
+    total += current
+    return float(total)
+
+
+def _temporal_value_has_source_branch_proof(
+    temporal_value: _TemporalFormulaValue,
+    *,
+    current_value: Any,
+    branch: SourceStructureBranch,
+    case: dict[str, Any],
+) -> bool:
+    branch_text = _normalized_formula_clause_text(branch.text)
+    for index in _selected_temporal_version_indexes(temporal_value, case):
+        _start, _end, value = temporal_value.versions[index]
+        if not _formula_runtime_values_equal(value, current_value):
+            continue
+        excerpts = (
+            temporal_value.version_formula_excerpts[index]
+            if index < len(temporal_value.version_formula_excerpts)
+            else ()
+        )
+        for excerpt in excerpts:
+            excerpt_text = _normalized_formula_clause_text(excerpt)
+            if excerpt_text and (
+                excerpt_text in branch_text or branch_text in excerpt_text
+            ):
+                return True
+    return False
+
+
+def _selected_temporal_version_indexes(
+    temporal_value: _TemporalFormulaValue,
+    case: dict[str, Any],
+) -> tuple[int, ...]:
+    if len(temporal_value.versions) > _TEMPORAL_WITNESS_VERSION_LIMIT:
+        return ()
+    period = _normalized_case_period(case)
+    if not _is_iso_calendar_date(period) or any(
+        not _is_iso_calendar_date(start)
+        or (end and not _is_iso_calendar_date(end))
+        or (end and end < start)
+        for start, end, _value in temporal_value.versions
+    ):
+        return ()
+    candidates = [
+        (index, start, value)
+        for index, (start, end, value) in enumerate(temporal_value.versions)
+        if start <= period and (not end or period <= end)
+    ]
+    if not candidates:
+        return ()
+    latest = max(start for _index, start, _value in candidates)
+    selected = [(index, value) for index, start, value in candidates if start == latest]
+    if len(selected) != 1:
+        return ()
+    return (selected[0][0],)
+
+
+def _temporal_formula_values_vary(temporal_value: _TemporalFormulaValue) -> bool:
+    if len(temporal_value.versions) > _TEMPORAL_WITNESS_VERSION_LIMIT:
+        return False
+    values = [value for _start, _end, value in temporal_value.versions]
+    return bool(values) and any(
+        not _formula_runtime_values_equal(values[0], value) for value in values[1:]
+    )
+
+
+def _temporal_name_changes_formula_value(
+    expression: ast.expr,
+    *,
+    name: str,
+    temporal_value: _TemporalFormulaValue,
+    environment: dict[str, Any],
+) -> bool:
+    if len(temporal_value.versions) > _TEMPORAL_WITNESS_VERSION_LIMIT:
+        return False
+    baseline = _evaluate_condition_expression(expression, environment)
+    if baseline is _UNRESOLVED_CONDITION_VALUE:
+        return False
+    current = environment.get(name, _UNRESOLVED_CONDITION_VALUE)
+    for _start, _end, candidate in temporal_value.versions[
+        :_TEMPORAL_WITNESS_VERSION_LIMIT
+    ]:
+        if current is not _UNRESOLVED_CONDITION_VALUE and _formula_runtime_values_equal(
+            current,
+            candidate,
+        ):
+            continue
+        candidate_environment = {**environment, name: candidate}
+        alternative = _evaluate_condition_expression(
+            expression,
+            candidate_environment,
+        )
+        if alternative is not _UNRESOLVED_CONDITION_VALUE and not (
+            _formula_runtime_values_equal(baseline, alternative)
+        ):
+            return True
+    return False
+
+
+def _formula_branch_computation_occurrences(
+    branch: SourceStructureBranch,
+    *,
+    interval: _NumericInterval | None,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> tuple[NumericOccurrenceLike, ...]:
+    source_occurrences = tuple(
+        extract_numeric_occurrences(authoritative_numeric_recall_text(branch.text))
+    )
+    boundaries = (
+        ()
+        if interval is None
+        else tuple(
+            occurrence
+            for occurrence in (interval.lower, interval.upper)
+            if occurrence is not None
+        )
+    )
+    return tuple(
+        occurrence
+        for occurrence in source_occurrences
+        if not _temporal_occurrence_is_formula_applicability_preface(
+            occurrence,
+            branch.text,
+        )
+        and not any(
+            _numeric_occurrences_are_equivalent(occurrence, boundary)
+            for boundary in boundaries
+        )
+    )
 
 
 def _formula_execution_is_source_branch_witness(
@@ -11226,6 +11574,7 @@ def _formula_execution_is_source_branch_witness(
 def _unbound_matching_formula_rules(
     branch: SourceStructureBranch,
     *,
+    corpus_citation_path: str,
     principal_rules: dict[str, dict[str, Any]],
     bound_rule_names: set[str],
     asserted_by_rule: dict[str, list[dict[str, Any]]],
@@ -11249,6 +11598,7 @@ def _unbound_matching_formula_rules(
     )
     witnesses = _formula_branch_test_witnesses(
         branch,
+        corpus_citation_path=corpus_citation_path,
         principal_rules=principal_rules,
         rule_names=set(scanned_rule_names),
         asserted_by_rule=asserted_by_rule,
@@ -11984,29 +12334,10 @@ def _formula_execution_matches_source_branch(
             )
         ):
             return False
-    source_occurrences = tuple(
-        extract_numeric_occurrences(authoritative_numeric_recall_text(branch.text))
-    )
-    boundaries = (
-        ()
-        if interval is None
-        else tuple(
-            occurrence
-            for occurrence in (interval.lower, interval.upper)
-            if occurrence is not None
-        )
-    )
-    computation_occurrences = tuple(
-        occurrence
-        for occurrence in source_occurrences
-        if not _temporal_occurrence_is_formula_applicability_preface(
-            occurrence,
-            branch.text,
-        )
-        and not any(
-            _numeric_occurrences_are_equivalent(occurrence, boundary)
-            for boundary in boundaries
-        )
+    computation_occurrences = _formula_branch_computation_occurrences(
+        branch,
+        interval=interval,
+        extract_numeric_occurrences=extract_numeric_occurrences,
     )
     if not computation_occurrences:
         return True
@@ -18951,7 +19282,10 @@ def _rule_formula_text_for_case(
     """Resolve one temporal formula when the companion case identifies a period."""
 
     versions = rule.get("versions")
-    if not isinstance(versions, list):
+    if (
+        not isinstance(versions, list)
+        or len(versions) > _TEMPORAL_WITNESS_VERSION_LIMIT
+    ):
         return None
     unambiguous = _unambiguous_rule_formula_text(rule)
     formula_versions = [
@@ -18959,37 +19293,30 @@ def _rule_formula_text_for_case(
         for version in versions
         if isinstance(version, dict) and version.get("formula") is not None
     ]
-    dated_versions = [
-        version
-        for version in formula_versions
-        if re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}",
-            str(version.get("effective_from") or "").strip(),
-        )
-    ]
     has_temporal_metadata = any(
         str(version.get("effective_from") or "").strip()
         or str(version.get("effective_to") or "").strip()
         for version in formula_versions
     )
-    if has_temporal_metadata and (
-        len(dated_versions) != len(formula_versions)
-        or any(
-            effective_to and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", effective_to)
-            for version in formula_versions
-            if (effective_to := str(version.get("effective_to") or "").strip())
-        )
-    ):
-        return None
+    if has_temporal_metadata:
+        for version in formula_versions:
+            effective_from = str(version.get("effective_from") or "").strip()
+            effective_to = str(version.get("effective_to") or "").strip()
+            if (
+                not _is_iso_calendar_date(effective_from)
+                or (effective_to and not _is_iso_calendar_date(effective_to))
+                or (effective_to and effective_to < effective_from)
+            ):
+                return None
     period = _normalized_case_period(case)
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+    if not _is_iso_calendar_date(period):
         if "period" not in case:
             return unambiguous
         return None if has_temporal_metadata else unambiguous
-    if not dated_versions:
+    if not has_temporal_metadata:
         return unambiguous
     candidates: list[tuple[str, str]] = []
-    for version in dated_versions:
+    for version in formula_versions:
         effective_from = str(version.get("effective_from") or "").strip()
         effective_to = str(version.get("effective_to") or "").strip()
         if effective_from > period or (effective_to and effective_to < period):
@@ -18998,16 +19325,76 @@ def _rule_formula_text_for_case(
     if not candidates:
         return None
     latest = max(effective_from for effective_from, _formula in candidates)
-    formulas = {
+    selected = [
         formula for effective_from, formula in candidates if effective_from == latest
-    }
-    return next(iter(formulas)) if len(formulas) == 1 else None
+    ]
+    return selected[0] if len(selected) == 1 else None
+
+
+def _selected_rule_formula_version_index(
+    rule: dict[str, Any],
+    case: dict[str, Any],
+) -> int | None:
+    versions = rule.get("versions")
+    if (
+        not isinstance(versions, list)
+        or len(versions) > _TEMPORAL_WITNESS_VERSION_LIMIT
+    ):
+        return None
+    formula_versions = [
+        (index, version)
+        for index, version in enumerate(versions)
+        if isinstance(version, dict) and version.get("formula") is not None
+    ]
+    if len(formula_versions) == 1:
+        index, version = formula_versions[0]
+        effective_from = str(version.get("effective_from") or "").strip()
+        effective_to = str(version.get("effective_to") or "").strip()
+        if not effective_from and not effective_to:
+            return index
+        if "period" not in case and (
+            _is_iso_calendar_date(effective_from)
+            and (not effective_to or _is_iso_calendar_date(effective_to))
+            and (not effective_to or effective_to >= effective_from)
+        ):
+            return index
+        if "period" not in case:
+            return None
+    period = _normalized_case_period(case)
+    if not _is_iso_calendar_date(period):
+        return None
+    candidates: list[tuple[int, str]] = []
+    for index, version in formula_versions:
+        effective_from = str(version.get("effective_from") or "").strip()
+        effective_to = str(version.get("effective_to") or "").strip()
+        if (
+            not _is_iso_calendar_date(effective_from)
+            or (effective_to and not _is_iso_calendar_date(effective_to))
+            or (effective_to and effective_to < effective_from)
+        ):
+            return None
+        if effective_from <= period and (not effective_to or period <= effective_to):
+            candidates.append((index, effective_from))
+    if not candidates:
+        return None
+    latest = max(effective_from for _index, effective_from in candidates)
+    selected = [index for index, start in candidates if start == latest]
+    return selected[0] if len(selected) == 1 else None
 
 
 def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
     """Return literal rule values, retaining resolvable temporal variants."""
 
     environment: dict[str, Any] = {}
+    module = payload.get("module")
+    source_verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    authoritative_citation_path = (
+        str(source_verification.get("corpus_citation_path") or "").strip("/").lower()
+        if isinstance(source_verification, dict)
+        else ""
+    )
     rules = payload.get("rules")
     if not isinstance(rules, list):
         return environment
@@ -19016,7 +19403,11 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         name = str(rule.get("name") or "").strip()
         versions = rule.get("versions")
-        if not name or not isinstance(versions, list):
+        if (
+            not name
+            or not isinstance(versions, list)
+            or len(versions) > _TEMPORAL_WITNESS_VERSION_LIMIT
+        ):
             continue
         formula_version_count = sum(
             1
@@ -19024,7 +19415,20 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(version, dict) and "formula" in version
         )
         entries: list[tuple[str, str, Any]] = []
-        for version in versions:
+        entry_formula_excerpts: list[tuple[str, ...]] = []
+        formula_excerpts_by_version: dict[int, list[str]] = {}
+        for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule):
+            if (
+                not authoritative_citation_path
+                or citation_path.strip("/").lower() != authoritative_citation_path
+            ):
+                continue
+            match = re.fullmatch(r"versions\[(\d+)\]\.formula", path)
+            if match is not None:
+                formula_excerpts_by_version.setdefault(int(match.group(1)), []).append(
+                    excerpt
+                )
+        for version_index, version in enumerate(versions):
             if not isinstance(version, dict) or "formula" not in version:
                 continue
             formula = version["formula"]
@@ -19041,6 +19445,9 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
                             value,
                         )
                     )
+                    entry_formula_excerpts.append(
+                        tuple(formula_excerpts_by_version.get(version_index, ()))
+                    )
         if len(entries) != formula_version_count:
             continue
         has_temporal_metadata = any(start or end for start, end, _value in entries)
@@ -19048,12 +19455,16 @@ def _constant_rule_environment(payload: dict[str, Any]) -> dict[str, Any]:
             has_temporal_metadata
             and entries
             and all(
-                re.fullmatch(r"\d{4}-\d{2}-\d{2}", start)
-                and (not end or re.fullmatch(r"\d{4}-\d{2}-\d{2}", end))
+                _is_iso_calendar_date(start)
+                and (not end or _is_iso_calendar_date(end))
+                and (not end or end >= start)
                 for start, end, _value in entries
             )
         ):
-            environment[name] = _TemporalFormulaValue(tuple(entries))
+            environment[name] = _TemporalFormulaValue(
+                tuple(entries),
+                tuple(entry_formula_excerpts),
+            )
             continue
         if has_temporal_metadata:
             continue
@@ -19076,7 +19487,7 @@ def _formula_environment_for_case(
         if not isinstance(value, _TemporalFormulaValue):
             resolved[name] = value
             continue
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+        if not _is_iso_calendar_date(period):
             if "period" not in case:
                 candidates = [candidate for _start, _end, candidate in value.versions]
                 if candidates and all(
@@ -19086,22 +19497,10 @@ def _formula_environment_for_case(
                 ):
                     resolved[name] = candidates[0]
             continue
-        candidates = [
-            (start, candidate)
-            for start, end, candidate in value.versions
-            if start <= period and (not end or period <= end)
-        ]
-        if not candidates:
+        selected_indexes = _selected_temporal_version_indexes(value, case)
+        if len(selected_indexes) != 1:
             continue
-        latest = max(start for start, _candidate in candidates)
-        latest_values = [
-            candidate for start, candidate in candidates if start == latest
-        ]
-        if latest_values and all(
-            type(candidate) is type(latest_values[0]) and candidate == latest_values[0]
-            for candidate in latest_values[1:]
-        ):
-            resolved[name] = latest_values[0]
+        resolved[name] = value.versions[selected_indexes[0]][2]
     return resolved
 
 
@@ -19117,6 +19516,15 @@ def _normalized_case_period(case: dict[str, Any]) -> str:
     if re.fullmatch(r"\d{4}-\d{2}", period):
         return f"{period}-01"
     return period
+
+
+def _is_iso_calendar_date(value: str) -> bool:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return False
+    with contextlib.suppress(ValueError):
+        date.fromisoformat(value)
+        return True
+    return False
 
 
 def _collapse_text(value: str) -> str:

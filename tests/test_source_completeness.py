@@ -5183,6 +5183,16 @@ rules:
     kind: parameter
     dtype: Rate
     source: us-nj/statute/54a:4-7
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-nj/statute/54a:4-7
+              excerpt: >-
+                For taxable year 2000, an eligible resident's New Jersey earned
+                income tax credit is 10% of the federal earned income tax credit.
     versions:
       - effective_from: '2000-01-01'
         effective_to: '2000-12-31'
@@ -5804,6 +5814,7 @@ def test_unbound_formula_diagnostics_cache_case_execution(monkeypatch):
         )
         diagnostic = completeness_module._unbound_matching_formula_rules(
             branch,
+            corpus_citation_path="us/example/statute/1",
             principal_rules=principal_rules,
             bound_rule_names=set(),
             asserted_by_rule=asserted_by_rule,
@@ -17906,6 +17917,21 @@ rules:
     kind: parameter
     dtype: Rate
     source: La. R.S. 47:297.4(A)(1)(a)(i)-(ii)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
     versions:
       - effective_from: '2006-01-01'
         formula: 0.25
@@ -17965,6 +17991,525 @@ rules:
     )
 
     assert not _has_issue(result, "formula branch")
+
+
+def test_temporal_rate_distinguishes_identical_executed_branch_leaves():
+    source = """\
+(i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+(ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:297.4
+rules:
+  - name: credit_percentage
+    kind: parameter
+    dtype: Rate
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+    versions:
+      - effective_from: '2006-01-01'
+        formula: 0.25
+      - effective_from: '2007-01-01'
+        formula: 0.50
+  - name: child_care_expense_credit
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.4
+              excerpt: >-
+                (ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.
+    versions:
+      - effective_from: '2006-01-01'
+        formula: 'if eligible: credit_percentage * unreduced_federal_credit else: 0'
+      - effective_from: '2007-01-01'
+        formula: 'if eligible: credit_percentage * unreduced_federal_credit else: 0'
+"""
+    cases = [
+        {
+            "name": "subparagraph i",
+            "period": "2006",
+            "input": {"eligible": True, "unreduced_federal_credit": 1000},
+            "output": {"child_care_expense_credit": 250},
+        },
+        {
+            "name": "subparagraph ii",
+            "period": "2007",
+            "input": {"eligible": True, "unreduced_federal_credit": 1000},
+            "output": {"child_care_expense_credit": 500},
+        },
+    ]
+
+    def analyze(candidate: str, candidate_cases: list[object]):
+        return analyze_complete_source_unit(
+            candidate,
+            source,
+            corpus_citation_path="us-la/statute/47:297.4",
+            test_cases=candidate_cases,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            extract_numeric_grounding_occurrences=(
+                EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+            ),
+            extract_named_scalars=extract_named_scalar_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+
+    correct = analyze(content, cases)
+    misbound_principal_payload = yaml.safe_load(content)
+    misbound_principal = next(
+        rule
+        for rule in misbound_principal_payload["rules"]
+        if rule["name"] == "child_care_expense_credit"
+    )
+    misbound_principal["metadata"]["proof"]["atoms"][1]["path"] = "versions[0].formula"
+    misbound_principal_proof = analyze(
+        yaml.safe_dump(misbound_principal_payload, sort_keys=False),
+        cases,
+    )
+    wrong_citation_principal_payload = yaml.safe_load(content)
+    wrong_citation_principal = next(
+        rule
+        for rule in wrong_citation_principal_payload["rules"]
+        if rule["name"] == "child_care_expense_credit"
+    )
+    wrong_citation_principal["metadata"]["proof"]["atoms"][1]["source"][
+        "corpus_citation_path"
+    ] = "us-wrong/statute/1"
+    wrong_citation_principal_proof = analyze(
+        yaml.safe_dump(wrong_citation_principal_payload, sort_keys=False),
+        cases,
+    )
+    repeated_rate = analyze(content.replace("formula: 0.50", "formula: 0.25"), cases)
+    missing_later_case = analyze(content, cases[:1])
+
+    unrelated_cap_content = content.replace(
+        "  - name: child_care_expense_credit\n",
+        """\
+  - name: unrelated_temporal_cap
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2006-01-01'
+        formula: 0.25
+      - effective_from: '2007-01-01'
+        formula: 0.50
+  - name: child_care_expense_credit
+""",
+    ).replace(
+        "credit_percentage * unreduced_federal_credit else: 0",
+        "credit_percentage * unreduced_federal_credit + unrelated_temporal_cap - unrelated_temporal_cap else: 0",
+    )
+    unrelated_cap_masks_repeated_rate = analyze(
+        unrelated_cap_content.replace("formula: 0.50", "formula: 0.25", 1),
+        [
+            cases[0],
+            {
+                **cases[1],
+                "output": {"child_care_expense_credit": 250},
+            },
+        ],
+    )
+    multiplicative_cancellation_content = unrelated_cap_content.replace(
+        "credit_percentage * unreduced_federal_credit + unrelated_temporal_cap - unrelated_temporal_cap",
+        "credit_percentage * unreduced_federal_credit * unrelated_temporal_cap / unrelated_temporal_cap",
+    )
+    multiplicative_cancellation_masks_repeated_rate = analyze(
+        multiplicative_cancellation_content.replace(
+            "formula: 0.50",
+            "formula: 0.25",
+            1,
+        ),
+        [
+            cases[0],
+            {
+                **cases[1],
+                "output": {"child_care_expense_credit": 250},
+            },
+        ],
+    )
+    material_additive_content = unrelated_cap_content.replace(
+        "credit_percentage * unreduced_federal_credit + unrelated_temporal_cap - unrelated_temporal_cap",
+        "credit_percentage * unreduced_federal_credit + unrelated_temporal_cap * unreduced_federal_credit",
+    )
+    material_additive_masks_repeated_rate = analyze(
+        material_additive_content.replace("formula: 0.50", "formula: 0.25", 1),
+        [
+            {
+                **cases[0],
+                "output": {"child_care_expense_credit": 500},
+            },
+            {
+                **cases[1],
+                "output": {"child_care_expense_credit": 750},
+            },
+        ],
+    )
+    material_multiplicative_content = unrelated_cap_content.replace(
+        "credit_percentage * unreduced_federal_credit + unrelated_temporal_cap - unrelated_temporal_cap",
+        "credit_percentage * unreduced_federal_credit * unrelated_temporal_cap",
+    )
+    material_multiplicative_masks_repeated_rate = analyze(
+        material_multiplicative_content.replace(
+            "formula: 0.50",
+            "formula: 0.25",
+            1,
+        ),
+        [
+            {
+                **cases[0],
+                "output": {"child_care_expense_credit": 62.5},
+            },
+            {
+                **cases[1],
+                "output": {"child_care_expense_credit": 125},
+            },
+        ],
+    )
+
+    assert not _has_issue(correct, "formula branch")
+    assert _has_issue(misbound_principal_proof, "formula branch", "(ii)")
+    assert _has_issue(wrong_citation_principal_proof, "formula branch", "(ii)")
+    assert _has_issue(repeated_rate, "formula branch", "(ii)")
+    assert _has_issue(missing_later_case, "formula branch", "(ii)")
+    assert _has_issue(unrelated_cap_masks_repeated_rate, "formula branch", "(ii)")
+    assert _has_issue(
+        multiplicative_cancellation_masks_repeated_rate,
+        "formula branch",
+        "(ii)",
+    )
+    assert _has_issue(material_additive_masks_repeated_rate, "formula branch", "(ii)")
+    assert _has_issue(
+        material_multiplicative_masks_repeated_rate,
+        "formula branch",
+        "(ii)",
+    )
+
+
+def test_temporal_witness_uses_parsed_free_factor_names_only():
+    source = "fifty percent of the unreduced federal credit."
+    branch = completeness_module.SourceStructureBranch(
+        path=("ii",),
+        kind="paragraph",
+        label="(ii)",
+        text=source,
+        start=0,
+        end=len(source),
+    )
+    temporal_rate = completeness_module._TemporalFormulaValue(
+        (
+            ("2006-01-01", "2006-12-31", 0.25),
+            ("2007-01-01", "", 0.5),
+        ),
+        (
+            (
+                "(i) For tax years beginning after December 31, 2005 and ending before January 1, 2007, twenty-five percent of the unreduced federal credit.",
+            ),
+            (
+                "(ii) For tax years beginning after December 31, 2006 fifty percent of the unreduced federal credit.",
+            ),
+        ),
+    )
+    kwargs = {
+        "case": {"period": "2007"},
+        "branch": branch,
+        "interval": None,
+        "formula_environment": {"rate": temporal_rate},
+        "constant_environment": {"rate": 0.5},
+        "evaluation_environment": {"rate": 0.5, "amount": 1000},
+        "extract_numeric_occurrences": EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        "numeric_value_is_grounded": numeric_value_is_grounded,
+    }
+
+    assert completeness_module._formula_leaf_temporal_bindings(
+        "rate * amount",
+        **kwargs,
+    ) == (("rate", "float", "0.5"),)
+    assert (
+        completeness_module._formula_leaf_temporal_bindings(
+            "record.rate * amount",
+            **kwargs,
+        )
+        == ()
+    )
+    assert (
+        completeness_module._formula_leaf_temporal_bindings(
+            'lookup("rate") * amount',
+            **kwargs,
+        )
+        == ()
+    )
+
+
+def test_temporal_proof_requires_selected_version_and_authoritative_citation():
+    source = "(ii) fifty percent of the amount."
+    branch = completeness_module.SourceStructureBranch(
+        path=("ii",),
+        kind="paragraph",
+        label="(ii)",
+        text=source,
+        start=0,
+        end=len(source),
+    )
+    duplicate_value = completeness_module._TemporalFormulaValue(
+        (
+            ("2005-01-01", "2005-12-31", 0.5),
+            ("2006-01-01", "2006-12-31", 0.25),
+            ("2007-01-01", "", 0.5),
+        ),
+        ((source,), (), ()),
+    )
+
+    assert not completeness_module._temporal_value_has_source_branch_proof(
+        duplicate_value,
+        current_value=0.5,
+        branch=branch,
+        case={"period": "2007"},
+    )
+
+    ambiguous_value = completeness_module._TemporalFormulaValue(
+        (
+            ("2007-01-01", "", 0.5),
+            ("2007-01-01", "", 0.5),
+        ),
+        ((source,), ()),
+    )
+    assert not completeness_module._temporal_value_has_source_branch_proof(
+        ambiguous_value,
+        current_value=0.5,
+        branch=branch,
+        case={"period": "2007"},
+    )
+    assert (
+        completeness_module._selected_temporal_version_indexes(
+            duplicate_value,
+            {"period": "2007-99-99"},
+        )
+        == ()
+    )
+
+    payload = yaml.safe_load(
+        """\
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:297.4
+rules:
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    metadata:
+      proof:
+        atoms:
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-wrong/statute/1
+              excerpt: (ii) fifty percent of the amount.
+    versions:
+      - effective_from: '2006-01-01'
+        formula: 0.25
+      - effective_from: '2007-01-01'
+        formula: 0.50
+"""
+    )
+    temporal_rate = completeness_module._constant_rule_environment(payload)["rate"]
+
+    assert isinstance(temporal_rate, completeness_module._TemporalFormulaValue)
+    assert temporal_rate.version_formula_excerpts == ((), ())
+    assert not completeness_module._temporal_value_has_source_branch_proof(
+        temporal_rate,
+        current_value=0.5,
+        branch=branch,
+        case={"period": "2007"},
+    )
+
+
+def test_temporal_witness_impact_evaluation_is_bounded(monkeypatch):
+    expression = completeness_module._parse_formula_expression("rate * amount / rate")
+    assert expression is not None
+    temporal_rate = completeness_module._TemporalFormulaValue(
+        tuple((f"{2000 + index}-01-01", "", 0.5 + index) for index in range(100))
+    )
+    evaluation_count = 0
+
+    def counted_evaluate(*_args, **_kwargs):
+        nonlocal evaluation_count
+        evaluation_count += 1
+        return 1000
+
+    monkeypatch.setattr(
+        completeness_module,
+        "_evaluate_condition_expression",
+        counted_evaluate,
+    )
+
+    assert not completeness_module._temporal_name_changes_formula_value(
+        expression,
+        name="rate",
+        temporal_value=temporal_rate,
+        environment={"rate": 0.5, "amount": 1000},
+    )
+    assert evaluation_count == 0
+
+
+def test_temporal_witness_version_scan_fails_closed_at_bound():
+    limit = completeness_module._TEMPORAL_WITNESS_VERSION_LIMIT
+    bounded = completeness_module._TemporalFormulaValue(
+        tuple((f"{2000 + index}-01-01", "", index) for index in range(limit))
+    )
+    over_bound = completeness_module._TemporalFormulaValue(
+        tuple((f"{2000 + index}-01-01", "", index) for index in range(limit + 1))
+    )
+
+    assert completeness_module._temporal_formula_values_vary(bounded)
+    assert not completeness_module._temporal_formula_values_vary(over_bound)
+    assert (
+        completeness_module._selected_temporal_version_indexes(
+            over_bound,
+            {"period": "2007"},
+        )
+        == ()
+    )
+
+    payload = {
+        "module": {
+            "source_verification": {"corpus_citation_path": "us-la/statute/47:297.4"}
+        },
+        "rules": [
+            {
+                "name": "rate",
+                "kind": "parameter",
+                "versions": [
+                    {"effective_from": start, "formula": value}
+                    for start, _end, value in over_bound.versions
+                ],
+            }
+        ],
+    }
+    assert "rate" not in completeness_module._constant_rule_environment(payload)
+
+
+def test_temporal_formula_selector_rejects_invalid_ambiguous_and_oversized_versions():
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            {"versions": [{"effective_from": "2024-02-30", "formula": "1+1"}]},
+            {"period": "2024-03-01"},
+        )
+        is None
+    )
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            {
+                "versions": [
+                    {
+                        "effective_from": "2024-03-01",
+                        "effective_to": "2024-02-01",
+                        "formula": "1+1",
+                    }
+                ]
+            },
+            {"period": "2024-03-01"},
+        )
+        is None
+    )
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            {
+                "versions": [
+                    {"effective_from": "2024-01-01", "formula": "1+1"},
+                    {"effective_from": "2024-01-01", "formula": "1+1"},
+                ]
+            },
+            {"period": "2024-01-01"},
+        )
+        is None
+    )
+    assert (
+        completeness_module._rule_formula_text_for_case(
+            {
+                "versions": [
+                    {"effective_from": f"{2000 + index}-01-01", "formula": "1+1"}
+                    for index in range(
+                        completeness_module._TEMPORAL_WITNESS_VERSION_LIMIT + 1
+                    )
+                ]
+            },
+            {"period": "2007"},
+        )
+        is None
+    )
+
+
+def test_temporal_witness_name_scan_fails_closed_at_bound(monkeypatch):
+    source = "fifty percent of the amount."
+    branch = completeness_module.SourceStructureBranch(
+        path=("ii",),
+        kind="paragraph",
+        label="(ii)",
+        text=source,
+        start=0,
+        end=len(source),
+    )
+    names = [
+        f"rate_{index}"
+        for index in range(completeness_module._TEMPORAL_WITNESS_NAME_LIMIT + 1)
+    ]
+    temporal = completeness_module._TemporalFormulaValue(
+        (("2007-01-01", "", 0.5),),
+        ((source,),),
+    )
+
+    def unexpected_impact_probe(*_args, **_kwargs):
+        raise AssertionError("impact evaluation must not run beyond the name bound")
+
+    monkeypatch.setattr(
+        completeness_module,
+        "_temporal_name_changes_formula_value",
+        unexpected_impact_probe,
+    )
+
+    assert (
+        completeness_module._formula_leaf_temporal_bindings(
+            "amount * " + " * ".join(names),
+            case={"period": "2007"},
+            branch=branch,
+            interval=None,
+            formula_environment={name: temporal for name in names},
+            constant_environment={name: 0.5 for name in names},
+            evaluation_environment={
+                "amount": 1000,
+                **{name: 0.5 for name in names},
+            },
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        )
+        is None
+    )
 
 
 def test_temporal_formula_filter_keeps_substantive_multiplier_grounding():
@@ -18475,6 +19020,14 @@ rules:
     kind: parameter
     dtype: Decimal
     source: de/statute/estg/32a(1)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[1].formula
+            kind: formula
+            source:
+              corpus_citation_path: de/statute/estg/32a
+              excerpt: Der Betrag wird als Einkommen * 2 berechnet.
     versions:
       - effective_from: '2025-01-01'
         formula: 1.5
