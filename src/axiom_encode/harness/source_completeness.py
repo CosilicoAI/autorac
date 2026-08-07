@@ -196,6 +196,7 @@ class _ExceptionWitness:
     zeroes: bool
     numeric_transition: tuple[float, float] | None
     relational_transitions: tuple[tuple[str, str, str], ...] = ()
+    case_pair_identity: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -16867,6 +16868,17 @@ def _rule_numeric_selector_names(rule: dict[str, Any]) -> set[str]:
         right = match.group("right")
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", right):
             names.add(right)
+    for operands_text in _balanced_call_operands(formula_text, "max"):
+        expression = _parse_formula_expression(f"max({operands_text})")
+        if expression is None:
+            continue
+        names.update(
+            node.id
+            for operands in _formula_positive_part_operands(expression)
+            for operand in operands
+            for node in ast.walk(operand)
+            if isinstance(node, ast.Name)
+        )
     if not names:
         names.update(
             identifier
@@ -17645,7 +17657,11 @@ def _exception_witnesses_for_branch(
         rule_name
         for rule_name, paths in principal_rule_paths.items()
         if not branch.path
-        or any(path == branch.path[: len(path)] for path in paths if path)
+        or any(
+            path == branch.path[: len(path)] or branch.path == path[: len(branch.path)]
+            for path in paths
+            if path
+        )
     }
     requirement = _source_exception_effect_requirement(branch.text)
     condition_text = _source_exception_condition_text(branch.text)
@@ -18507,14 +18523,66 @@ def _toggled_formula_boolean_selectors(
                     )
                     if witness is not None:
                         toggled.add(witness)
-    toggled.update(
-        _toggled_formula_numeric_selectors(
-            principal_rules,
-            asserted_by_rule=asserted_by_rule,
-            formula_environment=formula_environment,
-        )
+    numeric_witnesses = _toggled_formula_numeric_selectors(
+        principal_rules,
+        asserted_by_rule=asserted_by_rule,
+        formula_environment=formula_environment,
     )
+    toggled.update(_composed_numeric_dependency_witnesses(toggled, numeric_witnesses))
+    toggled.update(numeric_witnesses)
     return toggled
+
+
+def _composed_numeric_dependency_witnesses(
+    boolean_witnesses: Iterable[_ExceptionWitness],
+    numeric_witnesses: Iterable[_ExceptionWitness],
+) -> set[_ExceptionWitness]:
+    activating_by_rule_and_pair: dict[
+        tuple[str, tuple[int, ...]], list[_ExceptionWitness]
+    ] = {}
+    for witness in numeric_witnesses:
+        if (
+            witness.numeric_transition is None
+            or not witness.boolean_effect
+            or witness.blocks
+            or not witness.case_pair_identity
+        ):
+            continue
+        activating_by_rule_and_pair.setdefault(
+            (witness.rule_name, witness.case_pair_identity), []
+        ).append(witness)
+    composed: set[_ExceptionWitness] = set()
+    for witness in boolean_witnesses:
+        if (
+            witness.numeric_transition is not None
+            or not witness.active_value
+            or not witness.case_pair_identity
+        ):
+            continue
+        for dependency_witness in activating_by_rule_and_pair.get(
+            (witness.selector_name, witness.case_pair_identity), ()
+        ):
+            composed.add(
+                _ExceptionWitness(
+                    witness.rule_name,
+                    dependency_witness.selector_name,
+                    True,
+                    witness.blocks,
+                    witness.boolean_effect,
+                    witness.zeroes,
+                    dependency_witness.numeric_transition,
+                    dependency_witness.relational_transitions,
+                    witness.case_pair_identity,
+                )
+            )
+    return composed
+
+
+def _case_pair_identity(
+    left_case: dict[str, Any],
+    right_case: dict[str, Any],
+) -> tuple[int, int]:
+    return tuple(sorted((id(left_case), id(right_case))))
 
 
 def _toggled_formula_numeric_selectors(
@@ -18721,6 +18789,7 @@ def _toggled_formula_numeric_selectors(
                                 _exception_effect_is_zero(exception_runtime),
                                 (ordinary_value, exception_value),
                                 relational_transitions,
+                                _case_pair_identity(left_case, right_case),
                             )
                         )
     return witnesses
@@ -19097,6 +19166,7 @@ def _exception_witness_for_case_pair(
         ),
         _exception_effect_is_zero(counterfactual_runtime),
         None,
+        case_pair_identity=_case_pair_identity(left_case, right_case),
     )
 
 
