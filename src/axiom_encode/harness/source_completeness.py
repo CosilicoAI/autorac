@@ -15450,6 +15450,8 @@ def _branch_boundary_test_witnesses(
                         formula_environment=formula_environment or {},
                         source_interval=source_interval,
                         source_boolean_polarity=source_boolean_polarity,
+                        root_rule=rule,
+                        root_execution=execution,
                     )
                     for input_key, input_names, value in (
                         _case_numeric_selector_evidence(
@@ -15964,6 +15966,8 @@ def _boundary_case_changes_formula_effect(
     formula_environment: dict[str, Any],
     source_interval: _NumericInterval | None,
     source_boolean_polarity: int,
+    root_rule: dict[str, Any] | None = None,
+    root_execution: _FormulaExecution | None = None,
 ) -> bool:
     inputs = case.get("input")
     if not isinstance(inputs, dict):
@@ -15973,7 +15977,10 @@ def _boundary_case_changes_formula_effect(
         if float(boundary_value).is_integer()
         else max(abs(boundary_value) * 1e-6, 1e-9)
     )
-    signature = _formula_execution_effect_signature(execution)
+    controller_signature = _formula_execution_effect_signature(execution)
+    effect_rule = root_rule or rule
+    effect_execution = root_execution or execution
+    root_signature = _formula_execution_effect_signature(effect_execution)
     boundary_boolean = _formula_execution_boolean_value(execution)
     if (
         boundary_boolean is not None
@@ -16046,8 +16053,15 @@ def _boundary_case_changes_formula_effect(
                 if candidate_execution is not None
                 else None
             )
+            candidate_root_execution = _case_formula_execution(
+                effect_rule,
+                candidate_case,
+                formula_environment=formula_environment,
+                dependency_environment=candidate_dependencies,
+            )
             if (
                 candidate_execution is not None
+                and candidate_root_execution is not None
                 and (
                     candidate_boolean is None
                     or source_interval is None
@@ -16066,7 +16080,9 @@ def _boundary_case_changes_formula_effect(
                     )
                 )
                 and _formula_execution_effect_signature(candidate_execution)
-                != signature
+                != controller_signature
+                and _formula_execution_effect_signature(candidate_root_execution)
+                != root_signature
             ):
                 return True
     return False
@@ -17963,7 +17979,10 @@ def _numeric_exception_witness_matches_source(
         )
         for left_name, relation, right_name in witness.relational_transitions
     ):
-        return True
+        return _relational_exception_witness_has_source_effect(
+            condition_text,
+            witness,
+        )
     transition = witness.numeric_transition
     if transition is None:
         return False
@@ -17993,28 +18012,108 @@ def _source_relational_exception_matches(
     elif relation == "<=":
         left_name, relation, right_name = right_name, ">=", left_name
     collapsed = _collapse_text(text).lower()
-    relation_match = re.search(
-        r"\b(?:exceeds?\s+or\s+equals?|is\s+(?:greater|more)\s+than\s+or\s+equal\s+to)\b",
-        collapsed,
-    )
-    source_relation = ">=" if relation_match is not None else None
-    if relation_match is None:
-        relation_match = re.search(
-            r"\b(?:exceeds?|is\s+(?:greater|more)\s+than|übersteigt)\b",
-            collapsed,
-        )
-        source_relation = ">" if relation_match is not None else None
-    if relation_match is None:
-        return False
     left_matches = _source_relational_operand_matches(collapsed, left_name)
     right_matches = _source_relational_operand_matches(collapsed, right_name)
-    return source_relation == relation and any(
-        left.end() <= relation_match.start()
-        and relation_match.end() <= right.start()
-        and relation_match.start() - left.end() <= 240
-        and right.start() - relation_match.end() <= 240
-        for left in left_matches
-        for right in right_matches
+    relation_matches = tuple(
+        re.finditer(
+            r"\b(?P<inclusive>exceeds?\s+or\s+equals?|"
+            r"is\s+(?:greater|more)\s+than\s+or\s+equal\s+to)\b|"
+            r"\b(?P<strict>exceeds?|is\s+(?:greater|more)\s+than|übersteigt)\b",
+            collapsed,
+        )
+    )
+    for index, relation_match in enumerate(relation_matches):
+        source_relation = ">=" if relation_match.group("inclusive") else ">"
+        if source_relation != relation:
+            continue
+        left_bound, right_bound = _source_relation_operand_bounds(
+            collapsed,
+            relation_matches,
+            index,
+        )
+        if any(
+            left_bound <= left.start()
+            and left.end() <= relation_match.start()
+            and relation_match.end() <= right.start()
+            and right.end() <= right_bound
+            and relation_match.start() - left.end() <= 240
+            and right.start() - relation_match.end() <= 240
+            for left in left_matches
+            for right in right_matches
+        ):
+            return True
+    return False
+
+
+def _source_relation_operand_bounds(
+    text: str,
+    relation_matches: tuple[re.Match[str], ...],
+    index: int,
+) -> tuple[int, int]:
+    """Bound relation operands to their immediate clause or conjunct."""
+
+    relation_match = relation_matches[index]
+    left_bound = max(
+        (
+            match.end()
+            for match in re.finditer(r"[.;:]", text[: relation_match.start()])
+        ),
+        default=0,
+    )
+    right_delimiter = re.search(r"[.;:]", text[relation_match.end() :])
+    right_bound = (
+        relation_match.end() + right_delimiter.start()
+        if right_delimiter is not None
+        else len(text)
+    )
+    if index:
+        previous = relation_matches[index - 1]
+        separators = tuple(
+            re.finditer(
+                r"\b(?:and|or|und|oder)\b",
+                text[previous.end() : relation_match.start()],
+            )
+        )
+        if separators:
+            left_bound = max(
+                left_bound,
+                previous.end() + separators[-1].end(),
+            )
+    if index + 1 < len(relation_matches):
+        following = relation_matches[index + 1]
+        separator = re.search(
+            r"\b(?:and|or|und|oder)\b",
+            text[relation_match.end() : following.start()],
+        )
+        if separator is not None:
+            right_bound = min(
+                right_bound,
+                relation_match.end() + separator.start(),
+            )
+    return left_bound, right_bound
+
+
+def _relational_exception_witness_has_source_effect(
+    text: str,
+    witness: _ExceptionWitness,
+) -> bool:
+    """Require the relation-active side to have the source-directed effect."""
+
+    requirement = _source_exception_effect_requirement(text)
+    if requirement == "zero":
+        return witness.zeroes
+    if requirement == "exclude":
+        return witness.blocks or witness.zeroes
+    if requirement == "enable":
+        return not witness.blocks and not witness.zeroes
+    return bool(
+        re.search(
+            r"\b(?:excess\w*|overpayment\w*|refund\w*)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        and not witness.blocks
+        and not witness.zeroes
     )
 
 
@@ -18294,6 +18393,7 @@ def _toggled_formula_numeric_selectors(
                         principal_rules=principal_rules,
                         left_case=left_case,
                         right_case=right_case,
+                        formula_environment=formula_environment,
                     )
                 )
                 left_dependencies = {
@@ -18447,18 +18547,42 @@ def _case_pair_stable_asserted_formula_dependencies(
     principal_rules: dict[str, dict[str, Any]],
     left_case: dict[str, Any],
     right_case: dict[str, Any],
+    formula_environment: dict[str, Any],
 ) -> dict[str, Any]:
     """Return reached upstream outputs asserted identically by both cases."""
 
     dependencies: dict[str, Any] = {}
     referenced_names = set(_FORMULA_IDENTIFIER.findall(_rule_formula_text(rule)))
-    for name in sorted(referenced_names & set(principal_rules) - {rule_name}):
+    candidate_names = referenced_names & set(principal_rules) - {rule_name}
+    left_runtime_dependencies = _case_dependency_environment(
+        principal_rules,
+        left_case,
+        formula_environment=formula_environment,
+        require_asserted_value=False,
+    )
+    right_runtime_dependencies = _case_dependency_environment(
+        principal_rules,
+        right_case,
+        formula_environment=formula_environment,
+        require_asserted_value=False,
+    )
+    for name in sorted(candidate_names):
         left_value = _test_case_asserted_output_value(left_case, name)
         right_value = _test_case_asserted_output_value(right_case, name)
         if (
             left_value is _UNRESOLVED_CONDITION_VALUE
             or right_value is _UNRESOLVED_CONDITION_VALUE
             or not _formula_runtime_values_equal(left_value, right_value)
+            or name not in left_runtime_dependencies
+            or name not in right_runtime_dependencies
+            or not _formula_runtime_values_equal(
+                left_value,
+                left_runtime_dependencies[name],
+            )
+            or not _formula_runtime_values_equal(
+                right_value,
+                right_runtime_dependencies[name],
+            )
         ):
             continue
         boolean_value = _boolean_value(left_value)

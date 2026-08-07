@@ -20929,6 +20929,64 @@ def test_boundary_witness_follows_asserted_reached_local_dependency():
     assert not unwitnessed
 
 
+def test_boundary_witness_rejects_effect_invariant_root_behind_dependency():
+    text = "B.(1) The credit applies when income is at most 100 dollars."
+    branch = completeness_module.SourceStructureBranch(
+        ("b", "1"),
+        "paragraph",
+        "B.(1)",
+        text,
+        0,
+        len(text),
+    )
+    boundary = next(
+        occurrence
+        for occurrence in EN_NUMERIC_OCCURRENCE_EXTRACTOR(branch.text)
+        if occurrence.value == 100
+    )
+    principal_rules = {
+        "low_income_applies": {
+            "name": "low_income_applies",
+            "kind": "derived",
+            "dtype": "Judgment",
+            "versions": [{"formula": "income <= income_limit"}],
+        },
+        "credit_amount": {
+            "name": "credit_amount",
+            "kind": "derived",
+            "dtype": "Money",
+            "versions": [
+                {"formula": "if low_income_applies: base_credit else: base_credit"}
+            ],
+        },
+    }
+    case = {
+        "name": "endpoint",
+        "period": "2026",
+        "input": {"income": 100, "base_credit": 50},
+        "output": {"low_income_applies": "holds", "credit_amount": 50},
+    }
+
+    witnessed = completeness_module._branch_boundary_test_witnesses(
+        branch,
+        boundary,
+        principal_rules=principal_rules,
+        principal_rule_paths={
+            "low_income_applies": {("a", "1")},
+            "credit_amount": {("b", "1")},
+        },
+        asserted_by_rule={
+            "low_income_applies": [case],
+            "credit_amount": [case],
+        },
+        numeric_value_is_grounded=numeric_value_is_grounded,
+        formula_environment={"income_limit": 100},
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert not witnessed
+
+
 @pytest.mark.parametrize(
     "formula",
     [
@@ -20973,6 +21031,45 @@ def test_relational_exception_witness_rejects_reversed_source_operands():
     )
 
 
+def test_relational_exception_witness_rejects_reversed_effect_orientation():
+    witnesses, branch = _credit_liability_exception_witnesses(
+        formula="if credit_amount > tax_liability: 0 else: 10",
+        mutation="reversed_effect",
+    )
+
+    assert not any(
+        completeness_module._numeric_exception_witness_matches_source(
+            branch,
+            witness,
+            extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        )
+        for witness in witnesses
+    )
+
+
+def test_source_relational_match_does_not_cross_bind_conjoined_relations():
+    source = "The credit exceeds tax liability and income exceeds the income threshold."
+
+    assert completeness_module._source_relational_exception_matches(
+        source,
+        left_name="credit_amount",
+        relation=">",
+        right_name="tax_liability",
+    )
+    assert completeness_module._source_relational_exception_matches(
+        source,
+        left_name="income",
+        relation=">",
+        right_name="income_threshold",
+    )
+    assert not completeness_module._source_relational_exception_matches(
+        source,
+        left_name="credit_amount",
+        relation=">",
+        right_name="income_threshold",
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -20986,6 +21083,7 @@ def test_relational_exception_witness_rejects_reversed_source_operands():
         "unchanged_runtime",
         "irrelevant_input",
         "same_side_relation",
+        "wrong_stable_dependency_runtime",
     ],
 )
 def test_credit_liability_relational_witness_preserves_pair_guards(
@@ -21052,7 +21150,7 @@ def _credit_liability_exception_witnesses(
     elif mutation == "key_mismatch":
         right["input"]["extra"] = 1
     elif mutation == "output_key_mismatch":
-        right["output"].pop("credit_amount")
+        right["output"]["unrelated_output"] = 1
     elif mutation == "two_inputs":
         right["input"]["refund_applies"] = False
     elif mutation == "missing_affected_output":
@@ -21076,6 +21174,11 @@ def _credit_liability_exception_witnesses(
     elif mutation == "same_side_relation":
         right["input"]["tax_liability"] = 400
         right["output"]["refund_amount"] = 100
+    elif mutation == "reversed_effect":
+        left["output"]["refund_amount"] = 0
+        right["output"]["refund_amount"] = 10
+    elif mutation == "wrong_stable_dependency_runtime":
+        principal_rules["credit_amount"]["versions"][0]["formula"] = "raw_credit * 2"
 
     witnesses = completeness_module._toggled_formula_numeric_selectors(
         principal_rules,
