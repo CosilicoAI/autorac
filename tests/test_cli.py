@@ -295,6 +295,7 @@ from axiom_encode.harness.encoding_db import (
 )
 from axiom_encode.harness.eval_evidence import EVAL_EVIDENCE_PRIVATE_KEY_ENV
 from axiom_encode.harness.evals import (
+    CorpusAmendmentDocument,
     CorpusSourceUnit,
     EvalArtifactMetrics,
     _bind_eval_result_payload,
@@ -4525,7 +4526,27 @@ class TestCmdEvalSuiteRevalidate:
         trace_file = source_output / "trace.json"
         context_manifest_file = source_output / "context.json"
         trace_file.write_text("{}\n")
-        context_manifest_file.write_text("{}\n")
+        context_manifest_file.write_text(
+            json.dumps(
+                {
+                    "context_files": [
+                        {
+                            "kind": "corpus_amendment_act",
+                            "source_path": "us/statute/amendment-visible",
+                            "workspace_path": "context/amendment-act-1.txt",
+                            "import_path": "us/statute/amendment-visible",
+                        }
+                    ],
+                    "dropped_amendment_documents": [
+                        {
+                            "citation_path": "us/statute/amendment-dropped",
+                            "reason": "aggregate_context_limit",
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
         (source_output / "suite-run.json").write_text(
             json.dumps(
                 {
@@ -4737,7 +4758,24 @@ class TestCmdEvalSuiteRevalidate:
                     body="authoritative source text",
                     citation_path="us/statute/7/2014/e/6/A",
                     requested="us/statute/7/2014/e/6/A",
-                    amendment_documents=("attached-amendment",),
+                    amendment_documents=(
+                        CorpusAmendmentDocument(
+                            citation_path="us/statute/amendment-visible",
+                            title="Visible amendment",
+                            expression_date="2026-01-01",
+                            metadata={},
+                            body="Visible amendment body.",
+                            match_tier="structured",
+                        ),
+                        CorpusAmendmentDocument(
+                            citation_path="us/statute/amendment-dropped",
+                            title="Dropped amendment",
+                            expression_date="2025-01-01",
+                            metadata={},
+                            body="Dropped amendment body.",
+                            match_tier="structured",
+                        ),
+                    ),
                     source_attestation=_complete_source_attestation(
                         "us/statute/7/2014/e/6/A"
                     ),
@@ -4772,9 +4810,10 @@ class TestCmdEvalSuiteRevalidate:
             dependency_root
         ]
         assert mock_eval.call_args.kwargs["require_complete_source_unit"] is True
-        assert mock_eval.call_args.kwargs["amendment_documents"] == (
-            "attached-amendment",
-        )
+        assert tuple(
+            document.citation_path
+            for document in mock_eval.call_args.kwargs["amendment_documents"]
+        ) == ("us/statute/amendment-visible",)
         ledger = json.loads((source_output / "suite-results.jsonl").read_text())
         assert ledger["result"]["metrics"]["compile_pass"] is compile_pass
         assert ledger["result"]["metrics"]["ci_pass"] is ci_pass

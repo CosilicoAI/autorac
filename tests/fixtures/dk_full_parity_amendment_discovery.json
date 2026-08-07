@@ -1,0 +1,1211 @@
+{
+  "provenance": {
+    "source_file": "2026-08-04-dk-full-parity-tier1.jsonl",
+    "source_sha256": "5c348870772b2e79cc10a978f63380ec4e814c9ed13e570930fcf4c5643eaca0",
+    "note": "One shallowest active body row from each of the 51 amendment documents (48 tier1/amending-acts plus 3 supplemental acts). Citation/source/date/heading fields and the retained discovery metadata are exact; unrelated mechanical metadata is omitted and bodies are replaced."
+  },
+  "target_rows": [
+    {
+      "source_line": 1,
+      "citation_path": "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lbk-603-2025-boerne-og-ungeydelsesloven.xml",
+      "expression_date": "2025-05-12",
+      "heading": "Bekendtgørelse af lov om en børne- og ungeydelse",
+      "metadata": {
+        "title": "Bekendtgørelse af lov om en børne- og ungeydelse",
+        "title_short": "LBK nr 603 af 12/05/2025",
+        "title_alternative": "Børne- og ungeydelsesloven"
+      },
+      "body": null
+    },
+    {
+      "source_line": 2,
+      "citation_path": "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lbk-603-2025-boerne-og-ungeydelsesloven.xml",
+      "expression_date": "2025-05-12",
+      "heading": "§ 1.",
+      "metadata": {
+        "title": "Bekendtgørelse af lov om en børne- og ungeydelse",
+        "title_short": "LBK nr 603 af 12/05/2025",
+        "title_alternative": "Børne- og ungeydelsesloven"
+      },
+      "body": "Trimmed live consolidation body from JSONL line 2."
+    },
+    {
+      "source_line": 1287,
+      "citation_path": "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lbk-724-2022-boerne-og-ungeydelsesloven.xml",
+      "expression_date": "2022-05-25",
+      "heading": "Bekendtgørelse af lov om en børne- og ungeydelse",
+      "metadata": {
+        "title": "Bekendtgørelse af lov om en børne- og ungeydelse",
+        "title_short": "LBK nr 724 af 25/05/2022",
+        "title_alternative": "Børne- og ungeydelsesloven"
+      },
+      "body": null
+    },
+    {
+      "source_line": 1288,
+      "citation_path": "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lbk-724-2022-boerne-og-ungeydelsesloven.xml",
+      "expression_date": "2022-05-25",
+      "heading": "§ 1.",
+      "metadata": {
+        "title": "Bekendtgørelse af lov om en børne- og ungeydelse",
+        "title_short": "LBK nr 724 af 25/05/2022",
+        "title_alternative": "Børne- og ungeydelsesloven"
+      },
+      "body": "Trimmed live consolidation body from JSONL line 1288."
+    },
+    {
+      "source_line": 1289,
+      "citation_path": "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-1-a",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lbk-724-2022-boerne-og-ungeydelsesloven.xml",
+      "expression_date": "2022-05-25",
+      "heading": "§ 1 a.",
+      "metadata": {
+        "title": "Bekendtgørelse af lov om en børne- og ungeydelse",
+        "title_short": "LBK nr 724 af 25/05/2022",
+        "title_alternative": "Børne- og ungeydelsesloven"
+      },
+      "body": "Trimmed live consolidation body from JSONL line 1289."
+    }
+  ],
+  "amendment_rows": [
+    {
+      "source_line": 1642,
+      "citation_path": "dk/statute/lov-108-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-108-2024-aendringslov.xml",
+      "expression_date": "2024-01-31",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af personskatteloven (Nedsættelse af bundskatten som følge af kommunale skattestigninger)",
+        "title_short": "LOV nr 108 af 31/01/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Personskatteloven § 6, stk. 2 (2024 bundskat rates).",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-6"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1642."
+    },
+    {
+      "source_line": 1665,
+      "citation_path": "dk/statute/lov-1214-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1214-2024-aendringslov.xml",
+      "expression_date": "2024-11-26",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ejendomsskatteloven, ejendomsvurderingsloven, skattekontrolloven og kildeskatteloven (Justeringer af pensionistlåneordningen til betaling af grundskyld og foreløbige beskatningsgrundlag i udstykningstilfælde m.v.)",
+        "title_short": "LOV nr 1214 af 26/11/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven § 61, stk. 9 changes only a numeric cross-reference."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1665."
+    },
+    {
+      "source_line": 1524,
+      "citation_path": "dk/statute/lov-1389-2022/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1389-2022-aendringslov.xml",
+      "expression_date": "2022-10-05",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act; ELI not-in-force)",
+        "title": "Lov om ændring af lov om afgift af elektricitet, lov om en børne- og ungeydelse, pensionsbeskatningsloven og selskabsskatteloven (Nedsættelse af den almindelige elafgift i første halvår 2023, forhøjelse af børne- og ungeydelsen i 2023, fremrykning af forhøjelse af aldersopsparingens lave loft, udvidelse af perioden for aldersopsparingens høje loft og indførelse af skattepligt på udbytter til udenlandske stater og deres institutioner)",
+        "title_short": "LOV nr 1389 af 05/10/2022",
+        "source_family": "tier1/amending-acts",
+        "amends": "Børne- og ungeydelsesloven §§ 1 and 5 (the 2023 660 kr. uplift and payment timing) and pensionsbeskatningsloven §§ 16 and 25 A.",
+        "amendment_targets": [
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-1",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-5",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-5",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-16",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-25-a"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1524."
+    },
+    {
+      "source_line": 1690,
+      "citation_path": "dk/statute/lov-1456-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1456-2024-aendringslov.xml",
+      "expression_date": "2024-12-10",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension og lov om Udbetaling Danmark (Permanent forhøjelse af den supplerende pensionsydelse)",
+        "title_short": "LOV nr 1456 af 10/12/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven § 72 d raises the 2025 supplementary pension benefit.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-72-d"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1690."
+    },
+    {
+      "source_line": 1533,
+      "citation_path": "dk/statute/lov-1564-2023/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1564-2023-aendringslov.xml",
+      "expression_date": "2023-12-12",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af personskatteloven, pensionsbeskatningsloven og forskellige andre love (Forhøjelse af personfradraget for personer under 18 år og klare regler for bevarelse af lavere pensionsudbetalingsalder m.v.)",
+        "title_short": "LOV nr 1564 af 12/12/2023",
+        "source_family": "tier1/amending-acts",
+        "amends": "Personskatteloven §§ 8 c, 10 and 14, including the personfradrag; pensionsbeskatningsloven §§ 2, 8, 10, 11 A, 12, 17 B, 24, 29, 29 A, 42 A and 44.",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-8-c",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-10",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-14",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-2",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-8",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-10",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-11-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-12",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-17-b",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-24",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-29",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-29-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-42-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-44"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1533."
+    },
+    {
+      "source_line": 1797,
+      "citation_path": "dk/statute/lov-1623-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1623-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om Arbejdsmarkedets Tillægspension, lov om arbejdsskadesikring og lov om Lønmodtagernes Dyrtidsfond (Indførelse af en statslig finansieringsgaranti, bortfald af aktuarberetningen, skærpede krav til it- og cybersikkerhed for ATP og LD Fonde, ny takststruktur på arbejdsskadeområdet m.v.)",
+        "title_short": "LOV nr 1623 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "ATP-loven §§ 1, 2, 2 a, 2 b, 9, 9 a, 21, 23 b, new 23 d, 24 a, 27, 27 c and 32 a include the voluntary-contribution eligibility and contribution-coordination changes. Existing § 23 c anchors new § 23 d.",
+        "amendment_targets": [
+          "dk/statute/lbk-1142-2024/atp-loven",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-1",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-2",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-2-a",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-2-b",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-9",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-9-a",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-21",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-23-b",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-23-c",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-24-a",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-27",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-27-c",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-32-a"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1797."
+    },
+    {
+      "source_line": 1833,
+      "citation_path": "dk/statute/lov-1627-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1627-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om en skattefri seniorpræmie, lov om social pension og forskellige andre love  (Forhøjelse af den skattefri seniorpræmie m.v.)",
+        "title_short": "LOV nr 1627 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Of the act's broad pension cleanup, arbejdsløshedsforsikringsloven §§ 74 and 74 l are retained because they change the afterløn age and the explicit 2027 rate. Pensionsloven § 49 is retained because the act directly changes that campaign-marked payment section; other Tier-1 pension edits remain diligence prose.",
+        "amendment_targets": [
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-74",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-74-l",
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-49"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1833."
+    },
+    {
+      "source_line": 1844,
+      "citation_path": "dk/statute/lov-1628-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1628-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension og forskellige andre love (Ophør af udbetaling af forsørgelsesydelser til anbringelses- og behandlingsdømte)",
+        "title_short": "LOV nr 1628 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven §§ 14 a, 34, 45, 46, 48 f and 52, aktivloven §§ 10 a, 25 a and 29, and børnetilskudsloven §§ 2, 3, 4 and 8 suspend support payments for specified persons under placement or treatment orders.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-14-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-34",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-45",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-48-f",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-52",
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-25-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-29",
+          "dk/statute/lbk-63-2019/boernetilskudsloven",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-2",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-3",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-4",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-8"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1844."
+    },
+    {
+      "source_line": 1415,
+      "citation_path": "dk/statute/lov-1630-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1630-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om Arbejdsgivernes Uddannelsesbidrag og ligningsloven (Ændring af lønbegreb, afgørelser uden forudgående partshøring, omlægning af refusion og tilskud vedrørende oplæring i udlandet, justering af bidrag for 2026 og fastsættelse af modelparametre for 2026 m.v.)",
+        "title_short": "LOV nr 1630 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven § 31 makes subsidies and refunds under AUB §§ 8 a and 8 b tax-free, an employer-training subject outside the campaign household tax-benefit parameters."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1415."
+    },
+    {
+      "source_line": 1802,
+      "citation_path": "dk/statute/lov-1638-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1638-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om kapitalmarkeder, lov om finansiel virksomhed, lov om investeringsforeninger m.v. og forskellige andre love (Ophævelse af national prospektgrænse, delvis ophævelse af forbud mod aktieklasser i finansielle virksomheder, forsikringsselskaber og fondsmæglerselskaber, ændring af offentliggørelseskrav ved optagelse til handel på en multilateral handelsfacilitet, styrkelse af Finanstilsynets uafhængighed m.v.)",
+        "title_short": "LOV nr 1638 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "ATP-loven §§ 27, 27 e, new 27 n and 32 a change financial-governance and sustainability rules outside the campaign parameter surface."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1802."
+    },
+    {
+      "source_line": 1323,
+      "citation_path": "dk/statute/lov-1642-2025/aendring-af-boerne-og-ungeydelsesloven-mv/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1642-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om en børne- og ungeydelse, ligningsloven og forskellige andre love",
+        "title_short": "LOV nr 1642 af 16/12/2025",
+        "source_family": "tax-and-social-benefits/amending-acts",
+        "amends": "Lov om en børne- og ungeydelse (act § 1), ligningsloven (act § 2), pensionsbeskatningsloven (act § 6), and lov om aktiv socialpolitik (act § 9), plus five acts outside this Tier-1 scope.",
+        "amendment_targets": [
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-2",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-4",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-11",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-7",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-38",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-39",
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-14",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-33"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1323."
+    },
+    {
+      "source_line": 1853,
+      "citation_path": "dk/statute/lov-1648-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1648-2025-aendringslov.xml",
+      "expression_date": "2025-12-16",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af udlændingeloven, lov om Det Centrale Personregister og forskellige andre love (Afskæring af offentlige tilbud m.v. til udlændinge, som opholder sig ulovligt i Danmark)",
+        "title_short": "LOV nr 1648 af 16/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "SU-loven §§ 2, 2 f, new 2 g and 29, kildeskatteloven §§ 46, 48, 53 A and 75, and arbejdsløshedsforsikringsloven § 90 b restrict public benefits and tax handling for persons unlawfully present. Existing SU § 2 f anchors new § 2 g.",
+        "amendment_targets": [
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-2",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-2-f",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-29",
+          "dk/statute/lbk-460-2024/kildeskatteloven",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-46",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-48",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-53-a",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-75",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-90-b"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1853."
+    },
+    {
+      "source_line": 1717,
+      "citation_path": "dk/statute/lov-1655-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1655-2024-aendringslov.xml",
+      "expression_date": "2024-12-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om aktiv socialpolitik, lov om en aktiv beskæftigelsesindsats og forskellige andre love (Reform af kontanthjælpssystemet, ophævelse af 225-timersreglen og kontanthjælpsloftet, fritidstillæg til børn, afklaring, rettighedsbaseret tilskud til medicin m.v.)",
+        "title_short": "LOV nr 1655 af 30/12/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "The DK_2025 cash-assistance reform: aktivloven monetary, eligibility, threshold, cap, sanction and indexation provisions selected below, plus Tier-1 coordination blocks in unemployment, ATP, child supplement, pension, withholding tax, ligningsloven, pension tax and SU laws.",
+        "amendment_targets": [
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-11",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-12",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-14",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-16",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-17",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-18",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-19",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-20",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-25-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-25-b",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-26",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-30",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-31",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-35",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-42",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-43",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-68",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-69-d",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-69-j",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-69-o",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-71",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-73-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-74-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-79",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-82-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-82-b",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-86",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-87",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-109",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-87-a",
+          "dk/statute/lbk-1142-2024/atp-loven",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-2-a",
+          "dk/statute/lbk-1142-2024/atp-loven/paragraf-17-s",
+          "dk/statute/lbk-63-2019/boernetilskudsloven",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-10-d",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-18",
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-31",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-32-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-32-c",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-32-d",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-d",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-f",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-g",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-48-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-48-b",
+          "dk/statute/lbk-460-2024/kildeskatteloven",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-49-a",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-7",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-25-a",
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-7"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1717."
+    },
+    {
+      "source_line": 1345,
+      "citation_path": "dk/statute/lov-1691-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1691-2024-aendringslov.xml",
+      "expression_date": "2024-12-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af selskabsskatteloven, aktiesparekontoloven, aktieavancebeskatningsloven, personskatteloven og forskellige andre love (Udmøntning af dele af »Aftale om Iværksætterpakken«)",
+        "title_short": "LOV nr 1691 af 30/12/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Personskatteloven § 8 a; ligningsloven §§ 8 X, 16 A, 16 B, 16 C and 16 I; kildeskatteloven §§ 48 E and 65; and pensionsbeskatningsloven §§ 12 and 30 B.",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-8-a",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-8-x",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-16-a",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-16-b",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-16-c",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-16-i",
+          "dk/statute/lbk-460-2024/kildeskatteloven",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-48-e",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-65",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-12",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-30-b"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1345."
+    },
+    {
+      "source_line": 1671,
+      "citation_path": "dk/statute/lov-1694-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1694-2024-aendringslov.xml",
+      "expression_date": "2024-12-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af opkrævningsloven og forskellige andre love (Ny opkrævningsløsning for visse krav, renteharmonisering, hæftelse for kildeskat efter solvent likvidation og sikring af rentekrav ved udbetaling af refusion af kildeskat til modtagere af udbytter, renter og royalties m.v.)",
+        "title_short": "LOV nr 1694 af 30/12/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven § 69 B interest and liability after an erroneous withholding-tax refund; a procedural recovery rule."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1671."
+    },
+    {
+      "source_line": 1694,
+      "citation_path": "dk/statute/lov-1703-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1703-2024-aendringslov.xml",
+      "expression_date": "2024-12-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social service, lov om retssikkerhed og administration på det sociale område, lov om socialtilsyn og forskellige andre love (Ændringer som følge af ældreloven, lov om ældretilsyn og lov om lokalplejehjem og udskillelse af reglerne om madservice fra bestemmelsen om personlig og praktisk hjælp i lov om social service)",
+        "title_short": "LOV nr 1703 af 30/12/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Care-law citation migrations in pensionsloven §§ 26 n, 33 and 38 a, arbejdsløshedsforsikringsloven §§ 48, 49, 53, 55, 56 a and 74 a, aktivloven § 75 and ligningsloven § 7; no campaign parameter changes."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1694."
+    },
+    {
+      "source_line": 1645,
+      "citation_path": "dk/statute/lov-174-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-174-2024-aendringslov.xml",
+      "expression_date": "2024-02-27",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act; ELI not-in-force)",
+        "title": "Lov om ændring af lov om kommunal indsats for unge under 25 år og forskellige andre love (Afskaffelse af uddannelsesparathedsvurdering, udvidelse af den sammenhængende plan for vejledning og afskaffelse af krav om studievalgsportfolio)",
+        "title_short": "LOV nr 174 af 27/02/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Børne- og ungeydelsesloven § 2 changes only the name of the cited youth-guidance law; it does not alter a campaign eligibility value."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1645."
+    },
+    {
+      "source_line": 1880,
+      "citation_path": "dk/statute/lov-1750-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1750-2025-aendringslov.xml",
+      "expression_date": "2025-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om en aktiv beskæftigelsesindsats, lov om organisering og understøttelse af beskæftigelsesindsatsen m.v. og forskellige andre love (Reform af beskæftigelsesindsatsen, mere fleksible kontaktforløb og tilbud, afskaffelse af kravet om jobcentre, frihed i organisering af beskæftigelsesindsatsen, afskaffelse af ressourceforløb og revalidering m.v.)",
+        "title_short": "LOV nr 1750 af 29/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "From the broader employment reform, aktivloven §§ 10 e, 10 f, 10 h, 19 and 20, pensionsloven §§ 16 and 46 d, and arbejdsløshedsforsikringsloven § 87 a govern abolition and transition of campaign benefit and eligibility surfaces.",
+        "amendment_targets": [
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-e",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-f",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-h",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-19",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-20",
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-16",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-d",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-87-a"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1880."
+    },
+    {
+      "source_line": 1420,
+      "citation_path": "dk/statute/lov-1755-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1755-2025-aendringslov.xml",
+      "expression_date": "2025-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af erhvervsvirksomhedsloven, aktieavancebeskatningsloven og forskellige andre love (Ny mulighed for generationsskifte til en medarbejderejevirksomhed og selskabsbeskattede elaktiviteter i andelsselskaber)",
+        "title_short": "LOV nr 1755 af 29/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven §§ 5 H and 16 A coordinate employee-ownership and cooperative-company taxation outside the campaign parameter surface."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1420."
+    },
+    {
+      "source_line": 1829,
+      "citation_path": "dk/statute/lov-1757-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1757-2025-aendringslov.xml",
+      "expression_date": "2025-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om vederlag og pension m.v. for ministre og pensionsbeskatningsloven (Ændring af ministres vederlæggelse som opfølgning på »Aftale om en reform af fremtidige folketingsmedlemmers og ministres vederlæggelse« og reglerne om godtgørelse til ministre for dobbelt husførelse m.v.)",
+        "title_short": "LOV nr 1757 af 29/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsbeskatningsloven § 19 coordinates the special ministerial pension regime, outside the campaign household parameter surface."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1829."
+    },
+    {
+      "source_line": 1430,
+      "citation_path": "dk/statute/lov-1775-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1775-2025-aendringslov.xml",
+      "expression_date": "2025-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om afgift af elektricitet og ligningsloven (Nedsættelse af den almindelige elafgift i 2026 og 2027 m.v.)",
+        "title_short": "LOV nr 1775 af 29/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven § 8 P sets the 2026-27 taxable value of renewable electricity supplied from business installations to private residences, outside the EUROMOD household campaign spine."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1430."
+    },
+    {
+      "source_line": 1434,
+      "citation_path": "dk/statute/lov-1781-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-1781-2025-aendringslov.xml",
+      "expression_date": "2025-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ligningsloven (Udvidelse af medarbejderaktieordningen for nye, mindre virksomheder)",
+        "title_short": "LOV nr 1781 af 29/12/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven § 7 P expands the employee-share scheme for new small companies, outside the campaign parameter surface."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1434."
+    },
+    {
+      "source_line": 1400,
+      "citation_path": "dk/statute/lov-198-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-198-2025-aendringslov.xml",
+      "expression_date": "2025-02-25",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om aktiv socialpolitik, ligningsloven og forskellige andre love (Præcisering af retten til ydelser under kortvarige udlandsophold, afskaffelse af skærpet rådighedssanktion for aktivitetsparate m.v.)",
+        "title_short": "LOV nr 198 af 25/02/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Among the act's broader procedural blocks, aktivloven §§ 5, 13, 14, 20, 40 a, 68, 69 j, 82 a, 82 b and 109 and ligningsloven §§ 7 and 8 O govern campaign eligibility, amount, sanction and indexation surfaces.",
+        "amendment_targets": [
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-5",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-13",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-14",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-20",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-40-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-68",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-69-j",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-82-a",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-82-b",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-109",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-7",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-8-o"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1400."
+    },
+    {
+      "source_line": 1335,
+      "citation_path": "dk/statute/lov-2226-2020/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-2226-2020-aendringslov.xml",
+      "expression_date": "2020-12-29",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af emballageafgiftsloven, lov om afgifter af spil, virksomhedsskatteloven og forskellige andre love (Genindførelse af emballageafgift på pvc-folier, forhøjelse af afgiftssatsen for væddemål og onlinekasino samt afskaffelse af skattefordele ved forældrekøb i virksomheds- og kapitalafkastordningerne)",
+        "title_short": "LOV nr 2226 af 29/12/2020",
+        "source_family": "tier1/amending-acts",
+        "amends": "Arbejdsmarkedsbidragsloven § 5 and kildeskatteloven §§ 26 A and 33 C. These business-income/capital-return cross-references do not set a confirmed DK_2025 campaign parameter."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1335."
+    },
+    {
+      "source_line": 1514,
+      "citation_path": "dk/statute/lov-252-2022/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-252-2022-aendringslov.xml",
+      "expression_date": "2022-02-25",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af personskatteloven (Nedsættelse af bundskatten som følge af kommunale skattestigninger)",
+        "title_short": "LOV nr 252 af 25/02/2022",
+        "source_family": "tier1/amending-acts",
+        "amends": "Personskatteloven § 6, stk. 2 (2022 bundskat rates).",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-6"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1514."
+    },
+    {
+      "source_line": 1276,
+      "citation_path": "dk/statute/lov-303-2026/aendring-af-social-pension-mv/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-303-2026-aendringslov.xml",
+      "expression_date": "2026-02-24",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension, lov om højeste, mellemste, forhøjet almindelig og almindelig førtidspension m.v. og forskellige andre love",
+        "title_short": "LOV nr 303 af 24/02/2026",
+        "source_family": "social-benefits/amending-acts",
+        "amends": "Lov om social pension (act § 1), lov om aktiv socialpolitik (act § 3), lov om arbejdsløshedsforsikring m.v. (act § 5), and lov om en børne- og ungeydelse (act § 9), plus six acts outside this Tier-1 scope.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-16",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-26-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-26-g",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-39",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-d",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-f",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-46-g",
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-e",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-f",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-10-h",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-87-a",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-87-b",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-4-e"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1276."
+    },
+    {
+      "source_line": 1653,
+      "citation_path": "dk/statute/lov-333-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-333-2024-aendringslov.xml",
+      "expression_date": "2024-04-09",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af chokoladeafgiftsloven, kildeskatteloven og forskellige andre love (Godtgørelse af dækningsafgift i chokoladeafgiftsloven, præcisering af krav om beholdningsregnskab ved løssalg af groftskåret røgtobak, bøder ved enkeltsalg af cigaretter og manglende beholdningsregnskab, tilpasning af det afgiftspligtige vareområde for visse alkoholvarer, nulangivelse ved udbetaling af royalty til udlandet uden indeholdelse af kildeskat, mulighed for dataudstilling om visse søfarende, afskaffelse af godtgørelsesordning i spildevandsafgiftsloven, tilpasning af reglerne om sikkerhedsstempelmærker og genindførelse af register over erhvervsfiskere med B-status m.v.)",
+        "title_short": "LOV nr 333 af 09/04/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven § 66 A reporting for royalty payments and withheld royalty tax; no household tax-benefit parameter."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1653."
+    },
+    {
+      "source_line": 1437,
+      "citation_path": "dk/statute/lov-369-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-369-2025-aendringslov.xml",
+      "expression_date": "2025-04-09",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af boafgiftsloven, aktieavancebeskatningsloven og forskellige andre love (Nedsættelse af boafgiften og gaveafgiften og indførelse af et retskrav på en skematisk værdiansættelse ved overdragelse af erhvervsvirksomheder til et nært familiemedlem, bedre mulighed for succession ved overdragelse af ejendomsvirksomheder og lempelse af pengetankregler m.v.)",
+        "title_short": "LOV nr 369 af 09/04/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven §§ 33 C and 33 D, ligningsloven § 7 P and pensionsbeskatningsloven § 15 A coordinate business transfers; the act's § 13 amends older LOV 482/2024 rather than personskatteloven."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1437."
+    },
+    {
+      "source_line": 1452,
+      "citation_path": "dk/statute/lov-437-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-437-2025-aendringslov.xml",
+      "expression_date": "2025-05-06",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om arbejdsløshedsforsikring m.v. og barselsloven (Udvidet ret til dagpenge til iværksættere og bagatelgrænse for arbejde i selvstændig virksomhed med fulde barselsdagpenge)",
+        "title_short": "LOV nr 437 af 06/05/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Arbejdsløshedsforsikringsloven §§ 49, new 49 a, 51 a, 53 and 53 a expand entrepreneurs' earnings-related unemployment-benefit eligibility. Existing § 49 anchors the new § 49 a.",
+        "amendment_targets": [
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-49",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-51-a",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-53",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-53-a"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1452."
+    },
+    {
+      "source_line": 1456,
+      "citation_path": "dk/statute/lov-469-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-469-2025-aendringslov.xml",
+      "expression_date": "2025-05-14",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af en række love på børne- og undervisningsområdet, socialområdet, det familieretlige område, skatteområdet, beskæftigelsesområdet, udlændinge- og integrationsområdet og ældreområdet (Forbud mod anvendelse af personer under 18 år som tolke m.v.)",
+        "title_short": "LOV nr 469 af 14/05/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven new § 57 a, arbejdsløshedsforsikringsloven new § 100 e and aktivloven new § 8 b establish an interpreter-use prohibition; they do not set a campaign tax-benefit parameter."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1456."
+    },
+    {
+      "source_line": 1312,
+      "citation_path": "dk/statute/lov-482-2024/reform-af-personskat/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-482-2024-personskattereform.xml",
+      "expression_date": "2024-05-22",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af personskatteloven, ligningsloven og forskellige andre love",
+        "title_short": "LOV nr 482 af 22/05/2024",
+        "source_family": "personal-income-tax/amending-acts",
+        "amends": "Personskatteloven (act § 1), ligningsloven (act § 2), lov om en børne- og ungeydelse (act § 4), and pensionsbeskatningsloven (act § 7), plus five acts outside this Tier-1 scope. Act § 4 changes \"topskat\" to \"mellemskat\" in børne- og ungeydelsesloven § 1 a, stk. 1, 1. pkt., and stk. 2.",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-5",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-7",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-7-a",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-8",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-13",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-26",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-9-j",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-1-a",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-42-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-49-a",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-49-c"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1312."
+    },
+    {
+      "source_line": 1517,
+      "citation_path": "dk/statute/lov-546-2022/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-546-2022-aendringslov.xml",
+      "expression_date": "2022-05-03",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om midlertidig opholdstilladelse til personer, der er fordrevet fra Ukraine, lov om individuel boligstøtte, lov om børnetilskud og forskudsvis udbetaling af børnebidrag og integrationsloven (Kommunal indkvartering og forplejning og tilpasning af regler på integrationsområdet, børne- og undervisningsområdet, social- og ældreområdet, indenrigs- og boligområdet og sundhedsområdet som følge af modtagelse af personer, der er fordrevet fra Ukraine)",
+        "title_short": "LOV nr 546 af 03/05/2022",
+        "source_family": "tier1/amending-acts",
+        "amends": "Børnetilskudsloven §§ 5 and 10 a extend eligibility to specified Ukraine/Afghanistan temporary-permit holders.",
+        "amendment_targets": [
+          "dk/statute/lbk-63-2019/boernetilskudsloven",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-5",
+          "dk/statute/lbk-63-2019/boernetilskudsloven/paragraf-10-a"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1517."
+    },
+    {
+      "source_line": 1751,
+      "citation_path": "dk/statute/lov-562-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-562-2025-aendringslov.xml",
+      "expression_date": "2025-05-27",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ejendomsskatteloven, ejendomsvurderingsloven og forskellige andre love (Alternativer til anvendelse af ejendomsværdier til beskatningsformål for landbrugs- og skovejendomme samt erhvervsejendomme, grundskyld og dækningsafgift i visse udstykningstilfælde m.v.)",
+        "title_short": "LOV nr 562 af 27/05/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven §§ 33 C and 33 D and ligningsloven §§ 14, 15 J and 15 K coordinate property valuation and tax; these are outside the campaign household parameter spine."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1751."
+    },
+    {
+      "source_line": 1530,
+      "citation_path": "dk/statute/lov-610-2023/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-610-2023-aendringslov.xml",
+      "expression_date": "2023-05-31",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af personskatteloven (Nedsættelse af bundskatten som følge af kommunale skattestigninger)",
+        "title_short": "LOV nr 610 af 31/05/2023",
+        "source_family": "tier1/amending-acts",
+        "amends": "Personskatteloven § 6, stk. 2 (2023 bundskat rates).",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-6"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1530."
+    },
+    {
+      "source_line": 1903,
+      "citation_path": "dk/statute/lov-615-2026/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-615-2026-aendringslov.xml",
+      "expression_date": "2026-06-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ejendomsvurderingsloven, ejendomsskatteloven og forskellige andre love (Samlet ejendomskategori for landbrugs-, skov- og naturejendomme, forenkling af ejendomsvurderingerne for 2026 og 2027 og lempeligere ejendomsbeskatningsgrundlag for kolonihavegrunde m.v.)",
+        "title_short": "LOV nr 615 af 30/06/2026",
+        "source_family": "tier1/amending-acts",
+        "amends": "Presumptive PSL-chain act: kildeskatteloven § 33 C, ligningsloven §§ 14, 15 J and 15 K, pensionsbeskatningsloven § 15 A and personskatteloven § 4.",
+        "amendment_targets": [
+          "dk/statute/lbk-460-2024/kildeskatteloven",
+          "dk/statute/lbk-460-2024/kildeskatteloven/paragraf-33-c",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-14",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-15-j",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-15-k",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven",
+          "dk/statute/lbk-1243-2024/pensionsbeskatningsloven/paragraf-15-a",
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-4"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1903."
+    },
+    {
+      "source_line": 1920,
+      "citation_path": "dk/statute/lov-616-2026/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-616-2026-aendringslov.xml",
+      "expression_date": "2026-06-30",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ligningsloven og lov om en aktiv beskæftigelsesindsats (Forhøjelse af befordringsfradraget for indkomståret 2026 og forhøjelse af befordringsgodtgørelsen efter § 175 i lov om en aktiv beskæftigelsesindsats for andet halvår 2026)",
+        "title_short": "LOV nr 616 af 30/06/2026",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven § 9 C changes the 2026 befordringsfradrag value.",
+        "amendment_targets": [
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-9-c"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1920."
+    },
+    {
+      "source_line": 1355,
+      "citation_path": "dk/statute/lov-630-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-630-2024-aendringslov.xml",
+      "expression_date": "2024-06-11",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om arbejdsløshedsforsikring m.v., lov om aktiv socialpolitik, lov om social pension og forskellige andre love (Neutralisering af virkning på indkomstoverførsler som følge af afskaffelse af en helligdag)",
+        "title_short": "LOV nr 630 af 11/06/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Arbejdsløshedsforsikringsloven §§ 47, 70 and 74 l, aktivloven § 109, pensionsloven §§ 49, 49 a and 49 b, and SU-loven § 12 neutralize the income-transfer effect of abolishing a public holiday.",
+        "amendment_targets": [
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-47",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-70",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-74-l",
+          "dk/statute/lbk-1004-2025/aktivloven",
+          "dk/statute/lbk-1004-2025/aktivloven/paragraf-109",
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-49",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-49-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-49-b",
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-12"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1355."
+    },
+    {
+      "source_line": 1368,
+      "citation_path": "dk/statute/lov-632-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-632-2024-aendringslov.xml",
+      "expression_date": "2024-06-11",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension og forskellige andre love (Fradragsret for indbetalinger til aldersforsikring, aldersopsparing og supplerende engangssum i indtægtsgrundlaget ved beregning af visse sociale ydelser)",
+        "title_short": "LOV nr 632 af 11/06/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven §§ 29, 32 a, 39 b and 39 c, børne- og ungeydelsesloven § 1 a, and SU-loven §§ 23, 24 and 26 add deductions for specified retirement-account contributions to benefit income bases.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-29",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-32-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-39-b",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-39-c",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-1-a",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1-a",
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-23",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-24",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-26"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1368."
+    },
+    {
+      "source_line": 1377,
+      "citation_path": "dk/statute/lov-665-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-665-2024-aendringslov.xml",
+      "expression_date": "2024-06-11",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af straffeloven, retsplejeloven og forskellige andre love (Gennemførelse af dele af bandepakke IV)",
+        "title_short": "LOV nr 665 af 11/06/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "Børne- og ungeydelsesloven inserts § 4 e after § 4 d: a payment-disqualification rule tied to specified criminal convictions. Historical LBK 724 therefore uses its extant § 4 d insertion anchor.",
+        "amendment_targets": [
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-724-2022/boerne-og-ungeydelsesloven/paragraf-4-d",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven",
+          "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-4-e"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1377."
+    },
+    {
+      "source_line": 1777,
+      "citation_path": "dk/statute/lov-674-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-674-2025-aendringslov.xml",
+      "expression_date": "2025-06-17",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af SU-loven (Minimumskrav til dokumentation m.v. ved ansøgning om SU-handicaptillæg, anvendelse af kunstig intelligens til understøttelse af sagsbehandling m.v.)",
+        "title_short": "LOV nr 674 af 17/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "SU-loven §§ 1 and 10 a and new § 39 a govern handicaptillæg eligibility, documentation and decision support. The extant § 39 is the insertion anchor because § 39 a is absent from the Tier-1 base.",
+        "amendment_targets": [
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-1",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-10-a",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-39"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1777."
+    },
+    {
+      "source_line": 1541,
+      "citation_path": "dk/statute/lov-679-2023/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-679-2023-aendringslov.xml",
+      "expression_date": "2023-06-03",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af kildeskatteloven, lov om kommunal indkomstskat, ejendomsvurderingsloven og forskellige andre love  (Opkrævning og inddrivelse af grundskyld og dækningsafgift m.v., statens afregning af grundskyld og dækningsafgift til kommunerne, foreløbige vurderinger som midlertidigt beskatningsgrundlag i 2024 og 2025, forenkling af ejendomsvurderingerne for 2024 og 2025, udvidelse af antallet af dommere i Landsskatteretten m.v.)",
+        "title_short": "LOV nr 679 af 03/06/2023",
+        "source_family": "tier1/amending-acts",
+        "amends": "Presumptive PSL-chain act: personskatteloven §§ 4, 6, 8 and 12; arbejdsmarkedsbidragsloven § 2; relevant ligningsloven § 16; and pensionsloven §§ 14 c and 72 d. Property-tax-administration provisions in kildeskatteloven and aktivloven § 85 a are recorded at their Tier-1 roots without diligence-only child targets.",
+        "amendment_targets": [
+          "dk/statute/lbk-1284-2021/personskatteloven",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-4",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-6",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-8",
+          "dk/statute/lbk-1284-2021/personskatteloven/paragraf-12",
+          "dk/statute/lbk-121-2020/arbejdsmarkedsbidragsloven",
+          "dk/statute/lbk-121-2020/arbejdsmarkedsbidragsloven/paragraf-2",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-16",
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-14-c",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-72-d",
+          "dk/statute/lbk-460-2024/kildeskatteloven",
+          "dk/statute/lbk-1004-2025/aktivloven"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1541."
+    },
+    {
+      "source_line": 1389,
+      "citation_path": "dk/statute/lov-685-2024/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-685-2024-aendringslov.xml",
+      "expression_date": "2024-06-11",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af SU-loven (Reform af SU-systemet på det videregående uddannelsesområde)",
+        "title_short": "LOV nr 685 af 11/06/2024",
+        "source_family": "tier1/amending-acts",
+        "amends": "SU-loven §§ 16, 17 and 21 change the grant-period eligibility and duration rules for higher education.",
+        "amendment_targets": [
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-16",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-17",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-21"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1389."
+    },
+    {
+      "source_line": 1509,
+      "citation_path": "dk/statute/lov-703-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-703-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension, lov om arbejdsskadesikring og lov om afgift af bidraget til Arbejdsmarkedets Erhvervssikring og af arbejdsulykkeserstatninger m.v. (Regulering af folkepensionsalderen og ændring af revisionsbestemmelse m.v.)",
+        "title_short": "LOV nr 703 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven §§ 1 a and 72 e set the later folkepensionsalder by birth cohort and change its statutory review schedule.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-1-a",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-72-e"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1509."
+    },
+    {
+      "source_line": 1747,
+      "citation_path": "dk/statute/lov-704-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-704-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social pension og lov om højeste, mellemste, forhøjet almindelig og almindelig førtidspension m.v. (Forhøjelse af mediecheck)",
+        "title_short": "LOV nr 704 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsloven § 49 raises the mediecheck amount.",
+        "amendment_targets": [
+          "dk/statute/lbk-1123-2024/pensionsloven",
+          "dk/statute/lbk-1123-2024/pensionsloven/paragraf-49"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1747."
+    },
+    {
+      "source_line": 1788,
+      "citation_path": "dk/statute/lov-711-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-711-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om forsikringsvirksomhed, lov om betalinger, lov om etablering af statsgaranti på en del af ejendomskreditaftalerne i landdistrikterne og forskellige andre love (Tværgående pensionskassers og forsikringsselskabers adgang til at eje og drive skov, vilkår for adgang til betalingssystemer for udbydere af betalingstjenester og etablering af statsgaranti på en del af ejendomskreditaftalerne i landdistrikterne m.v.)",
+        "title_short": "LOV nr 711 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "ATP-loven §§ 24 a, 24 d, 25, 26, 26 b, 27 c and 32 a change governance and investment rules, not a campaign benefit or contribution parameter."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1788."
+    },
+    {
+      "source_line": 1819,
+      "citation_path": "dk/statute/lov-730-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-730-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af retsplejeloven og forskellige andre love (Kreditorforfølgning i pensionsordninger for konfiskationskrav og erstatningskrav m.v. som følge af visse strafbare handlinger, der har medført et udbytte, m.v.)",
+        "title_short": "LOV nr 730 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Pensionsbeskatningsloven §§ 25 A, 29, 30 and 38 change creditor and confiscation treatment of pension arrangements, not campaign amounts or eligibility."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1819."
+    },
+    {
+      "source_line": 1409,
+      "citation_path": "dk/statute/lov-749-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-749-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af ligningsloven, afskrivningsloven, opkrævningsloven og skatteindberetningsloven (Lempelse af beskatningen af aktionærlån og ændring af reglerne om beskatning af løbende ydelser)",
+        "title_short": "LOV nr 749 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Ligningsloven §§ 7 O, 12 B and 16 E change shareholder-loan and recurring-payment taxation outside the campaign household parameter spine."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1409."
+    },
+    {
+      "source_line": 1769,
+      "citation_path": "dk/statute/lov-750-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-750-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af minimumsbeskatningsloven, selskabsskatteloven, skattekontrolloven og forskellige andre love (Tilpasning til OECD’s administrative retningslinjer om minimumsbeskatningsreglerne, lempelse af reglerne om transfer pricing-dokumentation, aflønning af kvalificerede distributører i visse lande og justering af reglerne om omkvalifikation af transparente enheder, begrænset skattepligt af renter, indeholdelse af renteskat og royaltyskat, international sambeskatning og oplysningspligt m.v.)",
+        "title_short": "LOV nr 750 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Kildeskatteloven §§ 65 C, 65 D and 66 A and ligningsloven §§ 2, 2 A, new 2 B and 5 H concern international, withholding and transfer-pricing rules outside the campaign household parameter surface."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1769."
+    },
+    {
+      "source_line": 1588,
+      "citation_path": "dk/statute/lov-753-2023/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-753-2023-aendringslov.xml",
+      "expression_date": "2023-06-13",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af lov om social service, lov om retssikkerhed og administration på det sociale område og forskellige andre love (Ændringer som følge af barnets lov, initiativret for adopterede børn, adoption uden samtykke fra fødslen, samvær med børn på kvindekrisecentre m.v. og fasttrack for godkendelse af plejefamilier m.v.)",
+        "title_short": "LOV nr 753 af 13/06/2023",
+        "source_family": "tier1/amending-acts",
+        "amends": "Technical serviceloven-to-barnets-lov citation migrations in børnetilskudsloven §§ 5 and 8, aktivloven §§ 13 f, 22, 23, 25, 32, 68 a, 69 j, 75 and 96, pensionsloven §§ 26 n, 26 s and 38 a, arbejdsløshedsforsikringsloven §§ 48, 49, 53, 55, 56 a and 74 a, ATP-loven § 2 a, ligningsloven §§ 7 and 9, pensionsbeskatningsloven § 19, børne- og ungeydelsesloven §§ 2 and 4, and kildeskatteloven § 49 A."
+      },
+      "body": "Trimmed live amendment body from JSONL line 1588."
+    },
+    {
+      "source_line": 1780,
+      "citation_path": "dk/statute/lov-754-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-754-2025-aendringslov.xml",
+      "expression_date": "2025-06-20",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af universitetsloven, lov om akkreditering af videregående uddannelsesinstitutioner og forskellige andre love (Kandidatuddannelse på 75 ECTS-point, nye erhvervskandidatuddannelser og andre elementer fra aftale om reform af universitetsuddannelserne i Danmark m.v.)",
+        "title_short": "LOV nr 754 af 20/06/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Arbejdsløshedsforsikringsloven §§ 54 and 62 a and SU-loven §§ 1, 5 and 24 coordinate benefit and SU eligibility for reformed university degrees.",
+        "amendment_targets": [
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-54",
+          "dk/statute/lbk-1077-2025/arbejdsloeshedsforsikringsloven/paragraf-62-a",
+          "dk/statute/lbk-395-2023/su-loven",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-1",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-5",
+          "dk/statute/lbk-395-2023/su-loven/paragraf-24"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1780."
+    },
+    {
+      "source_line": 1392,
+      "citation_path": "dk/statute/lov-96-2025/aendringslov/aendringcentreretparagraf-1",
+      "source_path": "sources/dk/statute/2026-08-04-dk-full-parity-tier1/eli/dk-lov-96-2025-aendringslov.xml",
+      "expression_date": "2025-02-04",
+      "heading": "§ 1",
+      "metadata": {
+        "document_type": "ændringslov (amendment act)",
+        "title": "Lov om ændring af arbejdsmarkedsbidragsloven og forskellige andre love (Unges fritagelse for arbejdsmarkedsbidrag m.v.)",
+        "title_short": "LOV nr 96 af 04/02/2025",
+        "source_family": "tier1/amending-acts",
+        "amends": "Arbejdsmarkedsbidragsloven § 1 creates the age-based contribution exemption. Separately, ligningsloven § 7 exempts specified institution-paid student expenses from tax.",
+        "amendment_targets": [
+          "dk/statute/lbk-121-2020/arbejdsmarkedsbidragsloven",
+          "dk/statute/lbk-121-2020/arbejdsmarkedsbidragsloven/paragraf-1",
+          "dk/statute/lbk-1500-2025/ligningsloven",
+          "dk/statute/lbk-1500-2025/ligningsloven/paragraf-7"
+        ]
+      },
+      "body": "Trimmed live amendment body from JSONL line 1392."
+    }
+  ]
+}
