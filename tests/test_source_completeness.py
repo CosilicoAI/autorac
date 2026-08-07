@@ -58,13 +58,16 @@ def _analyze(
     test_cases: list[object] | None = None,
     artifact_numeric_values: tuple[float, ...] | None = None,
     artifact_numeric_bindings: tuple[tuple[str, float], ...] | None = None,
+    extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
+    extract_numeric_grounding_occurrences=None,
 ):
     return analyze_complete_source_unit(
         content,
         authoritative_source_text,
         corpus_citation_path=corpus_citation_path,
         test_cases=test_cases,
-        extract_numeric_occurrences=DE_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+        extract_numeric_grounding_occurrences=(extract_numeric_grounding_occurrences),
         extract_named_scalars=extract_named_scalar_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
         artifact_numeric_values=artifact_numeric_values,
@@ -5447,6 +5450,270 @@ rules:
         test_cases=test_cases,
     )
     assert _has_issue(premature, "formula branch", "test")
+
+
+def test_formula_witness_follows_bounded_temporal_parameter_aliases():
+    source = """\
+(1) Except as provided in Paragraph (2), there shall be a credit in an amount
+equal to three and one-half percent of the federal earned income tax credit.
+(2) For tax years beginning on or after January 1, 2019, through December 31,
+2030, there shall be a credit in an amount equal to five percent of the federal
+earned income tax credit.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:297.8
+rules:
+  - name: base_rate
+    kind: parameter
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.8
+              excerpt: three and one-half percent
+    versions:
+      - effective_from: '2008-01-01'
+        formula: 0.035
+  - name: temporary_rate
+    kind: parameter
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.8
+              excerpt: five percent
+    versions:
+      - effective_from: '2019-01-01'
+        effective_to: '2030-12-31'
+        formula: 0.05
+  - name: selected_rate
+    kind: parameter
+    versions:
+      - effective_from: '2008-01-01'
+        formula: base_rate
+      - effective_from: '2019-01-01'
+        formula: temporary_rate
+      - effective_from: '2031-01-01'
+        formula: base_rate
+  - name: credit
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.8
+              excerpt: >-
+                an amount equal to three and one-half percent of the federal
+                earned income tax credit
+          - path: versions[0].formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.8
+              excerpt: >-
+                an amount equal to five percent of the federal earned income
+                tax credit
+    versions:
+      - effective_from: '2008-01-01'
+        formula: selected_rate * federal_credit
+"""
+    cases = [
+        {
+            "name": f"credit in {year}",
+            "period": year,
+            "input": {"federal_credit": 1000},
+            "output": {"credit": expected},
+        }
+        for year, expected in (
+            ("2008", 35),
+            ("2018", 35),
+            ("2019", 50),
+            ("2030", 50),
+            ("2031", 35),
+        )
+    ]
+    environment = completeness_module._constant_rule_environment(
+        yaml.safe_load(content)
+    )
+    assert not completeness_module._source_describes_half(source.split("(2)")[0])
+    assert completeness_module._source_describes_half(
+        "The credit equals one-half of the federal credit."
+    )
+    assert completeness_module._source_worded_percentage_rates(source) == pytest.approx(
+        (0.035, 0.05)
+    )
+    assert [
+        completeness_module._formula_environment_for_case(environment, case)[
+            "selected_rate"
+        ]
+        for case in cases
+    ] == pytest.approx([0.035, 0.035, 0.05, 0.05, 0.035])
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.8",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "formula branch"), result.issues
+
+    wrong_rate = _analyze(
+        content.replace("formula: 0.035", "formula: 0.04", 1),
+        source,
+        corpus_citation_path="us-la/statute/47:297.8",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert _has_issue(wrong_rate, "formula branch", "three and one-half percent")
+
+    wrong_citation = _analyze(
+        content.replace(
+            "corpus_citation_path: us-la/statute/47:297.8\n"
+            "              excerpt: three and one-half percent",
+            "corpus_citation_path: us-wrong/statute/1\n"
+            "              excerpt: three and one-half percent",
+            1,
+        ),
+        source,
+        corpus_citation_path="us-la/statute/47:297.8",
+        test_cases=cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert _has_issue(wrong_citation, "formula branch", "three and one-half percent")
+
+    temporary_only = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:297.8",
+        test_cases=cases[2:4],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert _has_issue(
+        temporary_only,
+        "formula branch",
+        "three and one-half percent",
+        "legally applicable companion-case period",
+    )
+
+
+def test_parameter_alias_resolution_fails_closed_on_cycles_inputs_and_gaps():
+    payload = yaml.safe_load(
+        """\
+rules:
+  - name: cycle_a
+    kind: parameter
+    versions: [{formula: cycle_b}]
+  - name: cycle_b
+    kind: parameter
+    versions: [{formula: cycle_a}]
+  - name: input_alias
+    kind: parameter
+    versions: [{formula: external_input}]
+  - name: hidden_input_alias
+    kind: parameter
+    versions: [{formula: 'if true: bounded_rate else: external_input'}]
+  - name: hidden_input_inverse_alias
+    kind: parameter
+    versions: [{formula: 'if false: external_input else: bounded_rate'}]
+  - name: bounded_rate
+    kind: parameter
+    versions:
+      - effective_from: '2008-01-01'
+        effective_to: '2018-12-31'
+        formula: 0.035
+  - name: bounded_alias
+    kind: parameter
+    versions:
+      - effective_from: '2008-01-01'
+        formula: bounded_rate
+  - name: derived_alias
+    kind: derived
+    versions:
+      - effective_from: '2008-01-01'
+        formula: bounded_rate
+"""
+    )
+
+    environment = completeness_module._constant_rule_environment(payload)
+
+    assert (
+        not {
+            "cycle_a",
+            "cycle_b",
+            "input_alias",
+            "hidden_input_alias",
+            "hidden_input_inverse_alias",
+            "derived_alias",
+        }
+        & environment.keys()
+    )
+    assert completeness_module._formula_environment_for_case(
+        environment,
+        {"period": "2018"},
+    )["bounded_alias"] == pytest.approx(0.035)
+    assert "bounded_alias" not in completeness_module._formula_environment_for_case(
+        environment,
+        {"period": "2019"},
+    )
+
+
+def test_parameter_alias_resolution_is_order_invariant_and_depth_bounded():
+    base = {
+        "name": "base",
+        "kind": "parameter",
+        "versions": [{"formula": 0.035}],
+    }
+
+    def alias_rules(count: int) -> list[dict[str, object]]:
+        return [
+            {
+                "name": f"alias_{index}",
+                "kind": "parameter",
+                "versions": [
+                    {"formula": "base" if index == 1 else f"alias_{index - 1}"}
+                ],
+            }
+            for index in range(1, count + 1)
+        ]
+
+    bounded_aliases = alias_rules(completeness_module._TEMPORAL_WITNESS_NAME_LIMIT)
+    forward = completeness_module._constant_rule_environment(
+        {"rules": [base, *bounded_aliases]}
+    )
+    reverse = completeness_module._constant_rule_environment(
+        {"rules": [base, *reversed(bounded_aliases)]}
+    )
+
+    assert forward == reverse
+    assert forward[f"alias_{len(bounded_aliases)}"] == pytest.approx(0.035)
+
+    over_limit_aliases = alias_rules(
+        completeness_module._TEMPORAL_WITNESS_NAME_LIMIT + 1
+    )
+    over_limit = completeness_module._constant_rule_environment(
+        {"rules": [base, *over_limit_aliases]}
+    )
+
+    assert over_limit == {"base": pytest.approx(0.035)}
 
 
 def test_formula_witness_requires_reached_arithmetic_dependency_assertion():
@@ -22352,6 +22619,38 @@ def test_preposed_reference_reservation_does_not_require_toggle(source: str):
     assert not completeness_module._source_exception_requires_paired_witness(source)
 
 
+def test_resolved_same_subsection_formula_reservation_does_not_require_toggle():
+    source = (
+        "(1) Except as provided in Paragraph (2) of this Subsection, "
+        "the credit equals three and one-half percent of the federal credit."
+    )
+
+    assert not completeness_module._source_exception_requires_paired_witness(
+        source,
+        branch_path=("a", "1"),
+        independently_covered_paths={("a", "2")},
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "(1) Subject to section 999, the credit equals five percent of income.",
+        "(1) Except as provided by 26 U.S.C. 99, the credit equals five percent of income.",
+        (
+            "(1) Except as provided in Paragraph (2) of this Subsection, "
+            "the credit equals five percent of income."
+        ),
+    ],
+)
+def test_unresolved_or_external_formula_reservation_requires_toggle(source: str):
+    assert completeness_module._source_exception_requires_paired_witness(
+        source,
+        branch_path=("a", "1"),
+        independently_covered_paths=set(),
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -22363,6 +22662,10 @@ def test_preposed_reference_reservation_does_not_require_toggle(source: str):
         ("(1) Subject to section 5 and residency restrictions, the credit applies."),
         ("(1) Except as provided in section 5, the credit applies only to residents."),
         "(1) Subject to section 5, the credit applies if income is low.",
+        (
+            "(1) Except as provided in Paragraph (2) of this Subsection, "
+            "if the claimant is resident the credit equals five percent of income."
+        ),
         "(1) Subject to section 5, the credit applies to residents.",
         "(1) Subject to section 5, the credit applies only when married.",
         "(1) Subject to section 5, if eligible the credit applies.",
