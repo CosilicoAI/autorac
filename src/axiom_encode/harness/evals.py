@@ -8152,7 +8152,6 @@ def _rulespec_validation_target(
                 f"identity {identity}"
             )
         validation_file = validation_content_root / relative
-        validation_file.parent.mkdir(parents=True, exist_ok=True)
         if legacy_replacement is not None:
             expected_relative = Path(*legacy_replacement.destination.parts[1:])
             if relative != expected_relative:
@@ -8161,6 +8160,7 @@ def _rulespec_validation_target(
                     "replacement destination"
                 )
             stage_legacy_replacement_overlay(legacy_replacement, overlay_repo)
+        validation_file.parent.mkdir(parents=True, exist_ok=True)
         safe_rulespec_file = validate_explicit_context_file(
             rulespec_file,
             generated_root,

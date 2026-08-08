@@ -125,6 +125,7 @@ from axiom_encode.harness.validator_pipeline import (
 from axiom_encode.legacy_replacement import (
     LegacyReplacementContract,
     LegacyReplacementFile,
+    LegacyReplacementRetainedSuccessor,
     LegacyReplacementRewrite,
 )
 from axiom_encode.repo_routing import find_policy_repo_root, monorepo_checkout_name
@@ -5094,23 +5095,62 @@ def test_rulespec_prevalidation_rejects_live_checkout_artifact(tmp_path):
 
 def test_evaluate_artifact_uses_post_replacement_tree_for_first_compile(tmp_path):
     policy_repo, generated, contract = _unicode_path_replacement_fixture(tmp_path)
+    checkout = policy_repo.parent
+    retained_source = Path("us/statutes/47:297/4.yaml")
+    retained_source_manifest = Path(
+        ".axiom/encoding-manifests/us/statutes/47:297/4.json"
+    )
+    retained_destination = Path("us/statutes/47/297/4.yaml")
+    retained_destination_manifest = Path(
+        ".axiom/encoding-manifests/us/statutes/47/297/4.json"
+    )
+    retained_raw = {
+        retained_source: b"format: rulespec/v1\nrules: []\n",
+        retained_source_manifest: b"legacy manifest\n",
+        retained_destination: b"format: rulespec/v1\nrules: []\n",
+        retained_destination_manifest: b"signed successor manifest\n",
+    }
+    for path, raw in retained_raw.items():
+        target = checkout / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+    def retained_file(path: Path) -> LegacyReplacementFile:
+        raw = retained_raw[path]
+        return LegacyReplacementFile(path, hashlib.sha256(raw).hexdigest(), raw)
+
+    contract = contract._replace(
+        retained_successors=(
+            LegacyReplacementRetainedSuccessor(
+                source=retained_source,
+                destination=retained_destination,
+                legacy_manifest=retained_file(retained_source_manifest),
+                legacy_files=(retained_file(retained_source),),
+                successor_manifest=retained_file(retained_destination_manifest),
+                successor_files=(retained_file(retained_destination),),
+            ),
+        )
+    )
     observed = []
 
-    def reject_non_ascii_checkout(_pipeline, validation_file):
+    def reject_noncanonical_checkout(_pipeline, validation_file):
         checkout = validation_file.parents[3]
         unsafe = [
             path
             for path in checkout.rglob("*")
-            if any(not part.isascii() for part in path.relative_to(checkout).parts)
+            if any(
+                not part.isascii() or ":" in part
+                for part in path.relative_to(checkout).parts
+            )
         ]
         observed.append((validation_file, unsafe))
         return ValidationResult("hard-cut", passed=not unsafe)
 
     with (
         patch.object(
-            ValidatorPipeline, "_run_compile_check", reject_non_ascii_checkout
+            ValidatorPipeline, "_run_compile_check", reject_noncanonical_checkout
         ),
-        patch.object(ValidatorPipeline, "_run_ci", reject_non_ascii_checkout),
+        patch.object(ValidatorPipeline, "_run_ci", reject_noncanonical_checkout),
     ):
         metrics = evaluate_artifact(
             local_corpus_release=_write_test_corpus_provision(tmp_path / "release"),
