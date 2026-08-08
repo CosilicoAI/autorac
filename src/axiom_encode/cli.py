@@ -250,6 +250,7 @@ from .harness.validator_pipeline import (
     _rulespec_resolution_cache_scope,
     _rulespec_rule_formula_rule_records,
     _rulespec_target_is_descendant_of,
+    _safe_load_unique_keys,
     extract_embedded_source_text,
     extract_typed_numeric_occurrences_from_text,
     find_interval_table_reencoding_candidates,
@@ -1074,14 +1075,25 @@ def _format_counter(counter: dict[str, int]) -> str:
 
 
 _MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS = 16
+_MAX_REQUIRED_TEST_CASE_CONTRACTS = 32
+_MAX_REQUIRED_TEST_CASE_FIELDS = 64
 _MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACT_JSON_BYTES = 64 * 1024
 _DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
+_STRUCTURED_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v2"
+
+
+class _RequiredTestCaseContract(NamedTuple):
+    name: str
+    period: dict[str, str]
+    input: dict[str, object]
+    required_output: dict[str, object]
 
 
 class _DeferredOutputReviewContract(NamedTuple):
     citation: str
     rulespec_path: str
     required_deferred_outputs: tuple[tuple[str, str], ...]
+    required_test_cases: tuple[_RequiredTestCaseContract, ...] = ()
 
 
 def _parse_deferred_output_review_contract_json(
@@ -1110,19 +1122,31 @@ def _parse_deferred_output_review_contract_json(
         payload = json.loads(raw, object_pairs_hook=reject_duplicates)
     except argparse.ArgumentTypeError:
         raise
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise argparse.ArgumentTypeError("review contract must be valid JSON") from exc
-    if not isinstance(payload, dict) or set(payload) != {
+    if not isinstance(payload, dict):
+        raise argparse.ArgumentTypeError("review contract must be a JSON object")
+    schema = payload.get("schema")
+    v1_fields = {
         "schema",
         "citation",
         "rulespec_path",
         "required_deferred_outputs",
-    }:
-        raise argparse.ArgumentTypeError(
-            "review contract must contain exactly schema, citation, rulespec_path, "
-            "and required_deferred_outputs"
-        )
-    if payload["schema"] != _DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA:
+    }
+    v2_fields = {*v1_fields, "required_test_cases"}
+    if schema == _DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA:
+        if set(payload) != v1_fields:
+            raise argparse.ArgumentTypeError(
+                "v1 review contract must contain exactly schema, citation, "
+                "rulespec_path, and required_deferred_outputs"
+            )
+    elif schema == _STRUCTURED_REVIEW_CONTRACT_SCHEMA:
+        if set(payload) != v2_fields:
+            raise argparse.ArgumentTypeError(
+                "v2 review contract must contain exactly schema, citation, "
+                "rulespec_path, required_deferred_outputs, and required_test_cases"
+            )
+    else:
         raise argparse.ArgumentTypeError("review contract schema is unsupported")
     citation = payload["citation"]
     rulespec_path = payload["rulespec_path"]
@@ -1150,12 +1174,15 @@ def _parse_deferred_output_review_contract_json(
     payload_contracts = payload["required_deferred_outputs"]
     if (
         not isinstance(payload_contracts, list)
-        or not payload_contracts
         or len(payload_contracts) > _MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS
     ):
         raise argparse.ArgumentTypeError(
-            "review contract required_deferred_outputs must be a nonempty array with "
+            "review contract required_deferred_outputs must be an array with "
             f"at most {_MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS} entries"
+        )
+    if schema == _DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA and not payload_contracts:
+        raise argparse.ArgumentTypeError(
+            "v1 review contract required_deferred_outputs must be a nonempty array"
         )
     contracts: list[tuple[str, str]] = []
     seen_outputs: set[str] = set()
@@ -1189,10 +1216,150 @@ def _parse_deferred_output_review_contract_json(
             )
         seen_outputs.add(output)
         contracts.append((output, reason))
+
+    required_test_cases: list[_RequiredTestCaseContract] = []
+    if schema == _STRUCTURED_REVIEW_CONTRACT_SCHEMA:
+        payload_test_cases = payload["required_test_cases"]
+        if (
+            not isinstance(payload_test_cases, list)
+            or len(payload_test_cases) > _MAX_REQUIRED_TEST_CASE_CONTRACTS
+        ):
+            raise argparse.ArgumentTypeError(
+                "review contract required_test_cases must be an array with at most "
+                f"{_MAX_REQUIRED_TEST_CASE_CONTRACTS} entries"
+            )
+        if not contracts and not payload_test_cases:
+            raise argparse.ArgumentTypeError(
+                "v2 review contract must require a deferred output or test case"
+            )
+        seen_test_names: set[str] = set()
+        for index, item in enumerate(payload_test_cases):
+            label = f"review contract test case #{index + 1}"
+            if not isinstance(item, dict) or set(item) != {
+                "name",
+                "period",
+                "input",
+                "required_output",
+            }:
+                raise argparse.ArgumentTypeError(
+                    f"{label} must contain exactly name, period, input, and "
+                    "required_output"
+                )
+            name = item["name"]
+            if (
+                not isinstance(name, str)
+                or not name
+                or name != name.strip()
+                or "\r" in name
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in name
+                )
+            ):
+                raise argparse.ArgumentTypeError(
+                    f"{label} name must be a nonempty normalized string"
+                )
+            if name in seen_test_names:
+                raise argparse.ArgumentTypeError(
+                    "review contract required test case names must be unique"
+                )
+            seen_test_names.add(name)
+            period = item["period"]
+            period_fields = {"period_kind", "start", "end"}
+            if isinstance(period, dict) and period.get("period_kind") == "custom":
+                period_fields.add("name")
+            if (
+                not isinstance(period, dict)
+                or set(period) != period_fields
+                or any(
+                    not isinstance(value, str)
+                    or not value
+                    or value != value.strip()
+                    or any(
+                        ord(character) < 32 or ord(character) == 127
+                        for character in value
+                    )
+                    for value in period.values()
+                )
+            ):
+                raise argparse.ArgumentTypeError(
+                    f"{label} period must be an exact normalized RuleSpec period "
+                    "mapping"
+                )
+            if period["period_kind"] not in _RULESPEC_ENGINE_PERIOD_KINDS:
+                raise argparse.ArgumentTypeError(
+                    f"{label} period_kind is not supported by the RuleSpec engine"
+                )
+            try:
+                period_start = date.fromisoformat(period["start"])
+                period_end = date.fromisoformat(period["end"])
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(
+                    f"{label} period dates must be ISO dates"
+                ) from exc
+            if period_start > period_end:
+                raise argparse.ArgumentTypeError(
+                    f"{label} period start must not follow end"
+                )
+
+            normalized_fields: dict[str, dict[str, object]] = {}
+            for field in ("input", "required_output"):
+                mapping = item[field]
+                if (
+                    not isinstance(mapping, dict)
+                    or (field == "required_output" and not mapping)
+                    or len(mapping) > _MAX_REQUIRED_TEST_CASE_FIELDS
+                ):
+                    raise argparse.ArgumentTypeError(
+                        f"{label} {field} must be an object with at most "
+                        f"{_MAX_REQUIRED_TEST_CASE_FIELDS} fields"
+                    )
+                normalized: dict[str, object] = {}
+                for key, value in mapping.items():
+                    if (
+                        not isinstance(key, str)
+                        or not key
+                        or key != key.strip()
+                        or any(
+                            ord(character) < 32 or ord(character) == 127
+                            for character in key
+                        )
+                    ):
+                        raise argparse.ArgumentTypeError(
+                            f"{label} {field} keys must be normalized strings"
+                        )
+                    if not isinstance(value, (str, int, float, bool)) or (
+                        isinstance(value, float) and not math.isfinite(value)
+                    ):
+                        raise argparse.ArgumentTypeError(
+                            f"{label} {field} values must be finite JSON scalars"
+                        )
+                    if isinstance(value, str) and (
+                        value != value.strip()
+                        or "\r" in value
+                        or any(
+                            (ord(character) < 32 and character not in {"\n", "\t"})
+                            or ord(character) == 127
+                            for character in value
+                        )
+                    ):
+                        raise argparse.ArgumentTypeError(
+                            f"{label} {field} string values must be normalized"
+                        )
+                    normalized[key] = value
+                normalized_fields[field] = normalized
+            required_test_cases.append(
+                _RequiredTestCaseContract(
+                    name=name,
+                    period=dict(period),
+                    input=normalized_fields["input"],
+                    required_output=normalized_fields["required_output"],
+                )
+            )
     return _DeferredOutputReviewContract(
         citation=citation,
         rulespec_path=rulespec_path,
         required_deferred_outputs=tuple(contracts),
+        required_test_cases=tuple(required_test_cases),
     )
 
 
@@ -1221,8 +1388,8 @@ def _required_deferred_output_contract_issues(
     if binding_issues:
         return binding_issues
     try:
-        payload = yaml.safe_load(output_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        payload = _safe_load_unique_keys(output_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError, RecursionError, ValueError) as exc:
         return [f"required deferred-output contract could not parse YAML: {exc}"]
     module = payload.get("module") if isinstance(payload, dict) else None
     deferred_outputs = (
@@ -1250,6 +1417,101 @@ def _required_deferred_output_contract_issues(
                 f"`{expected_output}` must equal the signed dispatch contract "
                 "byte-for-byte; paraphrase, shortening, reordering, and synonym "
                 "substitution are not permitted"
+            )
+    if not contract.required_test_cases:
+        return issues
+
+    test_file = _rulespec_test_path(output_file)
+    try:
+        test_payload = _safe_load_unique_keys(test_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError, RecursionError, ValueError) as exc:
+        return [*issues, f"required test-case contract could not parse YAML: {exc}"]
+    if isinstance(test_payload, dict) and isinstance(test_payload.get("cases"), list):
+        test_cases = test_payload["cases"]
+    elif isinstance(test_payload, list):
+        test_cases = test_payload
+    else:
+        return [
+            *issues,
+            "required test-case contract expected a companion YAML case array",
+        ]
+
+    def values_equal(actual: object, expected: object) -> bool:
+        return type(actual) is type(expected) and actual == expected
+
+    for required in contract.required_test_cases:
+        matches = [
+            item
+            for item in test_cases
+            if isinstance(item, dict) and item.get("name") == required.name
+        ]
+        if len(matches) != 1:
+            issues.append(
+                "[required-test-case-contract] expected exactly one companion case "
+                f"named {required.name!r}; found {len(matches)}"
+            )
+            continue
+        candidate = matches[0]
+        unsigned_runtime_fields = sorted(
+            field
+            for field in ("tables", "inputs", "oracle_inputs")
+            if field in candidate
+        )
+        if unsigned_runtime_fields:
+            issues.append(
+                "[required-test-case-contract] companion case "
+                f"{required.name!r} contains unsigned runtime input field(s): "
+                + ", ".join(unsigned_runtime_fields)
+            )
+        if candidate.get("period") != required.period:
+            issues.append(
+                "[required-test-case-contract] companion case "
+                f"{required.name!r} period does not exactly match the signed contract"
+            )
+        candidate_input = candidate.get("input")
+        candidate_input_keys = (
+            set(candidate_input) if isinstance(candidate_input, dict) else set()
+        )
+        missing_inputs = sorted(set(required.input) - candidate_input_keys)
+        unexpected_inputs = sorted(candidate_input_keys - set(required.input))
+        changed_inputs = sorted(
+            key
+            for key, expected in required.input.items()
+            if isinstance(candidate_input, dict)
+            and key in candidate_input
+            and not values_equal(candidate_input[key], expected)
+        )
+        if (
+            not isinstance(candidate_input, dict)
+            or missing_inputs
+            or unexpected_inputs
+            or changed_inputs
+        ):
+            details = []
+            if missing_inputs:
+                details.append("missing: " + ", ".join(missing_inputs))
+            if unexpected_inputs:
+                details.append("unexpected: " + ", ".join(unexpected_inputs))
+            if changed_inputs:
+                details.append("changed: " + ", ".join(changed_inputs))
+            issues.append(
+                "[required-test-case-contract] companion case "
+                f"{required.name!r} input map does not exactly match the signed contract"
+                + (f" ({'; '.join(details)})" if details else "")
+            )
+        candidate_output = candidate.get("output")
+        missing_or_changed_outputs = [
+            key
+            for key, expected in required.required_output.items()
+            if not isinstance(candidate_output, dict)
+            or key not in candidate_output
+            or not values_equal(candidate_output[key], expected)
+        ]
+        if missing_or_changed_outputs:
+            issues.append(
+                "[required-test-case-contract] companion case "
+                f"{required.name!r} is missing or changes required output(s): "
+                + ", ".join(missing_or_changed_outputs)
             )
     return issues
 
@@ -27738,6 +28000,19 @@ def _run_encode_attempt(
             if deferred_output_review_contract is not None
             else ()
         ),
+        required_test_case_contracts=(
+            tuple(
+                {
+                    "name": contract.name,
+                    "period": contract.period,
+                    "input": contract.input,
+                    "required_output": contract.required_output,
+                }
+                for contract in deferred_output_review_contract.required_test_cases
+            )
+            if deferred_output_review_contract is not None
+            else ()
+        ),
         required_import_targets=required_import_targets,
         legacy_replacement=(
             replacement_target.legacy_replacement
@@ -51551,10 +51826,33 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
 
     generated_content = output_file.read_text()
     output_test = _rulespec_test_path(output_file)
+    if (
+        deferred_output_review_contract is not None
+        and deferred_output_review_contract.required_test_cases
+        and (output_test.is_symlink() or not output_test.is_file())
+    ):
+        return (
+            False,
+            [
+                f"{relative_output}: structured review contract requires a freshly "
+                "generated regular companion test file"
+            ],
+            {},
+        )
+    if (
+        deferred_output_review_contract is not None
+        and deferred_output_review_contract.required_test_cases
+        and output_test.stat().st_size > VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES
+    ):
+        return (
+            False,
+            [f"{relative_output}: generated companion test file exceeds size limit"],
+            {},
+        )
     generated_test_cases: Any | None = None
     if output_test.exists():
         try:
-            loaded_tests = yaml.safe_load(output_test.read_text())
+            loaded_tests = _safe_load_unique_keys(output_test.read_text())
         except (yaml.YAMLError, ValueError):
             loaded_tests = None
         if isinstance(loaded_tests, dict) and isinstance(

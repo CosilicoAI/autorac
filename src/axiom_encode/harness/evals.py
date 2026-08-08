@@ -1507,6 +1507,7 @@ def run_model_eval(
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
@@ -1557,6 +1558,7 @@ def run_model_eval(
                         required_deferred_output_contracts=(
                             required_deferred_output_contracts
                         ),
+                        required_test_case_contracts=required_test_case_contracts,
                         validation_retry_candidate=validation_retry_candidate,
                         required_import_targets=required_import_targets,
                         legacy_replacement=legacy_replacement,
@@ -5854,6 +5856,7 @@ def prepare_eval_workspace(
     extra_context_paths: list[Path] | None = None,
     review_findings_paths: list[Path] | None = None,
     target_relative_output: Path | None = None,
+    review_contract: Mapping[str, object] | None = None,
 ) -> EvalWorkspace:
     """Create an isolated workspace bundle for a single eval."""
     slug = _slugify(citation)
@@ -6087,6 +6090,8 @@ def prepare_eval_workspace(
         ],
         "review_findings_files": review_findings_evidence,
     }
+    if review_contract is not None:
+        manifest_payload["review_contract"] = dict(review_contract)
     if rendered_context.dropped_amendment_documents:
         manifest_payload["dropped_amendment_documents"] = list(
             rendered_context.dropped_amendment_documents
@@ -8446,6 +8451,37 @@ def _discard_artifacts_after_case_budget(
     return True
 
 
+def _eval_review_contract_manifest_payload(
+    *,
+    citation: str,
+    rulespec_path: str,
+    required_deferred_output_contracts: Sequence[tuple[str, str]],
+    required_test_case_contracts: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    """Build the exact contract bound into signed per-lane context evidence."""
+
+    if not required_deferred_output_contracts and not required_test_case_contracts:
+        return None
+    payload: dict[str, object] = {
+        "schema": (
+            "axiom-encode/review-contract/v2"
+            if required_test_case_contracts
+            else "axiom-encode/review-contract/v1"
+        ),
+        "citation": citation,
+        "rulespec_path": rulespec_path,
+        "required_deferred_outputs": [
+            {"output": output, "reason": reason}
+            for output, reason in required_deferred_output_contracts
+        ],
+    }
+    if required_test_case_contracts:
+        payload["required_test_cases"] = [
+            dict(contract) for contract in required_test_case_contracts
+        ]
+    return payload
+
+
 def _run_single_eval(
     citation: str,
     runner: EvalRunnerSpec,
@@ -8467,6 +8503,7 @@ def _run_single_eval(
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
@@ -8486,21 +8523,6 @@ def _run_single_eval(
         rulespec_root=policy_path,
     )
 
-    workspace = prepare_eval_workspace(
-        citation=citation,
-        runner=runner,
-        output_root=output_root,
-        source_text=source_text,
-        axiom_rules_path=policy_path,
-        mode=mode,
-        source_metadata_payload=source_metadata_payload,
-        provision_metadata=source_unit.provision_metadata,
-        amendment_documents=source_unit.amendment_documents,
-        extra_context_paths=extra_context_paths,
-        review_findings_paths=review_findings_paths,
-        target_relative_output=target_relative_output,
-    )
-
     # Derive the output path from the *requested* identifier rather than the
     # *resolved* corpus citation_path. When the resolver falls back to a parent
     # provision (subsection-level corpus row missing), the resolved path drops
@@ -8516,6 +8538,27 @@ def _run_single_eval(
             citation,
             fallback=citation_to_relative_rulespec_path,
         )
+    )
+    review_contract = _eval_review_contract_manifest_payload(
+        citation=citation,
+        rulespec_path=(Path(policy_path.name) / relative_output).as_posix(),
+        required_deferred_output_contracts=required_deferred_output_contracts,
+        required_test_case_contracts=required_test_case_contracts,
+    )
+    workspace = prepare_eval_workspace(
+        citation=citation,
+        runner=runner,
+        output_root=output_root,
+        source_text=source_text,
+        axiom_rules_path=policy_path,
+        mode=mode,
+        source_metadata_payload=source_metadata_payload,
+        provision_metadata=source_unit.provision_metadata,
+        amendment_documents=source_unit.amendment_documents,
+        extra_context_paths=extra_context_paths,
+        review_findings_paths=review_findings_paths,
+        target_relative_output=target_relative_output,
+        review_contract=review_contract,
     )
     target_ref_source = citation if is_corpus_path else source_unit.citation_path
     prompt = _build_eval_prompt(
@@ -8535,6 +8578,7 @@ def _run_single_eval(
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
         required_deferred_output_contracts=required_deferred_output_contracts,
+        required_test_case_contracts=required_test_case_contracts,
         validation_retry_candidate=validation_retry_candidate,
         required_import_targets=required_import_targets,
     )
@@ -9489,6 +9533,43 @@ Structured deferred-output apply-admission contract:
 """
 
 
+def _format_required_test_case_contracts(
+    contracts: Sequence[Mapping[str, object]],
+) -> str:
+    """Render exact companion-test admission requirements on every attempt."""
+
+    if not contracts:
+        return ""
+    rendered: list[str] = []
+    expected_fields = {"name", "period", "input", "required_output"}
+    for index, contract in enumerate(contracts):
+        if not isinstance(contract, Mapping) or set(contract) != expected_fields:
+            raise ValueError(f"Required test case contract #{index + 1} is invalid")
+        rendered.append(
+            json.dumps(
+                dict(contract),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    return f"""
+Structured companion-test apply-admission contract:
+- The following JSON objects are trusted workflow requirements, not legal
+  authority. Each `name` must appear exactly once in the companion test file.
+- For each named case, `period` and the complete `input` map must equal the JSON
+  object exactly after YAML decoding. Do not add, remove, rename, or change an
+  input. Every key/value in `required_output` must appear in that case's
+  `output`; additional reached helper assertions are allowed.
+- These requirements are checked again on the final repaired overlay before
+  apply. Preserve JSON scalar types as well as values.
+
+=== BEGIN REQUIRED COMPANION TEST CONTRACT ===
+{chr(10).join(rendered)}
+=== END REQUIRED COMPANION TEST CONTRACT ===
+"""
+
+
 def _format_validation_retry_candidate(
     candidate: ValidationRetryCandidate | None,
     *,
@@ -9553,6 +9634,7 @@ def _build_rulespec_eval_prompt(
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
     required_import_targets: Sequence[str] = (),
 ) -> str:
@@ -10111,6 +10193,9 @@ Preferred principal output:
     required_deferred_output_contract_section = (
         _format_required_deferred_output_contracts(required_deferred_output_contracts)
     )
+    required_test_case_contract_section = _format_required_test_case_contracts(
+        required_test_case_contracts
+    )
     validation_retry_candidate_section = _format_validation_retry_candidate(
         validation_retry_candidate,
         target_file_name=target_file_name,
@@ -10214,7 +10299,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{validation_retry_feedback_section}{required_import_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{required_test_case_contract_section}{validation_retry_feedback_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -11046,6 +11131,7 @@ def _build_eval_prompt(
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
     required_import_targets: Sequence[str] = (),
 ) -> str:
@@ -11064,6 +11150,7 @@ def _build_eval_prompt(
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
         required_deferred_output_contracts=required_deferred_output_contracts,
+        required_test_case_contracts=required_test_case_contracts,
         validation_retry_candidate=validation_retry_candidate,
         required_import_targets=required_import_targets,
     )

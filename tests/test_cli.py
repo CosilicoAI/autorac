@@ -162,6 +162,7 @@ from axiom_encode.cli import (
     _require_clean_axiom_encode_git_provenance,
     _required_deferred_output_contract_issues,
     _required_generated_import_issues,
+    _RequiredTestCaseContract,
     _resolve_applied_manifest_placement,
     _resolve_encode_replacement_target,
     _resolve_explicit_policy_repo_for_corpus_source,
@@ -13042,6 +13043,111 @@ class TestCmdEncode:
             call.kwargs["required_deferred_output_contracts"]
             for call in mock_run.call_args_list
         ] == [contract.required_deferred_outputs] * 2
+
+    def test_encode_structured_contract_retries_before_apply(self, tmp_path):
+        output = "us:statutes/26/1/j/2#standard_deduction"
+        input_key = "us:statutes/26/1/j/2#input.single_status"
+        required_case = _RequiredTestCaseContract(
+            name="exact 2025 case",
+            period={
+                "period_kind": "tax_year",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+            },
+            input={input_key: True},
+            required_output={output: 12500},
+        )
+        contract = _DeferredOutputReviewContract(
+            citation="26 USC 1(j)(2)",
+            rulespec_path="us/statutes/26/1/j/2.yaml",
+            required_deferred_outputs=(),
+            required_test_cases=(required_case,),
+        )
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            review_contract_json=contract,
+        )
+        generated_attempts = 0
+        apply_counts_at_validation: list[int] = []
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            if generated_attempts == 2:
+                assert any(
+                    "input map does not exactly match" in item
+                    for item in kwargs["validation_retry_feedback"]
+                )
+                assert kwargs["validation_retry_candidate"] is not None
+            result = self._make_eval_result(True)
+            result.runner = f"codex-{kwargs['runner_specs'][0].split(':', 1)[1]}"
+            result.model = kwargs["runner_specs"][0].split(":", 1)[1]
+            result.generation_prompt_sha256 = f"prompt-{generated_attempts}"
+            generated = args.output / result.runner / "statutes/26/1/j/2.yaml"
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("format: rulespec/v1\nmodule: {}\nrules: []\n")
+            candidate_input = {input_key: True}
+            if generated_attempts == 1:
+                candidate_input[f"{input_key}.unsigned_prior_year"] = 0
+            generated.with_suffix(".test.yaml").write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": required_case.name,
+                            "period": required_case.period,
+                            "input": candidate_input,
+                            "output": {output: 12500},
+                        }
+                    ]
+                )
+            )
+            result.output_file = str(generated)
+            return [result]
+
+        def validate(result, **_kwargs):
+            apply_counts_at_validation.append(mock_apply.call_count)
+            issues = _required_deferred_output_contract_issues(
+                Path(result.output_file),
+                contract,
+                citation=contract.citation,
+                rulespec_path=contract.rulespec_path,
+            )
+            return not issues, issues, {}
+
+        applied_file = args.policy_repo_path / contract.rulespec_path
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as mock_run,
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                side_effect=validate,
+            ),
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                return_value=[applied_file],
+            ) as mock_apply,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert apply_counts_at_validation == [0, 0]
+        mock_apply.assert_called_once()
+        expected_case = {
+            "name": required_case.name,
+            "period": required_case.period,
+            "input": required_case.input,
+            "required_output": required_case.required_output,
+        }
+        assert [
+            call.kwargs["required_test_case_contracts"]
+            for call in mock_run.call_args_list
+        ] == [(expected_case,)] * 2
 
     def test_encode_retry_feedback_includes_actionable_ci_issue(self):
         import axiom_encode.cli as cli_module
@@ -40925,6 +41031,71 @@ rules:
         assert issues == []
         assert supplemental == {}
         record_snapshot.assert_called_once()
+
+    def test_apply_overlay_structured_contract_requires_generated_companion(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-la"
+        target = policy_repo / "statutes/47/294.yaml"
+        baseline_companion = target.with_name("294.test.yaml")
+        generated = output_root / "codex-test-model/statutes/47/294.yaml"
+        target.parent.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        target.write_text("format: rulespec/v1\nrules: []\n")
+        baseline_companion.write_text(
+            "- name: exact case\n"
+            "  period: {period_kind: tax_year, start: '2025-01-01', "
+            "end: '2025-12-31'}\n"
+            "  input: {}\n"
+            "  output: {us-la:statutes/47/294#deduction: 12500}\n"
+        )
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+            citation="us-la/statute/47:294",
+        )
+        contract = _DeferredOutputReviewContract(
+            citation="us-la/statute/47:294",
+            rulespec_path="us-la/statutes/47/294.yaml",
+            required_deferred_outputs=(),
+            required_test_cases=(
+                _RequiredTestCaseContract(
+                    name="exact case",
+                    period={
+                        "period_kind": "tax_year",
+                        "start": "2025-01-01",
+                        "end": "2025-12-31",
+                    },
+                    input={},
+                    required_output={
+                        "us-la:statutes/47/294#deduction": 12500,
+                    },
+                ),
+            ),
+        )
+
+        with patch(
+            "axiom_encode.cli._record_successful_apply_validation"
+        ) as record_snapshot:
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+                deferred_output_review_contract=contract,
+            )
+
+        assert ok is False
+        assert supplemental == {}
+        assert len(issues) == 1
+        assert "freshly generated regular companion" in issues[0]
+        record_snapshot.assert_not_called()
 
     def test_apply_overlay_reads_source_metadata_from_explicit_context_manifest(
         self, tmp_path

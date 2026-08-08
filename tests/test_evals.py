@@ -62,6 +62,7 @@ from axiom_encode.harness.evals import (
     _context_file_executable_surfaces,
     _context_import_target,
     _eval_result_from_payload,
+    _eval_review_contract_manifest_payload,
     _eval_suite_execution_identity_sha256,
     _eval_suite_rulespec_roots,
     _evaluate_generated_artifact_with_repairs,
@@ -6127,6 +6128,46 @@ def test_review_findings_are_persisted_and_mandatory_in_prompt(tmp_path):
     assert persisted.read_text() == expected
     assert evidence["content"] == expected
     assert evidence["sha256"] == hashlib.sha256(expected.encode()).hexdigest()
+
+
+def test_structured_review_contract_is_bound_into_context_manifest(tmp_path):
+    policy_repo_root = _canonical_rulespec_content_root(tmp_path, "us")
+    required_case = {
+        "name": "exact case",
+        "period": {
+            "period_kind": "tax_year",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+        },
+        "input": {"us:statutes/26/1#input.single": True},
+        "required_output": {"us:statutes/26/1#deduction": 12500},
+    }
+    contract = _eval_review_contract_manifest_payload(
+        citation="us/statute/26/1",
+        rulespec_path="us/statutes/26/1.yaml",
+        required_deferred_output_contracts=(("missing#output", "exact reason"),),
+        required_test_case_contracts=(required_case,),
+    )
+    workspace = prepare_eval_workspace(
+        citation="us/statute/26/1",
+        runner=parse_runner_spec("codex:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Source text.",
+        axiom_rules_path=policy_repo_root,
+        mode="cold",
+        review_contract=contract,
+    )
+
+    manifest = json.loads(workspace.manifest_file.read_text())
+    assert manifest["review_contract"] == {
+        "schema": "axiom-encode/review-contract/v2",
+        "citation": "us/statute/26/1",
+        "rulespec_path": "us/statutes/26/1.yaml",
+        "required_deferred_outputs": [
+            {"output": "missing#output", "reason": "exact reason"}
+        ],
+        "required_test_cases": [required_case],
+    }
 
 
 def test_review_findings_reject_empty_file(tmp_path):

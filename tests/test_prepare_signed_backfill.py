@@ -20,6 +20,7 @@ from scripts.prepare_signed_backfill import (
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
+    _normalize_required_test_cases,
     authorize_legacy_index_manifest_shrink,
     authorized_changed_paths,
     branch_name,
@@ -176,6 +177,7 @@ def test_authorize_legacy_index_manifest_shrink_rejects_malformed_embedded_path(
 def test_split_atomic_source_input_preserves_legacy_source_array() -> None:
     assert split_atomic_source_input('["us-ri/statute/44-30-1"]') == {
         "canonical_refresh_bundle": [],
+        "primary_required_test_cases": [],
         "source_bundle": ["us-ri/statute/44-30-1"],
     }
 
@@ -190,8 +192,52 @@ def test_split_atomic_source_input_selects_canonical_refresh_mode() -> None:
         json.dumps({"canonical_refresh_bundle": [addition]})
     ) == {
         "canonical_refresh_bundle": [addition],
+        "primary_required_test_cases": [],
         "source_bundle": [],
     }
+
+
+def test_split_atomic_source_input_selects_v2_structured_refresh_mode() -> None:
+    required_case = {
+        "name": "2025 single",
+        "period": {
+            "period_kind": "tax_year",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+        },
+        "input": {},
+        "required_output": {"us-la:statutes/47/294#deduction": 12500},
+    }
+    payload = {
+        "schema": "axiom-encode/atomic-source-transaction/v2",
+        "source_bundle": [],
+        "canonical_refresh_bundle": [],
+        "primary_required_test_cases": [required_case],
+    }
+
+    assert split_atomic_source_input(json.dumps(payload)) == {
+        "canonical_refresh_bundle": [],
+        "primary_required_test_cases": [required_case],
+        "source_bundle": [],
+    }
+
+
+@pytest.mark.parametrize("period_kind", ["month", "benefit_week"])
+def test_required_test_case_normalization_accepts_engine_period_kinds(
+    period_kind: str,
+) -> None:
+    case = {
+        "name": f"exact {period_kind}",
+        "period": {
+            "period_kind": period_kind,
+            "start": "2025-01-01",
+            "end": "2025-01-31",
+        },
+        "input": {},
+        "required_output": {"us-la:statutes/47/294#amount": 1},
+    }
+
+    assert _normalize_required_test_cases([case], label="test") == (case,)
 
 
 @pytest.mark.parametrize(
@@ -231,7 +277,8 @@ def test_split_atomic_source_input_cli_emits_normalized_object(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == (
-        '{"canonical_refresh_bundle":[],"source_bundle":["us-ri/statute/44-30-1"]}\n'
+        '{"canonical_refresh_bundle":[],"primary_required_test_cases":[],'
+        '"source_bundle":["us-ri/statute/44-30-1"]}\n'
     )
 
 
@@ -569,6 +616,7 @@ def test_parse_canonical_refresh_bundle_accepts_tracked_canonical_targets(
             "manifest_sha256",
             "review_finding",
             "deferred_output_contracts",
+            "required_test_cases",
         }
         for item in inventory
     )
@@ -747,7 +795,51 @@ def test_parse_canonical_refresh_bundle_preserves_deferred_output_contracts(
     )
 
     assert inventory[0]["deferred_output_contracts"] == []
+    assert inventory[0]["required_test_cases"] == []
     assert inventory[1]["deferred_output_contracts"] == contracts
+    assert inventory[1]["required_test_cases"] == []
+
+
+def test_parse_canonical_refresh_bundle_preserves_primary_required_test_cases(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    cases = [
+        {
+            "name": "2025 single",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+            },
+            "input": {
+                "us-la:statutes/47/294#input.single": True,
+                "us-la:statutes/47/294#input.joint": False,
+            },
+            "required_output": {
+                "us-la:statutes/47/294#standard_deduction": 12500,
+            },
+        }
+    ]
+
+    inventory = parse_canonical_refresh_bundle(
+        repo,
+        '[{"citation":"us-la/statute/47:295",'
+        '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+        primary_required_test_cases_json=json.dumps(cases),
+    )
+
+    assert inventory[0]["required_test_cases"] == cases
+    assert inventory[1]["required_test_cases"] == []
+    assert (
+        verify_canonical_refresh_target(
+            repo,
+            json.dumps(inventory[0]),
+        )["required_test_cases"]
+        == cases
+    )
 
 
 def test_parse_canonical_refresh_bundle_rejects_duplicate_contract_outputs(
