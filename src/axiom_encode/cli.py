@@ -214,6 +214,7 @@ from .harness.proof_validator import (
     MoneyAtomRatchet,
     ProofValidationResult,
     _rule_source_subsection_scope,
+    _source_contains_proof_evidence,
     emit_money_atom_ratchet,
     evaluate_money_atoms,
     find_noncanonical_corpus_citation_path_issues,
@@ -297,6 +298,9 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     RECEIPT_SCHEMA_V4 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+)
+from .legacy_replacement import (
+    RECEIPT_SCHEMA_V5 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
 )
 from .legacy_replacement import (
     RETAINED_SUCCESSOR_TOOL as APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
@@ -2328,6 +2332,16 @@ def main():
         type=Path,
         required=True,
         help="Exact canonical rulespec-<country> checkout",
+    )
+    manifest_census_parser.add_argument(
+        "--corpus-path",
+        type=Path,
+        default=None,
+        help=(
+            "Canonical axiom-corpus checkout bound by the RuleSpec toolchain; "
+            "required to census manifests backed by signed-v6 exact-dependent "
+            "replacement receipts"
+        ),
     )
     _add_expected_encoder_checkout_argument(manifest_census_parser)
     manifest_census_parser.add_argument(
@@ -7440,6 +7454,7 @@ def _scheduled_dependent_manifest_issue(
     signing_broker: SigningBroker | Ed25519PublicKey,
     expected_waiver_set_sha256: str,
     expected_encoder_identity: Mapping[str, str],
+    local_corpus_release: LocalCorpusRelease | None = None,
 ) -> str | None:
     """Fully verify the fresh v5 manifest that resolves one scheduled group."""
 
@@ -7468,6 +7483,7 @@ def _scheduled_dependent_manifest_issue(
             signing_broker=signing_broker,
             expected_waiver_set_sha256=expected_waiver_set_sha256,
             expected_encoder_identity=expected_encoder_identity,
+            local_corpus_release=local_corpus_release,
         )
     )
     if verified is None or issues:
@@ -8536,7 +8552,11 @@ def _legacy_replacement_reference_inventory_issues(
     return issues
 
 
-def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
+def _legacy_replacement_pending_paths(
+    repo_path: Path,
+    *,
+    local_corpus_release: LocalCorpusRelease | None = None,
+) -> list[str]:
     """Return signed-replacement scheduled files still at their bound base bytes."""
 
     pending: list[str] = []
@@ -8649,6 +8669,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -8713,6 +8734,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
         if receipt.get("schema_version") in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         } and _legacy_destination_predecessor_issues(
             repo_path,
@@ -8857,6 +8879,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
                     payload.get(VALIDATION_WAIVER_SET_SHA256_FIELD) or ""
                 ),
                 expected_encoder_identity=expected_encoder_identity,
+                local_corpus_release=local_corpus_release,
             )
             if manifest_issue:
                 pending.append(f"invalid:{primary}")
@@ -8892,6 +8915,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -8907,6 +8931,7 @@ def _manifest_census(
     *,
     roots: tuple[str, ...],
     expected_encoder_checkout: Path | None = None,
+    local_corpus_release: LocalCorpusRelease | None = None,
 ) -> dict[str, object]:
     """Compute model-generated and unmanifested rule-file counts.
 
@@ -8918,7 +8943,10 @@ def _manifest_census(
     rule file.
     """
     repo_path = _resolve_canonical_rulespec_checkout(repo_path)
-    pending_legacy = _legacy_replacement_pending_paths(repo_path)
+    pending_legacy = _legacy_replacement_pending_paths(
+        repo_path,
+        local_corpus_release=local_corpus_release,
+    )
     if pending_legacy:
         raise RuntimeError(
             "manifest census is unavailable while a signed legacy replacement "
@@ -8942,6 +8970,7 @@ def _manifest_census(
             repo_path,
             surviving,
             roots=roots,
+            local_corpus_release=local_corpus_release,
             expected_encoder_identity=expected_encoder_identity,
             path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
@@ -8949,6 +8978,7 @@ def _manifest_census(
             repo_path,
             surviving,
             roots=roots,
+            local_corpus_release=local_corpus_release,
             expected_encoder_identity=expected_encoder_identity,
             path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
         )
@@ -9014,10 +9044,17 @@ def cmd_manifest_census(args):
         label="RuleSpec checkout",
     )
     roots = tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS))
+    corpus_path = args.corpus_path
+    local_corpus_release = (
+        load_rulespec_local_corpus_release(repo_path, Path(corpus_path))
+        if corpus_path is not None
+        else None
+    )
     census = _manifest_census(
         repo_path,
         roots=roots,
         expected_encoder_checkout=getattr(args, "expected_encoder_checkout", None),
+        local_corpus_release=local_corpus_release,
     )
     census["captured_at"] = (
         datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -12722,6 +12759,7 @@ def _applied_manifest_paths_for_files(
     repo_path: Path,
     *,
     relative_files: set[str],
+    local_corpus_release: LocalCorpusRelease | None = None,
 ) -> set[str]:
     manifest_paths: set[str] = set()
     if not relative_files:
@@ -12736,6 +12774,7 @@ def _applied_manifest_paths_for_files(
             _load_verified_applied_encoding_manifest_payload(
                 repo_path,
                 relative_manifest_path,
+                local_corpus_release=local_corpus_release,
                 expected_encoder_identity=expected_encoder_identity,
                 path_migration_receipt_proof_cache=(path_migration_receipt_proof_cache),
             )
@@ -13210,8 +13249,16 @@ def _ensure_no_unmanifested_preexisting_rulespec_changes(
     if not dirty_targets:
         return
 
+    local_corpus_release = load_rulespec_local_corpus_release(
+        repo_path,
+        corpus_path,
+    )
     relevant_manifest_paths.update(
-        _applied_manifest_paths_for_files(repo_path, relative_files=dirty_targets)
+        _applied_manifest_paths_for_files(
+            repo_path,
+            relative_files=dirty_targets,
+            local_corpus_release=local_corpus_release,
+        )
     )
     changed_metadata_paths = {
         path
@@ -22937,6 +22984,7 @@ def _legacy_replacement_manifest_issues(
     ]
     if receipt_schema in {
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
     }:
         identity_deleted_files.extend(
@@ -22988,6 +23036,7 @@ def _legacy_replacement_manifest_issues(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -22998,6 +23047,7 @@ def _legacy_replacement_manifest_issues(
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23012,6 +23062,7 @@ def _legacy_replacement_manifest_issues(
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23025,6 +23076,7 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -23034,6 +23086,7 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23054,6 +23107,7 @@ def _legacy_replacement_manifest_issues(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -23155,6 +23209,7 @@ def _legacy_replacement_manifest_issues(
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23168,6 +23223,7 @@ def _legacy_replacement_manifest_issues(
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23177,6 +23233,7 @@ def _legacy_replacement_manifest_issues(
                 if receipt_schema
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23221,6 +23278,7 @@ def _legacy_replacement_manifest_issues(
     if receipt_schema in {
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
     }:
         issues.extend(
@@ -23519,7 +23577,10 @@ def _legacy_replacement_manifest_issues(
             "live_files",
             "rewrites",
         }
-        if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        if receipt_schema in {
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+        }:
             expected_dependent_fields.add("source_verification_migration")
         if (
             not isinstance(dependent, dict)
@@ -23534,7 +23595,11 @@ def _legacy_replacement_manifest_issues(
             continue
         receipt_source_verification_migration = (
             dependent.get("source_verification_migration")
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             else None
         )
         if receipt_source_verification_migration is not None and (
@@ -23706,13 +23771,39 @@ def _legacy_replacement_manifest_issues(
                     base_raw, authoritative_replacements
                 )
                 source_verification_migration = None
+                if path == primary_path and receipt_schema in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }:
+                    rewritten, source_verification_migration = (
+                        _migrate_legacy_exact_dependent_source_verification(rewritten)
+                    )
+                proof_excerpt_reanchors: tuple[dict[str, object], ...] = ()
                 if (
                     path == primary_path
                     and receipt_schema
                     == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
                 ):
-                    rewritten, source_verification_migration = (
-                        _migrate_legacy_exact_dependent_source_verification(rewritten)
+                    receipt_rewrite = rewrite_by_path.get(path)
+                    raw_reanchors = (
+                        receipt_rewrite.get("proof_excerpt_reanchors")
+                        if isinstance(receipt_rewrite, dict)
+                        else None
+                    )
+                    if local_corpus_release is None:
+                        raise ValueError(
+                            "v6 exact dependent proof-excerpt verification requires "
+                            "the authenticated signed corpus"
+                        )
+                    if not isinstance(raw_reanchors, list):
+                        raise ValueError(
+                            "v6 exact dependent lacks proof-excerpt replay evidence"
+                        )
+                    rewritten, proof_excerpt_reanchors = (
+                        _reanchor_legacy_exact_dependent_proof_excerpts(
+                            rewritten,
+                            corpus_release=local_corpus_release,
+                        )
                     )
                 proof_import_repairs = 0
                 if path == primary_path:
@@ -23825,20 +23916,28 @@ def _legacy_replacement_manifest_issues(
             if counts:
                 expected_rewrite_paths.add(path)
                 rewrite = rewrite_by_path.get(path)
+                expected_rewrite_fields = {
+                    "path",
+                    "before_sha256",
+                    "after_sha256",
+                    "replacements",
+                    "proof_import_repairs",
+                }
+                if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+                    expected_rewrite_fields.add("proof_excerpt_reanchors")
                 if (
                     not isinstance(rewrite, dict)
-                    or set(rewrite)
-                    != {
-                        "path",
-                        "before_sha256",
-                        "after_sha256",
-                        "replacements",
-                        "proof_import_repairs",
-                    }
+                    or set(rewrite) != expected_rewrite_fields
                     or rewrite.get("before_sha256") != before_sha256
                     or rewrite.get("after_sha256") != after_sha256
                     or rewrite.get("replacements") != list(counts)
                     or rewrite.get("proof_import_repairs") != proof_import_repairs
+                    or (
+                        receipt_schema
+                        == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+                        and rewrite.get("proof_excerpt_reanchors")
+                        != list(proof_excerpt_reanchors)
+                    )
                     or not isinstance(
                         rewrite.get("proof_import_repairs"),
                         int,
@@ -23857,7 +23956,11 @@ def _legacy_replacement_manifest_issues(
                 f"{manifest_label} exact dependent rewrite inventory is not exact"
             )
         if (
-            receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             and receipt_source_verification_migration is not None
             and primary_path not in expected_rewrite_paths
         ):
@@ -24418,6 +24521,7 @@ def _legacy_exact_dependent_manifest_issues(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -24588,6 +24692,7 @@ def _legacy_retained_successor_manifest_issues(
         or receipt.get("schema_version")
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -27377,6 +27482,7 @@ def _resolve_legacy_replacement_contract(
         )
         rewritten, counts = rewrite_exact_references(raw, replacements)
         _source_verification_migration = None
+        proof_excerpt_reanchors: tuple[dict[str, object], ...] = ()
         dependent_primary = dependent_owner.get(relative)
         if (
             dependent_primary is not None
@@ -27388,9 +27494,16 @@ def _resolve_legacy_replacement_contract(
                 rewritten, _source_verification_migration = (
                     _migrate_legacy_exact_dependent_source_verification(rewritten)
                 )
+                rewritten, proof_excerpt_reanchors = (
+                    _reanchor_legacy_exact_dependent_proof_excerpts(
+                        rewritten,
+                        corpus_release=corpus_release,
+                    )
+                )
             except ValueError as exc:
                 raise ValueError(
-                    "legacy exact dependent source verification cannot be migrated "
+                    "legacy exact dependent source verification and proof evidence "
+                    "cannot be migrated "
                     f"safely for {relative}: {exc}"
                 ) from exc
         if not counts:
@@ -27421,6 +27534,7 @@ def _resolve_legacy_replacement_contract(
                             hashlib.sha256(rewritten).hexdigest(),
                             counts,
                             rewritten,
+                            proof_excerpt_reanchors=proof_excerpt_reanchors,
                         )
                     )
                 else:
@@ -37435,6 +37549,297 @@ def _try_repair_generated_nonexact_proof_excerpts(
     if not _install_generated_yaml_payload(rules_file, payload):
         return []
     return repaired
+
+
+def _reanchor_legacy_exact_dependent_proof_excerpts(
+    raw: bytes,
+    *,
+    corpus_release: LocalCorpusRelease,
+) -> tuple[bytes, tuple[dict[str, object], ...]]:
+    """Surgically bind stale exact-dependent excerpts to signed corpus text."""
+
+    try:
+        text = raw.decode("utf-8")
+        payload = yaml.safe_load(text) or {}
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError(
+            "legacy exact dependent proof excerpts are not valid UTF-8 YAML"
+        ) from exc
+    if not isinstance(payload, dict):
+        return raw, ()
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        return raw, ()
+
+    reanchors: list[dict[str, object]] = []
+    source_bodies: dict[str, str | None] = {}
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        rule_name = str(rule.get("name") or "").strip()
+        atoms = _proof_atoms_from_rule(rule)
+        if not isinstance(atoms, list):
+            continue
+        for atom_index, atom in enumerate(atoms):
+            if not isinstance(atom, dict):
+                continue
+            source = atom.get("source")
+            if not isinstance(source, dict):
+                continue
+            excerpt = source.get("excerpt")
+            citation_path = str(source.get("corpus_citation_path") or "").strip()
+            if not isinstance(excerpt, str) or not excerpt.strip():
+                continue
+            if not citation_path:
+                raise ValueError(
+                    "legacy exact dependent proof excerpt has no corpus citation: "
+                    f"{rule_name}[{atom_index}]"
+                )
+            if citation_path not in source_bodies:
+                source_bodies[citation_path] = _local_corpus_body_for_corpus_path(
+                    citation_path,
+                    corpus_release=corpus_release,
+                )
+            source_body = source_bodies[citation_path]
+            if source_body is None:
+                raise ValueError(
+                    "legacy exact dependent proof excerpt source is absent from the "
+                    f"signed corpus: {rule_name}[{atom_index}]: {citation_path}"
+                )
+            source_has_excerpt = _source_contains_proof_evidence(
+                source_text=source_body,
+                evidence_text=excerpt.strip(),
+            )
+            evidence_body = source_body
+            rule_source = rule.get("source")
+            if _rule_source_subsection_scope(rule_source):
+                scoped_body = _declared_rule_subsection_source_text(
+                    source_body,
+                    rule_source=rule_source,
+                )
+                if scoped_body is not None:
+                    evidence_body = scoped_body
+                elif source_has_excerpt:
+                    continue
+                else:
+                    raise ValueError(
+                        "legacy exact dependent proof excerpt declared subsection "
+                        f"is absent: {rule_name}[{atom_index}]: {citation_path}"
+                    )
+            if _source_contains_proof_evidence(
+                source_text=evidence_body,
+                evidence_text=excerpt.strip(),
+            ):
+                continue
+            query_excerpt = _legacy_exact_dependent_reanchor_query(
+                excerpt,
+                rule_source=rule.get("source"),
+                numeric_profile=_numeric_profile_for_citation_path(citation_path),
+            )
+            if query_excerpt is None:
+                raise ValueError(
+                    "legacy exact dependent proof excerpt contains an ambiguous "
+                    f"ellipsis: {rule_name}[{atom_index}]: {citation_path}"
+                )
+            exact_excerpt = _closest_exact_source_excerpt(
+                source_text=evidence_body,
+                excerpt=query_excerpt,
+                numeric_profile=_numeric_profile_for_citation_path(citation_path),
+                require_all_query_numbers=True,
+            )
+            if exact_excerpt is None or not _source_contains_proof_evidence(
+                source_text=evidence_body,
+                evidence_text=exact_excerpt,
+            ):
+                raise ValueError(
+                    "legacy exact dependent proof excerpt cannot be reanchored "
+                    f"unambiguously: {rule_name}[{atom_index}]: {citation_path}"
+                )
+            reanchors.append(
+                {
+                    "rule": rule_name,
+                    "atom_index": atom_index,
+                    "field": "excerpt",
+                    "corpus_citation_path": citation_path,
+                    "before": excerpt,
+                    "after": exact_excerpt,
+                    "source_body_sha256": hashlib.sha256(
+                        source_body.encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+
+    if not reanchors:
+        return raw, ()
+    migrated = _apply_legacy_exact_dependent_proof_excerpt_reanchors(
+        raw,
+        tuple(reanchors),
+    )
+    return migrated, tuple(reanchors)
+
+
+_LEGACY_EXACT_PROOF_ELLIPSIS_PATTERN = re.compile(r"(?:\.{3}|\u2026)")
+_LEGACY_EXACT_PROOF_RATE_ELLIPSIS_PATTERN = re.compile(
+    r"(?:\.{3}|\u2026)\s*(?:percent|%)",
+    flags=re.IGNORECASE,
+)
+
+
+def _legacy_exact_dependent_reanchor_query(
+    excerpt: str,
+    *,
+    rule_source: object,
+    numeric_profile: str,
+) -> str | None:
+    """Resolve only an unambiguous rate ellipsis from authenticated rule context."""
+
+    if _LEGACY_EXACT_PROOF_ELLIPSIS_PATTERN.search(excerpt) is None:
+        return excerpt
+    if not isinstance(rule_source, str) or not rule_source.strip():
+        return None
+    rate_occurrences = [
+        occurrence
+        for occurrence in extract_typed_numeric_occurrences_from_text(
+            rule_source,
+            profile=numeric_profile,
+        )
+        if occurrence.has_rate_context
+    ]
+    source_values = {occurrence.source_value for occurrence in rate_occurrences}
+    if len(source_values) != 1:
+        return None
+    rate_occurrence = rate_occurrences[0]
+    query = _LEGACY_EXACT_PROOF_RATE_ELLIPSIS_PATTERN.sub(
+        rate_occurrence.raw,
+        excerpt,
+    )
+    if _LEGACY_EXACT_PROOF_ELLIPSIS_PATTERN.search(query) is not None:
+        return None
+    return query
+
+
+def _apply_legacy_exact_dependent_proof_excerpt_reanchors(
+    raw: bytes,
+    reanchors: Sequence[Mapping[str, object]],
+) -> bytes:
+    """Replay only the exact proof scalar changes bound by a migration receipt."""
+
+    try:
+        text = raw.decode("utf-8")
+        payload = yaml.safe_load(text) or {}
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError(
+            "legacy exact dependent proof-excerpt replay input is invalid"
+        ) from exc
+    rules = payload.get("rules") if isinstance(payload, dict) else None
+    if not isinstance(rules, list):
+        if reanchors:
+            raise ValueError("legacy exact dependent proof-excerpt replay has no rules")
+        return raw
+
+    excerpt_spans = _yaml_excerpt_scalar_spans(text)
+    used_span_indexes: set[int] = set()
+    replacements: list[tuple[int, int, str]] = []
+    seen_targets: set[tuple[str, int]] = set()
+    for raw_reanchor in reanchors:
+        if not isinstance(raw_reanchor, Mapping) or set(raw_reanchor) != {
+            "rule",
+            "atom_index",
+            "field",
+            "corpus_citation_path",
+            "before",
+            "after",
+            "source_body_sha256",
+        }:
+            raise ValueError("legacy exact dependent proof-excerpt proof is malformed")
+        rule_name = raw_reanchor.get("rule")
+        atom_index = raw_reanchor.get("atom_index")
+        field = raw_reanchor.get("field")
+        citation_path = raw_reanchor.get("corpus_citation_path")
+        before = raw_reanchor.get("before")
+        after = raw_reanchor.get("after")
+        source_body_sha256 = raw_reanchor.get("source_body_sha256")
+        if (
+            not isinstance(rule_name, str)
+            or not rule_name
+            or not isinstance(atom_index, int)
+            or isinstance(atom_index, bool)
+            or atom_index < 0
+            or field != "excerpt"
+            or not isinstance(citation_path, str)
+            or not citation_path
+            or not isinstance(before, str)
+            or not before
+            or not isinstance(after, str)
+            or not after
+            or before == after
+            or not isinstance(source_body_sha256, str)
+            or _SHA256_HEX_PATTERN.fullmatch(source_body_sha256) is None
+            or (rule_name, atom_index) in seen_targets
+        ):
+            raise ValueError("legacy exact dependent proof-excerpt proof is invalid")
+        seen_targets.add((rule_name, atom_index))
+        matching_rules = [
+            rule
+            for rule in rules
+            if isinstance(rule, dict)
+            and str(rule.get("name") or "").strip() == rule_name
+        ]
+        if len(matching_rules) != 1:
+            raise ValueError(
+                "legacy exact dependent proof-excerpt rule identity is ambiguous"
+            )
+        atoms = _proof_atoms_from_rule(matching_rules[0])
+        if not isinstance(atoms, list) or atom_index >= len(atoms):
+            raise ValueError("legacy exact dependent proof-excerpt atom is absent")
+        atom = atoms[atom_index]
+        source = atom.get("source") if isinstance(atom, dict) else None
+        if (
+            not isinstance(source, dict)
+            or source.get("corpus_citation_path") != citation_path
+            or source.get("excerpt") != before
+        ):
+            raise ValueError("legacy exact dependent proof-excerpt binding is stale")
+        span_index, span = _find_yaml_excerpt_scalar_span(
+            excerpt_spans,
+            rule=rule_name,
+            excerpt=before,
+            used_span_indexes=used_span_indexes,
+        )
+        if span is None:
+            raise ValueError(
+                "legacy exact dependent proof excerpt has no unique scalar span"
+            )
+        used_span_indexes.add(span_index)
+        replacements.append(
+            (
+                span.start,
+                span.end,
+                _render_yaml_excerpt_scalar_like(
+                    text[span.start : span.end],
+                    after,
+                ),
+            )
+        )
+        source["excerpt"] = after
+
+    if not replacements:
+        return raw
+    migrated_text = text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        migrated_text = migrated_text[:start] + replacement + migrated_text[end:]
+    try:
+        migrated_payload = yaml.safe_load(migrated_text) or {}
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError(
+            "legacy exact dependent proof-excerpt reanchor produced invalid YAML"
+        ) from exc
+    if migrated_payload != payload:
+        raise ValueError(
+            "legacy exact dependent proof-excerpt reanchor changed unrelated "
+            "RuleSpec structure"
+        )
+    return migrated_text.encode("utf-8")
 
 
 def _declared_rule_subsection_source_text(
@@ -48952,6 +49357,9 @@ def _build_apply_validation_snapshot(
                             "after_sha256": item.after_sha256,
                             "replacements": list(item.replacements),
                             "proof_import_repairs": item.proof_import_repairs,
+                            "proof_excerpt_reanchors": list(
+                                item.proof_excerpt_reanchors
+                            ),
                         }
                         for item in dependent.rewrites
                     ],
@@ -49504,6 +49912,7 @@ def _stage_signed_legacy_replacement_provenance(
                     "after_sha256": item.after_sha256,
                     "replacements": list(item.replacements),
                     "proof_import_repairs": item.proof_import_repairs,
+                    "proof_excerpt_reanchors": list(item.proof_excerpt_reanchors),
                 }
                 for item in dependent.rewrites
             ],
@@ -54709,6 +55118,26 @@ def _finalize_legacy_exact_dependents_from_overlay(
                     f"{legacy_file.path.as_posix()}"
                 )
                 continue
+            if legacy_file.path == dependent.primary:
+                try:
+                    expected_raw = (
+                        _apply_legacy_exact_dependent_proof_excerpt_reanchors(
+                            expected_raw,
+                            rewrite.proof_excerpt_reanchors,
+                        )
+                    )
+                except ValueError as exc:
+                    issues.append(
+                        "Legacy exact dependent proof-excerpt proof is stale for "
+                        f"{legacy_file.path.as_posix()}: {exc}"
+                    )
+                    continue
+            elif rewrite.proof_excerpt_reanchors:
+                issues.append(
+                    "Legacy exact dependent companion has proof-excerpt rewrites for "
+                    f"{legacy_file.path.as_posix()}"
+                )
+                continue
             proof_import_repairs = 0
             if legacy_file.path == dependent.primary:
                 try:
@@ -54729,7 +55158,7 @@ def _finalize_legacy_exact_dependents_from_overlay(
                 issues.append(
                     "Legacy exact dependent final transformation is not limited "
                     "to authenticated reference, source-verification, and "
-                    "proof-import hash rewrites for "
+                    "proof-excerpt/proof-import hash rewrites for "
                     f"{legacy_file.path.as_posix()} "
                     f"(expected {hashlib.sha256(expected_raw).hexdigest()}, "
                     f"found {hashlib.sha256(live_raw).hexdigest()})"

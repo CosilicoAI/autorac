@@ -2560,6 +2560,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "axiom-encode/scripts/prepare_signed_backfill.py stage \\\n"
         in (commit_step["run"])
     )
+    assert "--corpus-root axiom-corpus" in commit_step["run"]
 
     guard_step = next(
         step for step in steps if step.get("name") == "Verify generated provenance"

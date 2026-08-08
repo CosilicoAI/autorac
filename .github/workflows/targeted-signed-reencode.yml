@@ -3042,7 +3042,8 @@ jobs:
           else
             "${workflow_python[@]}" \
               axiom-encode/scripts/prepare_signed_backfill.py stage \
-              "$RULESPEC_CHECKOUT"
+              "$RULESPEC_CHECKOUT" \
+              --corpus-root axiom-corpus
             git -C "$RULESPEC_CHECKOUT" \
               -c core.hooksPath=/dev/null \
               -c user.name=axiom-encode-bot \

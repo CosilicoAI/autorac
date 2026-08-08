@@ -1183,6 +1183,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
     if schema in {
         "axiom-encode/legacy-fresh-reencode-receipt/v4",
         "axiom-encode/legacy-fresh-reencode-receipt/v5",
+        "axiom-encode/legacy-fresh-reencode-receipt/v6",
     }:
         assert isinstance(retained_successors, list)
         deleted_files.extend(
@@ -1209,6 +1210,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
+                "axiom-encode/legacy-fresh-reencode-receipt/v6",
             }
             else None
         ),
@@ -1219,6 +1221,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
+                "axiom-encode/legacy-fresh-reencode-receipt/v6",
             }
             else None
         ),
@@ -1229,6 +1232,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
+                "axiom-encode/legacy-fresh-reencode-receipt/v6",
             }
             else None
         ),
@@ -1238,6 +1242,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
             in {
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
+                "axiom-encode/legacy-fresh-reencode-receipt/v6",
             }
             else None
         ),
@@ -1247,6 +1252,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
             in {
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
+                "axiom-encode/legacy-fresh-reencode-receipt/v6",
             }
             else None
         ),
@@ -2466,6 +2472,68 @@ def test_stage_accepts_v5_singular_exact_dependent_noop_migration(
     _refresh_legacy_receipt_bindings(repo, manifest, receipt)
 
     authorized_changed_paths(repo)
+
+
+def test_stage_rejects_v6_noop_proof_excerpt_reanchor_without_signed_corpus(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["schema_version"] = "axiom-encode/legacy-fresh-reencode-receipt/v6"
+    replacement = payload["replacement"]
+    replacement["destination_predecessor_class"] = "absent"
+    replacement["destination_predecessor_files"] = []
+    replacement["retained_successors"] = []
+    replacement["metadata_reconciliations"] = []
+    for dependent in replacement["exact_dependents"]:
+        dependent["source_verification_migration"] = None
+        for rewrite in dependent["rewrites"]:
+            rewrite["proof_excerpt_reanchors"] = []
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    with pytest.raises(ValueError, match="authenticated signed corpus"):
+        authorized_changed_paths(repo)
+
+
+def test_stage_rejects_v6_proof_excerpt_reanchor_without_signed_corpus(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["schema_version"] = "axiom-encode/legacy-fresh-reencode-receipt/v6"
+    replacement = payload["replacement"]
+    replacement["destination_predecessor_class"] = "absent"
+    replacement["destination_predecessor_files"] = []
+    replacement["retained_successors"] = []
+    replacement["metadata_reconciliations"] = []
+    for dependent in replacement["exact_dependents"]:
+        dependent["source_verification_migration"] = None
+        for rewrite in dependent["rewrites"]:
+            rewrite["proof_excerpt_reanchors"] = [
+                {
+                    "rule": "fabricated",
+                    "atom_index": 0,
+                    "field": "excerpt",
+                    "corpus_citation_path": "us/statute/47/32",
+                    "before": "old",
+                    "after": "new",
+                    "source_body_sha256": "a" * 64,
+                }
+            ]
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    with pytest.raises(ValueError, match="authenticated signed corpus"):
+        authorized_changed_paths(repo)
 
 
 def test_stage_accepts_v5_multi_source_exact_dependent_migration(

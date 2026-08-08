@@ -49,9 +49,11 @@ from axiom_encode.cli import (
     _applied_encoding_manifest_path,
     _applied_encoding_manifest_signature_issue,
     _applied_encoding_manifest_verifier,
+    _applied_manifest_paths_for_files,
     _applied_manifest_source_attestation_issues,
     _apply_encoder_execution_identity,
     _apply_generated_encoding_result,
+    _apply_legacy_exact_dependent_proof_excerpt_reanchors,
     _build_eval_suite_payload,
     _build_eval_suite_report,
     _canonical_rulespec_compile_path,
@@ -94,6 +96,7 @@ from axiom_encode.cli import (
     _load_verified_applied_encoding_manifest_payload,
     _local_factual_input_names_from_rules_content,
     _looks_like_absolute_rulespec_output_target,
+    _manifest_census,
     _manifest_coverage_by_file,
     _medicaid_magi_income_helper_issue_names,
     _normalize_invalid_proof_atom_kinds,
@@ -107,6 +110,7 @@ from axiom_encode.cli import (
     _qualify_deferred_output_subsection_paths,
     _quoted_review_finding_excerpts,
     _read_only_guard_encoder_execution_identity,
+    _reanchor_legacy_exact_dependent_proof_excerpts,
     _record_successful_apply_validation,
     _recover_apply_transaction,
     _relative_generated_output_path,
@@ -8957,6 +8961,226 @@ rules:
     )
 
 
+def test_reanchor_legacy_exact_dependent_proof_excerpt_binds_signed_body(
+    monkeypatch,
+):
+    citation_path = "us-la/form/it-540i-2026"
+    stale_excerpt = "Enter on Line 3 the Louisiana estimated standard deduction"
+    exact_excerpt = (
+        "3. Enter on Line 3 the Louisiana If your filing status is: estimated "
+        "standard deduction. Single $12,875 Married Filing Joint $25,750 3. 00 "
+        "Married Filing Separate $12,875"
+    )
+    raw = f"""format: rulespec/v1
+rules:
+- name: la_2026_resident_standard_deduction
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: {citation_path}
+          excerpt: {stale_excerpt}
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 0
+""".encode()
+    corpus_release = SimpleNamespace(name="signed-la-release")
+    requested = []
+
+    def source_body(requested_path, *, corpus_release):
+        requested.append((requested_path, corpus_release))
+        return exact_excerpt
+
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_corpus_body_for_corpus_path",
+        source_body,
+    )
+
+    migrated, reanchors = _reanchor_legacy_exact_dependent_proof_excerpts(
+        raw,
+        corpus_release=corpus_release,
+    )
+
+    assert requested == [(citation_path, corpus_release)]
+    assert reanchors == (
+        {
+            "rule": "la_2026_resident_standard_deduction",
+            "atom_index": 0,
+            "field": "excerpt",
+            "corpus_citation_path": citation_path,
+            "before": stale_excerpt,
+            "after": exact_excerpt,
+            "source_body_sha256": hashlib.sha256(exact_excerpt.encode()).hexdigest(),
+        },
+    )
+    assert _apply_legacy_exact_dependent_proof_excerpt_reanchors(raw, reanchors) == (
+        migrated
+    )
+    before_payload = yaml.safe_load(raw)
+    after_payload = yaml.safe_load(migrated)
+    before_payload["rules"][0]["metadata"]["proof"]["atoms"][0]["source"]["excerpt"] = (
+        exact_excerpt
+    )
+    assert after_payload == before_payload
+
+
+def test_reanchor_legacy_exact_dependent_rate_ellipsis_uses_rule_source(
+    monkeypatch,
+):
+    source_body = (
+        "(1) A credit equal to three and one-half percent of the federal earned "
+        "income tax credit.\n\n"
+        "(2) Through 2030, a credit equal to five percent of the federal earned "
+        "income tax credit."
+    )
+    raw = b"""format: rulespec/v1
+rules:
+- name: earned_income_credit
+  source: Five percent of the federal earned-income credit through 2030
+  metadata:
+    proof:
+      atoms:
+      - source:
+          corpus_citation_path: us-la/statute/47:297.8
+          excerpt: a credit equal to ... percent of the federal earned income tax credit
+"""
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_corpus_body_for_corpus_path",
+        lambda _path, *, corpus_release: source_body,
+    )
+
+    migrated, reanchors = _reanchor_legacy_exact_dependent_proof_excerpts(
+        raw,
+        corpus_release=SimpleNamespace(),
+    )
+
+    assert len(reanchors) == 1
+    assert reanchors[0]["after"] == (
+        "(2) Through 2030, a credit equal to five percent of the federal earned "
+        "income tax credit."
+    )
+    assert "three and one-half percent" not in migrated.decode()
+
+
+def test_reanchor_legacy_exact_dependent_rate_ellipsis_without_context_fails(
+    monkeypatch,
+):
+    raw = b"""format: rulespec/v1
+rules:
+- name: earned_income_credit
+  metadata:
+    proof:
+      atoms:
+      - source:
+          corpus_citation_path: us-la/statute/47:297.8
+          excerpt: a credit equal to ... percent of the federal earned income tax credit
+"""
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_corpus_body_for_corpus_path",
+        lambda _path, *, corpus_release: (
+            "A credit equal to five percent of the federal earned income tax credit."
+        ),
+    )
+
+    with pytest.raises(ValueError, match="ambiguous ellipsis"):
+        _reanchor_legacy_exact_dependent_proof_excerpts(
+            raw,
+            corpus_release=SimpleNamespace(),
+        )
+
+
+def test_reanchor_legacy_exact_dependent_respects_declared_subsection(
+    monkeypatch,
+):
+    source_body = (
+        "(a) The qualifying amount is $100.\n"
+        "(b) The qualifying amount for residents is $100."
+    )
+    raw = b"""format: rulespec/v1
+rules:
+- name: resident_amount
+  source: Section 1(b)
+  metadata:
+    proof:
+      atoms:
+      - source:
+          corpus_citation_path: us-la/statute/example
+          excerpt: The qualifying amount is $100.
+"""
+    monkeypatch.setattr(
+        "axiom_encode.cli._local_corpus_body_for_corpus_path",
+        lambda _path, *, corpus_release: source_body,
+    )
+
+    _migrated, reanchors = _reanchor_legacy_exact_dependent_proof_excerpts(
+        raw,
+        corpus_release=SimpleNamespace(),
+    )
+
+    assert len(reanchors) == 1
+    assert reanchors[0]["after"] == ("(b) The qualifying amount for residents is $100.")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda proof: proof.update(corpus_citation_path="us-la/form/other"), "stale"),
+        (lambda proof: proof.update(source_body_sha256="not-a-digest"), "invalid"),
+    ],
+)
+def test_replay_legacy_exact_dependent_proof_excerpt_fails_closed(mutation, error):
+    raw = b"""format: rulespec/v1
+rules:
+- name: deduction
+  metadata:
+    proof:
+      atoms:
+      - source:
+          corpus_citation_path: us-la/form/it-540i-2026
+          excerpt: stale excerpt
+"""
+    proof = {
+        "rule": "deduction",
+        "atom_index": 0,
+        "field": "excerpt",
+        "corpus_citation_path": "us-la/form/it-540i-2026",
+        "before": "stale excerpt",
+        "after": "exact signed body excerpt",
+        "source_body_sha256": "a" * 64,
+    }
+    mutation(proof)
+
+    with pytest.raises(ValueError, match=error):
+        _apply_legacy_exact_dependent_proof_excerpt_reanchors(raw, [proof])
+
+
+def test_replay_legacy_exact_dependent_proof_excerpt_rejects_duplicate_target():
+    raw = b"""format: rulespec/v1
+rules:
+- name: deduction
+  metadata:
+    proof:
+      atoms:
+      - source:
+          corpus_citation_path: us-la/form/it-540i-2026
+          excerpt: stale excerpt
+"""
+    proof = {
+        "rule": "deduction",
+        "atom_index": 0,
+        "field": "excerpt",
+        "corpus_citation_path": "us-la/form/it-540i-2026",
+        "before": "stale excerpt",
+        "after": "exact signed body excerpt",
+        "source_body_sha256": "a" * 64,
+    }
+
+    with pytest.raises(ValueError, match="invalid"):
+        _apply_legacy_exact_dependent_proof_excerpt_reanchors(raw, [proof, proof])
+
+
 def test_repair_generated_nonexact_proof_excerpt_reanchors_amendment_document(
     tmp_path, monkeypatch
 ):
@@ -14623,7 +14847,11 @@ class TestCmdEncode:
             "rules: []\n"
         )
         source_test.write_text("[]\n")
-        source_text = "authoritative Louisiana section 47:32\n"
+        source_text = (
+            "3. Enter on Line 3 the Louisiana If your filing status is: estimated "
+            "standard deduction. Single $12,875 Married Filing Joint $25,750 3. 00 "
+            "Married Filing Separate $12,875\n"
+        )
         corpus_path, source_attestation = self._bind_apply_source_release(
             checkout,
             tmp_path,
@@ -14688,6 +14916,11 @@ class TestCmdEncode:
             "              target: us-la:statutes/47:32#amount\n"
             "              output: amount\n"
             f"              hash: sha256:{source_before_sha256}\n"
+            "          - path: versions[0].formula\n"
+            "            kind: parameter\n"
+            "            source:\n"
+            "              corpus_citation_path: us-la/statute/47/32\n"
+            "              excerpt: Enter on Line 3 the Louisiana estimated standard deduction\n"
             "    versions:\n"
             "      - effective_from: '2026-01-01'\n"
             "        formula: amount\n"
@@ -15259,7 +15492,7 @@ class TestCmdEncode:
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v5")
+        assert receipt["schema_version"].endswith("/v6")
         assert len(receipt["replacement"]["retained_successors"]) == 4
         assert {
             item["destination"]
@@ -15310,6 +15543,19 @@ class TestCmdEncode:
         exact = exact_by_primary[dependent_relative.as_posix()]
         assert exact["primary"] == dependent_relative.as_posix()
         assert exact["rewrites"][0]["proof_import_repairs"] == 1
+        assert exact["rewrites"][0]["proof_excerpt_reanchors"] == [
+            {
+                "rule": "liability",
+                "atom_index": 1,
+                "field": "excerpt",
+                "corpus_citation_path": "us-la/statute/47/32",
+                "before": (
+                    "Enter on Line 3 the Louisiana estimated standard deduction"
+                ),
+                "after": source_text.strip(),
+                "source_body_sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+            }
+        ]
         assert exact["source_verification_migration"] == {
             "legacy_corpus_citation_paths": ["us-la/statute/47/32"],
             "corpus_citation_path": "us-la/statute/47/32",
@@ -15375,16 +15621,40 @@ class TestCmdEncode:
                 return_value=TEST_PINNED_ENCODER_IDENTITY,
             ),
             patch(
+                "axiom_encode.cli._current_guard_encoder_execution_identity",
+                return_value=TEST_PINNED_ENCODER_IDENTITY,
+            ),
+            patch(
                 "axiom_encode.cli._applied_encoding_manifest_verifier",
                 return_value=TEST_APPLY_SIGNING_BROKER,
             ),
         ):
+            assert (
+                _legacy_replacement_pending_paths(
+                    checkout,
+                    local_corpus_release=release,
+                )
+                == []
+            )
+            assert dependent_manifest.relative_to(
+                checkout
+            ).as_posix() in _applied_manifest_paths_for_files(
+                checkout,
+                relative_files={dependent_relative.as_posix()},
+                local_corpus_release=release,
+            )
+            census = _manifest_census(
+                checkout,
+                roots=tuple(sorted(RULESPEC_ATOMIC_MODULE_ROOTS)),
+                local_corpus_release=release,
+            )
             guard_issues = guard_generated_change_issues(
                 checkout,
                 corpus_path=corpus_path,
                 base_ref=base_ref,
                 head_ref="HEAD",
             )
+        assert dependent_relative.as_posix() not in census["unmanifested_paths"]
         assert guard_issues == [], "\n".join(guard_issues)
 
         from scripts.prepare_signed_backfill import authorized_changed_paths
@@ -15393,7 +15663,10 @@ class TestCmdEncode:
             os.environ,
             {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
         ):
-            authorized = authorized_changed_paths(checkout)
+            authorized = authorized_changed_paths(
+                checkout,
+                corpus_root=corpus_path,
+            )
         expected_authorized = {
             source_relative,
             _applied_encoding_manifest_path(source_relative),
@@ -15546,6 +15819,54 @@ class TestCmdEncode:
         assert any(
             "source-verification migration proof is stale" in issue for issue in issues
         )
+
+        for field, value in (
+            ("after", "fabricated signed-corpus excerpt"),
+            ("source_body_sha256", "0" * 64),
+            ("inventory", None),
+        ):
+            destination_manifest.write_bytes(outer_before_tamper)
+            receipt_path.write_bytes(receipt_before_tamper)
+            restore_linked_manifests()
+            tampered_receipt = copy.deepcopy(receipt)
+            reanchors = tampered_receipt["replacement"]["exact_dependents"][0][
+                "rewrites"
+            ][0]["proof_excerpt_reanchors"]
+            if field == "inventory":
+                reanchors.clear()
+            else:
+                reanchors[0][field] = value
+            _sign_applied_encoding_manifest(
+                tampered_receipt,
+                TEST_APPLY_SIGNING_BROKER,
+            )
+            receipt_path.write_text(
+                json.dumps(tampered_receipt, indent=2, sort_keys=True) + "\n"
+            )
+            tampered_receipt_sha256 = hashlib.sha256(
+                receipt_path.read_bytes()
+            ).hexdigest()
+            tampered_outer = copy.deepcopy(outer)
+            tampered_outer["replacement"]["receipt_sha256"] = tampered_receipt_sha256
+            _sign_applied_encoding_manifest(
+                tampered_outer,
+                TEST_APPLY_SIGNING_BROKER,
+            )
+            destination_manifest.write_text(
+                json.dumps(tampered_outer, indent=2, sort_keys=True) + "\n"
+            )
+            rebind_linked_manifests(tampered_receipt_sha256)
+            _verified, _root, _digest, issues = (
+                _load_verified_applied_encoding_manifest_payload(
+                    checkout,
+                    destination_manifest.relative_to(checkout).as_posix(),
+                    signing_broker=TEST_APPLY_SIGNING_BROKER,
+                    expected_waiver_set_sha256=post_migration_waiver_sha256,
+                    expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                    local_corpus_release=release,
+                )
+            )
+            assert any("rewrite proof is stale" in issue for issue in issues)
 
         destination_manifest.write_bytes(outer_before_tamper)
         receipt_path.write_bytes(receipt_before_tamper)
@@ -44743,6 +45064,7 @@ rules: []
 
         args = SimpleNamespace(
             repo=repo,
+            corpus_path=None,
             roots=" ".join(["policies", "regulations", "statutes"]),
             json=False,
             badge=True,
@@ -44768,6 +45090,7 @@ rules: []
 
         args = SimpleNamespace(
             repo=repo,
+            corpus_path=None,
             roots=" ".join(["policies", "regulations", "statutes"]),
             json=False,
             badge=True,
@@ -44793,6 +45116,7 @@ rules: []
         )
         args = SimpleNamespace(
             repo=repo,
+            corpus_path=None,
             roots="policies regulations statutes",
             json=True,
             badge=False,

@@ -33,7 +33,8 @@ RECEIPT_SCHEMA_V1: Final = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 RECEIPT_SCHEMA_V2: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 RECEIPT_SCHEMA_V3: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 RECEIPT_SCHEMA_V4: Final = "axiom-encode/legacy-fresh-reencode-receipt/v4"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v5"
+RECEIPT_SCHEMA_V5: Final = "axiom-encode/legacy-fresh-reencode-receipt/v5"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v6"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 DESTINATION_PREDECESSOR_ABSENT: Final = "absent"
 DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE: Final = (
@@ -130,6 +131,7 @@ class LegacyReplacementRewrite(NamedTuple):
     replacements: tuple[dict[str, object], ...]
     raw: bytes
     proof_import_repairs: int = 0
+    proof_excerpt_reanchors: tuple[dict[str, object], ...] = ()
 
 
 class LegacyReplacementSourceVerificationMigration(NamedTuple):

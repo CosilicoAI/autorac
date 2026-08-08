@@ -27,6 +27,7 @@ LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-recei
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4 = "axiom-encode/legacy-fresh-reencode-receipt/v4"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5 = "axiom-encode/legacy-fresh-reencode-receipt/v5"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6 = "axiom-encode/legacy-fresh-reencode-receipt/v6"
 LEGACY_EXACT_DEPENDENT_TOOL = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
@@ -1797,11 +1798,13 @@ def _validate_legacy_exact_dependents(
     live_manifests: set[PurePosixPath],
     manifest_payloads: dict[PurePosixPath, dict[str, object]],
     changed: set[PurePosixPath],
+    corpus_release: object | None,
 ) -> set[tuple[PurePosixPath, PurePosixPath]]:
     """Verify v2 exact dependents and return manifest-bound unchanged claims."""
 
     from axiom_encode.cli import (
         _legacy_primary_source_citations,
+        _reanchor_legacy_exact_dependent_proof_excerpts,
         _repair_proof_import_hashes,
         _strict_legacy_replacement_map,
     )
@@ -1847,7 +1850,10 @@ def _validate_legacy_exact_dependents(
             "live_files",
             "rewrites",
         }
-        if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+        if receipt_schema in {
+            LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+        }:
             expected_dependent_fields.add("source_verification_migration")
         if (
             not isinstance(raw_dependent, dict)
@@ -1856,7 +1862,11 @@ def _validate_legacy_exact_dependents(
             raise ValueError(f"{label} is malformed")
         receipt_source_verification_migration = (
             raw_dependent.get("source_verification_migration")
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5
+            if receipt_schema
+            in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+            }
             else None
         )
         primary = _safe_relative_path(
@@ -1973,7 +1983,10 @@ def _validate_legacy_exact_dependents(
 
         expected_source_verification_migration = None
         source_verification_migration = None
-        if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+        if receipt_schema in {
+            LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+        }:
             _unused_primary, source_verification_migration = (
                 migrate_legacy_exact_dependent_source_verification(
                     base_by_path[primary]
@@ -2015,13 +2028,16 @@ def _validate_legacy_exact_dependents(
         rewrite_paths: set[PurePosixPath] = set()
         for rewrite_index, rewrite in enumerate(raw_rewrites):
             rewrite_label = f"{label}.rewrites[{rewrite_index}]"
-            if not isinstance(rewrite, dict) or set(rewrite) != {
+            expected_rewrite_fields = {
                 "path",
                 "before_sha256",
                 "after_sha256",
                 "replacements",
                 "proof_import_repairs",
-            }:
+            }
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6:
+                expected_rewrite_fields.add("proof_excerpt_reanchors")
+            if not isinstance(rewrite, dict) or set(rewrite) != expected_rewrite_fields:
                 raise ValueError(f"{rewrite_label} is malformed")
             rewrite_path = _safe_relative_path(
                 rewrite.get("path"),
@@ -2042,6 +2058,10 @@ def _validate_legacy_exact_dependents(
                 or not isinstance(rewrite.get("proof_import_repairs"), int)
                 or isinstance(rewrite.get("proof_import_repairs"), bool)
                 or rewrite["proof_import_repairs"] < 0
+                or (
+                    receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6
+                    and not isinstance(rewrite.get("proof_excerpt_reanchors"), list)
+                )
             ):
                 raise ValueError(f"{rewrite_label} proof is malformed")
             try:
@@ -2051,7 +2071,10 @@ def _validate_legacy_exact_dependents(
                 )
                 observed_proof_repairs = 0
                 if rewrite_path == primary:
-                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+                    if receipt_schema in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+                    }:
                         expected_live, observed_source_migration = (
                             migrate_legacy_exact_dependent_source_verification(
                                 expected_live
@@ -2065,6 +2088,24 @@ def _validate_legacy_exact_dependents(
                         raise ValueError(
                             f"{label}.source_verification_migration schema differs"
                         )
+                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6:
+                        if corpus_release is None:
+                            raise ValueError(
+                                f"{rewrite_label} proof-excerpt verification requires "
+                                "the authenticated signed corpus"
+                            )
+                        expected_live, observed_reanchors = (
+                            _reanchor_legacy_exact_dependent_proof_excerpts(
+                                expected_live,
+                                corpus_release=corpus_release,
+                            )
+                        )
+                        if list(observed_reanchors) != rewrite[
+                            "proof_excerpt_reanchors"
+                        ]:
+                            raise ValueError(
+                                f"{rewrite_label} proof-excerpt corpus replay differs"
+                            )
                     content_root = repo / primary.parts[0]
                     expected_text, observed_proof_repairs = _repair_proof_import_hashes(
                         expected_live.decode("utf-8"),
@@ -2076,6 +2117,17 @@ def _validate_legacy_exact_dependents(
                         repo_path=content_root,
                     )
                     expected_live = expected_text.encode("utf-8")
+                elif (
+                    receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6
+                    and rewrite["proof_excerpt_reanchors"]
+                ):
+                    raise ValueError(
+                        f"{rewrite_label} companion has proof-excerpt rewrites"
+                    )
+            except ValueError as exc:
+                raise ValueError(
+                    f"{rewrite_label} transformation is invalid: {exc}"
+                ) from exc
             except (PathMigrationPlanError, UnicodeError) as exc:
                 raise ValueError(f"{rewrite_label} is unreadable") from exc
             if (
@@ -2090,7 +2142,11 @@ def _validate_legacy_exact_dependents(
             rewrite_paths.add(rewrite_path)
 
         if (
-            receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5
+            receipt_schema
+            in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+            }
             and primary not in rewrite_paths
             and source_verification_migration is not None
         ):
@@ -2164,7 +2220,16 @@ def _validate_legacy_exact_dependents(
     return unchanged_authorized
 
 
-def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
+def authorized_changed_paths(
+    repo: Path,
+    *,
+    corpus_root: Path | None = None,
+) -> set[PurePosixPath]:
+    corpus_release = None
+    if corpus_root is not None:
+        from axiom_encode.toolchain import load_rulespec_local_corpus_release
+
+        corpus_release = load_rulespec_local_corpus_release(repo, corpus_root)
     changed = _changed_paths(repo)
     manifests = {
         path
@@ -2256,6 +2321,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
@@ -2320,6 +2386,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             }:
                 if not isinstance(retained_successors, list) or not isinstance(
                     metadata_reconciliations, list
@@ -2350,6 +2417,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             }:
                 identity_deleted_files.extend(
                     {"path": item.get("path"), "deleted": True}
@@ -2396,6 +2464,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     }
                     else None
                 ),
@@ -2406,6 +2475,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     }
                     else None
                 ),
@@ -2416,6 +2486,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     }
                     else None
                 ),
@@ -2425,6 +2496,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     in {
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     }
                     else None
                 ),
@@ -2434,6 +2506,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     in {
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     }
                     else None
                 ),
@@ -2446,6 +2519,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             } and (
                 not isinstance(
                     receipt_replacement.get("destination_predecessor_class"), str
@@ -2498,6 +2572,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             }:
                 predecessor_issues = _legacy_destination_predecessor_issues(
                     repo,
@@ -3010,6 +3085,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             }:
                 exact_unchanged_claims = _validate_legacy_exact_dependents(
                     repo,
@@ -3023,6 +3099,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     live_manifests=live_manifests,
                     manifest_payloads=manifest_payloads,
                     changed=changed,
+                    corpus_release=corpus_release,
                 )
                 authenticated_unchanged_claims.update(exact_unchanged_claims)
                 authorized_unchanged.update(
@@ -3130,8 +3207,12 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
     return authorized
 
 
-def stage_authorized_changes(repo: Path) -> None:
-    authorized = authorized_changed_paths(repo)
+def stage_authorized_changes(
+    repo: Path,
+    *,
+    corpus_root: Path | None = None,
+) -> None:
+    authorized = authorized_changed_paths(repo, corpus_root=corpus_root)
     subprocess.run(
         [
             "git",
@@ -3183,6 +3264,7 @@ def main() -> None:
     base_parser.add_argument("pr_base_branch", nargs="?", default="main")
     stage_parser = subparsers.add_parser("stage")
     stage_parser.add_argument("repo", type=Path)
+    stage_parser.add_argument("--corpus-root", type=Path)
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
     cascade_parser.add_argument("repo", type=Path)
     cascade_parser.add_argument("target_citation")
@@ -3410,7 +3492,7 @@ def main() -> None:
                 )
             )
         else:
-            stage_authorized_changes(args.repo)
+            stage_authorized_changes(args.repo, corpus_root=args.corpus_root)
     except (
         OSError,
         ValueError,
