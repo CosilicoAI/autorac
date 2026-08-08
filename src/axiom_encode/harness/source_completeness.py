@@ -1844,8 +1844,9 @@ authoritative branch is a bare `Repealed.` tombstone or a finite Louisiana \
 `Repealed by Acts ...` session-law tombstone, cite that exact current source branch and \
 affirmatively state the repeal in `reason`; do not invent a missing dependency or \
 executable rule. Use the bounded form `<exact branch citation> is repealed.`, optionally \
-adding only the authenticated Acts citation/effective date and/or `and supplies no \
-operative rule`. For Louisiana delegated rates, use `no executable RuleSpec output \
+adding the exact authenticated history either as `is repealed by <Acts citation>.` or \
+as `is repealed. <Acts citation>.`, and/or adding `and supplies no operative rule`. \
+For Louisiana delegated rates, use `no executable RuleSpec output \
 for those <source-stated modifiers> rates is supplied in the available context`; do \
 not repeat the dependency in that missing object or append a relative clause."""
 
@@ -1854,6 +1855,7 @@ def _imprecise_deferral_retry_shape(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...],
+    reason: str = "",
 ) -> str:
     """Render branch-specific retry guidance without inventing source facts."""
 
@@ -1871,6 +1873,21 @@ def _imprecise_deferral_retry_shape(
                 f"required in `reason` is `{citation.title} U.S.C. "
                 f"{section}{fragments}`."
             )
+    elif (
+        path
+        and reason
+        and _reason_cites_exact_current_statute_branch(
+            reason,
+            corpus_citation_path=corpus_citation_path,
+            path=path,
+            strict_terminal=True,
+        )
+    ):
+        branch_hint = (
+            "\nThe current-source branch citation in `reason` is already "
+            "recognized; correct the bounded dependency, runtime-gap, or repeal "
+            "tail without replacing that authenticated citation."
+        )
     elif path:
         citation_parts = [
             part for part in corpus_citation_path.strip("/").split("/") if part
@@ -1926,6 +1943,25 @@ _TITLE_SUFFIX_LEGAL_CITATION = re.compile(
     r"(?:and|or|through|to)\s+)(?:\d+)?[a-z]\s*"
     r"[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
     r"\s*\d+[a-z]?)*\s+of\s+this\s+title\b",
+    flags=re.IGNORECASE,
+)
+_LOUISIANA_RS_NUMERIC_RECALL_TARGET = (
+    r"\d+[A-Za-z]?\s*:\s*"
+    r"\d+[A-Za-z]?(?:(?:[-\u2010\u2011\u2012\u2013\u2014\u2015"
+    r"\u2212\ufe58\ufe63\uff0d][A-Za-z0-9]+)|(?:\.\d+[A-Za-z]?))*"
+    r"(?:\s*\(\s*(?:[A-Za-z]+|\d{1,2})\s*\))*"
+)
+_LOUISIANA_RS_NUMERIC_RECALL_CITATION = re.compile(
+    r"(?<![A-Za-z0-9_])(?:(?:La\.?\s*)|(?:LSA\s*[-\u2010-\u2015]?\s*))?"
+    r"R\.?\s*S\.?\s*(?:§{1,2}\s*)?"
+    + _LOUISIANA_RS_NUMERIC_RECALL_TARGET
+    + r"(?:\s*(?:,\s*(?:(?:and/or|and|or)\s+)?|"
+    + r"(?:and/or|and|or|through|to)\s+|&\s*)"
+    + _LOUISIANA_RS_NUMERIC_RECALL_TARGET
+    + r")*"
+    + r"(?![A-Za-z0-9_])(?![./:]\s*(?:[A-Za-z0-9]|\())"
+    + r"(?![-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d]"
+    + r"\s*(?:[A-Za-z0-9]|\())",
     flags=re.IGNORECASE,
 )
 _LOUISIANA_SESSION_LAW_CITATION = re.compile(
@@ -4818,6 +4854,7 @@ def _deferred_coverage(
                     retry_shape = _imprecise_deferral_retry_shape(
                         corpus_citation_path=corpus_citation_path,
                         path=display_cited_branch,
+                        reason=reason,
                     )
                     issues.append(
                         "[complete-source-unit:deferral] "
@@ -4837,6 +4874,7 @@ def _deferred_coverage(
             retry_shape = _imprecise_deferral_retry_shape(
                 corpus_citation_path=corpus_citation_path,
                 path=display_path or path,
+                reason=reason,
             )
             issues.append(
                 "[complete-source-unit:deferral] "
@@ -10346,9 +10384,13 @@ def _repeal_reason_tail_is_bounded(
     bounded = _collapse_text(tail).strip()
     if re.fullmatch(r"\.?", bounded):
         return True
-    if re.match(r"^by\s+acts?(?:\s+of)?\b", bounded, flags=re.IGNORECASE):
+    if re.match(
+        r"^(?:by\s+|\.\s*)acts?(?:\s+of)?\b",
+        bounded,
+        flags=re.IGNORECASE,
+    ):
         normalized_history = _normalize_written_section_marker(
-            re.sub(r"^by\s+", "", bounded, flags=re.IGNORECASE)
+            re.sub(r"^(?:by\s+|\.\s*)", "", bounded, flags=re.IGNORECASE)
         )
         history = _LOUISIANA_SESSION_LAW_CITATION.match(normalized_history)
         if history is None or history.start() != 0:
@@ -10935,6 +10977,7 @@ def authoritative_numeric_recall_text(source_text: str) -> str:
 
     cleaned = _strip_terminal_session_law_history(source_text)
     cleaned = _LOUISIANA_SESSION_LAW_CITATION.sub("", cleaned)
+    cleaned = _LOUISIANA_RS_NUMERIC_RECALL_CITATION.sub("", cleaned)
     cleaned = _GERMAN_LEGAL_CITATION.sub("", cleaned)
     cleaned = _TITLE_SUFFIX_LEGAL_CITATION.sub("", cleaned)
     cleaned = _ENGLISH_LEGAL_CITATION.sub("", cleaned)

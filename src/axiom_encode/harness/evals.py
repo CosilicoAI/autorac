@@ -10261,8 +10261,9 @@ Complete-source-unit mode is enabled for this request:
   current legal branch and affirmatively state that it is repealed. Do not
   fabricate an executable rule, input, runtime gap, or external blocker. Use
   the bounded reason form `<exact branch citation> is repealed.`, optionally
-  adding only the authenticated Acts citation/effective date and/or `and
-  supplies no operative rule`; never qualify, report, or retract the assertion.
+  adding the exact authenticated history either as `is repealed by <Acts
+  citation>.` or as `is repealed. <Acts citation>.`, and/or adding `and supplies
+  no operative rule`; never qualify, report, or retract the assertion.
 - For a Louisiana branch that computes tax at rates provided in another R.S.
   section, use the bounded missing-export clause `no executable RuleSpec output
   for those <source-stated modifiers> rates is supplied in the available
