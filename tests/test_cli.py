@@ -15076,9 +15076,7 @@ class TestCmdEncode:
             assert b"us-la:statutes/47:32#amount" not in overlay_bytes
             assert f"hash: sha256:{_sha256_file(generated)}".encode() in overlay_bytes
             assert b"    corpus_citation_paths:\n" not in overlay_bytes
-            assert (
-                b"    corpus_citation_path: us-la/statute/47/32\n" in overlay_bytes
-            )
+            assert b"    corpus_citation_path: us-la/statute/47/32\n" in overlay_bytes
             assert b"      checked_paths:\n" in overlay_bytes
 
         with (
@@ -15211,8 +15209,7 @@ class TestCmdEncode:
         assert b"us-la:statutes/47/32#amount" in dependent.read_bytes()
         assert b"    corpus_citation_paths:\n" not in dependent.read_bytes()
         assert (
-            b"    corpus_citation_path: us-la/statute/47/32\n"
-            in dependent.read_bytes()
+            b"    corpus_citation_path: us-la/statute/47/32\n" in dependent.read_bytes()
         )
         assert b"      checked_paths:\n" in dependent.read_bytes()
         assert (
@@ -15547,8 +15544,7 @@ class TestCmdEncode:
             )
         )
         assert any(
-            "source-verification migration proof is stale" in issue
-            for issue in issues
+            "source-verification migration proof is stale" in issue for issue in issues
         )
 
         destination_manifest.write_bytes(outer_before_tamper)
