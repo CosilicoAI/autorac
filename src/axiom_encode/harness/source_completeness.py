@@ -299,7 +299,7 @@ _EDITORIAL_OMISSION_ONLY = re.compile(
     r"(?:(?:\((?:\d+[a-z]?|[a-z])\)|\d+[a-z]?\.|[a-z]\))\s*)?"
     r"(?:bis\s+\(\d+[a-z]?\)\s*)?"
     r"(?:\(\s*)?"
-    r"(?:weggefallen|aufgehoben|repealed|omitted|\.{3,})"
+    r"(?:weggefallen|aufgehoben|omitted|\.{3,})"
     r"(?:\s*\))?"
     r"\s*[.;]?\s*$",
     flags=re.IGNORECASE,
@@ -1839,7 +1839,15 @@ module:
 must list exact absolute upstream RuleSpec outputs. When no external legal dependency \
 exists, cite the exact current source branch and name its concrete source-stated missing \
 input or runtime capability in the `reason` itself; the output path is not a source \
-citation, and a generic claim that the branch is unavailable is invalid."""
+citation, and a generic claim that the branch is unavailable is invalid. When the \
+authoritative branch is a bare `Repealed.` tombstone or a finite Louisiana \
+`Repealed by Acts ...` session-law tombstone, cite that exact current source branch and \
+affirmatively state the repeal in `reason`; do not invent a missing dependency or \
+executable rule. Use the bounded form `<exact branch citation> is repealed.`, optionally \
+adding only the authenticated Acts citation/effective date and/or `and supplies no \
+operative rule`. For Louisiana delegated rates, use `no executable RuleSpec output \
+for those <source-stated modifiers> rates is supplied in the available context`; do \
+not repeat the dependency in that missing object or append a relative clause."""
 
 
 def _imprecise_deferral_retry_shape(
@@ -4686,15 +4694,24 @@ def _deferred_coverage(
                         for blocker in blocker_targets
                     )
                 )
-            return _reason_dependency_is_source_bound(
-                reason,
-                candidate_scope_text,
-                corpus_citation_path=corpus_citation_path,
-            ) or _reason_names_source_bound_runtime_gap(
-                reason,
-                candidate_scope_text,
-                path=candidate_path,
-                corpus_citation_path=corpus_citation_path,
+            return (
+                _reason_dependency_is_source_bound(
+                    reason,
+                    candidate_scope_text,
+                    corpus_citation_path=corpus_citation_path,
+                )
+                or _reason_names_source_bound_runtime_gap(
+                    reason,
+                    candidate_scope_text,
+                    path=candidate_path,
+                    corpus_citation_path=corpus_citation_path,
+                )
+                or _reason_covers_source_authenticated_repeal(
+                    reason,
+                    candidate_scope_text,
+                    path=candidate_path,
+                    corpus_citation_path=corpus_citation_path,
+                )
             )
 
         valid_root_symbol = (
@@ -5780,6 +5797,8 @@ def _louisiana_source_link_is_operative(
     dependency_link = re.search(
         r"\b(?:under(?:\s+(?:both|either))?|according\s+to|pursuant\s+to|"
         r"in\s+accordance\s+with(?:\s+the\s+provisions?\s+of)?|"
+        r"at\s+(?:the\s+)?(?:amounts?|percentages?|rates?)\s+"
+        r"provided(?:\s+for)?\s+in|"
         r"depends?(?:\s*,?\s*(?:directly|entirely|necessarily|primarily|solely|"
         r"ultimately|in\s+part)\s*,?)*\s+(?:on|upon)|"
         r"is\s+(?:(?:directly|entirely|necessarily|primarily|solely|ultimately)\s+)*"
@@ -6962,7 +6981,11 @@ def _reason_dependency_is_source_bound(
 
     louisiana_dependencies = _qualified_louisiana_rs_dependencies(reason)
     if not _MISSING_DEPENDENCY_LANGUAGE.search(reason) and not any(
-        _reason_match_has_bounded_insufficiency(reason, dependency)
+        _reason_match_has_bounded_insufficiency(
+            reason,
+            dependency,
+            source_scope_text=source_scope_text,
+        )
         for dependency in louisiana_dependencies
     ):
         return False
@@ -7105,7 +7128,9 @@ def _reason_match_names_missing_dependency(
         flags=re.IGNORECASE,
     )
     if allow_bounded_insufficiency and _reason_match_has_bounded_insufficiency(
-        reason, match
+        reason,
+        match,
+        source_scope_text=source_scope_text,
     ):
         return True
     direct_signals = list(_MISSING_DEPENDENCY_LANGUAGE.finditer(before))
@@ -7214,6 +7239,8 @@ def _reason_match_names_missing_dependency(
 def _reason_match_has_bounded_insufficiency(
     reason: str,
     match: re.Match[str],
+    *,
+    source_scope_text: str,
 ) -> bool:
     """Recognize one citation-local statement that a supplied dependency is incomplete."""
 
@@ -7226,6 +7253,27 @@ def _reason_match_has_bounded_insufficiency(
             else len(reason)
         )
     after = reason[match.end() : clause_end]
+    unavailable_export = re.fullmatch(
+        r"\s*(?:[,;:]\s*)?(?:but\s+)?no\s+"
+        r"(?P<missing>[^.;\n]{1,200}?)\s+"
+        r"(?:is|are)\s+(?:available|encoded|implemented|provided|supplied)"
+        r"(?:\s+in\s+(?:the\s+)?(?:available|provided|supplied)\s+context)?"
+        r"\s*\.?\s*",
+        after,
+        flags=re.IGNORECASE,
+    )
+    if unavailable_export is not None:
+        missing_scope = unavailable_export.group("missing")
+        return bool(
+            _missing_scope_starts_with_executable_object(missing_scope)
+            and _unavailable_export_names_source_concept(
+                missing_scope,
+                source_scope_text=source_scope_text,
+            )
+            and not _executable_object_scope_claims_ready(missing_scope)
+            and not _missing_scope_reverses_insufficiency(missing_scope)
+            and not tuple(_reason_dependencies(missing_scope))
+        )
     insufficiency = re.match(
         r"\s*(?:(?:dependency|context|module|output|provision|rulespec)\s+)?"
         r"(?:(?:provides?|exports?)\s+only\b(?P<limited>[^.;\n]{1,200}?)"
@@ -7310,6 +7358,62 @@ def _reason_match_has_bounded_insufficiency(
         and _missing_scope_starts_with_executable_object(missing_scope)
         and not _missing_scope_reverses_insufficiency(missing_scope)
     )
+
+
+def _unavailable_export_names_source_concept(
+    missing_scope: str,
+    *,
+    source_scope_text: str,
+) -> bool:
+    """Bind a missing executable export to the source-linked object family."""
+
+    source_link = re.search(
+        r"\bat\s+(?:the\s+)?(?P<object>amounts?|percentages?|rates?)\s+"
+        r"provided(?:\s+for)?\s+in\s+" + _LOUISIANA_RS_DEFERRAL_DEPENDENCY.pattern,
+        source_scope_text,
+        flags=re.IGNORECASE,
+    )
+    if source_link is None:
+        return False
+    source_signature = _louisiana_object_signature(source_link.group("object"))
+    if source_signature is None:
+        return False
+
+    wrapper = re.match(
+        r"\s*(?:(?:an?|the)\s+)?(?:executable\s+)?(?:RuleSpec\s+)?"
+        r"(?:exports?|outputs?)\s+for\s+(?P<concept>.+)",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    concept_scope = wrapper.group("concept") if wrapper is not None else missing_scope
+    if re.fullmatch(
+        r"\s*(?:the\s+)?(?:"
+        r"rates?\s+applicable\s+to\s+"
+        r"(?:corporations?|(?:corporation|corporate)\s+taxable\s+income)|"
+        r"rates?\s+used\s+to\s+compute\s+corporation\s+tax|"
+        r"rates?\s+that\s+apply\s+to\s+corporations?"
+        r")\s*",
+        concept_scope,
+        flags=re.IGNORECASE,
+    ):
+        concept_scope = "corporate rates"
+    elif re.search(r"\b(?:that|which)\b", concept_scope, flags=re.IGNORECASE):
+        return False
+    concept_signature = _louisiana_object_signature(concept_scope)
+    if concept_signature is None or concept_signature[0] != source_signature[0]:
+        return False
+
+    source_modifiers = {
+        _louisiana_normalize_modifier_token(
+            {"corporation": "corporate", "corporations": "corporate"}.get(
+                token,
+                token,
+            )
+        )
+        for token in re.findall(r"[a-z][a-z0-9]+", source_scope_text.lower())
+    }
+    generic_modifiers = {"applicable"}
+    return concept_signature[1] <= source_modifiers | generic_modifiers
 
 
 _LOUISIANA_DOCUMENTARY_HEAD = re.compile(
@@ -7405,14 +7509,16 @@ def _missing_scope_starts_with_executable_object(missing_scope: str) -> bool:
 def _executable_object_scope_claims_ready(missing_scope: str) -> bool:
     """Reject a relative or appositive assertion that the object already exists."""
 
-    qualifier = re.search(
-        r"(?P<marker>,|\b(?:that|which)\b)(?P<scope>[^.;\n]{1,180})",
+    if re.fullmatch(
+        r"\s*(?:(?:an?|the)\s+)?(?:executable\s+)?(?:RuleSpec\s+)?"
+        r"(?:exports?|outputs?)\s+for\s+(?:the\s+)?(?:"
+        r"rates?\s+used\s+to\s+compute\s+corporation\s+tax"
+        r")\s*",
         missing_scope,
         flags=re.IGNORECASE,
-    )
-    if qualifier is None:
+    ):
         return False
-    scope = qualifier.group("scope")
+
     ready_state = (
         r"(?:accessible|accessed|available|complete|computed|calculated|determined|"
         r"defined|deployed|downloadable|downloaded|encoded|executed|extant|found|"
@@ -7427,6 +7533,41 @@ def _executable_object_scope_claims_ready(missing_scope: str) -> bool:
         r"(?:actively|actually|already|always|currently|directly|fully|immediately|"
         r"just|now|presently|previously|readily|still)"
     )
+    direct_readiness = re.search(
+        rf"\b(?:"
+        rf"(?:{affirmative_adverb}\s+)*{ready_state}"
+        r"(?:\s+(?:here|in\s+(?:this|the)\s+context))?|"
+        r"(?:this|the)\s+context\s+"
+        r"(?:exports?|furnishes?|has|holds?|implements?|provides?|supplies?)"
+        r")\b",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    if direct_readiness is not None:
+        readiness_prefix = missing_scope[: direct_readiness.start()]
+        readiness_tail = missing_scope[direct_readiness.end() :]
+        epistemically_limited = re.search(
+            r"\b(?:barely|conditionally|hardly|not|supposedly|theoretically)\s*$",
+            readiness_prefix,
+            flags=re.IGNORECASE,
+        )
+        conditionally_later = re.match(
+            r"\s*(?:(?:only\s+)?(?:after|if|once|unless|upon|when)|"
+            r"provided\s+that|in\s+theory(?:\s+only)?|on\s+paper)\b",
+            readiness_tail,
+            flags=re.IGNORECASE,
+        )
+        if epistemically_limited is None and conditionally_later is None:
+            return True
+
+    qualifier = re.search(
+        r"(?P<marker>,|\b(?:that|which)\b)(?P<scope>[^.;\n]{1,180})",
+        missing_scope,
+        flags=re.IGNORECASE,
+    )
+    if qualifier is None:
+        return False
+    scope = qualifier.group("scope")
     if qualifier.group("marker") == ",":
         bare_ready = re.match(
             rf"\s*(?!not\b)"
@@ -8799,6 +8940,8 @@ def _louisiana_object_signature(text: str) -> tuple[str, frozenset[str]] | None:
         "documents": "document",
         "equation": "formula",
         "equations": "formula",
+        "export": "output",
+        "exports": "output",
         "fact": "fact",
         "facts": "fact",
         "formula": "formula",
@@ -10157,12 +10300,340 @@ def _reason_names_source_bound_runtime_gap(
     return len(substantive_tokens(reason) & substantive_tokens(source_scope_text)) >= 2
 
 
+def _reason_covers_source_authenticated_repeal(
+    reason: str,
+    source_scope_text: str,
+    *,
+    path: tuple[str, ...],
+    corpus_citation_path: str,
+) -> bool:
+    """Cover only an exact current branch whose authoritative text is a repeal."""
+
+    if not path or not source_scope_text.strip():
+        return False
+    if not _source_branch_is_explicit_repeal_tombstone(source_scope_text):
+        return False
+    for affirmative in re.finditer(
+        r"\b(?:has\s+been|is|stands?|was)\s+repealed\b",
+        reason,
+        flags=re.IGNORECASE,
+    ):
+        clause_start, _clause_end = _reason_clause_bounds(reason, affirmative)
+        citation_subject = reason[clause_start : affirmative.start()]
+        if not _reason_cites_exact_current_statute_branch(
+            citation_subject,
+            corpus_citation_path=corpus_citation_path,
+            path=path,
+            strict_terminal=True,
+            citation_must_end=True,
+            citation_must_start=True,
+        ):
+            continue
+        return _repeal_reason_tail_is_bounded(
+            reason[affirmative.end() :],
+            source_scope_text=source_scope_text,
+        )
+    return False
+
+
+def _repeal_reason_tail_is_bounded(
+    tail: str,
+    *,
+    source_scope_text: str,
+) -> bool:
+    """Accept only finite tombstone history and non-operative explanations."""
+
+    bounded = _collapse_text(tail).strip()
+    if re.fullmatch(r"\.?", bounded):
+        return True
+    if re.match(r"^by\s+acts?(?:\s+of)?\b", bounded, flags=re.IGNORECASE):
+        normalized_history = _normalize_written_section_marker(
+            re.sub(r"^by\s+", "", bounded, flags=re.IGNORECASE)
+        )
+        history = _LOUISIANA_SESSION_LAW_CITATION.match(normalized_history)
+        if history is None or history.start() != 0:
+            return False
+        reason_history = normalized_history[: history.end()]
+        bounded = normalized_history[history.end() :].strip()
+        effective_date = re.match(
+            r"^,\s*eff(?:ective)?\.?\s+"
+            r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|"
+            r"July?|Aug(?:ust)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|"
+            r"Dec(?:ember)?)\.?\s+\d{1,2}\s*,\s*\d{4}",
+            bounded,
+            flags=re.IGNORECASE,
+        )
+        if effective_date is not None:
+            reason_history += " " + effective_date.group(0)
+            bounded = bounded[effective_date.end() :].strip()
+        reason_identity = _normalized_repeal_history(reason_history)
+        source_identity = _source_repeal_history(source_scope_text)
+        if (
+            reason_identity is None
+            or source_identity is None
+            or reason_identity != source_identity
+        ):
+            return False
+        if re.fullmatch(r"\.?", bounded):
+            return True
+    explanation = (
+        r"(?:,\s*)?(?:and\s+)?(?:"
+        r"supplies?\s+no\s+operative\s+rule(?:\s+to\s+encode)?|"
+        r"has\s+no\s+operative\s+(?:effect|rule|text)|"
+        r"contains?\s+no\s+operative\s+(?:legal\s+)?"
+        r"(?:effect|predicate|provision|requirement|rule|text)|"
+        r"contains?\s+no\s+operative\s+legal\s+predicate\s*,\s*amount\s*,\s*"
+        r"source-stated\s+input\s*,\s*or\s+runtime\s+consequence\s+from\s+"
+        r"which\s+an\s+executable\s+output\s+can\s+be\s+computed"
+        r")\s*\.?"
+    )
+    return bool(re.fullmatch(explanation, bounded, flags=re.IGNORECASE))
+
+
+def _source_repeal_history(source_scope_text: str) -> tuple[object, ...] | None:
+    """Return the normalized authenticated history on a repeal tombstone."""
+
+    source_body = _collapse_text(_strip_source_clause_marker(source_scope_text)).strip()
+    if source_body.startswith("[") and source_body.endswith("]"):
+        source_body = source_body[1:-1].strip()
+    repeal = re.fullmatch(
+        r"repealed\s+by\s+(?P<history>.+)",
+        source_body,
+        flags=re.IGNORECASE,
+    )
+    if repeal is None:
+        return None
+    return _normalized_repeal_history(repeal.group("history"))
+
+
+def _normalized_repeal_history(history: str) -> tuple[object, ...] | None:
+    """Parse a session law without collapsing list and range structure."""
+
+    normalized = _normalize_written_section_marker(history)
+    citation = _LOUISIANA_SESSION_LAW_CITATION.match(normalized)
+    if citation is None or citation.start() != 0:
+        return None
+    citation_text = citation.group(0)
+    year = re.search(r"\b(?P<year>\d{4})\b", citation_text)
+    number_marker = re.search(r"\bNos?\.?", citation_text, flags=re.IGNORECASE)
+    if year is None or number_marker is None:
+        return None
+
+    session_text = citation_text[year.end() : number_marker.start()]
+    session_text = re.sub(
+        r"\bE\.?\s*S\.?\b",
+        "ex sess",
+        session_text,
+        flags=re.IGNORECASE,
+    )
+    session_text = re.sub(
+        r"\b(?:Ex(?:tra)?\.?|Extraordinary)\b",
+        "ex",
+        session_text,
+        flags=re.IGNORECASE,
+    )
+    session_text = re.sub(
+        r"\bSess(?:ion)?\.?\b",
+        "sess",
+        session_text,
+        flags=re.IGNORECASE,
+    )
+    session_text = re.sub(
+        r"\b(\d+)\s+(st|nd|rd|th|d)\b",
+        r"\1\2",
+        session_text,
+        flags=re.IGNORECASE,
+    )
+    ordinal_words = {
+        "first": "1",
+        "second": "2",
+        "third": "3",
+        "fourth": "4",
+        "fifth": "5",
+        "sixth": "6",
+        "seventh": "7",
+        "eighth": "8",
+        "ninth": "9",
+        "tenth": "10",
+    }
+    session_tokens = re.findall(r"[a-z0-9]+", session_text.lower())
+    ex_index = session_tokens.index("ex") if "ex" in session_tokens else 0
+    if ex_index:
+        word_ordinal = _english_ordinal_value(session_tokens[:ex_index])
+        if word_ordinal is not None:
+            session_tokens = [str(word_ordinal), *session_tokens[ex_index:]]
+    session_parts: list[str] = []
+    for token in session_tokens:
+        if token in ordinal_words:
+            session_parts.append(ordinal_words[token])
+            continue
+        ordinal = re.fullmatch(r"(?P<number>\d+)(?P<suffix>st|nd|rd|th|d)", token)
+        if ordinal is None:
+            session_parts.append(token)
+            continue
+        number = int(ordinal.group("number"))
+        suffix = ordinal.group("suffix")
+        final_two = number % 100
+        expected_suffix = (
+            "th"
+            if 11 <= final_two <= 13
+            else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+        )
+        historical_d = (
+            suffix == "d" and not 11 <= final_two <= 13 and number % 10 in {2, 3}
+        )
+        if suffix != expected_suffix and not historical_d:
+            return None
+        session_parts.append(str(number))
+    session = tuple(session_parts)
+
+    section_marker = re.search(r"§{1,2}", citation_text)
+    acts_end = (
+        section_marker.start() if section_marker is not None else len(citation_text)
+    )
+    act_numbers = tuple(
+        match.group(0)
+        for match in re.finditer(
+            r"\d+(?:[-–—]\d+)?",
+            citation_text[number_marker.end() : acts_end],
+        )
+    )
+    sections: tuple[str, ...] = ()
+    if section_marker is not None:
+        section_text = citation_text[section_marker.end() :]
+        section_text = re.sub(r"\b(?:through|to)\b", "-", section_text, flags=re.I)
+        section_text = re.sub(r"\band\b", ",", section_text, flags=re.I)
+        section_text = re.sub(r"[–—]", "-", section_text)
+        section_text = re.sub(r"\s+", "", section_text).strip(",")
+        sections = tuple(part for part in section_text.split(",") if part)
+
+    effective_date: tuple[str, str, str] | None = None
+    date = re.search(
+        r"\beff(?:ective)?\.?\s+"
+        r"(?P<month>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|"
+        r"July?|Aug(?:ust)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?)\.?\s+(?P<day>\d{1,2})\s*,\s*(?P<year>\d{4})",
+        normalized[citation.end() :],
+        flags=re.IGNORECASE,
+    )
+    if date is not None:
+        month = date.group("month").lower()[:3]
+        if month == "sep":
+            month = "sep"
+        effective_date = (month, str(int(date.group("day"))), date.group("year"))
+
+    return (
+        year.group("year"),
+        session,
+        act_numbers,
+        sections,
+        effective_date,
+    )
+
+
+def _normalize_written_section_marker(text: str) -> str:
+    """Preserve singular/list structure for written section markers."""
+
+    return re.sub(
+        r"\b(?P<label>sections?)\s+(?=\d)",
+        lambda match: "§§" if match.group("label").lower().endswith("s") else "§",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+def _english_ordinal_value(tokens: Sequence[str]) -> int | None:
+    """Normalize ordinary English session ordinals admitted by the citation grammar."""
+
+    single = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "sixth": 6,
+        "seventh": 7,
+        "eighth": 8,
+        "ninth": 9,
+        "tenth": 10,
+        "eleventh": 11,
+        "twelfth": 12,
+        "thirteenth": 13,
+        "fourteenth": 14,
+        "fifteenth": 15,
+        "sixteenth": 16,
+        "seventeenth": 17,
+        "eighteenth": 18,
+        "nineteenth": 19,
+        "twentieth": 20,
+        "thirtieth": 30,
+        "fortieth": 40,
+        "fiftieth": 50,
+        "sixtieth": 60,
+        "seventieth": 70,
+        "eightieth": 80,
+        "ninetieth": 90,
+    }
+    if len(tokens) == 1:
+        return single.get(tokens[0])
+    tens = {
+        "twenty": 20,
+        "thirty": 30,
+        "forty": 40,
+        "fifty": 50,
+        "sixty": 60,
+        "seventy": 70,
+        "eighty": 80,
+        "ninety": 90,
+    }
+    if len(tokens) == 2 and tokens[0] in tens and tokens[1] in single:
+        unit = single[tokens[1]]
+        if 1 <= unit <= 9:
+            return tens[tokens[0]] + unit
+    return None
+
+
+def _source_branch_is_explicit_repeal_tombstone(source_scope_text: str) -> bool:
+    """Accept a bare repeal or a finite Louisiana session-law repeal history."""
+
+    source_body = _collapse_text(_strip_source_clause_marker(source_scope_text)).strip()
+    if source_body.startswith("[") and source_body.endswith("]"):
+        source_body = source_body[1:-1].strip()
+    if re.fullmatch(r"repealed\s*[.;]?", source_body, flags=re.IGNORECASE):
+        return True
+    repeal = re.fullmatch(
+        r"repealed\s+by\s+(?P<history>.+)",
+        source_body,
+        flags=re.IGNORECASE,
+    )
+    if repeal is None:
+        return False
+    history = _normalize_written_section_marker(repeal.group("history"))
+    citation = _LOUISIANA_SESSION_LAW_CITATION.match(history)
+    if citation is None or citation.start() != 0:
+        return False
+    effective_date_tail = history[citation.end() :]
+    return bool(
+        _normalized_repeal_history(history) is not None
+        and re.fullmatch(
+            r"\s*(?:,\s*eff(?:ective)?\.?\s+"
+            r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|"
+            r"July?|Aug(?:ust)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|"
+            r"Dec(?:ember)?)\.?\s+\d{1,2}\s*,\s*\d{4})?\s*\.?\s*",
+            effective_date_tail,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _reason_cites_exact_current_statute_branch(
     reason: str,
     *,
     corpus_citation_path: str,
     path: tuple[str, ...],
     strict_terminal: bool = False,
+    citation_must_end: bool = False,
+    citation_must_start: bool = False,
 ) -> bool:
     """Bind a runtime-gap reason to one complete current-source branch."""
 
@@ -10203,19 +10674,25 @@ def _reason_cites_exact_current_statute_branch(
         section_pattern = literal_pattern(
             normalize_rulespec_path_segment(citation.section)
         )
+        start_guard = r"^\s*" if citation_must_start else ""
+        end_guard = r"\s*$" if citation_must_end else ""
         return bool(
             re.search(
-                rf"\b{re.escape(citation.title)}\s+U\.?\s*S\.?\s*C\.?\s*"
+                rf"{start_guard}\b{re.escape(citation.title)}\s+"
+                rf"U\.?\s*S\.?\s*C\.?\s*"
                 rf"(?:§{{1,2}}\s*)?{section_pattern}\s*{usc_branch_pattern}"
-                rf"{usc_terminal_guard}",
+                rf"{usc_terminal_guard}{end_guard}",
                 reason,
                 flags=re.IGNORECASE,
             )
         )
 
+    start_guard = r"^\s*" if citation_must_start else ""
+    end_guard = r"\s*$" if citation_must_end else ""
     canonical_pattern = re.compile(
-        rf"(?<![A-Za-z0-9_.-]){literal_pattern(corpus_citation_path.rstrip('/'))}"
-        rf"\s*{branch_pattern}{state_branch_terminal_guard}",
+        rf"{start_guard}(?<![A-Za-z0-9_.-])"
+        rf"{literal_pattern(corpus_citation_path.rstrip('/'))}"
+        rf"\s*{branch_pattern}{state_branch_terminal_guard}{end_guard}",
         flags=re.IGNORECASE,
     )
     if canonical_pattern.search(reason):
@@ -10245,10 +10722,10 @@ def _reason_cites_exact_current_statute_branch(
         for part in complete_louisiana_branch
     )
     louisiana_rs_pattern = re.compile(
-        rf"(?<![A-Za-z0-9])(?:La\.?\s+)?R\.?\s*S\.?\s*"
+        rf"{start_guard}(?<![A-Za-z0-9])(?:La\.?\s+)?R\.?\s*S\.?\s*"
         rf"{literal_pattern(title)}\s*:\s*{literal_pattern(section)}\s*"
         rf"{louisiana_branch_pattern}"
-        rf"{state_branch_terminal_guard}",
+        rf"{state_branch_terminal_guard}{end_guard}",
         flags=re.IGNORECASE,
     )
     return bool(louisiana_rs_pattern.search(reason))

@@ -109,6 +109,18 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
         complete_prompt
     )
     assert "The output path\n  is not a source citation" in complete_prompt
+    assert (
+        "authoritative branch is exactly a bare `Repealed.` tombstone"
+        in complete_prompt
+    )
+    assert "Do not\n  fabricate an executable rule" in complete_prompt
+    assert (
+        "the bounded reason form `<exact branch citation> is repealed.`"
+        in complete_prompt
+    )
+    assert (
+        "For a Louisiana branch that computes tax at rates provided" in complete_prompt
+    )
     assert "exact missing RuleSpec targets under `blocked_by`" not in complete_prompt
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
@@ -257,6 +269,17 @@ def test_eval_prompt_adds_completeness_only_when_enabled(tmp_path):
         complete_prompt
     )
     assert "The output path\n  is not a source citation" in complete_prompt
+    assert (
+        "authoritative branch is exactly a bare `Repealed.` tombstone"
+        in complete_prompt
+    )
+    assert (
+        "the bounded reason form `<exact branch citation> is repealed.`"
+        in complete_prompt
+    )
+    assert (
+        "For a Louisiana branch that computes tax at rates provided" in complete_prompt
+    )
     assert (
         "Only include `blocked_by` entries when you know the exact" in complete_prompt
     )
