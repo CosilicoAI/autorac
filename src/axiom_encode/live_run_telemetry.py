@@ -50,6 +50,12 @@ def runner_identity() -> dict:
 
 
 def _live_telemetry_configured() -> bool:
+    # Test-suite invocations of the encode path must never reach the real
+    # dashboard: developer machines carry write credentials in their shell
+    # environment, so credential presence alone cannot distinguish a real
+    # encode from a pytest fixture run.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
     return bool(
         os.environ.get("AXIOM_ENCODE_SUPABASE_URL")
         and os.environ.get("AXIOM_ENCODE_SUPABASE_SECRET_KEY")

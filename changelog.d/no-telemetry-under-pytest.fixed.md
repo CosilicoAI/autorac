@@ -1,0 +1,1 @@
+Encode telemetry (live-run presence and completed-run sync) is disabled under pytest: developer machines carry dashboard write credentials in their shell environment, and test-suite invocations of the encode path were writing fixture runs to the production ops dashboard.
