@@ -1531,6 +1531,311 @@ def test_skipped_dotted_labels_do_not_form_subsection_hierarchy():
     assert recognize_source_structure("A. First.\nC. Third.\nD. Fourth.") == ()
 
 
+def test_parenthesized_cfr_outline_scopes_repeated_numeric_markers():
+    source = """\
+(a) Status requirements.
+(1) Citizen.
+(2) National.
+(3) First group.
+(i) First member.
+(ii) Second member.
+(6) Qualified aliens.
+(i) Qualified status.
+(A) Permanent resident.
+(B) Asylee.
+(ii) Immediate eligibility.
+(A) Forty quarters.
+(1) Spouse quarters.
+(2) Benefit quarters.
+(G) Military connection.
+(1) Veteran.
+(2) Active duty.
+(3) Family member.
+(iii) Five-year wait.
+(A) Permanent resident.
+(iv) Status categories stand alone.
+(7) Definition.
+(b) Reporting. (1) First reporting rule.
+(2) Documentation rule.
+(c) Sponsored aliens. (1) Definition.
+(2) Deeming.
+(i) Income.
+(A) Earned-income reduction.
+(B) Gross-income limit.
+(v) Allocation.
+(3) Exempt aliens.
+(i) Household member.
+(ii) Organization sponsor.
+(4) Responsibilities.
+"""
+
+    branches = recognize_source_structure(source)
+    paths = {branch.path for branch in branches}
+
+    assert ("a", "3") in paths
+    assert ("a", "6", "ii", "a", "1") in paths
+    assert ("a", "6", "ii", "g", "3") in paths
+    assert ("b", "1") in paths
+    assert ("c", "1") in paths
+    assert ("c", "3") in paths
+    assert ("c", "3", "ii") in paths
+    assert sum(branch.label == "(3)" for branch in branches) == 3
+    assert not any(branch.path == ("3",) for branch in branches)
+
+
+def test_parenthesized_cfr_outline_keeps_colliding_branch_text_separate():
+    source = """\
+(a) Status requirements.
+(1) Citizen.
+(3) American Indian categories.
+(i) Canadian-born member.
+(ii) Recognized tribe member.
+(b) Reporting requirements.
+(2) Missing documentation.
+(c) Sponsored aliens.
+(2) Deeming rules.
+(3) Exempt sponsored aliens.
+(i) Sponsor household member.
+"""
+
+    by_path = {branch.path: branch for branch in recognize_source_structure(source)}
+
+    assert "American Indian categories" in by_path[("a", "3")].text
+    assert "Exempt sponsored aliens" not in by_path[("a", "3")].text
+    assert "Exempt sponsored aliens" in by_path[("c", "3")].text
+    assert "Canadian-born member" not in by_path[("c", "3")].text
+
+
+def test_parenthesized_cfr_outline_keeps_suffixed_numeric_siblings():
+    source = """\
+(a) Status requirements.
+(1) First item.
+(1a) Added first item.
+(1b) Second added item.
+(2) Second item.
+(b) Reporting requirements.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "1a"),
+        ("a", "1b"),
+        ("a", "2"),
+        ("b",),
+    ]
+
+
+def test_parenthesized_cfr_outline_reports_distinct_colliding_branch_citations():
+    source = """\
+(a) Status requirements.
+(1) Citizen.
+(2) National.
+(3) American Indian categories.
+(i) Canadian-born member.
+(ii) Recognized tribe member.
+(b) Reporting requirements.
+(2) Missing documentation.
+(c) Sponsored aliens.
+(2) Deeming rules.
+(3) Exempt sponsored aliens.
+(i) Sponsor household member.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/regulation/7/273/4
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/regulation/7/273/4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert _has_issue(result, "us/regulation/7/273/4(a)", "Nummer 3")
+    assert _has_issue(result, "us/regulation/7/273/4(c)", "Nummer 3")
+    assert not _has_issue(result, "us/regulation/7/273/4(3) [Absatz 3]")
+
+
+def test_parenthesized_cfr_outline_is_recognized_with_bounded_runtime():
+    source = (
+        "(a) Start.\n"
+        + "".join(f"({index}) Item {index}.\n" for index in range(1, 20_001))
+        + "(b) End."
+    )
+
+    started = time.perf_counter()
+    branches = recognize_source_structure(source)
+    elapsed = time.perf_counter() - started
+
+    assert len(branches) == 20_002
+    assert branches[-2].path == ("a", "20000")
+    assert branches[-1].path == ("b",)
+    assert elapsed < 1.5
+
+
+def test_parenthesized_nonoutline_without_root_sequence_remains_flat():
+    source = "(2) Prior rule.\n(3) Current rule.\n(i) Inline detail."
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("2",),
+        ("3",),
+        ("i",),
+    ]
+
+
+def test_parenthesized_cfr_outline_does_not_promote_inline_cross_references():
+    source = """\
+(a) Status requirements. See paragraph (1) for the first rule.
+(1) First rule.
+(b) Reporting requirements. See paragraphs (a)(1) and (2).
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "1"),
+        ("b",),
+    ]
+
+
+def test_parenthesized_cfr_outline_keeps_punctuated_cross_reference_formula_owner():
+    source = """\
+(a) First rule.
+(1) First child.
+(b) Reporting rule. See paragraph: (a)(1) for scope; amount = income * 2.
+(c) Final rule.
+"""
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("a",),
+        ("a", "1"),
+        ("b",),
+        ("c",),
+    ]
+    assert "amount = income * 2" in branches[2].text
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert [(branch.path, branch.text) for branch in formula_branches] == [
+        (("b",), "amount = income * 2."),
+    ]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "As specified in paragraph: (1)",
+        "Compare paragraph: (1)",
+        "Refer to paragraph: (1)",
+        "Subject to paragraph: (1)",
+        "For purposes of paragraph: (1)",
+        "See subparagraph: (1)",
+        "See paragraph no. (1)",
+        "See paragraph no. 1: (1)",
+        "See the provisions of paragraph: (1)",
+        "Compare to: (1)",
+        "Refer back to: (1)",
+        "Subject to subpart: (1)",
+        "See appendix A: (1)",
+        "See appendix A; (1)",
+        "For purposes of appendix A. (1)",
+        "For purposes of appendix A: (1)",
+        "See 7 CFR 273.2: (1)",
+        "See 7 CFR 273.2; (1)",
+        "See 7 CFR § 273.2: (1)",
+        "See 7 C.F.R. § 273.2. (1)",
+        "Refer back to appendix A: (1)",
+        "Refer back to appendix A— (1)",
+        "See appendix A to part 273: (1)",
+        "Subject to schedule A: (1)",
+        "Subject to schedule A; (1)",
+    ),
+)
+def test_parenthesized_cfr_outline_rejects_punctuated_single_marker_reference(
+    reference: str,
+):
+    source = f"""\
+(a) First rule.
+(1) First child.
+(b) Reporting rule. {reference} controls; amount = income * 2.
+(c) Final rule.
+"""
+    branches = recognize_source_structure(source)
+    assert [branch.path for branch in branches] == [
+        ("a",),
+        ("a", "1"),
+        ("b",),
+        ("c",),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    assert [branch.path for branch in formula_branches] == [("b",)]
+
+
+def test_parenthesized_cfr_outline_accepts_inline_child_after_chapeau():
+    source = """\
+(a) First rule. The following paragraphs: (1) First child.
+(b) Final rule.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "1"),
+        ("b",),
+    ]
+
+
+def test_parenthesized_cfr_outline_reference_lead_does_not_cross_sentence():
+    source = """\
+(a) First rule. See prior rule. The following paragraphs: (1) First child.
+(b) Final rule.
+"""
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("a",),
+        ("a", "1"),
+        ("b",),
+    ]
+
+
+def test_parenthesized_cfr_outline_deduplicates_repeated_attached_ancestors():
+    source = """\
+(a)(1) First.
+(a)(2) Second.
+(b)(1) Third.
+(b)(2) Fourth.
+"""
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("a",),
+        ("a", "1"),
+        ("a", "2"),
+        ("b",),
+        ("b", "1"),
+        ("b", "2"),
+    ]
+    by_path = {branch.path: branch for branch in branches}
+    assert "First" in by_path[("a",)].text
+    assert "Second" in by_path[("a",)].text
+    assert "Third" not in by_path[("a",)].text
+    assert "Third" in by_path[("b",)].text
+    assert "Fourth" in by_path[("b",)].text
+
+
 def test_parenthesized_letters_nest_under_active_numeric_paragraph():
     source = "A. Outer.\n(1) Numeric.\n(a) First.\n(b) Second.\n(2) Other.\nB. End."
 

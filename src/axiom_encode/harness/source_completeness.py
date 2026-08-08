@@ -244,6 +244,46 @@ _PARENTHESIZED_OUTLINE_MARKER = re.compile(
     r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
+_INLINE_PARENTHESIZED_OUTLINE_MARKER = re.compile(
+    r"(?:(?<=[.!?;:])[ \t]+|(?<=—)[ \t]*)"
+    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
+    flags=re.IGNORECASE,
+)
+_INLINE_OUTLINE_REFERENCE_CONTEXT = re.compile(
+    r"\b(?:section|subsection|paragraph|subparagraph|clause|subclause|item|"
+    r"subitem|division|subdivision|part|subpart|chapter|subchapter|title|article|"
+    r"subarticle)s?"
+    r"(?:\s+(?:no\.?|number)(?:\s*[A-Za-z0-9][A-Za-z0-9.-]*)?)?"
+    r"\s*[:;,.!?—]?\s*$|"
+    r"\b(?:see|compare(?:\s+(?:to|with))?|refer(?:\s+back)?(?:\s+to)?|"
+    r"subject\s+to|under|pursuant\s+to|according\s+to|"
+    r"in\s+accordance\s+with|for\s+purposes\s+of|"
+    r"as\s+(?:provided|specified|described|stated)\s+in)\s*:\s*$",
+    flags=re.IGNORECASE,
+)
+_INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT = re.compile(
+    r"\b(?:see|compare(?:\s+(?:to|with))?|refer(?:\s+back)?(?:\s+to)?|"
+    r"subject\s+to|under|pursuant\s+to|according\s+to|"
+    r"in\s+accordance\s+with|for\s+purposes\s+of|"
+    r"as\s+(?:provided|specified|described|stated)\s+in)\s+"
+    r"(?:(?!\n|[;!?—]|\.(?=\s+[A-Z])).){1,96}[:;.!?—]\s*$",
+    flags=re.IGNORECASE,
+)
+_INLINE_OUTLINE_STRUCTURAL_CHAPEAU_CONTEXT = re.compile(
+    r"\b(?:the\s+)?following\s+"
+    r"(?:sections?|subsections?|paragraphs?|subparagraphs?|clauses?|"
+    r"subclauses?|items?|subitems?|divisions?|subdivisions?|parts?|subparts?)"
+    r"\s*:\s*$",
+    flags=re.IGNORECASE,
+)
+_INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD = re.compile(
+    r"\b(?:see|compare(?:\s+(?:to|with))?|refer(?:\s+back)?(?:\s+to)?|"
+    r"subject\s+to|under|pursuant\s+to|according\s+to|"
+    r"in\s+accordance\s+with|for\s+purposes\s+of|"
+    r"as\s+(?:provided|specified|described|stated)\s+in)"
+    r"\s+(?:the\s+)?following\b",
+    flags=re.IGNORECASE,
+)
 _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)"
     r"(?!(?i:st|nd|rd|th)\b)"
@@ -2054,25 +2094,46 @@ def recognize_source_structure(source_text: str) -> tuple[SourceStructureBranch,
                 )
                 paragraph_segments.append((marker.path, marker.start, end, text))
     else:
-        paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
-        for index, match in enumerate(paragraph_matches):
-            start = match.start()
-            end = (
-                paragraph_matches[index + 1].start()
-                if index + 1 < len(paragraph_matches)
-                else len(source_text)
-            )
-            label = match.group("label").lower()
-            text = source_text[start:end].strip()
-            if _is_editorial_omission(text):
-                continue
-            path = (label,)
-            branches.append(
-                SourceStructureBranch(
-                    path, "paragraph", match.group("marker"), text, start, end
+        nested_markers = _qualified_parenthesized_legal_outline_markers(source_text)
+        if nested_markers:
+            for marker, end in _nested_outline_marker_spans(
+                nested_markers,
+                outer_end=len(source_text),
+            ):
+                text = source_text[marker.start : end].strip()
+                if _is_editorial_omission(text):
+                    continue
+                branches.append(
+                    SourceStructureBranch(
+                        marker.path,
+                        marker.kind,
+                        marker.label,
+                        text,
+                        marker.start,
+                        end,
+                    )
                 )
-            )
-            paragraph_segments.append((path, start, end, text))
+                paragraph_segments.append((marker.path, marker.start, end, text))
+        else:
+            paragraph_matches = list(_PARAGRAPH_MARKER.finditer(source_text))
+            for index, match in enumerate(paragraph_matches):
+                start = match.start()
+                end = (
+                    paragraph_matches[index + 1].start()
+                    if index + 1 < len(paragraph_matches)
+                    else len(source_text)
+                )
+                label = match.group("label").lower()
+                text = source_text[start:end].strip()
+                if _is_editorial_omission(text):
+                    continue
+                path = (label,)
+                branches.append(
+                    SourceStructureBranch(
+                        path, "paragraph", match.group("marker"), text, start, end
+                    )
+                )
+                paragraph_segments.append((path, start, end, text))
 
     if not paragraph_segments:
         paragraph_segments = [((), 0, len(source_text), source_text)]
@@ -2353,6 +2414,255 @@ def _nested_parenthesized_outline_markers(
             )
         )
     return tuple(markers)
+
+
+_PARENTHESIZED_LEGAL_OUTLINE_LEVELS = (
+    "lower-alpha",
+    "numeric",
+    "roman",
+    "upper-alpha",
+    "numeric",
+    "roman",
+    "upper-alpha",
+    "numeric",
+    "roman",
+)
+
+
+def _qualified_parenthesized_legal_outline_markers(
+    source_text: str,
+) -> tuple[_OutlineMarker, ...]:
+    """Resolve a proven all-parenthesized U.S. legal outline.
+
+    A flat parenthesized scan cannot distinguish repeated labels such as
+    ``(a)(3)``, ``(a)(6)(ii)(G)(3)``, and ``(c)(3)``.  Use the conventional
+    U.S. legal hierarchy only when sequential root subsections prove that the
+    source is an outline; otherwise retain the legacy flat recognizer.
+    """
+
+    line_matches = tuple(_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text))
+    inline_matches = tuple(
+        match
+        for match in _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text)
+        if not _inline_outline_marker_has_reference_context(source_text, match)
+    )
+    inline_marker_starts = {match.start("marker") for match in inline_matches}
+    matches = tuple(
+        heapq.merge(
+            line_matches,
+            inline_matches,
+            key=lambda match: match.start("marker"),
+        )
+    )
+    if not matches:
+        return ()
+
+    markers: list[_OutlineMarker] = []
+    emitted_paths: set[tuple[str, ...]] = set()
+    active: list[tuple[int, str, str, str]] = []
+    for match in matches:
+        raw_labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker")))
+        if not raw_labels or not all(
+            _is_parenthesized_outline_label(label) for label in raw_labels
+        ):
+            continue
+        marker_start = match.start("marker")
+        attached_parent_level: int | None = None
+        for label_index, raw_label in enumerate(raw_labels):
+            level, category = _parenthesized_legal_outline_level(
+                raw_label,
+                active=active,
+                attached_parent_level=attached_parent_level,
+            )
+            if marker_start in inline_marker_starts and label_index == 0 and level == 0:
+                break
+            active = [entry for entry in active if entry[0] < level]
+            normalized = raw_label.lower()
+            active.append((level, raw_label, normalized, category))
+            path = tuple(entry[2] for entry in active)
+            is_repeated_attached_ancestor = (
+                len(raw_labels) > 1
+                and label_index < len(raw_labels) - 1
+                and path in emitted_paths
+            )
+            if not is_repeated_attached_ancestor:
+                markers.append(
+                    _OutlineMarker(
+                        marker_start,
+                        path,
+                        (
+                            "paragraph"
+                            if category == "numeric" or level == 0
+                            else "letter"
+                        ),
+                        f"({raw_label})",
+                    )
+                )
+                emitted_paths.add(path)
+            attached_parent_level = level
+
+    root_labels = [
+        marker.path[0]
+        for marker in markers
+        if len(marker.path) == 1 and marker.label[1:-1].islower()
+    ]
+    has_sequential_roots = any(
+        first == "a" and second == "b"
+        for first, second in itertools.pairwise(root_labels)
+    )
+    return tuple(markers) if has_sequential_roots else ()
+
+
+def _inline_outline_marker_has_reference_context(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    prefix = source_text[max(0, match.start("marker") - 128) : match.start("marker")]
+    if _INLINE_OUTLINE_STRUCTURAL_CHAPEAU_CONTEXT.search(prefix) and not (
+        _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD.search(prefix)
+    ):
+        return False
+    return bool(
+        _INLINE_OUTLINE_REFERENCE_CONTEXT.search(prefix)
+        or _INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT.search(prefix)
+    )
+
+
+def _parenthesized_legal_outline_level(
+    raw_label: str,
+    *,
+    active: Sequence[tuple[int, str, str, str]],
+    attached_parent_level: int | None,
+) -> tuple[int, str]:
+    categories = _parenthesized_legal_outline_categories(raw_label)
+    candidate_levels = tuple(
+        level
+        for level, category in enumerate(_PARENTHESIZED_LEGAL_OUTLINE_LEVELS)
+        if category in categories
+    )
+    if not candidate_levels:
+        return 0, categories[0]
+
+    if attached_parent_level is not None:
+        level = next(
+            (level for level in candidate_levels if level > attached_parent_level),
+            candidate_levels[-1],
+        )
+        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+
+    continuing = [
+        (level, category)
+        for level, previous, _normalized, category in active
+        if level in candidate_levels
+        and _parenthesized_outline_label_follows(previous, raw_label, category)
+    ]
+    if continuing:
+        return max(continuing, key=lambda item: item[0])
+
+    parent_level = active[-1][0] if active else -1
+    first_descending = [
+        level
+        for level in candidate_levels
+        if level > parent_level
+        and _parenthesized_outline_label_is_first(
+            raw_label,
+            _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level],
+        )
+    ]
+    if first_descending:
+        level = first_descending[0]
+        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+
+    same_category = [
+        (level, category)
+        for level, _previous, _normalized, category in active
+        if category in categories
+    ]
+    if same_category:
+        return max(same_category, key=lambda item: item[0])
+
+    descending = [level for level in candidate_levels if level > parent_level]
+    if descending:
+        level = descending[0]
+        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+
+    level = min(candidate_levels, key=lambda item: abs(item - parent_level))
+    return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+
+
+def _parenthesized_legal_outline_categories(raw_label: str) -> tuple[str, ...]:
+    if raw_label[0].isdigit():
+        return ("numeric",)
+    if raw_label.isupper():
+        return ("upper-alpha",)
+    categories = ["lower-alpha"]
+    if _is_roman_outline_label(raw_label):
+        categories.append("roman")
+    return tuple(categories)
+
+
+def _parenthesized_outline_label_follows(
+    previous: str,
+    current: str,
+    category: str,
+) -> bool:
+    if category == "numeric":
+        previous_match = re.fullmatch(r"(\d+)([a-z]?)", previous, re.IGNORECASE)
+        current_match = re.fullmatch(r"(\d+)([a-z]?)", current, re.IGNORECASE)
+        if previous_match is None or current_match is None:
+            return False
+        previous_number = int(previous_match.group(1))
+        current_number = int(current_match.group(1))
+        previous_suffix = previous_match.group(2).lower()
+        current_suffix = current_match.group(2).lower()
+        return (current_number == previous_number + 1 and not current_suffix) or (
+            current_number == previous_number
+            and len(current_suffix) == 1
+            and (
+                (not previous_suffix and current_suffix == "a")
+                or (
+                    len(previous_suffix) == 1
+                    and ord(current_suffix) == ord(previous_suffix) + 1
+                )
+            )
+        )
+    if category in {"lower-alpha", "upper-alpha"}:
+        return (
+            len(previous) == len(current) == 1
+            and ord(current.lower()) == ord(previous.lower()) + 1
+        )
+    if category == "roman":
+        previous_value = _roman_outline_value(previous)
+        current_value = _roman_outline_value(current)
+        return previous_value is not None and current_value == previous_value + 1
+    return False
+
+
+def _parenthesized_outline_label_is_first(label: str, category: str) -> bool:
+    if category == "numeric":
+        match = re.fullmatch(r"(\d+)([a-z]?)", label, re.IGNORECASE)
+        return match is not None and int(match.group(1)) == 1 and not match.group(2)
+    if category in {"lower-alpha", "upper-alpha"}:
+        return label.lower() == "a"
+    if category == "roman":
+        return _roman_outline_value(label) == 1
+    return False
+
+
+def _roman_outline_value(label: str) -> int | None:
+    if not _is_roman_outline_label(label):
+        return None
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+    total = 0
+    previous = 0
+    for character in reversed(label.lower()):
+        value = values[character]
+        if value < previous:
+            total -= value
+        else:
+            total += value
+            previous = value
+    return total
 
 
 def _nested_outline_marker_spans(
