@@ -3069,6 +3069,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
         ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
         ("us", "ef9dd5f72d529ebc70f539c42144361e536d7563"),
         ("us", "f4fd3203db560c0d4661542388b6ae2f353e0bd3"),
+        ("us", "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"),
         ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
         ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
     ],
@@ -3090,6 +3091,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
             ("us", "38ddc92d4160a0d39af13bfe232a446b554a15c5"),
             ("us", "ef9dd5f72d529ebc70f539c42144361e536d7563"),
             ("us", "f4fd3203db560c0d4661542388b6ae2f353e0bd3"),
+            ("us", "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"),
             ("us", "6535019ce780d9e78f10509f2fe7a2607fb2bdc4"),
             ("ca", "f60f7a84c30e38c7d4961d70647eb0457e7d76c2"),
         }
@@ -3120,7 +3122,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_protected_branch_tip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "rulespec-us"
-    reviewed_ref = "f4fd3203db560c0d4661542388b6ae2f353e0bd3"
+    reviewed_ref = "e942ce50546b1c3a1c0c8f3f0404a217eddbe071"
     git_calls: list[tuple[str, ...]] = []
 
     def fake_git(_repo: Path, *args: str) -> bytes:
