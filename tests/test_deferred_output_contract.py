@@ -144,10 +144,7 @@ def test_required_deferred_output_contract_rejects_duplicate_output(
             "      reason: |\n"
             f"        {REASON}\n"
         ),
-        (
-            "module:\n  deferred_outputs:\n"
-            f"    - output: {OUTPUT}\n      reason: 47\n"
-        ),
+        (f"module:\n  deferred_outputs:\n    - output: {OUTPUT}\n      reason: 47\n"),
     ],
 )
 def test_required_deferred_output_contract_rejects_adversarial_shape_and_drift(

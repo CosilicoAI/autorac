@@ -12993,15 +12993,9 @@ class TestCmdEncode:
             result.runner = f"codex-{kwargs['runner_specs'][0].split(':', 1)[1]}"
             result.model = kwargs["runner_specs"][0].split(":", 1)[1]
             result.generation_prompt_sha256 = f"prompt-{generated_attempts}"
-            generated = (
-                args.output / result.runner / "statutes/26/1/j/2.yaml"
-            )
+            generated = args.output / result.runner / "statutes/26/1/j/2.yaml"
             generated.parent.mkdir(parents=True, exist_ok=True)
-            reason = (
-                "Wrong paraphrase."
-                if generated_attempts == 1
-                else expected_reason
-            )
+            reason = "Wrong paraphrase." if generated_attempts == 1 else expected_reason
             generated.write_text(
                 "format: rulespec/v1\n"
                 "module:\n"

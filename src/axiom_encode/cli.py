@@ -1095,6 +1095,7 @@ def _parse_deferred_output_review_contract_json(
         raise argparse.ArgumentTypeError(
             "review contract JSON exceeds the bounded size"
         )
+
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         decoded: dict[str, object] = {}
         for key, value in pairs:

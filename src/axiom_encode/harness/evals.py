@@ -10109,9 +10109,7 @@ Preferred principal output:
         validation_retry_feedback
     )
     required_deferred_output_contract_section = (
-        _format_required_deferred_output_contracts(
-            required_deferred_output_contracts
-        )
+        _format_required_deferred_output_contracts(required_deferred_output_contracts)
     )
     validation_retry_candidate_section = _format_validation_retry_candidate(
         validation_retry_candidate,
