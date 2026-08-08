@@ -7371,6 +7371,560 @@ rules: []
     )
 
 
+def _louisiana_47_32_c_deferral(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/c#corporate_income_tax_amount
+      reason: >-
+        {reason}
+rules: []
+"""
+    source = """\
+A. Placeholder.
+
+B. Placeholder.
+
+C. On corporations. The tax upon the taxable income of every corporation shall
+be computed at the rates provided for in R.S. 47:287.12.
+"""
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+
+def test_louisiana_repeal_and_delegated_rate_are_precisely_covered():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/b#repealed_subsection
+      reason: >-
+        La. R.S. 47:32(B) is repealed by Acts 2024, 3rd Ex. Sess., No. 11,
+        section 4, effective December 4, 2024, and supplies no operative rule.
+    - output: us-la:statutes/47/32/c#corporate_income_tax_rate
+      reason: >-
+        La. R.S. 47:32(C) requires corporation taxable-income tax to be computed
+        at rates provided in R.S. 47:287.12; no executable RuleSpec export for
+        those corporation rates is supplied in the available context.
+rules:
+  - name: individual_income_tax_amount
+    kind: derived
+    entity: Person
+    dtype: Money
+    unit: USD
+    period: Year
+    source: La. R.S. 47:32(A)
+    versions:
+      - formula: individual_net_income * 0.03
+"""
+    source = """\
+A. On individuals. The tax upon the taxable income of an individual shall be
+computed at the rate of three percent on net income.
+
+B. Repealed by Acts 2024, 3rd Ex. Sess., No. 11, §4, eff. Dec. 4, 2024.
+
+C. On corporations. The tax upon the taxable income of every corporation shall
+be computed at the rates provided for in R.S. 47:287.12.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "source branch b", "neither encoded")
+    assert not _has_issue(result, "source branch c", "neither encoded")
+    assert not _has_issue(result, "deferred_outputs[0]", "deferral")
+    assert not _has_issue(result, "deferred_outputs[1]", "deferral")
+
+
+def test_louisiana_delegated_rate_accepts_archived_comma_reason():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/c#corporate_income_tax_amount
+      reason: >-
+        us-la/statute/47:32(c) requires corporation tax to be computed using the
+        rates provided in R.S. 47:287.12, but no executable RuleSpec output for
+        those corporation rates is supplied in the available context.
+rules: []
+"""
+    source = """\
+A. Placeholder.
+
+B. Placeholder.
+
+C. On corporations. The tax upon the taxable income of every corporation shall
+be computed at the rates provided for in R.S. 47:287.12.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "source branch c", "neither encoded")
+    assert not _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+def test_louisiana_delegated_rate_rejects_documentary_unavailability():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/c#corporate_income_tax_amount
+      reason: >-
+        R.S. 47:287.12; no executable explanatory report is supplied in the
+        available context.
+rules: []
+"""
+    source = """\
+C. On corporations. The tax upon the taxable income of every corporation shall
+be computed at the rates provided for in R.S. 47:287.12.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+def test_parenthesized_bare_repeal_is_audited_and_precisely_covered():
+    source = "(a) Repealed."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999/a#repealed_subsection
+      reason: 42 U.S.C. 9999(a) is repealed and supplies no operative rule.
+rules: []
+"""
+
+    branches = recognize_source_structure(source)
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert [branch.path for branch in branches] == [("a",)]
+    assert not _has_issue(result, "source branch a", "neither encoded")
+    assert not _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "42 U.S.C. 9999(b) is repealed and supplies no operative rule.",
+        "42 U.S.C. 9999(a) remains operative.",
+        (
+            "42 U.S.C. 9999(a) is repealed by Acts 1900, No. 999, effective "
+            "January 1, 1900."
+        ),
+    ),
+)
+def test_parenthesized_bare_repeal_requires_exact_deferral(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/statute/42/9999
+  deferred_outputs:
+    - output: us:statutes/42/9999/a#repealed_subsection
+      reason: {reason}
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        "(a) Repealed.",
+        corpus_citation_path="us/statute/42/9999",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    ("source_branch", "reason"),
+    (
+        (
+            "B. The tax rate is four percent.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, §4.",
+            "This subsection is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, §4.",
+            "La. R.S. 47:32(C) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11. A credit is available to residents.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11. Taxpayers must file a return.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11; however, a corporation is "
+            "eligible for the credit.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, except corporations shall pay a fee.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Pub. L. 95-600.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Laws 2024, ch. 11.",
+            "La. R.S. 47:32(B) is repealed and supplies no operative rule.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11-12.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, No. 11, 12.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, 12.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, No. 11-12.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, §§4-5.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, No. 11, §§4, 5.",
+        ),
+        (
+            "B. Repealed by Acts 2024, No. 11, §§4, 5.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, No. 11, §§4-5.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 3rd Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, 3th Ex. Sess., No. 11.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 1st Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, 1rd Ex. Sess., No. 11.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 2nd Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed by Acts 2024, 2st Ex. Sess., No. 11.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 3th Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 1rd Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed.",
+        ),
+        (
+            "B. Repealed by Acts 2024, 2st Ex. Sess., No. 11.",
+            "La. R.S. 47:32(B) is repealed.",
+        ),
+    ),
+)
+def test_repeal_coverage_requires_exact_source_tombstone_and_branch(
+    source_branch: str,
+    reason: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/b#repealed_subsection
+      reason: >-
+        {reason}
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source_branch,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+def test_repeal_history_accepts_equivalent_session_law_spellings():
+    abbreviated = completeness_module._normalized_repeal_history(
+        "Act of 2024, 3rd E.S., No. 11, §4, eff. Dec. 4, 2024."
+    )
+    expanded = completeness_module._normalized_repeal_history(
+        "Acts 2024, 3rd Ex. Sess., No. 11, section 4, effective December 4, 2024."
+    )
+
+    assert abbreviated == expanded
+
+
+@pytest.mark.parametrize(
+    ("source_history", "reason_history"),
+    (
+        (
+            "Act of 2024, No. 11, §4",
+            "Act of 2024, No. 11, section 4",
+        ),
+        (
+            "Acts 2024, No. 11, §4",
+            "Act of 2024, No. 11, section 4",
+        ),
+        (
+            "Act of 2024, No. 11, §4",
+            "Acts 2024, No. 11, section 4",
+        ),
+        (
+            "Acts 2024, 3d Ex. Sess., No. 11, §4",
+            "Acts 2024, 3rd Ex. Sess., No. 11, section 4",
+        ),
+        (
+            "Acts 2024, Third Extraordinary Session, No. 11, §4",
+            "Acts 2024, 3rd Ex. Sess., No. 11, section 4",
+        ),
+        (
+            "Acts 2016, 1 st Ex. Sess., No. 29, §§2 and 3",
+            "Acts 2016, 1st Ex. Sess., No. 29, sections 2 and 3",
+        ),
+        (
+            "Acts 2016, 1st Ex. Sess., No. 29, sections 2 and 3",
+            "Acts 2016, 1st Ex. Sess., No. 29, §§2 and 3",
+        ),
+        (
+            "Acts 2024, Twenty First Extraordinary Session, No. 11, §4",
+            "Acts 2024, 21st Ex. Sess., No. 11, section 4",
+        ),
+        (
+            "Acts 2024, Eleventh Extraordinary Session, No. 11, §4",
+            "Acts 2024, 11th Ex. Sess., No. 11, section 4",
+        ),
+    ),
+)
+def test_repeal_history_equivalence_is_accepted_end_to_end(
+    source_history: str,
+    reason_history: str,
+):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/b#repealed_subsection
+      reason: >-
+        La. R.S. 47:32(B) is repealed by {reason_history}, and supplies no
+        operative rule.
+rules: []
+"""
+    source = f"""\
+A. Placeholder.
+
+B. Repealed by {source_history}.
+
+C. Placeholder.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert not _has_issue(result, "source branch b", "neither encoded")
+    assert not _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "La. R.S. 47:32(B) is not repealed and remains operative.",
+        "La. R.S. 47:32(B) repeal was proposed but rejected.",
+        "La. R.S. 47:32(B) contains no repeal and remains in force.",
+        ("La. R.S. 47:32(B) remains operative. An unrelated act is repealed."),
+        (
+            "La. R.S. 47:32(B) repeal was proposed and rejected. An unrelated "
+            "act is repealed."
+        ),
+        "An unrelated act is repealed. La. R.S. 47:32(B) remains operative.",
+        "La. R.S. 47:32(B) is repealed. No, it remains operative.",
+        "La. R.S. 47:32(B) is repealed only in a rejected proposal.",
+        "La. R.S. 47:32(B) is repealed in neither law nor fact.",
+        "It is false that La. R.S. 47:32(B) is repealed.",
+        "A rejected proposal says La. R.S. 47:32(B) is repealed.",
+        "It is uncertain whether La. R.S. 47:32(B) is repealed.",
+        "No law states La. R.S. 47:32(B) is repealed.",
+        "A report merely alleges La. R.S. 47:32(B) is repealed.",
+        "La. R.S. 47:32(B) is repealed. That statement is false.",
+        "La. R.S. 47:32(B) is repealed. It remains effective.",
+        "La. R.S. 47:32(B) is repealed? No.",
+        "La. R.S. 47:32(B) is repealed, supposedly.",
+        "La. R.S. 47:32(B) is repealed according to a rejected proposal.",
+        "La. R.S. 47:32(B) is repealed. That assertion is wrong.",
+        "La. R.S. 47:32(B) is repealed. That is a lie.",
+        "La. R.S. 47:32(B) is repealed. Actually, it is in effect.",
+        "La. R.S. 47:32(B) is repealed. It remains valid.",
+        "La. R.S. 47:32(B) is repealed. It continues to apply.",
+        "La. R.S. 47:32(B) is repealed. In fact it still governs.",
+        "La. R.S. 47:32(B) is repealed. Correction: it is active.",
+        "La. R.S. 47:32(B) is repealed under a proposal.",
+        "La. R.S. 47:32(B) is repealed subject to enactment.",
+        "La. R.S. 47:32(B) is repealed conditionally.",
+        "La. R.S. 47:32(B) is repealed hypothetically.",
+        "La. R.S. 47:32(B) is repealed in theory.",
+        "La. R.S. 47:32(B) is repealed, perhaps.",
+        "La. R.S. 47:32(B) is repealed, maybe.",
+        "La. R.S. 47:32(B) is repealed if approved.",
+        "La. R.S. 47:32(B) is repealed, the report says.",
+        (
+            "La. R.S. 47:32(B) is repealed by Acts 1999, No. 999, §7, "
+            "effective January 1, 2000."
+        ),
+        (
+            "La. R.S. 47:32(B) is repealed by Acts 2024, No. 12, effective "
+            "December 5, 2024."
+        ),
+    ),
+)
+def test_repeal_coverage_requires_affirmative_reason(reason: str):
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/b#repealed_subsection
+      reason: >-
+        {reason}
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        "B. Repealed by Acts 2024, No. 11.",
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    "missing_scope",
+    (
+        "mortgage interest",
+        "dog licenses",
+        "tax calculation for dog licenses",
+        "taxable-income formula for dog licenses",
+        "corporation income calculation for dog licenses",
+        "individual taxable-income output",
+        "corporation rates dog licenses",
+        "corporation taxable income mortgage interest",
+        "corporation rates that determine dog-license fees",
+        "those rates which apply to dog licenses",
+        "corporation rates that concern mortgage interest",
+        "tax rates that calculate an unrelated benefit",
+        "rate schedule which governs dog licenses",
+    ),
+)
+def test_louisiana_delegated_rate_rejects_unrelated_missing_concept(
+    missing_scope: str,
+):
+    reason = (
+        f"R.S. 47:287.12, but no executable RuleSpec output for {missing_scope} "
+        "is supplied in the available context."
+    )
+    result = _louisiana_47_32_c_deferral(reason)
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    "delegated_concept",
+    (
+        "those rates",
+        "corporate rates",
+        "the applicable rates",
+        "the tax rates",
+        "the rate schedule",
+        "rates applicable to corporations",
+        "the rates applicable to corporation taxable income",
+        "the rates applicable to corporate taxable income",
+        "the rates used to compute corporation tax",
+        "the rates that apply to corporations",
+    ),
+)
+def test_louisiana_delegated_rate_accepts_rate_family_description(
+    delegated_concept: str,
+):
+    reason = (
+        f"R.S. 47:287.12, but no executable RuleSpec output for "
+        f"{delegated_concept} is supplied in the available context."
+    )
+    result = _louisiana_47_32_c_deferral(reason)
+
+    assert not _has_issue(result, "source branch c", "neither encoded")
+    assert not _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+@pytest.mark.parametrize(
+    "missing_scope",
+    (
+        "corporation-rates formula that is supplied in this context",
+        "corporation-rates formula, already available and supplied here,",
+        "corporation-rates formula which is currently available",
+        "RuleSpec output for corporation rates supplied here",
+        "RuleSpec output for corporation rates currently available in this context",
+        "RuleSpec output for corporation rates the context exports",
+        "RuleSpec output for corporation rates which are not unavailable",
+        "RuleSpec output for corporation rates that are anything but unavailable",
+        "RuleSpec output for corporation rates which are no longer unavailable",
+        "RuleSpec output for corporation rates which are far from unavailable",
+        "RuleSpec output for corporation rates which exist here",
+    ),
+)
+def test_louisiana_delegated_rate_rejects_ready_state_qualifier(
+    missing_scope: str,
+):
+    reason = (
+        f"R.S. 47:287.12, but no executable {missing_scope} is supplied in the "
+        "available context."
+    )
+    result = _louisiana_47_32_c_deferral(reason)
+
+    assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
 @pytest.mark.parametrize(
     "reason",
     (

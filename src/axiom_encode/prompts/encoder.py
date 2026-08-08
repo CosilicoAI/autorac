@@ -1677,6 +1677,20 @@ Complete-source-unit mode is enabled for this request:
   any branch is absent. A deferral reason must identify the exact branch and a
   concrete missing input, dependency, or runtime capability; generic omission
   language is not coverage.
+- When an authoritative branch is exactly a bare `Repealed.` tombstone, or a
+  Louisiana `Repealed by Acts ...` tombstone whose remaining text is solely a
+  finite session-law citation and optional effective date, preserve that branch
+  path in `module.deferred_outputs[].output`. Make `reason` cite the exact
+  current legal branch and affirmatively state that it is repealed. Do not
+  fabricate an executable rule, input, runtime gap, or external blocker. Use
+  the bounded reason form `<exact branch citation> is repealed.`, optionally
+  adding only the authenticated Acts citation/effective date and/or `and
+  supplies no operative rule`; never qualify, report, or retract the assertion.
+- For a Louisiana branch that computes tax at rates provided in another R.S.
+  section, use the bounded missing-export clause `no executable RuleSpec output
+  for those <source-stated modifiers> rates is supplied in the available
+  context`. Do not repeat the dependency inside that missing object or append a
+  `that`/`which` relative clause.
 - Companion tests must execute every source-stated formula branch, boundary,
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
