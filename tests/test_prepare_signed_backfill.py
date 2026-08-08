@@ -833,10 +833,13 @@ def test_parse_canonical_refresh_bundle_preserves_primary_required_test_cases(
 
     assert inventory[0]["required_test_cases"] == cases
     assert inventory[1]["required_test_cases"] == []
-    assert verify_canonical_refresh_target(
-        repo,
-        json.dumps(inventory[0]),
-    )["required_test_cases"] == cases
+    assert (
+        verify_canonical_refresh_target(
+            repo,
+            json.dumps(inventory[0]),
+        )["required_test_cases"]
+        == cases
+    )
 
 
 def test_parse_canonical_refresh_bundle_rejects_duplicate_contract_outputs(

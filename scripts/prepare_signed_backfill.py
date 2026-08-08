@@ -329,7 +329,9 @@ def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
     ):
         raise ValueError("atomic source transaction bundle fields must be arrays")
     if source_bundle and (refresh_bundle or primary_required_test_cases):
-        raise ValueError("atomic source transaction must select exactly one source mode")
+        raise ValueError(
+            "atomic source transaction must select exactly one source mode"
+        )
     return {
         "canonical_refresh_bundle": refresh_bundle,
         "primary_required_test_cases": primary_required_test_cases,
@@ -557,12 +559,18 @@ def _normalize_required_test_cases(
         period_fields = {"period_kind", "start", "end"}
         if isinstance(period, dict) and period.get("period_kind") == "custom":
             period_fields.add("name")
-        if not isinstance(period, dict) or set(period) != period_fields or any(
-            not isinstance(field, str)
-            or not field
-            or field != field.strip()
-            or any(ord(character) < 32 or ord(character) == 127 for character in field)
-            for field in period.values()
+        if (
+            not isinstance(period, dict)
+            or set(period) != period_fields
+            or any(
+                not isinstance(field, str)
+                or not field
+                or field != field.strip()
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in field
+                )
+                for field in period.values()
+            )
         ):
             raise ValueError(
                 f"{case_label} period must be an exact normalized RuleSpec period "
@@ -679,7 +687,9 @@ def _validate_wrapped_review_contract_size(
         separators=(",", ":"),
     ).encode("utf-8")
     if len(wrapped_contract) > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES:
-        raise ValueError(f"{label} wrapped review contract exceeds the maximum input size")
+        raise ValueError(
+            f"{label} wrapped review contract exceeds the maximum input size"
+        )
 
 
 def parse_canonical_refresh_bundle(
@@ -717,7 +727,9 @@ def parse_canonical_refresh_bundle(
         len(primary_required_test_cases_json.encode("utf-8"))
         > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES
     ):
-        raise ValueError("primary required test cases JSON exceeds the maximum input size")
+        raise ValueError(
+            "primary required test cases JSON exceeds the maximum input size"
+        )
     primary_required_test_cases = _normalize_required_test_cases(
         _load_unambiguous_json(
             primary_required_test_cases_json,

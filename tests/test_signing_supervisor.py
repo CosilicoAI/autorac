@@ -3894,9 +3894,7 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
             "schema": "axiom-encode/review-contract/v2",
             "citation": additions[1]["citation"],
             "rulespec_path": additions[1]["replace_rulespec_path"],
-            "required_deferred_outputs": additions[1][
-                "deferred_output_contracts"
-            ],
+            "required_deferred_outputs": additions[1]["deferred_output_contracts"],
             "required_test_cases": additions[1]["required_test_cases"],
         },
         None,
@@ -4991,17 +4989,17 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
                 "required_test_cases": json.loads(json.dumps(required_test_cases)),
             }
             if mutation == "wrong-review-contract":
-                context["review_contract"]["required_test_cases"][0][
-                    "required_output"
-                ]["us-la:statutes/47/294#standard_deduction"] = 0
+                context["review_contract"]["required_test_cases"][0]["required_output"][
+                    "us-la:statutes/47/294#standard_deduction"
+                ] = 0
             if mutation == "wrong-review-contract-input-type":
                 context["review_contract"]["required_test_cases"][0]["input"][
                     "us-la:statutes/47/294#input.single"
                 ] = 1
             if mutation == "wrong-review-contract-output-type":
-                context["review_contract"]["required_test_cases"][0][
-                    "required_output"
-                ]["us-la:statutes/47/294#standard_deduction"] = 12500.0
+                context["review_contract"]["required_test_cases"][0]["required_output"][
+                    "us-la:statutes/47/294#standard_deduction"
+                ] = 12500.0
         if mutation == "control-companion-finding" and index > 0:
             finding = "Preserve the companion\x00 ownership boundary.\n"
             context["review_findings_files"] = [

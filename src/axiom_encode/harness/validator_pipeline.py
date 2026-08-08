@@ -21200,9 +21200,7 @@ def find_test_input_assignment_issues(
                 _SymbolInputDependencyVersion(
                     effective_from=effective_from,
                     effective_to=effective_to,
-                    inputs=frozenset(
-                        identifiers - defined_symbols - imported_symbols
-                    ),
+                    inputs=frozenset(identifiers - defined_symbols - imported_symbols),
                     dependencies=frozenset(identifiers & defined_symbols),
                 )
             )

@@ -1125,9 +1125,7 @@ def _parse_deferred_output_review_contract_json(
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise argparse.ArgumentTypeError("review contract must be valid JSON") from exc
     if not isinstance(payload, dict):
-        raise argparse.ArgumentTypeError(
-            "review contract must be a JSON object"
-        )
+        raise argparse.ArgumentTypeError("review contract must be a JSON object")
     schema = payload.get("schema")
     v1_fields = {
         "schema",
@@ -1253,7 +1251,9 @@ def _parse_deferred_output_review_contract_json(
                 or not name
                 or name != name.strip()
                 or "\r" in name
-                or any(ord(character) < 32 or ord(character) == 127 for character in name)
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in name
+                )
             ):
                 raise argparse.ArgumentTypeError(
                     f"{label} name must be a nonempty normalized string"
@@ -1267,12 +1267,19 @@ def _parse_deferred_output_review_contract_json(
             period_fields = {"period_kind", "start", "end"}
             if isinstance(period, dict) and period.get("period_kind") == "custom":
                 period_fields.add("name")
-            if not isinstance(period, dict) or set(period) != period_fields or any(
-                not isinstance(value, str)
-                or not value
-                or value != value.strip()
-                or any(ord(character) < 32 or ord(character) == 127 for character in value)
-                for value in period.values()
+            if (
+                not isinstance(period, dict)
+                or set(period) != period_fields
+                or any(
+                    not isinstance(value, str)
+                    or not value
+                    or value != value.strip()
+                    or any(
+                        ord(character) < 32 or ord(character) == 127
+                        for character in value
+                    )
+                    for value in period.values()
+                )
             ):
                 raise argparse.ArgumentTypeError(
                     f"{label} period must be an exact normalized RuleSpec period "

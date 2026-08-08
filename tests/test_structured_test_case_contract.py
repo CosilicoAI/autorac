@@ -23,10 +23,7 @@ JOINT = (
     "federal_return_filing_status_is_joint_surviving_spouse_or_head_of_household"
 )
 PRINCIPAL = "us-la:statutes/47/294#standard_deduction"
-CPI = (
-    "us-la:statutes/47/294#input."
-    "previous_calendar_year_cpi_u_percentage_increase"
-)
+CPI = "us-la:statutes/47/294#input.previous_calendar_year_cpi_u_percentage_increase"
 PRIOR_JOINT = (
     "us-la:statutes/47/294#input."
     "prior_year_standard_deduction_joint_surviving_spouse_or_head_of_household"
@@ -148,10 +145,13 @@ def test_required_test_case_contract_covers_all_four_294_cases(tmp_path: Path) -
             }
         )
 
-    assert _issues(
-        _write_candidate(tmp_path, candidates),
-        _raw_contract(test_cases=contracts),
-    ) == []
+    assert (
+        _issues(
+            _write_candidate(tmp_path, candidates),
+            _raw_contract(test_cases=contracts),
+        )
+        == []
+    )
 
     for candidate in candidates:
         candidate["input"] = {
