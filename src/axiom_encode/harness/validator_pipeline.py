@@ -21156,6 +21156,7 @@ def find_test_input_assignment_issues(
     imported_symbols = _rulespec_import_fragment_names(payload.get("imports"))
     symbol_inputs: dict[str, set[str]] = {}
     symbol_dependencies: dict[str, set[str]] = {}
+    symbol_versions: dict[str, tuple[_SymbolInputDependencyVersion, ...] | None] = {}
     for rule in rules:
         if not isinstance(rule, dict):
             continue
@@ -21173,17 +21174,47 @@ def find_test_input_assignment_issues(
         if not isinstance(versions, list):
             continue
         formula_identifiers: set[str] = set()
+        dependency_versions: list[_SymbolInputDependencyVersion] = []
+        version_metadata_valid = True
         for version in versions:
             if not isinstance(version, dict):
+                version_metadata_valid = False
                 continue
             formula = version.get("formula")
             if not isinstance(formula, str):
+                version_metadata_valid = False
                 continue
-            formula_identifiers.update(_formula_local_identifiers(formula))
+            identifiers = _formula_local_identifiers(formula)
+            formula_identifiers.update(identifiers)
+            try:
+                effective_from = date.fromisoformat(str(version["effective_from"]))
+                effective_to = (
+                    date.fromisoformat(str(version["effective_to"]))
+                    if version.get("effective_to") is not None
+                    else None
+                )
+            except (KeyError, TypeError, ValueError):
+                version_metadata_valid = False
+                continue
+            dependency_versions.append(
+                _SymbolInputDependencyVersion(
+                    effective_from=effective_from,
+                    effective_to=effective_to,
+                    inputs=frozenset(
+                        identifiers - defined_symbols - imported_symbols
+                    ),
+                    dependencies=frozenset(identifiers & defined_symbols),
+                )
+            )
         symbol_inputs[rule_name] = (
             formula_identifiers - defined_symbols - imported_symbols
         )
         symbol_dependencies[rule_name] = formula_identifiers & defined_symbols
+        symbol_versions[rule_name] = (
+            tuple(dependency_versions)
+            if version_metadata_valid and dependency_versions
+            else None
+        )
 
     if not symbol_inputs:
         return []
@@ -21207,6 +21238,8 @@ def find_test_input_assignment_issues(
             test_case.get("output"),
             symbol_inputs=symbol_inputs,
             symbol_dependencies=symbol_dependencies,
+            symbol_versions=symbol_versions,
+            period_bounds=_test_case_period_bounds(test_case.get("period")),
         )
         local_inputs = required_inputs & globally_local_inputs
         if not local_inputs:
@@ -21247,6 +21280,29 @@ def _defined_rulespec_symbols(rules: list[Any]) -> set[str]:
     }
 
 
+@dataclass(frozen=True)
+class _SymbolInputDependencyVersion:
+    effective_from: date
+    effective_to: date | None
+    inputs: frozenset[str]
+    dependencies: frozenset[str]
+
+
+def _test_case_period_bounds(period: Any) -> tuple[date, date] | None:
+    """Return unambiguous test bounds, otherwise request union fallback."""
+
+    if not isinstance(period, dict) or not {"period_kind", "start", "end"}.issubset(
+        period
+    ):
+        return None
+    try:
+        start = date.fromisoformat(str(period["start"]))
+        end = date.fromisoformat(str(period["end"]))
+    except (TypeError, ValueError):
+        return None
+    return (start, end) if start <= end else None
+
+
 def _indexed_by_input_names(value: Any) -> set[str]:
     if isinstance(value, str):
         return {value.strip()} if value.strip() else set()
@@ -21260,6 +21316,8 @@ def _required_inputs_for_test_outputs(
     *,
     symbol_inputs: dict[str, set[str]],
     symbol_dependencies: dict[str, set[str]],
+    symbol_versions: dict[str, tuple[_SymbolInputDependencyVersion, ...] | None],
+    period_bounds: tuple[date, date] | None,
 ) -> set[str]:
     if not isinstance(outputs, dict):
         return set().union(*symbol_inputs.values()) if symbol_inputs else set()
@@ -21273,6 +21331,8 @@ def _required_inputs_for_test_outputs(
                     fragment,
                     symbol_inputs=symbol_inputs,
                     symbol_dependencies=symbol_dependencies,
+                    symbol_versions=symbol_versions,
+                    period_bounds=period_bounds,
                     seen=set(),
                 )
             )
@@ -21284,18 +21344,62 @@ def _required_inputs_for_symbol(
     *,
     symbol_inputs: dict[str, set[str]],
     symbol_dependencies: dict[str, set[str]],
+    symbol_versions: dict[str, tuple[_SymbolInputDependencyVersion, ...] | None],
+    period_bounds: tuple[date, date] | None,
     seen: set[str],
 ) -> set[str]:
     if symbol in seen:
         return set()
     seen.add(symbol)
-    required = set(symbol_inputs.get(symbol, set()))
-    for dependency in symbol_dependencies.get(symbol, set()):
+    inputs = symbol_inputs.get(symbol, set())
+    dependencies = symbol_dependencies.get(symbol, set())
+    versions = symbol_versions.get(symbol)
+    if period_bounds is not None and versions:
+        period_start, period_end = period_bounds
+        transition_dates = {period_start, period_end}
+        for version in versions:
+            if period_start <= version.effective_from <= period_end:
+                transition_dates.add(version.effective_from)
+            if (
+                version.effective_to is not None
+                and period_start <= version.effective_to <= period_end
+            ):
+                transition_dates.add(version.effective_to)
+                if version.effective_to < period_end:
+                    transition_dates.add(version.effective_to + date.resolution)
+        selected_versions: list[_SymbolInputDependencyVersion] = []
+        for boundary in sorted(transition_dates):
+            live_versions = [
+                version
+                for version in versions
+                if version.effective_from <= boundary
+                and (version.effective_to is None or boundary <= version.effective_to)
+            ]
+            if not live_versions:
+                selected_versions = []
+                break
+            latest_from = max(version.effective_from for version in live_versions)
+            latest_versions = [
+                version
+                for version in live_versions
+                if version.effective_from == latest_from
+            ]
+            if len(latest_versions) != 1:
+                selected_versions = []
+                break
+            selected_versions.append(latest_versions[0])
+        if selected_versions and len(set(selected_versions)) == 1:
+            inputs = set(selected_versions[0].inputs)
+            dependencies = set(selected_versions[0].dependencies)
+    required = set(inputs)
+    for dependency in dependencies:
         required.update(
             _required_inputs_for_symbol(
                 dependency,
                 symbol_inputs=symbol_inputs,
                 symbol_dependencies=symbol_dependencies,
+                symbol_versions=symbol_versions,
+                period_bounds=period_bounds,
                 seen=seen,
             )
         )

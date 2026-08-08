@@ -181,7 +181,11 @@ def _require_empty_atomic_source(metadata: dict[str, object]) -> None:
                 "repair artifact is not a compatible single-target run: "
                 "atomic_source_input"
             ) from exc
-        if split != {"canonical_refresh_bundle": [], "source_bundle": []}:
+        if split != {
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
+            "source_bundle": [],
+        }:
             raise ValueError(
                 "repair artifact is not a compatible single-target run: "
                 "atomic_source_input"

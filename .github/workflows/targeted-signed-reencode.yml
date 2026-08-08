@@ -39,7 +39,7 @@ on:
         required: false
         type: string
       source_bundle_json:
-        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path,review_finding?,deferred_output_contracts?}]} for an independent refresh transaction
+        description: JSON citation array, canonical_refresh_bundle object, or atomic-source-transaction/v2 envelope for an independent refresh transaction
         required: false
         default: "[]"
         type: string
@@ -382,6 +382,8 @@ jobs:
             <<< "$atomic_source_payload")"
           canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
             <<< "$atomic_source_payload")"
+          primary_required_test_cases_json="$(jq -cer \
+            '.primary_required_test_cases' <<< "$atomic_source_payload")"
           if [[ ! "$REPAIR_RUN_ID" =~ ^[0-9]+$ ]] || \
              [ "$REPAIR_RUN_ID" = "$GITHUB_RUN_ID" ]; then
             echo "repair_run_id must identify a different decimal workflow run" >&2
@@ -398,6 +400,8 @@ jobs:
                <<< "$canonical_refresh_bundle_json" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "$source_bundle_json" > /dev/null || \
+             ! jq -e 'type == "array" and length == 0' \
+               <<< "$primary_required_test_cases_json" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
                <<< "${EXISTING_SIGNED_IMPORTS_JSON:-[]}" > /dev/null || \
              ! jq -e 'type == "array" and length == 0' \
@@ -565,6 +569,8 @@ jobs:
             <<< "$atomic_source_payload")"
           canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
             <<< "$atomic_source_payload")"
+          primary_required_test_cases_json="$(jq -cer \
+            '.primary_required_test_cases' <<< "$atomic_source_payload")"
           source_bundle_args=(
             axiom-encode/.venv/bin/python
             axiom-encode/scripts/prepare_signed_backfill.py
@@ -591,7 +597,9 @@ jobs:
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
               "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
-              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
+              --primary-required-test-cases-json \
+                "$primary_required_test_cases_json"
           )"
           existing_import_args=(
             axiom-encode/.venv/bin/python
@@ -889,6 +897,8 @@ jobs:
             <<< "$atomic_source_payload")"
           canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
             <<< "$atomic_source_payload")"
+          primary_required_test_cases_json="$(jq -cer \
+            '.primary_required_test_cases' <<< "$atomic_source_payload")"
           source_bundle_args=(
             "$workflow_python" -I "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
@@ -907,7 +917,9 @@ jobs:
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
               "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
-              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
+              --primary-required-test-cases-json \
+                "$primary_required_test_cases_json"
           )"
           printf '%s\n' "$normalized_canonical_refresh_bundle" \
             > "$RUNNER_TEMP/canonical-refresh-bundle.json"
@@ -1062,6 +1074,7 @@ jobs:
             local legacy_source_path="$6"
             local require_direct_imports="$7"
             local deferred_output_contracts_json="${8:-[]}"
+            local required_test_cases_json="${9:-[]}"
             local review_finding_path=""
             local review_contract_json=""
             local -a args=(
@@ -1146,20 +1159,27 @@ jobs:
               printf '%s\n' "$review_finding" > "$review_finding_path"
               args+=(--review-findings "$review_finding_path")
             fi
-            if [ "$deferred_output_contracts_json" != "[]" ]; then
+            if [ "$deferred_output_contracts_json" != "[]" ] || \
+               [ "$required_test_cases_json" != "[]" ]; then
               review_contract_json="$(
                 jq -cn \
-                  --arg schema "axiom-encode/review-contract/v1" \
+                  --arg schema "$([ "$required_test_cases_json" = "[]" ] \
+                    && printf '%s' 'axiom-encode/review-contract/v1' \
+                    || printf '%s' 'axiom-encode/review-contract/v2')" \
                   --arg citation "$citation" \
                   --arg rulespec_path "$replacement_path" \
                   --argjson required_deferred_outputs \
                     "$deferred_output_contracts_json" \
+                  --argjson required_test_cases "$required_test_cases_json" \
                   '{
                     schema: $schema,
                     citation: $citation,
                     rulespec_path: $rulespec_path,
                     required_deferred_outputs: $required_deferred_outputs
-                  }'
+                  } + if $schema == "axiom-encode/review-contract/v2"
+                    then {required_test_cases: $required_test_cases}
+                    else {}
+                    end'
               )"
               args+=(
                 --review-contract-json
@@ -1303,6 +1323,8 @@ jobs:
             <<< "$atomic_source_payload")"
           canonical_refresh_bundle_json="$(jq -cer '.canonical_refresh_bundle' \
             <<< "$atomic_source_payload")"
+          primary_required_test_cases_json="$(jq -cer \
+            '.primary_required_test_cases' <<< "$atomic_source_payload")"
           source_bundle_args=(
             "$workflow_python" "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
@@ -1319,7 +1341,9 @@ jobs:
               parse-canonical-refresh-bundle "$RULESPEC_CHECKOUT" \
               "$canonical_refresh_bundle_json" \
               --primary-citation "$CITATION" \
-              --primary-rulespec-path "$REPLACE_RULESPEC_PATH"
+              --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
+              --primary-required-test-cases-json \
+                "$primary_required_test_cases_json"
           )"
           verified_canonical_refresh_bundle="$(tr -d '\n' \
             < "$RUNNER_TEMP/canonical-refresh-bundle.json")"
@@ -1499,6 +1523,9 @@ jobs:
               refresh_deferred_output_contracts="$(
                 jq -cer '.deferred_output_contracts // []' <<< "$refresh_item"
               )"
+              refresh_required_test_cases="$(
+                jq -cer '.required_test_cases // []' <<< "$refresh_item"
+              )"
               refresh_lane=target
               refresh_finding="$REVIEW_FINDING"
               if [ "$refresh_index" -gt 0 ]; then
@@ -1509,7 +1536,8 @@ jobs:
               run_signed_encode \
                 "$refresh_citation" "$refresh_finding" false "$refresh_lane" \
                 "$refresh_rulespec_path" "" false \
-                "$refresh_deferred_output_contracts"
+                "$refresh_deferred_output_contracts" \
+                "$refresh_required_test_cases"
               checkpoint_signed_changes \
                 "Refresh signed canonical module for ${refresh_citation}"
               cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
@@ -1882,6 +1910,7 @@ jobs:
                   "manifest_sha256",
                   "review_finding",
                   "deferred_output_contracts",
+                  "required_test_cases",
               }
               and isinstance(item["citation"], str)
               and item["citation"]
@@ -1891,6 +1920,24 @@ jobs:
               and item["companion_path"]
               and isinstance(item["deferred_output_contracts"], list)
               and len(item["deferred_output_contracts"]) <= 16
+              and isinstance(item["required_test_cases"], list)
+              and len(item["required_test_cases"]) <= 32
+              and all(
+                  isinstance(case, dict)
+                  and set(case)
+                  == {"name", "period", "input", "required_output"}
+                  and isinstance(case["name"], str)
+                  and case["name"]
+                  and isinstance(case["period"], dict)
+                  and isinstance(case["input"], dict)
+                  and len(case["input"]) <= 64
+                  and isinstance(case["required_output"], dict)
+                  and case["required_output"]
+                  and len(case["required_output"]) <= 64
+                  for case in item["required_test_cases"]
+              )
+              and len({case["name"] for case in item["required_test_cases"]})
+              == len(item["required_test_cases"])
               and all(
                   isinstance(contract, dict)
                   and set(contract) == {"output", "reason"}
@@ -2003,6 +2050,25 @@ jobs:
                       "from its exact requested targets"
                   )
 
+          def normalized_review_contract(refresh_item):
+              deferred = refresh_item["deferred_output_contracts"]
+              required_cases = refresh_item["required_test_cases"]
+              if not deferred and not required_cases:
+                  return None
+              payload = {
+                  "schema": (
+                      "axiom-encode/review-contract/v2"
+                      if required_cases
+                      else "axiom-encode/review-contract/v1"
+                  ),
+                  "citation": refresh_item["citation"],
+                  "rulespec_path": refresh_item["rulespec_path"],
+                  "required_deferred_outputs": deferred,
+              }
+              if required_cases:
+                  payload["required_test_cases"] = required_cases
+              return payload
+
           expected = []
           if canonical_refresh_items:
               for refresh_index, refresh_item in enumerate(
@@ -2032,6 +2098,7 @@ jobs:
                           refresh_item["rulespec_path"],
                           refresh_item["companion_path"],
                           refresh_item["manifest_path"],
+                          normalized_review_contract(refresh_item),
                       )
                   )
           else:
@@ -2042,6 +2109,7 @@ jobs:
                       Path(sys.argv[1]),
                       "target",
                       normalized_replacement_path or None,
+                      None,
                       None,
                       None,
                   )
@@ -2061,6 +2129,7 @@ jobs:
                       None,
                       None,
                       None,
+                      None,
                   )
               )
           if dependent_citation:
@@ -2070,6 +2139,7 @@ jobs:
                       os.environ["DEPENDENT_REVIEW_FINDING"] or None,
                       Path(sys.argv[1]).with_name("dependent-context-manifest.json"),
                       "dependent",
+                      None,
                       None,
                       None,
                       None,
@@ -2087,6 +2157,7 @@ jobs:
                       None,
                       None,
                       None,
+                      None,
                   )
               )
 
@@ -2100,6 +2171,7 @@ jobs:
               expected_primary_path,
               expected_companion_path,
               expected_manifest_path,
+              expected_review_contract,
           ) in expected:
               citation_matches = matches.get(citation, [])
               if len(citation_matches) != 1:
@@ -2706,6 +2778,40 @@ jobs:
                   raise SystemExit(
                       "signed context manifest citation does not match"
                   )
+              if expected_review_contract is None:
+                  if "review_contract" in context_payload:
+                      raise SystemExit(
+                          "context manifest contains an unexpected review contract"
+                      )
+              else:
+                  try:
+                      actual_review_contract = json.dumps(
+                          context_payload.get("review_contract"),
+                          allow_nan=False,
+                          ensure_ascii=False,
+                          separators=(",", ":"),
+                          sort_keys=True,
+                      )
+                      normalized_expected_review_contract = json.dumps(
+                          expected_review_contract,
+                          allow_nan=False,
+                          ensure_ascii=False,
+                          separators=(",", ":"),
+                          sort_keys=True,
+                      )
+                  except (TypeError, ValueError) as exc:
+                      raise SystemExit(
+                          "context manifest does not bind the normalized "
+                          "review contract"
+                      ) from exc
+                  if (
+                      actual_review_contract
+                      != normalized_expected_review_contract
+                  ):
+                      raise SystemExit(
+                          "context manifest does not bind the normalized "
+                          "review contract"
+                      )
               review_findings = context_payload.get("review_findings_files")
               if not isinstance(review_findings, list):
                   raise SystemExit(

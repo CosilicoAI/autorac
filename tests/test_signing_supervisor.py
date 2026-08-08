@@ -1911,11 +1911,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["source_bundle_json"] == {
         "description": (
-            "JSON citation array for atomic imports, or "
-            '{"canonical_refresh_bundle":'
-            "[{citation,replace_rulespec_path,review_finding?,"
-            "deferred_output_contracts?}]} "
-            "for an independent refresh transaction"
+            "JSON citation array, canonical_refresh_bundle object, or "
+            "atomic-source-transaction/v2 envelope for an independent refresh "
+            "transaction"
         ),
         "required": False,
         "default": "[]",
@@ -2005,6 +2003,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     )
     assert "split-atomic-source-input" in source_bundle_command
     assert 'parse-source-bundle "$source_bundle_json"' in source_bundle_command
+    assert 'primary_required_test_cases_json="$(jq -cer' in source_bundle_command
+    assert "--primary-required-test-cases-json" in source_bundle_command
     assert "validate-source-add-targets" in source_bundle_command
     assert 'validate-source-add-targets "$RULESPEC_CHECKOUT"' in (source_bundle_command)
     assert 'parse-existing-signed-imports "$RULESPEC_CHECKOUT"' in (
@@ -3705,12 +3705,67 @@ def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
             "reason": "Exact source-bound missing dependency.",
         }
     ]
+    mixed_output = "us-la:statutes/47/297/4#mixed_contract_output"
+    additions[1]["deferred_output_contracts"] = [
+        {"output": mixed_output, "reason": "Exact mixed v2 contract reason."}
+    ]
+    additions[1]["required_test_cases"] = [
+        {
+            "name": "mixed v2 addition lane",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+            },
+            "input": {},
+            "required_output": {mixed_output: 0},
+        }
+    ]
     additions[2]["review_finding"] = "Preserve the five-year carryforward limit."
+    single = (
+        "us-la:statutes/47/294#input."
+        "federal_return_filing_status_is_single_or_married_separate"
+    )
+    joint = (
+        "us-la:statutes/47/294#input."
+        "federal_return_filing_status_is_joint_surviving_spouse_or_head_of_household"
+    )
+    primary_required_test_cases = [
+        {
+            "name": name,
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+            },
+            "input": {single: single_value, joint: joint_value},
+            "required_output": {
+                "us-la:statutes/47/294#standard_deduction": expected,
+            },
+        }
+        for name, single_value, joint_value, expected in (
+            (
+                "2025 single individual or married separate standard deduction",
+                True,
+                False,
+                12500,
+            ),
+            (
+                "2025 joint surviving spouse or head of household standard deduction",
+                False,
+                True,
+                25000,
+            ),
+            ("2025 no listed filing status group fails closed", False, False, 0),
+            ("2025 conflicting filing status groups fail closed", True, True, 0),
+        )
+    ]
     normalized = parse_canonical_refresh_bundle(
         repo,
         json.dumps(additions),
         primary_citation=primary_citation,
         primary_rulespec_path=primary_path,
+        primary_required_test_cases_json=json.dumps(primary_required_test_cases),
     )
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
@@ -3747,7 +3802,14 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "AXIOM_ENCODE_APPLY_SIGNING_KEY": "test-key",
         "AXIOM_TEST_PYTHON": sys.executable,
         "CALLS_PATH": str(calls_path),
-        "ATOMIC_SOURCE_JSON": json.dumps({"canonical_refresh_bundle": additions}),
+        "ATOMIC_SOURCE_JSON": json.dumps(
+            {
+                "schema": "axiom-encode/atomic-source-transaction/v2",
+                "source_bundle": [],
+                "canonical_refresh_bundle": additions,
+                "primary_required_test_cases": primary_required_test_cases,
+            }
+        ),
         "CHECKPOINTS_PATH": str(checkpoints_path),
         "CITATION": primary_citation,
         "DEPENDENT_CITATION": "",
@@ -3815,14 +3877,28 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         )
         for args in encode_args
     ] == [
-        None,
+        {
+            "schema": "axiom-encode/review-contract/v2",
+            "citation": primary_citation,
+            "rulespec_path": primary_path,
+            "required_deferred_outputs": [],
+            "required_test_cases": primary_required_test_cases,
+        },
         {
             "schema": "axiom-encode/review-contract/v1",
             "citation": additions[0]["citation"],
             "rulespec_path": additions[0]["replace_rulespec_path"],
             "required_deferred_outputs": additions[0]["deferred_output_contracts"],
         },
-        None,
+        {
+            "schema": "axiom-encode/review-contract/v2",
+            "citation": additions[1]["citation"],
+            "rulespec_path": additions[1]["replace_rulespec_path"],
+            "required_deferred_outputs": additions[1][
+                "deferred_output_contracts"
+            ],
+            "required_test_cases": additions[1]["required_test_cases"],
+        },
         None,
     ]
     forbidden = {
@@ -4807,6 +4883,18 @@ def _targeted_metadata_script() -> str:
             "context manifest contains an unexpected review finding",
         ),
         (
+            "wrong-review-contract",
+            "context manifest does not bind the normalized review contract",
+        ),
+        (
+            "wrong-review-contract-input-type",
+            "context manifest does not bind the normalized review contract",
+        ),
+        (
+            "wrong-review-contract-output-type",
+            "context manifest does not bind the normalized review contract",
+        ),
+        (
             "control-companion-finding",
             "normalized canonical refresh bundle is malformed",
         ),
@@ -4860,6 +4948,27 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
             if index == 0
             else "Preserve the companion ownership boundary.\n"
         )
+        required_test_cases = (
+            [
+                {
+                    "name": "2025 single",
+                    "period": {
+                        "period_kind": "tax_year",
+                        "start": "2025-01-01",
+                        "end": "2025-12-31",
+                    },
+                    "input": {
+                        "us-la:statutes/47/294#input.single": True,
+                        "us-la:statutes/47/294#input.joint": False,
+                    },
+                    "required_output": {
+                        "us-la:statutes/47/294#standard_deduction": 12500,
+                    },
+                }
+            ]
+            if index == 0
+            else []
+        )
         context = {
             "citation": citation,
             "review_findings_files": (
@@ -4873,6 +4982,26 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
                 else []
             ),
         }
+        if required_test_cases:
+            context["review_contract"] = {
+                "schema": "axiom-encode/review-contract/v2",
+                "citation": citation,
+                "rulespec_path": rulespec_path,
+                "required_deferred_outputs": [],
+                "required_test_cases": json.loads(json.dumps(required_test_cases)),
+            }
+            if mutation == "wrong-review-contract":
+                context["review_contract"]["required_test_cases"][0][
+                    "required_output"
+                ]["us-la:statutes/47/294#standard_deduction"] = 0
+            if mutation == "wrong-review-contract-input-type":
+                context["review_contract"]["required_test_cases"][0]["input"][
+                    "us-la:statutes/47/294#input.single"
+                ] = 1
+            if mutation == "wrong-review-contract-output-type":
+                context["review_contract"]["required_test_cases"][0][
+                    "required_output"
+                ]["us-la:statutes/47/294#standard_deduction"] = 12500.0
         if mutation == "control-companion-finding" and index > 0:
             finding = "Preserve the companion\x00 ownership boundary.\n"
             context["review_findings_files"] = [
@@ -4913,6 +5042,7 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
                     else None
                 ),
                 "deferred_output_contracts": [],
+                "required_test_cases": required_test_cases,
                 "rulespec_path": rulespec_path,
                 "rulespec_sha256": "a" * 64,
                 "companion_path": str(

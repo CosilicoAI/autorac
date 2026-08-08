@@ -148,7 +148,18 @@ def test_rejects_noncanonical_state_rulespec_path(replace_rulespec_path):
 
 @pytest.mark.parametrize(
     "atomic_source_input",
-    ["[]", '{"canonical_refresh_bundle":[]}'],
+    [
+        "[]",
+        '{"canonical_refresh_bundle":[]}',
+        json.dumps(
+            {
+                "schema": "axiom-encode/atomic-source-transaction/v2",
+                "source_bundle": [],
+                "canonical_refresh_bundle": [],
+                "primary_required_test_cases": [],
+            }
+        ),
+    ],
 )
 def test_extracts_new_atomic_source_metadata(tmp_path, atomic_source_input):
     archive, metadata = _archive(tmp_path)
@@ -290,6 +301,28 @@ def test_rejects_incompatible_prior_run_mode(tmp_path, field, value):
         (
             "atomic_source_input",
             '{"canonical_refresh_bundle":[{"citation":"x"}]}',
+        ),
+        (
+            "atomic_source_input",
+            json.dumps(
+                {
+                    "schema": "axiom-encode/atomic-source-transaction/v2",
+                    "source_bundle": [],
+                    "canonical_refresh_bundle": [],
+                    "primary_required_test_cases": [
+                        {
+                            "name": "must not replay a review contract",
+                            "period": {
+                                "period_kind": "tax_year",
+                                "start": "2025-01-01",
+                                "end": "2025-12-31",
+                            },
+                            "input": {"us:test#input": True},
+                            "required_output": {"us:test#output": 1},
+                        }
+                    ],
+                }
+            ),
         ),
     ],
 )

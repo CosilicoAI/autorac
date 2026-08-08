@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import math
@@ -15419,6 +15420,83 @@ rules:
 
     assert len(issues) == 1
     assert "disqualifying_condition" in issues[0]
+
+
+def test_test_input_assignment_selects_formula_dependencies_by_case_period():
+    content = """format: rulespec/v1
+module:
+  proof_validation:
+    required: true
+rules:
+  - name: adjusted_standard_deduction
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        formula: prior_year_standard_deduction * (1 + cpi_increase)
+  - name: standard_deduction
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    versions:
+      - effective_from: '2025-01-01'
+        effective_to: '2025-12-31'
+        formula: |-
+          if single_status and not joint_status:
+              12500
+          else:
+              0
+      - effective_from: '2026-01-01'
+        formula: |-
+          if single_status and not joint_status:
+              adjusted_standard_deduction
+          else:
+              0
+"""
+    case_2025 = {
+        "name": "2025 single",
+        "period": {
+            "period_kind": "tax_year",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+        },
+        "input": {
+            "us-la:statutes/47/294#input.single_status": True,
+            "us-la:statutes/47/294#input.joint_status": False,
+        },
+        "output": {"us-la:statutes/47/294#standard_deduction": 12500},
+    }
+
+    assert find_test_input_assignment_issues(content, [case_2025]) == []
+
+    case_2026 = copy.deepcopy(case_2025)
+    case_2026["name"] = "2026 single"
+    case_2026["period"] = {
+        "period_kind": "tax_year",
+        "start": "2026-01-01",
+        "end": "2026-12-31",
+    }
+    issues_2026 = find_test_input_assignment_issues(content, [case_2026])
+    assert len(issues_2026) == 1
+    assert "cpi_increase" in issues_2026[0]
+    assert "prior_year_standard_deduction" in issues_2026[0]
+
+    case_without_period = copy.deepcopy(case_2025)
+    case_without_period.pop("period")
+    fallback_issues = find_test_input_assignment_issues(content, [case_without_period])
+    assert len(fallback_issues) == 1
+    assert "cpi_increase" in fallback_issues[0]
+
+    boundary_spanning_case = copy.deepcopy(case_2025)
+    boundary_spanning_case["period"]["end"] = "2026-12-31"
+    boundary_issues = find_test_input_assignment_issues(
+        content, [boundary_spanning_case]
+    )
+    assert len(boundary_issues) == 1
+    assert "cpi_increase" in boundary_issues[0]
 
 
 def test_test_input_assignment_ignores_match_keyword():

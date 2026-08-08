@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import stat
 import subprocess
+from datetime import date
 from pathlib import Path, PurePosixPath
 
 COUNTRY_PATTERN = re.compile(r"[a-z]{2}")
@@ -49,8 +51,11 @@ MAX_SOURCE_BUNDLE_CITATIONS = 16
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS = MAX_SOURCE_BUNDLE_CITATIONS - 1
 MAX_DEFERRED_OUTPUT_CONTRACTS = 16
+MAX_REQUIRED_TEST_CASES = 32
+MAX_REQUIRED_TEST_CASE_FIELDS = 64
 MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES = 64 * 1024
 DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
+STRUCTURED_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v2"
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
@@ -288,19 +293,47 @@ def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
     if isinstance(payload, list):
         return {
             "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [],
             "source_bundle": payload,
         }
-    if not isinstance(payload, dict) or set(payload) != {"canonical_refresh_bundle"}:
+    if isinstance(payload, dict) and set(payload) == {"canonical_refresh_bundle"}:
+        refresh_bundle = payload["canonical_refresh_bundle"]
+        if not isinstance(refresh_bundle, list):
+            raise ValueError("canonical_refresh_bundle must be an array")
+        return {
+            "canonical_refresh_bundle": refresh_bundle,
+            "primary_required_test_cases": [],
+            "source_bundle": [],
+        }
+    v2_fields = {
+        "schema",
+        "source_bundle",
+        "canonical_refresh_bundle",
+        "primary_required_test_cases",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != v2_fields
+        or payload.get("schema") != "axiom-encode/atomic-source-transaction/v2"
+    ):
         raise ValueError(
             "atomic source JSON must be a source citation array or an exact "
-            "canonical_refresh_bundle object"
+            "canonical_refresh_bundle or atomic-source-transaction/v2 object"
         )
     refresh_bundle = payload["canonical_refresh_bundle"]
-    if not isinstance(refresh_bundle, list):
-        raise ValueError("canonical_refresh_bundle must be an array")
+    source_bundle = payload["source_bundle"]
+    primary_required_test_cases = payload["primary_required_test_cases"]
+    if not all(
+        isinstance(value, list)
+        for value in (refresh_bundle, source_bundle, primary_required_test_cases)
+    ):
+        raise ValueError("atomic source transaction bundle fields must be arrays")
+    if source_bundle and (refresh_bundle or primary_required_test_cases):
+        raise ValueError("atomic source transaction must select exactly one source mode")
     return {
         "canonical_refresh_bundle": refresh_bundle,
-        "source_bundle": [],
+        "primary_required_test_cases": primary_required_test_cases,
+        "source_bundle": source_bundle,
     }
 
 
@@ -483,12 +516,179 @@ def validate_source_add_targets(
     return sources
 
 
+def _normalize_required_test_cases(
+    value: object,
+    *,
+    label: str,
+) -> tuple[dict[str, object], ...]:
+    """Validate bounded exact companion-case admission requirements."""
+
+    if not isinstance(value, list) or len(value) > MAX_REQUIRED_TEST_CASES:
+        raise ValueError(
+            f"{label} must be an array with at most {MAX_REQUIRED_TEST_CASES} entries"
+        )
+    normalized_cases: list[dict[str, object]] = []
+    seen_names: set[str] = set()
+    for index, item in enumerate(value):
+        case_label = f"{label} case #{index + 1}"
+        if not isinstance(item, dict) or set(item) != {
+            "name",
+            "period",
+            "input",
+            "required_output",
+        }:
+            raise ValueError(
+                f"{case_label} must contain exactly name, period, input, and "
+                "required_output"
+            )
+        name = item["name"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or name != name.strip()
+            or "\r" in name
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        ):
+            raise ValueError(f"{case_label} name must be a normalized string")
+        if name in seen_names:
+            raise ValueError(f"{label} case names must be unique")
+        seen_names.add(name)
+        period = item["period"]
+        period_fields = {"period_kind", "start", "end"}
+        if isinstance(period, dict) and period.get("period_kind") == "custom":
+            period_fields.add("name")
+        if not isinstance(period, dict) or set(period) != period_fields or any(
+            not isinstance(field, str)
+            or not field
+            or field != field.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in field)
+            for field in period.values()
+        ):
+            raise ValueError(
+                f"{case_label} period must be an exact normalized RuleSpec period "
+                "mapping"
+            )
+        if period["period_kind"] not in {
+            "month",
+            "benefit_week",
+            "tax_year",
+            "custom",
+        }:
+            raise ValueError(
+                f"{case_label} period_kind is not supported by the RuleSpec engine"
+            )
+        try:
+            period_start = date.fromisoformat(period["start"])
+            period_end = date.fromisoformat(period["end"])
+        except ValueError as exc:
+            raise ValueError(f"{case_label} period dates must be ISO dates") from exc
+        if period_start > period_end:
+            raise ValueError(f"{case_label} period start must not follow end")
+        normalized_fields: dict[str, dict[str, object]] = {}
+        for field_name in ("input", "required_output"):
+            mapping = item[field_name]
+            if (
+                not isinstance(mapping, dict)
+                or (field_name == "required_output" and not mapping)
+                or len(mapping) > MAX_REQUIRED_TEST_CASE_FIELDS
+            ):
+                raise ValueError(
+                    f"{case_label} {field_name} must be an object with at "
+                    f"most {MAX_REQUIRED_TEST_CASE_FIELDS} fields"
+                )
+            normalized_mapping: dict[str, object] = {}
+            for key, field_value in mapping.items():
+                if (
+                    not isinstance(key, str)
+                    or not key
+                    or key != key.strip()
+                    or any(
+                        ord(character) < 32 or ord(character) == 127
+                        for character in key
+                    )
+                ):
+                    raise ValueError(
+                        f"{case_label} {field_name} keys must be normalized strings"
+                    )
+                if not isinstance(field_value, (str, int, float, bool)) or (
+                    isinstance(field_value, float) and not math.isfinite(field_value)
+                ):
+                    raise ValueError(
+                        f"{case_label} {field_name} values must be finite JSON scalars"
+                    )
+                if isinstance(field_value, str) and (
+                    field_value != field_value.strip()
+                    or "\r" in field_value
+                    or any(
+                        (ord(character) < 32 and character not in {"\n", "\t"})
+                        or ord(character) == 127
+                        for character in field_value
+                    )
+                ):
+                    raise ValueError(
+                        f"{case_label} {field_name} string values must be normalized"
+                    )
+                normalized_mapping[key] = field_value
+            normalized_fields[field_name] = normalized_mapping
+        normalized_period = {
+            "period_kind": period["period_kind"],
+            **({"name": period["name"]} if period["period_kind"] == "custom" else {}),
+            "start": period["start"],
+            "end": period["end"],
+        }
+        normalized_cases.append(
+            {
+                "name": name,
+                "period": normalized_period,
+                "input": dict(sorted(normalized_fields["input"].items())),
+                "required_output": dict(
+                    sorted(normalized_fields["required_output"].items())
+                ),
+            }
+        )
+    return tuple(normalized_cases)
+
+
+def _validate_wrapped_review_contract_size(
+    *,
+    citation: str,
+    path: PurePosixPath,
+    deferred_output_contracts: tuple[dict[str, str], ...],
+    required_test_cases: tuple[dict[str, object], ...],
+    label: str,
+) -> None:
+    """Keep helper normalization within the installed CLI's exact size bound."""
+
+    if not deferred_output_contracts and not required_test_cases:
+        return
+    payload: dict[str, object] = {
+        "schema": (
+            STRUCTURED_REVIEW_CONTRACT_SCHEMA
+            if required_test_cases
+            else DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA
+        ),
+        "citation": citation,
+        "rulespec_path": path.as_posix(),
+        "required_deferred_outputs": list(deferred_output_contracts),
+    }
+    if required_test_cases:
+        payload["required_test_cases"] = list(required_test_cases)
+    wrapped_contract = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(wrapped_contract) > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES:
+        raise ValueError(f"{label} wrapped review contract exceeds the maximum input size")
+
+
 def parse_canonical_refresh_bundle(
     repo: Path,
     refresh_bundle_json: str,
     *,
     primary_citation: str,
     primary_rulespec_path: str,
+    primary_required_test_cases_json: str = "[]",
 ) -> tuple[dict[str, str | None], ...]:
     """Validate independent existing canonical modules for atomic fresh encoding."""
 
@@ -511,7 +711,21 @@ def parse_canonical_refresh_bundle(
             "canonical refresh bundle and its primary contain more than "
             f"{MAX_SOURCE_BUNDLE_CITATIONS} modules"
         )
-    if not payload:
+    if not isinstance(primary_required_test_cases_json, str):
+        raise ValueError("primary required test cases JSON must be a string")
+    if (
+        len(primary_required_test_cases_json.encode("utf-8"))
+        > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES
+    ):
+        raise ValueError("primary required test cases JSON exceeds the maximum input size")
+    primary_required_test_cases = _normalize_required_test_cases(
+        _load_unambiguous_json(
+            primary_required_test_cases_json,
+            label="primary required test cases JSON",
+        ),
+        label="primary required test cases",
+    )
+    if not payload and not primary_required_test_cases:
         return ()
 
     repo = repo.resolve(strict=True)
@@ -541,9 +755,22 @@ def parse_canonical_refresh_bundle(
             "RuleSpec path"
         )
 
+    _validate_wrapped_review_contract_size(
+        citation=primary_citation,
+        path=primary_path,
+        deferred_output_contracts=(),
+        required_test_cases=primary_required_test_cases,
+        label="canonical refresh primary",
+    )
     requested: list[
-        tuple[str, PurePosixPath, str | None, tuple[dict[str, str], ...]]
-    ] = [(primary_citation, primary_path, None, ())]
+        tuple[
+            str,
+            PurePosixPath,
+            str | None,
+            tuple[dict[str, str], ...],
+            tuple[dict[str, object], ...],
+        ]
+    ] = [(primary_citation, primary_path, None, (), primary_required_test_cases)]
     seen_citations = {primary_citation}
     seen_paths = {primary_path}
     for index, value in enumerate(payload):
@@ -553,6 +780,7 @@ def parse_canonical_refresh_bundle(
             *required_fields,
             "review_finding",
             "deferred_output_contracts",
+            "required_test_cases",
         }
         if (
             not isinstance(value, dict)
@@ -561,12 +789,17 @@ def parse_canonical_refresh_bundle(
         ):
             raise ValueError(
                 f"{label} must contain citation and replace_rulespec_path, with "
-                "only optional review_finding and deferred_output_contracts fields"
+                "only optional review_finding, deferred_output_contracts, and "
+                "required_test_cases fields"
             )
         citation = value["citation"]
         raw_path = value["replace_rulespec_path"]
         review_finding = value.get("review_finding")
         deferred_output_contracts = value.get("deferred_output_contracts", [])
+        required_test_cases = _normalize_required_test_cases(
+            value.get("required_test_cases", []),
+            label=f"{label} required test cases",
+        )
         if (
             not isinstance(citation, str)
             or not citation
@@ -655,25 +888,24 @@ def parse_canonical_refresh_bundle(
             raise ValueError(
                 f"{label} path must equal the citation's canonical RuleSpec path"
             )
-        if normalized_contracts:
-            wrapped_contract = json.dumps(
-                {
-                    "schema": DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA,
-                    "citation": citation,
-                    "rulespec_path": path.as_posix(),
-                    "required_deferred_outputs": normalized_contracts,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            if len(wrapped_contract) > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES:
-                raise ValueError(
-                    f"{label} wrapped deferred output review contract exceeds "
-                    "the maximum input size"
-                )
+        _validate_wrapped_review_contract_size(
+            citation=citation,
+            path=path,
+            deferred_output_contracts=tuple(normalized_contracts),
+            required_test_cases=required_test_cases,
+            label=label,
+        )
         if citation in seen_citations or path in seen_paths:
             raise ValueError("canonical refresh citations and paths must be unique")
-        requested.append((citation, path, review_finding, tuple(normalized_contracts)))
+        requested.append(
+            (
+                citation,
+                path,
+                review_finding,
+                tuple(normalized_contracts),
+                required_test_cases,
+            )
+        )
         seen_citations.add(citation)
         seen_paths.add(path)
 
@@ -684,8 +916,15 @@ def parse_canonical_refresh_bundle(
             path=path,
             review_finding=review_finding,
             deferred_output_contracts=deferred_output_contracts,
+            required_test_cases=required_test_cases,
         )
-        for citation, path, review_finding, deferred_output_contracts in requested
+        for (
+            citation,
+            path,
+            review_finding,
+            deferred_output_contracts,
+            required_test_cases,
+        ) in requested
     )
 
 
@@ -696,6 +935,7 @@ def _canonical_refresh_target_inventory(
     path: PurePosixPath,
     review_finding: str | None,
     deferred_output_contracts: tuple[dict[str, str], ...],
+    required_test_cases: tuple[dict[str, object], ...],
 ) -> dict[str, object]:
     """Bind one refresh target and its untrusted predecessor manifest to HEAD."""
 
@@ -823,6 +1063,7 @@ def _canonical_refresh_target_inventory(
         "citation": citation,
         "review_finding": review_finding,
         "deferred_output_contracts": list(deferred_output_contracts),
+        "required_test_cases": list(required_test_cases),
         "rulespec_path": path.as_posix(),
         "rulespec_sha256": target_sha256,
         "companion_path": companion_path.as_posix(),
@@ -839,7 +1080,10 @@ def verify_canonical_refresh_target(
     """Require one normalized target to remain byte-identical before its lane."""
 
     try:
-        target = json.loads(target_json)
+        target = _load_unambiguous_json(
+            target_json,
+            label="canonical refresh target",
+        )
     except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("canonical refresh target is invalid JSON") from exc
     expected_fields = {
@@ -852,17 +1096,30 @@ def verify_canonical_refresh_target(
         "manifest_sha256",
         "review_finding",
         "deferred_output_contracts",
+        "required_test_cases",
     }
     deferred_output_contracts = (
         target.get("deferred_output_contracts") if isinstance(target, dict) else None
     )
+    try:
+        required_test_cases = _normalize_required_test_cases(
+            target.get("required_test_cases") if isinstance(target, dict) else None,
+            label="canonical refresh target required test cases",
+        )
+    except ValueError as exc:
+        raise ValueError("canonical refresh target inventory is malformed") from exc
     if (
         not isinstance(target, dict)
         or set(target) != expected_fields
         or not all(
             isinstance(target[field], str) and target[field]
             for field in expected_fields
-            - {"companion_sha256", "review_finding", "deferred_output_contracts"}
+            - {
+                "companion_sha256",
+                "review_finding",
+                "deferred_output_contracts",
+                "required_test_cases",
+            }
         )
         or (
             target["companion_sha256"] is not None
@@ -901,6 +1158,7 @@ def verify_canonical_refresh_target(
             }
         )
         != len(deferred_output_contracts or [])
+        or list(required_test_cases) != target["required_test_cases"]
         or (
             target["review_finding"] is not None
             and (
@@ -926,6 +1184,13 @@ def verify_canonical_refresh_target(
     )
     companion_path = _safe_relative_path(
         target["companion_path"], label="canonical refresh target companion"
+    )
+    _validate_wrapped_review_contract_size(
+        citation=target["citation"],
+        path=rulespec_path,
+        deferred_output_contracts=tuple(deferred_output_contracts),
+        required_test_cases=required_test_cases,
+        label="canonical refresh target",
     )
     if (
         citation_rulespec_path(target["citation"]) != rulespec_path
@@ -2854,6 +3119,11 @@ def main() -> None:
     )
     canonical_refresh_parser.add_argument("--primary-citation", required=True)
     canonical_refresh_parser.add_argument("--primary-rulespec-path", required=True)
+    canonical_refresh_parser.add_argument(
+        "--primary-required-test-cases-json",
+        default="[]",
+        help="bounded JSON array of exact companion cases required for the primary",
+    )
     canonical_refresh_target_parser = subparsers.add_parser(
         "verify-canonical-refresh-target",
         help="verify one normalized canonical refresh target remains unchanged",
@@ -2975,6 +3245,9 @@ def main() -> None:
                         args.refresh_bundle_json,
                         primary_citation=args.primary_citation,
                         primary_rulespec_path=args.primary_rulespec_path,
+                        primary_required_test_cases_json=(
+                            args.primary_required_test_cases_json
+                        ),
                     ),
                     separators=(",", ":"),
                 )
