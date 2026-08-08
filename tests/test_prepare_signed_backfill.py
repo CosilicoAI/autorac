@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from axiom_encode.cli import _legacy_replacement_manifest_issues
 from axiom_encode.legacy_replacement import (
+    migrate_legacy_exact_dependent_source_verification,
     receipt_identity_payload,
     receipt_identity_sha256,
 )
@@ -1179,7 +1180,10 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
     ]
     schema = receipt["schema_version"]
     retained_successors = replacement.get("retained_successors")
-    if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4":
+    if schema in {
+        "axiom-encode/legacy-fresh-reencode-receipt/v4",
+        "axiom-encode/legacy-fresh-reencode-receipt/v5",
+    }:
         assert isinstance(retained_successors, list)
         deleted_files.extend(
             {"path": item["path"], "deleted": True}
@@ -1204,6 +1208,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v2",
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
+                "axiom-encode/legacy-fresh-reencode-receipt/v5",
             }
             else None
         ),
@@ -1213,6 +1218,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
             in {
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
+                "axiom-encode/legacy-fresh-reencode-receipt/v5",
             }
             else None
         ),
@@ -1222,17 +1228,26 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
             in {
                 "axiom-encode/legacy-fresh-reencode-receipt/v3",
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
+                "axiom-encode/legacy-fresh-reencode-receipt/v5",
             }
             else None
         ),
         retained_successors=(
             retained_successors
-            if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4"
+            if schema
+            in {
+                "axiom-encode/legacy-fresh-reencode-receipt/v4",
+                "axiom-encode/legacy-fresh-reencode-receipt/v5",
+            }
             else None
         ),
         metadata_reconciliations=(
             replacement["metadata_reconciliations"]
-            if schema == "axiom-encode/legacy-fresh-reencode-receipt/v4"
+            if schema
+            in {
+                "axiom-encode/legacy-fresh-reencode-receipt/v4",
+                "axiom-encode/legacy-fresh-reencode-receipt/v5",
+            }
             else None
         ),
     )
@@ -1246,6 +1261,8 @@ def _write_legacy_replacement_change(
     omitted_scheduled_companion: bool = False,
     exact_dependent: bool = False,
     generated_exact_dependent: bool = False,
+    plural_exact_dependent: bool = False,
+    companion_only_plural_exact_dependent: bool = False,
     destination_predecessor: bool = False,
     retained_successor: bool = False,
     legacy_owner_class: str = "v1-hmac-untrusted",
@@ -1253,7 +1270,18 @@ def _write_legacy_replacement_change(
     old_rule = repo / "us/statutes/47:32.yaml"
     old_test = repo / "us/statutes/47:32.test.yaml"
     old_rule.parent.mkdir(parents=True)
-    old_rule.write_text("rules: []\n", encoding="utf-8")
+    old_rule.write_text(
+        (
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us/statute/47/32\n"
+            "rules: []\n"
+        )
+        if plural_exact_dependent
+        else "rules: []\n",
+        encoding="utf-8",
+    )
     old_test.write_text("[]\n", encoding="utf-8")
     old_rule_sha256 = hashlib.sha256(old_rule.read_bytes()).hexdigest()
     old_test_sha256 = hashlib.sha256(old_test.read_bytes()).hexdigest()
@@ -1421,7 +1449,20 @@ def _write_legacy_replacement_change(
                 "  source_verification:\n"
                 "    corpus_citation_path: us/statute/26/1\n"
                 if generated_exact_dependent
-                else ""
+                else (
+                    "module:\n"
+                    "  source_verification:\n"
+                    "    corpus_citation_paths:\n"
+                    "      - us/statute/47/32\n"
+                    "      - us/statute/47/294\n"
+                    "    upstream_source_check:\n"
+                    "      status: checked_higher_authority\n"
+                    "      checked_paths:\n"
+                    "        - us/statute/47/32\n"
+                    "        - us/statute/47/294\n"
+                    if plural_exact_dependent
+                    else ""
+                )
             )
             + "imports:\n"
             "  - us:statutes/47:32#amount\n"
@@ -1444,7 +1485,12 @@ def _write_legacy_replacement_change(
             "        formula: amount\n",
             encoding="utf-8",
         )
-        exact_companion.write_text("[]\n", encoding="utf-8")
+        exact_companion.write_text(
+            "imports:\n  - us:statutes/47:32\n"
+            if companion_only_plural_exact_dependent
+            else "[]\n",
+            encoding="utf-8",
+        )
         exact_manifest.parent.mkdir(parents=True, exist_ok=True)
         exact_applied_files = [
             {
@@ -1534,9 +1580,23 @@ def _write_legacy_replacement_change(
             "'us/statutes/47/294.yaml':\n  reason: canonical\n"
         )
     metadata.write_text('{"module":"us:statutes/47/32"}\n', encoding="utf-8")
-    if exact_dependent:
+    if exact_dependent and not companion_only_plural_exact_dependent:
         exact_primary.write_text(
             exact_primary.read_text(encoding="utf-8").replace(
+                "us:statutes/47:32",
+                "us:statutes/47/32",
+            ),
+            encoding="utf-8",
+        )
+        if plural_exact_dependent:
+            migrated, migration = migrate_legacy_exact_dependent_source_verification(
+                exact_primary.read_bytes()
+            )
+            assert migration is not None
+            exact_primary.write_bytes(migrated)
+    if companion_only_plural_exact_dependent:
+        exact_companion.write_text(
+            exact_companion.read_text(encoding="utf-8").replace(
                 "us:statutes/47:32",
                 "us:statutes/47/32",
             ),
@@ -1546,7 +1606,7 @@ def _write_legacy_replacement_change(
     new_rule.parent.mkdir(parents=True, exist_ok=True)
     new_rule.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
     new_test.write_text("[]\n", encoding="utf-8")
-    if exact_dependent:
+    if exact_dependent and not companion_only_plural_exact_dependent:
         exact_primary.write_text(
             exact_primary.read_text(encoding="utf-8").replace(
                 old_rule_sha256,
@@ -1587,7 +1647,9 @@ def _write_legacy_replacement_change(
     receipt.parent.mkdir(parents=True)
     receipt_payload = {
         "schema_version": (
-            "axiom-encode/legacy-fresh-reencode-receipt/v3"
+            "axiom-encode/legacy-fresh-reencode-receipt/v5"
+            if plural_exact_dependent
+            else "axiom-encode/legacy-fresh-reencode-receipt/v3"
             if destination_predecessor
             else (
                 "axiom-encode/legacy-fresh-reencode-receipt/v2"
@@ -1708,25 +1770,60 @@ def _write_legacy_replacement_change(
                 "live_files": exact_live_files,
                 "rewrites": [
                     {
-                        "path": exact_primary.relative_to(repo).as_posix(),
+                        "path": (
+                            exact_companion.relative_to(repo).as_posix()
+                            if companion_only_plural_exact_dependent
+                            else exact_primary.relative_to(repo).as_posix()
+                        ),
                         "before_sha256": hashlib.sha256(
-                            exact_primary_before
+                            exact_companion_before
+                            if companion_only_plural_exact_dependent
+                            else exact_primary_before
                         ).hexdigest(),
                         "after_sha256": hashlib.sha256(
-                            exact_primary.read_bytes()
+                            exact_companion.read_bytes()
+                            if companion_only_plural_exact_dependent
+                            else exact_primary.read_bytes()
                         ).hexdigest(),
                         "replacements": [
                             {
                                 "from": "us:statutes/47:32",
                                 "to": "us:statutes/47/32",
-                                "count": 2,
+                                "count": (
+                                    1 if companion_only_plural_exact_dependent else 2
+                                ),
                             }
                         ],
-                        "proof_import_repairs": 1,
+                        "proof_import_repairs": (
+                            0 if companion_only_plural_exact_dependent else 1
+                        ),
                     }
                 ],
+                **(
+                    {
+                        "source_verification_migration": (
+                            None
+                            if companion_only_plural_exact_dependent
+                            else {
+                                "legacy_corpus_citation_paths": [
+                                    "us/statute/47/32",
+                                    "us/statute/47/294",
+                                ],
+                                "corpus_citation_path": "us/statute/47/32",
+                            }
+                        )
+                    }
+                    if plural_exact_dependent
+                    else {}
+                ),
             }
         ]
+        if plural_exact_dependent:
+            replacement = receipt_payload["replacement"]
+            replacement["destination_predecessor_class"] = "absent"
+            replacement["destination_predecessor_files"] = []
+            replacement["retained_successors"] = []
+            replacement["metadata_reconciliations"] = []
     if retained_successor:
         retained_metadata_after = retained_metadata.read_bytes()
         receipt_payload["schema_version"] = (
@@ -2346,6 +2443,92 @@ def test_stage_accepts_v2_exact_dependent_with_unchanged_companion(
         "us/policies/income_tax/composite.test.yaml"
         not in _git(repo, "diff", "--cached", "--name-only").splitlines()
     )
+
+
+def test_stage_accepts_v5_singular_exact_dependent_noop_migration(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["schema_version"] = "axiom-encode/legacy-fresh-reencode-receipt/v5"
+    replacement = payload["replacement"]
+    replacement["destination_predecessor_class"] = "absent"
+    replacement["destination_predecessor_files"] = []
+    replacement["retained_successors"] = []
+    replacement["metadata_reconciliations"] = []
+    for dependent in replacement["exact_dependents"]:
+        dependent["source_verification_migration"] = None
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    authorized_changed_paths(repo)
+
+
+def test_stage_accepts_v5_multi_source_exact_dependent_migration(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+        plural_exact_dependent=True,
+    )
+
+    expected = authorized_changed_paths(repo)
+    stage_authorized_changes(repo)
+
+    primary = repo / "us/policies/income_tax/composite.yaml"
+    primary_text = primary.read_text(encoding="utf-8")
+    assert "    corpus_citation_path: us/statute/47/32\n" in primary_text
+    assert "    corpus_citation_paths:\n" not in primary_text
+    assert "        - us/statute/47/32\n" in primary_text
+    assert "        - us/statute/47/294\n" in primary_text
+    assert PurePosixPath("us/policies/income_tax/composite.yaml") in expected
+
+
+def test_stage_rejects_v5_plural_primary_with_companion_only_rewrite(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+        plural_exact_dependent=True,
+        companion_only_plural_exact_dependent=True,
+    )
+
+    with pytest.raises(ValueError, match="source_verification_migration differs"):
+        authorized_changed_paths(repo)
+
+
+def test_stage_rejects_v5_fabricated_source_verification_migration(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    manifest, receipt, _old_manifest, _metadata = _write_legacy_replacement_change(
+        repo,
+        exact_dependent=True,
+    )
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["schema_version"] = "axiom-encode/legacy-fresh-reencode-receipt/v5"
+    replacement = payload["replacement"]
+    replacement["destination_predecessor_class"] = "absent"
+    replacement["destination_predecessor_files"] = []
+    replacement["retained_successors"] = []
+    replacement["metadata_reconciliations"] = []
+    replacement["exact_dependents"][0]["source_verification_migration"] = {
+        "legacy_corpus_citation_paths": ["us/statute/47/32"],
+        "corpus_citation_path": "us/statute/47/32",
+    }
+    receipt.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    _refresh_legacy_receipt_bindings(repo, manifest, receipt)
+
+    with pytest.raises(ValueError, match="source_verification_migration differs"):
+        authorized_changed_paths(repo)
 
 
 def test_stage_rejects_generated_exact_dependent_under_old_manual_owner_class(

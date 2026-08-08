@@ -1380,6 +1380,11 @@ def _add_exact_dependent(checkout: Path, content_root: Path) -> Path:
         "    corpus_citation_paths:\n"
         "      - us-la/statute/47:32\n"
         "      - us-la/statute/47:294\n"
+        "    upstream_source_check:\n"
+        "      status: checked_higher_authority\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "        - us-la/statute/47:294\n"
         "imports:\n"
         "  - us-la:statutes/47:32#amount\n"
         "rules: []\n"
@@ -1404,6 +1409,269 @@ def _add_exact_dependent(checkout: Path, content_root: Path) -> Path:
     _git(checkout, "add", ".")
     _git(checkout, "commit", "-qm", "exact dependent")
     return dependent.relative_to(checkout)
+
+
+def test_exact_dependent_source_verification_migration_preserves_full_history() -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "      - us-la/statute/47:294\n"
+        "    upstream_source_check:\n"
+        "      status: checked_higher_authority\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "        - us-la/statute/47:294\n"
+        "rules:\n"
+        "  - metadata:\n"
+        "      proof:\n"
+        "        atoms:\n"
+        "          - source:\n"
+        "              corpus_citation_path: us-la/statute/47:294\n"
+    ).encode()
+
+    migrated, migration = _migrate_legacy_exact_dependent_source_verification(raw)
+
+    assert migration is not None
+    assert migration.legacy_corpus_citation_paths == (
+        "us-la/statute/47:32",
+        "us-la/statute/47:294",
+    )
+    assert migration.corpus_citation_path == "us-la/statute/47:32"
+    assert migrated == raw.replace(
+        (
+            "    corpus_citation_paths:\n"
+            "      - us-la/statute/47:32\n"
+            "      - us-la/statute/47:294\n"
+        ).encode(),
+        b"    corpus_citation_path: us-la/statute/47:32\n",
+        1,
+    )
+    assert b"      checked_paths:\n" in migrated
+    assert b"              corpus_citation_path: us-la/statute/47:294\n" in migrated
+
+
+@pytest.mark.parametrize(
+    "checked_paths",
+    [
+        "",
+        "      checked_paths:\n        - us-la/statute/47:32\n",
+        (
+            "      checked_paths:\n"
+            "        - us-la/statute/47:294\n"
+            "        - us-la/statute/47:32\n"
+        ),
+    ],
+)
+def test_exact_dependent_source_verification_migration_rejects_unbound_history(
+    checked_paths: str,
+) -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "      - us-la/statute/47:294\n"
+        "    upstream_source_check:\n"
+        "      status: checked_higher_authority\n"
+        f"{checked_paths}"
+        "rules: []\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="not preserved exactly"):
+        _migrate_legacy_exact_dependent_source_verification(raw)
+
+
+def test_exact_dependent_source_verification_migration_leaves_singular_unchanged() -> (
+    None
+):
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_path: us-la/statute/47:32\n"
+        "rules: []\n"
+    ).encode()
+
+    assert _migrate_legacy_exact_dependent_source_verification(raw) == (raw, None)
+
+
+@pytest.mark.parametrize(
+    ("extra_verification", "match"),
+    [
+        (
+            "    corpus_citation_path: us-la/statute/47:32\n",
+            "mixes singular and plural",
+        ),
+        ("    source_sha256: " + "a" * 64 + "\n", "ambiguous aggregate"),
+    ],
+)
+def test_exact_dependent_source_verification_migration_rejects_ambiguous_primary(
+    extra_verification: str,
+    match: str,
+) -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        f"{extra_verification}"
+        "    upstream_source_check:\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "rules: []\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match=match):
+        _migrate_legacy_exact_dependent_source_verification(raw)
+
+
+def test_exact_dependent_source_verification_migration_rejects_duplicate_history() -> (
+    None
+):
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "      - us-la/statute/47:32\n"
+        "    upstream_source_check:\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "        - us-la/statute/47:32\n"
+        "rules: []\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="not a unique canonical citation list"):
+        _migrate_legacy_exact_dependent_source_verification(raw)
+
+
+def test_exact_dependent_source_verification_migration_keeps_singular_aliases() -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_path: &citation us-la/statute/47:32\n"
+        "rules:\n"
+        "  - metadata:\n"
+        "      proof:\n"
+        "        atoms:\n"
+        "          - source: *citation\n"
+    ).encode()
+
+    migrated, migration = _migrate_legacy_exact_dependent_source_verification(raw)
+
+    assert migrated == raw
+    assert migration is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        (
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-la/statute/47:32\n"
+            "    corpus_citation_path: us-la/statute/47:294\n"
+            "rules: []\n"
+        ).encode(),
+        (
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  source_verification:\n"
+            "    corpus_citation_paths:\n"
+            "      - us-la/statute/47:32\n"
+            "  source_verification:\n"
+            "    corpus_citation_path: us-la/statute/47:294\n"
+            "rules: []\n"
+        ).encode(),
+    ],
+)
+def test_exact_dependent_source_verification_migration_rejects_noop_duplicate_keys(
+    raw: bytes,
+) -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        _migrate_legacy_exact_dependent_source_verification(raw)
+
+
+def test_exact_dependent_source_verification_migration_rejects_yaml_aliases() -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification: &verification\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "    upstream_source_check:\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "unrelated_audit_copy: *verification\n"
+        "rules: []\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="cannot contain YAML anchors or aliases"):
+        _migrate_legacy_exact_dependent_source_verification(raw)
+
+
+def test_exact_dependent_source_verification_migration_rejects_duplicate_keys() -> None:
+    from axiom_encode.cli import (
+        _migrate_legacy_exact_dependent_source_verification,
+    )
+
+    raw = (
+        "format: rulespec/v1\n"
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_paths:\n"
+        "      - us-la/statute/47:32\n"
+        "    upstream_source_check:\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "    upstream_source_check:\n"
+        "      checked_paths:\n"
+        "        - us-la/statute/47:32\n"
+        "rules: []\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        _migrate_legacy_exact_dependent_source_verification(raw)
 
 
 def test_contract_binds_exact_composite_dependent_to_clean_base(
@@ -1439,6 +1707,14 @@ def test_contract_binds_exact_composite_dependent_to_clean_base(
     assert b"us-la:statutes/47/32#amount" in next(
         item.raw for item in exact.live_files if item.path == dependent
     )
+    live_primary = next(item.raw for item in exact.live_files if item.path == dependent)
+    assert b"    corpus_citation_path: us-la/statute/47:32\n" in live_primary
+    assert b"    corpus_citation_paths:\n" not in live_primary
+    assert b"      checked_paths:\n" in live_primary
+    assert exact.source_verification_migration is not None
+    assert exact.source_verification_migration.corpus_citation_path == (
+        "us-la/statute/47:32"
+    )
     assert next(
         item.sha256
         for item in exact.legacy_files
@@ -1448,6 +1724,50 @@ def test_contract_binds_exact_composite_dependent_to_clean_base(
         for item in exact.live_files
         if item.path.name.endswith(".test.yaml")
     )
+
+
+def test_contract_rejects_exact_dependent_primary_outside_signed_source(
+    tmp_path: Path,
+) -> None:
+    checkout, content_root, source = _legacy_checkout(tmp_path)
+    dependent = _add_exact_dependent(checkout, content_root)
+    dependent_path = checkout / dependent
+    dependent_path.write_text(
+        dependent_path.read_text()
+        .replace(
+            ("      - us-la/statute/47:32\n      - us-la/statute/47:294\n"),
+            ("      - us-la/statute/47:294\n      - us-la/statute/47:32\n"),
+        )
+        .replace(
+            ("        - us-la/statute/47:32\n        - us-la/statute/47:294\n"),
+            ("        - us-la/statute/47:294\n        - us-la/statute/47:32\n"),
+        )
+    )
+    manifest = (
+        checkout
+        / ".axiom/encoding-manifests/us-la/policies/income_tax/2026_resident_core.json"
+    )
+    payload = json.loads(manifest.read_text())
+    for applied in payload["applied_files"]:
+        applied_path = checkout / applied["path"]
+        applied["sha256"] = hashlib.sha256(applied_path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(payload) + "\n")
+    _git(checkout, "add", ".")
+    _git(checkout, "commit", "-qm", "reordered exact dependent source history")
+
+    with (
+        patch("axiom_encode.cli.resolve_corpus_source_unit", return_value=source),
+        pytest.raises(ValueError, match="must match the signed replacement source"),
+    ):
+        _resolve_legacy_replacement_contract(
+            source_raw=Path("us-la/statutes/47:32.yaml"),
+            destination_raw=Path("us-la/statutes/47/32.yaml"),
+            policy_checkout_path=checkout,
+            policy_repo_path=content_root,
+            source_unit=source,
+            corpus_release=SimpleNamespace(),
+            exact_dependent_paths=(dependent,),
+        )
 
 
 def test_contract_rejects_exact_dependent_without_v1_ownership(
