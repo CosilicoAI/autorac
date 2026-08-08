@@ -14664,7 +14664,12 @@ class TestCmdEncode:
             "format: rulespec/v1\n"
             "module:\n"
             "  source_verification:\n"
-            "    corpus_citation_path: us-la/statute/47/32\n"
+            "    corpus_citation_paths:\n"
+            "      - us-la/statute/47/32\n"
+            "    upstream_source_check:\n"
+            "      status: checked_higher_authority\n"
+            "      checked_paths:\n"
+            "        - us-la/statute/47/32\n"
             "  proof_validation:\n"
             "    required: true\n"
             "imports:\n"
@@ -15070,6 +15075,11 @@ class TestCmdEncode:
             assert b"us-la:statutes/47/32#amount" in overlay_bytes
             assert b"us-la:statutes/47:32#amount" not in overlay_bytes
             assert f"hash: sha256:{_sha256_file(generated)}".encode() in overlay_bytes
+            assert b"    corpus_citation_paths:\n" not in overlay_bytes
+            assert (
+                b"    corpus_citation_path: us-la/statute/47/32\n" in overlay_bytes
+            )
+            assert b"      checked_paths:\n" in overlay_bytes
 
         with (
             patch("axiom_encode.cli.ValidatorPipeline"),
@@ -15199,6 +15209,12 @@ class TestCmdEncode:
         assert destination.exists()
         assert destination_test.exists()
         assert b"us-la:statutes/47/32#amount" in dependent.read_bytes()
+        assert b"    corpus_citation_paths:\n" not in dependent.read_bytes()
+        assert (
+            b"    corpus_citation_path: us-la/statute/47/32\n"
+            in dependent.read_bytes()
+        )
+        assert b"      checked_paths:\n" in dependent.read_bytes()
         assert (
             f"hash: sha256:{_sha256_file(destination)}".encode()
             in dependent.read_bytes()
@@ -15246,7 +15262,7 @@ class TestCmdEncode:
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v4")
+        assert receipt["schema_version"].endswith("/v5")
         assert len(receipt["replacement"]["retained_successors"]) == 4
         assert {
             item["destination"]
@@ -15297,6 +15313,15 @@ class TestCmdEncode:
         exact = exact_by_primary[dependent_relative.as_posix()]
         assert exact["primary"] == dependent_relative.as_posix()
         assert exact["rewrites"][0]["proof_import_repairs"] == 1
+        assert exact["source_verification_migration"] == {
+            "legacy_corpus_citation_paths": ["us-la/statute/47/32"],
+            "corpus_citation_path": "us-la/statute/47/32",
+        }
+        assert (
+            "    corpus_citation_path: us-la/statute/47/32\n" in dependent.read_text()
+        )
+        assert "    corpus_citation_paths:\n" not in dependent.read_text()
+        assert "      checked_paths:\n" in dependent.read_text()
         exact_legacy_hashes = {
             item["path"]: item["sha256"] for item in exact["legacy_files"]
         }
@@ -15485,6 +15510,46 @@ class TestCmdEncode:
             )
         )
         assert any("rewrite proof is stale" in issue for issue in issues)
+
+        destination_manifest.write_bytes(outer_before_tamper)
+        receipt_path.write_bytes(receipt_before_tamper)
+        restore_linked_manifests()
+        tampered_receipt = copy.deepcopy(receipt)
+        tampered_receipt["replacement"]["exact_dependents"][0][
+            "source_verification_migration"
+        ]["corpus_citation_path"] = "us-la/statute/47/294"
+        _sign_applied_encoding_manifest(
+            tampered_receipt,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        receipt_path.write_text(
+            json.dumps(tampered_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        tampered_receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        tampered_outer = copy.deepcopy(outer)
+        tampered_outer["replacement"]["receipt_sha256"] = tampered_receipt_sha256
+        _sign_applied_encoding_manifest(
+            tampered_outer,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        destination_manifest.write_text(
+            json.dumps(tampered_outer, indent=2, sort_keys=True) + "\n"
+        )
+        rebind_linked_manifests(tampered_receipt_sha256)
+        _verified, _root, _digest, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                destination_manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=post_migration_waiver_sha256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert any(
+            "source-verification migration proof is stale" in issue
+            for issue in issues
+        )
 
         destination_manifest.write_bytes(outer_before_tamper)
         receipt_path.write_bytes(receipt_before_tamper)

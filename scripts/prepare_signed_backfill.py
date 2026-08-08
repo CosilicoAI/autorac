@@ -26,6 +26,7 @@ LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-recei
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4 = "axiom-encode/legacy-fresh-reencode-receipt/v4"
+LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5 = "axiom-encode/legacy-fresh-reencode-receipt/v5"
 LEGACY_EXACT_DEPENDENT_TOOL = (
     "axiom-encode encode --apply --legacy-exact-dependent-rulespec-path"
 )
@@ -1804,7 +1805,10 @@ def _validate_legacy_exact_dependents(
         _repair_proof_import_hashes,
         _strict_legacy_replacement_map,
     )
-    from axiom_encode.legacy_replacement import legacy_receipt_v1_manifest_issues
+    from axiom_encode.legacy_replacement import (
+        legacy_receipt_v1_manifest_issues,
+        migrate_legacy_exact_dependent_source_verification,
+    )
     from axiom_encode.rulespec_path_migration import (
         PathMigrationPlanError,
         rewrite_exact_references,
@@ -1819,16 +1823,42 @@ def _validate_legacy_exact_dependents(
     seen_primaries: set[PurePosixPath] = set()
     seen_group_paths: set[PurePosixPath] = set()
     seen_manifests: set[PurePosixPath] = set()
+    receipt_schema = receipt.get("schema_version")
+    replacement_source = _safe_relative_path(
+        receipt_replacement.get("source"),
+        label=f"{root_manifest}.replacement.source",
+    )
+    replacement_source_raw = _base_regular_blob(
+        repo,
+        base_commit,
+        replacement_source,
+        required=True,
+    )
+    assert replacement_source_raw is not None
+    replacement_source_citations = _legacy_primary_source_citations(
+        replacement_source_raw
+    )
     for index, raw_dependent in enumerate(raw_dependents):
         label = f"{root_manifest} exact_dependents[{index}]"
-        if not isinstance(raw_dependent, dict) or set(raw_dependent) != {
+        expected_dependent_fields = {
             "primary",
             "legacy_manifest",
             "legacy_files",
             "live_files",
             "rewrites",
-        }:
+        }
+        if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+            expected_dependent_fields.add("source_verification_migration")
+        if (
+            not isinstance(raw_dependent, dict)
+            or set(raw_dependent) != expected_dependent_fields
+        ):
             raise ValueError(f"{label} is malformed")
+        receipt_source_verification_migration = (
+            raw_dependent.get("source_verification_migration")
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5
+            else None
+        )
         primary = _safe_relative_path(
             raw_dependent.get("primary"),
             label=f"{label}.primary",
@@ -1941,6 +1971,44 @@ def _validate_legacy_exact_dependents(
                 + "; ".join(legacy_issues)
             )
 
+        expected_source_verification_migration = None
+        source_verification_migration = None
+        if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+            _unused_primary, source_verification_migration = (
+                migrate_legacy_exact_dependent_source_verification(
+                    base_by_path[primary]
+                )
+            )
+            expected_source_verification_migration = (
+                {
+                    "legacy_corpus_citation_paths": list(
+                        source_verification_migration.legacy_corpus_citation_paths
+                    ),
+                    "corpus_citation_path": (
+                        source_verification_migration.corpus_citation_path
+                    ),
+                }
+                if source_verification_migration is not None
+                else None
+            )
+            if (
+                receipt_source_verification_migration
+                != expected_source_verification_migration
+            ):
+                raise ValueError(f"{label}.source_verification_migration differs")
+            if (
+                source_verification_migration is not None
+                and source_verification_migration.corpus_citation_path
+                != (
+                    replacement_source_citations[0]
+                    if replacement_source_citations
+                    else None
+                )
+            ):
+                raise ValueError(
+                    f"{label}.source_verification_migration source differs"
+                )
+
         raw_rewrites = raw_dependent.get("rewrites")
         if not isinstance(raw_rewrites, list) or not raw_rewrites:
             raise ValueError(f"{label}.rewrites is malformed")
@@ -1983,6 +2051,20 @@ def _validate_legacy_exact_dependents(
                 )
                 observed_proof_repairs = 0
                 if rewrite_path == primary:
+                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5:
+                        expected_live, observed_source_migration = (
+                            migrate_legacy_exact_dependent_source_verification(
+                                expected_live
+                            )
+                        )
+                        if observed_source_migration != source_verification_migration:
+                            raise ValueError(
+                                f"{label}.source_verification_migration replay differs"
+                            )
+                    elif source_verification_migration is not None:
+                        raise ValueError(
+                            f"{label}.source_verification_migration schema differs"
+                        )
                     content_root = repo / primary.parts[0]
                     expected_text, observed_proof_repairs = _repair_proof_import_hashes(
                         expected_live.decode("utf-8"),
@@ -2006,6 +2088,15 @@ def _validate_legacy_exact_dependents(
             ):
                 raise ValueError(f"{rewrite_label} transformation differs")
             rewrite_paths.add(rewrite_path)
+
+        if (
+            receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5
+            and primary not in rewrite_paths
+            and source_verification_migration is not None
+        ):
+            raise ValueError(
+                f"{label}.source_verification_migration lacks a primary rewrite"
+            )
 
         for path in expected_paths:
             if path in rewrite_paths:
@@ -2164,6 +2255,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                 }
                 or receipt.get("tool") != LEGACY_REPLACEMENT_TOOL
             ):
@@ -2225,7 +2317,10 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             metadata_reconciliations = receipt_replacement.get(
                 "metadata_reconciliations"
             )
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4:
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            }:
                 if not isinstance(retained_successors, list) or not isinstance(
                     metadata_reconciliations, list
                 ):
@@ -2252,7 +2347,10 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 for item in legacy_files
                 if isinstance(item, dict) and item.get("path") not in live_paths
             ]
-            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4:
+            if receipt_schema in {
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            }:
                 identity_deleted_files.extend(
                     {"path": item.get("path"), "deleted": True}
                     for successor in retained_successors
@@ -2297,6 +2395,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     }
                     else None
                 ),
@@ -2306,6 +2405,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     in {
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     }
                     else None
                 ),
@@ -2315,17 +2415,26 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                     in {
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                         LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
                     }
                     else None
                 ),
                 retained_successors=(
                     retained_successors
-                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4
+                    if receipt_schema
+                    in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    }
                     else None
                 ),
                 metadata_reconciliations=(
                     metadata_reconciliations
-                    if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4
+                    if receipt_schema
+                    in {
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                        LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    }
                     else None
                 ),
             )
@@ -2336,6 +2445,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             } and (
                 not isinstance(
                     receipt_replacement.get("destination_predecessor_class"), str
@@ -2387,6 +2497,7 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             }:
                 predecessor_issues = _legacy_destination_predecessor_issues(
                     repo,
@@ -2894,23 +3005,11 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                             f"legacy scheduled dependent retains an old reference: "
                             f"{pending_path}"
                         )
-            inventory_issues = _legacy_replacement_reference_inventory_issues(
-                repo,
-                base_commit=str(base_commit or ""),
-                authoritative_replacements=authoritative_replacements,
-                legacy=legacy,
-                replacement=receipt_replacement,
-                allow_pending_scheduled=False,
-            )
-            if inventory_issues:
-                raise ValueError(
-                    f"legacy replacement reference inventory differs: {relative}: "
-                    + "; ".join(inventory_issues)
-                )
             if receipt_schema in {
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
             }:
                 exact_unchanged_claims = _validate_legacy_exact_dependents(
                     repo,
@@ -2928,6 +3027,19 @@ def authorized_changed_paths(repo: Path) -> set[PurePosixPath]:
                 authenticated_unchanged_claims.update(exact_unchanged_claims)
                 authorized_unchanged.update(
                     path for _manifest, path in exact_unchanged_claims
+                )
+            inventory_issues = _legacy_replacement_reference_inventory_issues(
+                repo,
+                base_commit=str(base_commit or ""),
+                authoritative_replacements=authoritative_replacements,
+                legacy=legacy,
+                replacement=receipt_replacement,
+                allow_pending_scheduled=False,
+            )
+            if inventory_issues:
+                raise ValueError(
+                    f"legacy replacement reference inventory differs: {relative}: "
+                    + "; ".join(inventory_issues)
                 )
             authorized.update({receipt_relative, old_manifest_path, *receipt_rewrites})
 

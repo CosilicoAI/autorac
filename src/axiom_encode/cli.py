@@ -296,6 +296,9 @@ from .legacy_replacement import (
     RECEIPT_SCHEMA_V3 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
 )
 from .legacy_replacement import (
+    RECEIPT_SCHEMA_V4 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+)
+from .legacy_replacement import (
     RETAINED_SUCCESSOR_TOOL as APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
 )
 from .legacy_replacement import (
@@ -330,6 +333,9 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     legacy_v1_manifest_issues as _legacy_v1_manifest_issues,
+)
+from .legacy_replacement import (
+    migrate_legacy_exact_dependent_source_verification as _migrate_legacy_exact_dependent_source_verification,
 )
 from .legacy_replacement import receipt_identity_payload, receipt_identity_sha256
 from .legacy_replacement_overlay import (
@@ -8642,6 +8648,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -8705,6 +8712,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
             continue
         if receipt.get("schema_version") in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         } and _legacy_destination_predecessor_issues(
             repo_path,
@@ -8883,6 +8891,7 @@ def _legacy_replacement_pending_paths(repo_path: Path) -> list[str]:
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -22926,7 +22935,10 @@ def _legacy_replacement_manifest_issues(
         )
         if isinstance(item, dict) and item.get("path") not in receipt_live_paths
     ]
-    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+    if receipt_schema in {
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+    }:
         identity_deleted_files.extend(
             {"path": item.get("path"), "deleted": True}
             for successor in receipt_retained_successors
@@ -22975,6 +22987,7 @@ def _legacy_replacement_manifest_issues(
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -22984,6 +22997,7 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -22997,6 +23011,7 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23007,12 +23022,20 @@ def _legacy_replacement_manifest_issues(
         ),
         retained_successors=(
             receipt_retained_successors
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             else None
         ),
         metadata_reconciliations=(
             receipt_replacement.get("metadata_reconciliations")
-            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            if receipt_schema
+            in {
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+            }
             and isinstance(receipt_replacement, dict)
             and isinstance(receipt_replacement.get("metadata_reconciliations"), list)
             else None
@@ -23030,6 +23053,7 @@ def _legacy_replacement_manifest_issues(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -23130,6 +23154,7 @@ def _legacy_replacement_manifest_issues(
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23142,13 +23167,18 @@ def _legacy_replacement_manifest_issues(
                 if receipt_schema
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
             )
             | (
                 {"retained_successors", "metadata_reconciliations"}
-                if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+                if receipt_schema
+                in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }
                 else set()
             )
         )
@@ -23190,6 +23220,7 @@ def _legacy_replacement_manifest_issues(
         ]
     if receipt_schema in {
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
     }:
         issues.extend(
@@ -23301,6 +23332,12 @@ def _legacy_replacement_manifest_issues(
         or replacement.get("model_manifest_sha256") != nested_sha256
     ):
         issues.append(f"{manifest_label} nested model manifest binding is stale")
+    try:
+        replacement_source_citations = _legacy_primary_source_citations(
+            _rulespec_migration_base_blob(repo_path, base_commit, Path(str(source)))
+        )
+    except RuntimeError:
+        replacement_source_citations = ()
 
     scheduled = replacement.get("scheduled_dependents")
     seen_scheduled_primaries: set[str] = set()
@@ -23475,16 +23512,18 @@ def _legacy_replacement_manifest_issues(
     seen_exact_primaries: set[str] = set()
     seen_exact_files: set[str] = set()
     for dependent in exact_dependents:
+        expected_dependent_fields = {
+            "primary",
+            "legacy_manifest",
+            "legacy_files",
+            "live_files",
+            "rewrites",
+        }
+        if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+            expected_dependent_fields.add("source_verification_migration")
         if (
             not isinstance(dependent, dict)
-            or set(dependent)
-            != {
-                "primary",
-                "legacy_manifest",
-                "legacy_files",
-                "live_files",
-                "rewrites",
-            }
+            or set(dependent) != expected_dependent_fields
             or not isinstance(dependent.get("primary"), str)
             or not isinstance(dependent.get("legacy_manifest"), dict)
             or not isinstance(dependent.get("legacy_files"), list)
@@ -23492,6 +23531,31 @@ def _legacy_replacement_manifest_issues(
             or not isinstance(dependent.get("rewrites"), list)
         ):
             issues.append(f"{manifest_label} exact dependent is malformed")
+            continue
+        receipt_source_verification_migration = (
+            dependent.get("source_verification_migration")
+            if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            else None
+        )
+        if receipt_source_verification_migration is not None and (
+            not isinstance(receipt_source_verification_migration, dict)
+            or set(receipt_source_verification_migration)
+            != {"legacy_corpus_citation_paths", "corpus_citation_path"}
+            or not isinstance(
+                receipt_source_verification_migration.get(
+                    "legacy_corpus_citation_paths"
+                ),
+                list,
+            )
+            or not isinstance(
+                receipt_source_verification_migration.get("corpus_citation_path"),
+                str,
+            )
+        ):
+            issues.append(
+                f"{manifest_label} exact dependent source-verification migration "
+                "is malformed"
+            )
             continue
         primary = str(dependent["primary"])
         primary_path = Path(primary)
@@ -23641,6 +23705,15 @@ def _legacy_replacement_manifest_issues(
                 rewritten, counts = rewrite_exact_references(
                     base_raw, authoritative_replacements
                 )
+                source_verification_migration = None
+                if (
+                    path == primary_path
+                    and receipt_schema
+                    == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+                ):
+                    rewritten, source_verification_migration = (
+                        _migrate_legacy_exact_dependent_source_verification(rewritten)
+                    )
                 proof_import_repairs = 0
                 if path == primary_path:
                     content_root = repo_path / primary_path.parts[0]
@@ -23659,6 +23732,7 @@ def _legacy_replacement_manifest_issues(
                 RuntimeError,
                 UnsafeCorpusPathError,
                 UnicodeError,
+                ValueError,
                 PathMigrationPlanError,
             ) as exc:
                 issues.append(
@@ -23671,8 +23745,11 @@ def _legacy_replacement_manifest_issues(
                 legacy_hashes[path] != before_sha256
                 or live_hashes[path] != after_sha256
                 or rewritten != live_raw
-                or _migration_corpus_citations(base_raw)
-                != _migration_corpus_citations(live_raw)
+                or (
+                    source_verification_migration is None
+                    and _migration_corpus_citations(base_raw)
+                    != _migration_corpus_citations(live_raw)
+                )
             ):
                 issues.append(
                     f"{manifest_label} exact dependent transformation is stale "
@@ -23711,6 +23788,40 @@ def _legacy_replacement_manifest_issues(
                         f"{manifest_label} exact dependent source history is "
                         f"unverifiable for {path}: {exc}"
                     )
+            if path == primary_path:
+                expected_source_verification_migration = (
+                    {
+                        "legacy_corpus_citation_paths": list(
+                            source_verification_migration.legacy_corpus_citation_paths
+                        ),
+                        "corpus_citation_path": (
+                            source_verification_migration.corpus_citation_path
+                        ),
+                    }
+                    if source_verification_migration is not None
+                    else None
+                )
+                if (
+                    receipt_source_verification_migration
+                    != expected_source_verification_migration
+                ):
+                    issues.append(
+                        f"{manifest_label} exact dependent source-verification "
+                        f"migration proof is stale for {path}"
+                    )
+                if (
+                    source_verification_migration is not None
+                    and source_verification_migration.corpus_citation_path
+                    != (
+                        replacement_source_citations[0]
+                        if replacement_source_citations
+                        else None
+                    )
+                ):
+                    issues.append(
+                        f"{manifest_label} exact dependent singular source differs "
+                        "from the signed replacement source"
+                    )
             if counts:
                 expected_rewrite_paths.add(path)
                 rewrite = rewrite_by_path.get(path)
@@ -23744,6 +23855,15 @@ def _legacy_replacement_manifest_issues(
         if set(rewrite_by_path) != expected_rewrite_paths:
             issues.append(
                 f"{manifest_label} exact dependent rewrite inventory is not exact"
+            )
+        if (
+            receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+            and receipt_source_verification_migration is not None
+            and primary_path not in expected_rewrite_paths
+        ):
+            issues.append(
+                f"{manifest_label} exact dependent source-verification migration "
+                "lacks a primary rewrite"
             )
 
         try:
@@ -24297,6 +24417,7 @@ def _legacy_exact_dependent_manifest_issues(
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -24465,7 +24586,10 @@ def _legacy_retained_successor_manifest_issues(
         not isinstance(receipt, dict)
         or set(receipt) != _LEGACY_REPLACEMENT_RECEIPT_FIELDS
         or receipt.get("schema_version")
-        != APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+        not in {
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+        }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
         or receipt_sha256 != binding.get("receipt_sha256")
         or _applied_encoding_manifest_signature_issue(receipt, signing_broker)
@@ -27252,6 +27376,23 @@ def _resolve_legacy_replacement_contract(
             required_mode=0o644,
         )
         rewritten, counts = rewrite_exact_references(raw, replacements)
+        _source_verification_migration = None
+        dependent_primary = dependent_owner.get(relative)
+        if (
+            dependent_primary is not None
+            and dependent_primary in exact_groups
+            and relative == dependent_primary
+            and counts
+        ):
+            try:
+                rewritten, _source_verification_migration = (
+                    _migrate_legacy_exact_dependent_source_verification(rewritten)
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "legacy exact dependent source verification cannot be migrated "
+                    f"safely for {relative}: {exc}"
+                ) from exc
         if not counts:
             continue
         if relative.parts[: len(manifest_prefix)] == manifest_prefix or any(
@@ -27261,11 +27402,13 @@ def _resolve_legacy_replacement_contract(
                 f"legacy replacement cannot rewrite persisted provenance {relative}"
             )
         if _is_protected_rulespec_yaml_path(relative, roots=roots):
-            dependent_primary = dependent_owner.get(relative)
             if dependent_primary is not None:
                 if dependent_primary in exact_groups:
+                    reference_rewritten, _reference_counts = rewrite_exact_references(
+                        raw, replacements
+                    )
                     if _migration_corpus_citations(raw) != _migration_corpus_citations(
-                        rewritten
+                        reference_rewritten
                     ):
                         raise ValueError(
                             "legacy exact dependent rewrite would alter legal corpus "
@@ -27328,6 +27471,36 @@ def _resolve_legacy_replacement_contract(
 
     exact_dependents: list[_LegacyReplacementExactDependent] = []
     for primary in exact_groups:
+        primary_legacy_file = next(
+            item for item in exact_legacy_files[primary] if item.path == primary
+        )
+        try:
+            _unused_primary_raw, primary_source_migration = (
+                _migrate_legacy_exact_dependent_source_verification(
+                    primary_legacy_file.raw
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "legacy exact dependent source verification cannot be authenticated "
+                f"for {primary}: {exc}"
+            ) from exc
+        if (
+            primary_source_migration is not None
+            and primary_source_migration.corpus_citation_path
+            != source_unit.citation_path
+        ):
+            raise ValueError(
+                "legacy exact dependent singular source must match the signed "
+                f"replacement source for {primary}"
+            )
+        if primary_source_migration and not any(
+            item.path == primary for item in exact_rewrites_by_primary[primary]
+        ):
+            raise ValueError(
+                "legacy exact dependent plural source verification must be migrated "
+                f"in the authenticated primary reference rewrite: {primary}"
+            )
         rewritten_by_path = {
             item.path: item for item in exact_rewrites_by_primary[primary]
         }
@@ -27354,6 +27527,7 @@ def _resolve_legacy_replacement_contract(
                 legacy_files=exact_legacy_files[primary],
                 live_files=live_files,
                 rewrites=tuple(exact_rewrites_by_primary[primary]),
+                source_verification_migration=primary_source_migration,
             )
         )
 
@@ -48759,6 +48933,18 @@ def _build_apply_validation_snapshot(
                         {"path": item.path.as_posix(), "sha256": item.sha256}
                         for item in dependent.live_files
                     ],
+                    "source_verification_migration": (
+                        {
+                            "legacy_corpus_citation_paths": list(
+                                dependent.source_verification_migration.legacy_corpus_citation_paths
+                            ),
+                            "corpus_citation_path": (
+                                dependent.source_verification_migration.corpus_citation_path
+                            ),
+                        }
+                        if dependent.source_verification_migration is not None
+                        else None
+                    ),
                     "rewrites": [
                         {
                             "path": item.path.as_posix(),
@@ -49299,6 +49485,18 @@ def _stage_signed_legacy_replacement_provenance(
                 {"path": item.path.as_posix(), "sha256": item.sha256}
                 for item in dependent.live_files
             ],
+            "source_verification_migration": (
+                {
+                    "legacy_corpus_citation_paths": list(
+                        dependent.source_verification_migration.legacy_corpus_citation_paths
+                    ),
+                    "corpus_citation_path": (
+                        dependent.source_verification_migration.corpus_citation_path
+                    ),
+                }
+                if dependent.source_verification_migration is not None
+                else None
+            ),
             "rewrites": [
                 {
                     "path": item.path.as_posix(),
@@ -54491,6 +54689,26 @@ def _finalize_legacy_exact_dependents_from_overlay(
                     f"{legacy_file.path.as_posix()}"
                 )
                 continue
+            source_verification_migration = None
+            if legacy_file.path == dependent.primary:
+                try:
+                    expected_raw, source_verification_migration = (
+                        _migrate_legacy_exact_dependent_source_verification(
+                            expected_raw
+                        )
+                    )
+                except ValueError as exc:
+                    issues.append(
+                        "Legacy exact dependent source verification cannot be "
+                        f"migrated for {legacy_file.path.as_posix()}: {exc}"
+                    )
+                    continue
+            if source_verification_migration != dependent.source_verification_migration:
+                issues.append(
+                    "Legacy exact dependent source-verification proof is stale for "
+                    f"{legacy_file.path.as_posix()}"
+                )
+                continue
             proof_import_repairs = 0
             if legacy_file.path == dependent.primary:
                 try:
@@ -54507,12 +54725,11 @@ def _finalize_legacy_exact_dependents_from_overlay(
                         f"{legacy_file.path.as_posix()}"
                     )
                     continue
-            if live_raw != expected_raw or _migration_corpus_citations(
-                legacy_file.raw
-            ) != _migration_corpus_citations(live_raw):
+            if live_raw != expected_raw:
                 issues.append(
                     "Legacy exact dependent final transformation is not limited "
-                    "to authenticated reference and proof-import hash rewrites for "
+                    "to authenticated reference, source-verification, and "
+                    "proof-import hash rewrites for "
                     f"{legacy_file.path.as_posix()} "
                     f"(expected {hashlib.sha256(expected_raw).hexdigest()}, "
                     f"found {hashlib.sha256(live_raw).hexdigest()})"
