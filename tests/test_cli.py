@@ -160,6 +160,7 @@ from axiom_encode.cli import (
     _repair_upstream_placement_duplicate_imports,
     _require_axiom_encode_version_provenance,
     _require_clean_axiom_encode_git_provenance,
+    _required_deferred_output_contract_issues,
     _required_generated_import_issues,
     _resolve_applied_manifest_placement,
     _resolve_encode_replacement_target,
@@ -12281,6 +12282,7 @@ class TestCmdEncode:
         args.mode = overrides.get("mode", "repo-augmented")
         args.allow_context = overrides.get("allow_context", [])
         args.review_findings = overrides.get("review_findings", [])
+        args.review_contract_json = overrides.get("review_contract_json", None)
         args.repair_candidate_root = overrides.get("repair_candidate_root", None)
         args.repair_candidate_path = overrides.get("repair_candidate_path", None)
         args.repair_candidate_rulespec_sha256 = overrides.get(
@@ -12962,6 +12964,90 @@ class TestCmdEncode:
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
+
+    def test_encode_contract_rejection_retries_with_exact_context_before_apply(
+        self, tmp_path
+    ):
+        output = "us:statutes/26/1/j/2#income_tax_amount"
+        expected_reason = "Exact source-bound missing dependency."
+        contract = _DeferredOutputReviewContract(
+            citation="26 USC 1(j)(2)",
+            rulespec_path="us/statutes/26/1/j/2.yaml",
+            required_deferred_outputs=((output, expected_reason),),
+        )
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            review_contract_json=contract,
+        )
+        generated_attempts = 0
+        apply_counts_at_validation: list[int] = []
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            result = self._make_eval_result(True)
+            result.runner = f"codex-{kwargs['runner_specs'][0].split(':', 1)[1]}"
+            result.model = kwargs["runner_specs"][0].split(":", 1)[1]
+            result.generation_prompt_sha256 = f"prompt-{generated_attempts}"
+            generated = (
+                args.output / result.runner / "statutes/26/1/j/2.yaml"
+            )
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            reason = (
+                "Wrong paraphrase."
+                if generated_attempts == 1
+                else expected_reason
+            )
+            generated.write_text(
+                "format: rulespec/v1\n"
+                "module:\n"
+                "  deferred_outputs:\n"
+                f"    - output: {output}\n"
+                f"      reason: {reason}\n"
+                "rules: []\n"
+            )
+            generated.with_suffix(".test.yaml").write_text("[]\n")
+            result.output_file = str(generated)
+            return [result]
+
+        def validate(result, **_kwargs):
+            apply_counts_at_validation.append(mock_apply.call_count)
+            issues = _required_deferred_output_contract_issues(
+                Path(result.output_file),
+                contract,
+                citation=contract.citation,
+                rulespec_path=contract.rulespec_path,
+            )
+            return not issues, issues, {}
+
+        applied_file = args.policy_repo_path / contract.rulespec_path
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as mock_run,
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                side_effect=validate,
+            ),
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                return_value=[applied_file],
+            ) as mock_apply,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert apply_counts_at_validation == [0, 0]
+        mock_apply.assert_called_once()
+        assert [
+            call.kwargs["required_deferred_output_contracts"]
+            for call in mock_run.call_args_list
+        ] == [contract.required_deferred_outputs] * 2
 
     def test_encode_retry_feedback_includes_actionable_ci_issue(self):
         import axiom_encode.cli as cli_module

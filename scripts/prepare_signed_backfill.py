@@ -49,6 +49,8 @@ MAX_SOURCE_BUNDLE_CITATIONS = 16
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS = MAX_SOURCE_BUNDLE_CITATIONS - 1
 MAX_DEFERRED_OUTPUT_CONTRACTS = 16
+MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES = 64 * 1024
+DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
@@ -94,6 +96,20 @@ REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
         ("us", "hard-cut/canonical-layout-us"),
     }
 )
+
+
+def _load_unambiguous_json(raw: str, *, label: str) -> object:
+    """Decode untrusted transaction JSON while rejecting duplicate object keys."""
+
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise ValueError(f"{label} contains duplicate JSON key {key!r}")
+            decoded[key] = value
+        return decoded
+
+    return json.loads(raw, object_pairs_hook=reject_duplicates)
 
 
 def _read_bounded_regular(
@@ -268,7 +284,7 @@ def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
         raise ValueError("atomic source JSON must be a string")
     if len(atomic_source_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("atomic source JSON exceeds the maximum input size")
-    payload = json.loads(atomic_source_json)
+    payload = _load_unambiguous_json(atomic_source_json, label="atomic source JSON")
     if isinstance(payload, list):
         return {
             "canonical_refresh_bundle": [],
@@ -304,7 +320,7 @@ def parse_source_bundle(
         raise ValueError("source bundle JSON must be a string")
     if len(source_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("source bundle JSON exceeds the maximum input size")
-    payload = json.loads(source_bundle_json)
+    payload = _load_unambiguous_json(source_bundle_json, label="source bundle JSON")
     if not isinstance(payload, list):
         raise ValueError("source bundle JSON must be an array")
     if len(payload) > MAX_SOURCE_BUNDLE_CITATIONS:
@@ -484,7 +500,10 @@ def parse_canonical_refresh_bundle(
         raise ValueError("canonical refresh bundle JSON must be a string")
     if len(refresh_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("canonical refresh bundle JSON exceeds the maximum input size")
-    payload = json.loads(refresh_bundle_json)
+    payload = _load_unambiguous_json(
+        refresh_bundle_json,
+        label="canonical refresh bundle JSON",
+    )
     if not isinstance(payload, list):
         raise ValueError("canonical refresh bundle JSON must be an array")
     if len(payload) > MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS:
@@ -636,6 +655,22 @@ def parse_canonical_refresh_bundle(
             raise ValueError(
                 f"{label} path must equal the citation's canonical RuleSpec path"
             )
+        if normalized_contracts:
+            wrapped_contract = json.dumps(
+                {
+                    "schema": DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA,
+                    "citation": citation,
+                    "rulespec_path": path.as_posix(),
+                    "required_deferred_outputs": normalized_contracts,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(wrapped_contract) > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES:
+                raise ValueError(
+                    f"{label} wrapped deferred output review contract exceeds "
+                    "the maximum input size"
+                )
         if citation in seen_citations or path in seen_paths:
             raise ValueError("canonical refresh citations and paths must be unique")
         requested.append((citation, path, review_finding, tuple(normalized_contracts)))

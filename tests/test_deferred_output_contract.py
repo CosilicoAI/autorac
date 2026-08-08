@@ -10,6 +10,7 @@ from axiom_encode.cli import (
     _parse_deferred_output_review_contract_json,
     _required_deferred_output_contract_issues,
 )
+from axiom_encode.harness.evals import _format_required_deferred_output_contracts
 
 OUTPUT = "us-la:statutes/47/295/a#individual_louisiana_income_tax_amount"
 REASON = (
@@ -33,6 +34,16 @@ def _issues(path: Path) -> list[str]:
         citation="us-la/statute/47:295",
         rulespec_path="us-la/statutes/47/295.yaml",
     )
+
+
+def test_required_contract_prompt_preserves_exact_pair() -> None:
+    rendered = _format_required_deferred_output_contracts(
+        CONTRACT.required_deferred_outputs
+    )
+
+    assert '"output":"' + OUTPUT + '"' in rendered
+    assert '"reason":"' + REASON + '"' in rendered
+    assert "every character" in rendered
 
 
 def test_required_deferred_output_contract_accepts_exact_yaml_decoded_pair(
@@ -98,6 +109,57 @@ def test_required_deferred_output_contract_rejects_duplicate_output(
     assert "found 2" in issues[0]
 
 
+@pytest.mark.parametrize(
+    "document",
+    [
+        "rules: []\n",
+        "module:\n  deferred_outputs: invalid\n",
+        "module:\n  deferred_outputs:\n    - invalid\n",
+        "module:\n  deferred_outputs:\n    - output: 47\n      reason: exact\n",
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT.upper()}\n      reason: {REASON!r}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: '{OUTPUT} '\n      reason: {REASON!r}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT}\n      reason: {REASON.lower()!r}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT}\n"
+            f"      reason: {REASON.replace('47:32,', '47:32;')!r}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT}\n"
+            f"      reason: {REASON.replace(' but ', '  but ')!r}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT}\n"
+            "      reason: |\n"
+            f"        {REASON}\n"
+        ),
+        (
+            "module:\n  deferred_outputs:\n"
+            f"    - output: {OUTPUT}\n      reason: 47\n"
+        ),
+    ],
+)
+def test_required_deferred_output_contract_rejects_adversarial_shape_and_drift(
+    tmp_path: Path,
+    document: str,
+) -> None:
+    candidate = tmp_path / "295.yaml"
+    candidate.write_text(document, encoding="utf-8")
+
+    assert _issues(candidate)
+
+
 def test_parse_review_contract_rejects_duplicate_outputs() -> None:
     raw = (
         '{"schema":"axiom-encode/review-contract/v1",'
@@ -121,6 +183,26 @@ def test_parse_review_contract_rejects_empty_contract() -> None:
     )
 
     with pytest.raises(argparse.ArgumentTypeError, match="nonempty array"):
+        _parse_deferred_output_review_contract_json(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"schema":"axiom-encode/review-contract/v1",'
+        '"citation":"us-la/statute/47:295",'
+        '"citation":"us-la/statute/47:295",'
+        '"rulespec_path":"us-la/statutes/47/295.yaml",'
+        '"required_deferred_outputs":[{"output":"x","reason":"one"}]}',
+        '{"schema":"axiom-encode/review-contract/v1",'
+        '"citation":"us-la/statute/47:295",'
+        '"rulespec_path":"us-la/statutes/47/295.yaml",'
+        '"required_deferred_outputs":['
+        '{"output":"x","reason":"one","reason":"two"}]}',
+    ],
+)
+def test_parse_review_contract_rejects_duplicate_json_keys(raw: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="duplicate JSON key"):
         _parse_deferred_output_review_contract_json(raw)
 
 

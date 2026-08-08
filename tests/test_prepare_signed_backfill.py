@@ -16,6 +16,7 @@ from axiom_encode.legacy_replacement import (
 )
 from scripts.prepare_signed_backfill import (
     MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS,
+    MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES,
     MAX_SOURCE_BUNDLE_JSON_BYTES,
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
@@ -769,6 +770,59 @@ def test_parse_canonical_refresh_bundle_rejects_duplicate_contract_outputs(
                         "deferred_output_contracts": duplicate_contracts,
                     }
                 ]
+            ),
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[{"citation":"us-la/statute/47:295",'
+        '"citation":"us-la/statute/47:295",'
+        '"replace_rulespec_path":"us-la/statutes/47/295.yaml"}]',
+        '[{"citation":"us-la/statute/47:295",'
+        '"replace_rulespec_path":"us-la/statutes/47/295.yaml",'
+        '"deferred_output_contracts":[{"output":"x","reason":"one",'
+        '"reason":"two"}]}]',
+    ],
+)
+def test_parse_canonical_refresh_bundle_rejects_duplicate_json_keys(
+    tmp_path: Path,
+    raw: str,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        parse_canonical_refresh_bundle(
+            repo,
+            raw,
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
+
+
+def test_parse_canonical_refresh_bundle_rejects_oversized_wrapped_contract(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    oversized_reason = "😀" * (MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES // 4)
+
+    with pytest.raises(ValueError, match="wrapped.*maximum input size"):
+        parse_canonical_refresh_bundle(
+            repo,
+            json.dumps(
+                [
+                    {
+                        "citation": "us-la/statute/47:295",
+                        "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                        "deferred_output_contracts": [
+                            {"output": "x", "reason": oversized_reason}
+                        ],
+                    }
+                ],
+                ensure_ascii=False,
             ),
             primary_citation="us-la/statute/47:294",
             primary_rulespec_path="us-la/statutes/47/294.yaml",

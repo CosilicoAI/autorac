@@ -1,1 +1,1 @@
-Add a citation- and RuleSpec-path-bound review contract that mechanically enforces exact YAML-decoded deferred output reasons on the final repaired overlay before apply admission.
+Add a bounded, unambiguous, citation- and RuleSpec-path-bound deferred-output review contract to signed canonical refreshes. Exact YAML-decoded output/reason pairs are supplied to every generation attempt and enforced before the successful apply validation snapshot.

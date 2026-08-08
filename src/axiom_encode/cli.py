@@ -1095,8 +1095,20 @@ def _parse_deferred_output_review_contract_json(
         raise argparse.ArgumentTypeError(
             "review contract JSON exceeds the bounded size"
         )
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise argparse.ArgumentTypeError(
+                    f"review contract contains duplicate JSON key {key!r}"
+                )
+            decoded[key] = value
+        return decoded
+
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except argparse.ArgumentTypeError:
+        raise
     except (json.JSONDecodeError, RecursionError) as exc:
         raise argparse.ArgumentTypeError("review contract must be valid JSON") from exc
     if not isinstance(payload, dict) or set(payload) != {
@@ -27720,6 +27732,11 @@ def _run_encode_attempt(
         ),
         validation_retry_feedback=validation_retry_feedback,
         validation_retry_candidate=validation_retry_candidate,
+        required_deferred_output_contracts=(
+            deferred_output_review_contract.required_deferred_outputs
+            if deferred_output_review_contract is not None
+            else ()
+        ),
         required_import_targets=required_import_targets,
         legacy_replacement=(
             replacement_target.legacy_replacement
