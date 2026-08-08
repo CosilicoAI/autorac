@@ -1913,7 +1913,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "description": (
             "JSON citation array for atomic imports, or "
             '{"canonical_refresh_bundle":'
-            "[{citation,replace_rulespec_path,review_finding?}]} "
+            "[{citation,replace_rulespec_path,review_finding?,"
+            "deferred_output_contracts?}]} "
             "for an independent refresh transaction"
         ),
         "required": False,
@@ -3698,6 +3699,12 @@ def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
         tmp_path
     )
     additions[0]["review_finding"] = "Preserve the R.S. 47:32 ownership boundary."
+    additions[0]["deferred_output_contracts"] = [
+        {
+            "output": "us-la:statutes/47/295/a#individual_louisiana_income_tax_amount",
+            "reason": "Exact source-bound missing dependency.",
+        }
+    ]
     additions[2]["review_finding"] = "Preserve the five-year carryforward limit."
     normalized = parse_canonical_refresh_bundle(
         repo,
@@ -3799,6 +3806,24 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "Preserve the R.S. 47:32 ownership boundary.\n",
         None,
         "Preserve the five-year carryforward limit.\n",
+    ]
+    assert [
+        (
+            json.loads(args[args.index("--review-contract-json") + 1])
+            if "--review-contract-json" in args
+            else None
+        )
+        for args in encode_args
+    ] == [
+        None,
+        {
+            "schema": "axiom-encode/review-contract/v1",
+            "citation": additions[0]["citation"],
+            "rulespec_path": additions[0]["replace_rulespec_path"],
+            "required_deferred_outputs": additions[0]["deferred_output_contracts"],
+        },
+        None,
+        None,
     ]
     forbidden = {
         "--apply-target-only",
@@ -4887,6 +4912,7 @@ def test_targeted_artifact_enforces_exact_canonical_refresh_inventory(
                     if index > 0 and mutation != "unexpected-companion-finding"
                     else None
                 ),
+                "deferred_output_contracts": [],
                 "rulespec_path": rulespec_path,
                 "rulespec_sha256": "a" * 64,
                 "companion_path": str(

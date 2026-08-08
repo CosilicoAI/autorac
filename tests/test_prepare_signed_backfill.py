@@ -567,6 +567,7 @@ def test_parse_canonical_refresh_bundle_accepts_tracked_canonical_targets(
             "manifest_path",
             "manifest_sha256",
             "review_finding",
+            "deferred_output_contracts",
         }
         for item in inventory
     )
@@ -611,7 +612,7 @@ def test_parse_canonical_refresh_bundle_rejects_unknown_item_field(
 ) -> None:
     repo = _canonical_refresh_repo(tmp_path)
 
-    with pytest.raises(ValueError, match="only an optional review_finding"):
+    with pytest.raises(ValueError, match="only optional review_finding"):
         parse_canonical_refresh_bundle(
             repo,
             '[{"citation":"us-la/statute/47:295",'
@@ -716,6 +717,62 @@ def test_parse_canonical_refresh_bundle_cli_emits_paths(
         "us-la/statute/47:294",
         "us-la/statute/47:295",
     ]
+
+
+def test_parse_canonical_refresh_bundle_preserves_deferred_output_contracts(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    contracts = [
+        {
+            "output": "us-la:statutes/47/295/a#individual_louisiana_income_tax_amount",
+            "reason": "Exact source-bound missing dependency.",
+        }
+    ]
+
+    inventory = parse_canonical_refresh_bundle(
+        repo,
+        json.dumps(
+            [
+                {
+                    "citation": "us-la/statute/47:295",
+                    "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                    "deferred_output_contracts": contracts,
+                }
+            ]
+        ),
+        primary_citation="us-la/statute/47:294",
+        primary_rulespec_path="us-la/statutes/47/294.yaml",
+    )
+
+    assert inventory[0]["deferred_output_contracts"] == []
+    assert inventory[1]["deferred_output_contracts"] == contracts
+
+
+def test_parse_canonical_refresh_bundle_rejects_duplicate_contract_outputs(
+    tmp_path: Path,
+) -> None:
+    repo = _canonical_refresh_repo(tmp_path)
+    duplicate_contracts = [
+        {"output": "same", "reason": "one"},
+        {"output": "same", "reason": "two"},
+    ]
+
+    with pytest.raises(ValueError, match="outputs must be unique"):
+        parse_canonical_refresh_bundle(
+            repo,
+            json.dumps(
+                [
+                    {
+                        "citation": "us-la/statute/47:295",
+                        "replace_rulespec_path": "us-la/statutes/47/295.yaml",
+                        "deferred_output_contracts": duplicate_contracts,
+                    }
+                ]
+            ),
+            primary_citation="us-la/statute/47:294",
+            primary_rulespec_path="us-la/statutes/47/294.yaml",
+        )
 
 
 def test_verify_canonical_refresh_target_rejects_drift(tmp_path: Path) -> None:

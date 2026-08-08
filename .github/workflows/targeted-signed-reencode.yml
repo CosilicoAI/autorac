@@ -39,7 +39,7 @@ on:
         required: false
         type: string
       source_bundle_json:
-        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path,review_finding?}]} for an independent refresh transaction
+        description: JSON citation array for atomic imports, or {"canonical_refresh_bundle":[{citation,replace_rulespec_path,review_finding?,deferred_output_contracts?}]} for an independent refresh transaction
         required: false
         default: "[]"
         type: string
@@ -1061,7 +1061,9 @@ jobs:
             local replacement_path="$5"
             local legacy_source_path="$6"
             local require_direct_imports="$7"
+            local deferred_output_contracts_json="${8:-[]}"
             local review_finding_path=""
+            local review_contract_json=""
             local -a args=(
               /opt/axiom-verification/axiom-encode encode
               --backend openai
@@ -1143,6 +1145,26 @@ jobs:
               review_finding_path="$review_finding_dir/review-finding.txt"
               printf '%s\n' "$review_finding" > "$review_finding_path"
               args+=(--review-findings "$review_finding_path")
+            fi
+            if [ "$deferred_output_contracts_json" != "[]" ]; then
+              review_contract_json="$(
+                jq -cn \
+                  --arg schema "axiom-encode/review-contract/v1" \
+                  --arg citation "$citation" \
+                  --arg rulespec_path "$replacement_path" \
+                  --argjson required_deferred_outputs \
+                    "$deferred_output_contracts_json" \
+                  '{
+                    schema: $schema,
+                    citation: $citation,
+                    rulespec_path: $rulespec_path,
+                    required_deferred_outputs: $required_deferred_outputs
+                  }'
+              )"
+              args+=(
+                --review-contract-json
+                "$review_contract_json"
+              )
             fi
             if [ -n "${REPAIR_CANDIDATE_ROOT:-}" ]; then
               test -n "${REPAIR_CANDIDATE_PATH:-}" \
@@ -1474,6 +1496,9 @@ jobs:
                 "$RUNNER_TEMP/canonical-refresh-bundle.json")
               refresh_citation="$(jq -er '.citation' <<< "$refresh_item")"
               refresh_rulespec_path="$(jq -er '.rulespec_path' <<< "$refresh_item")"
+              refresh_deferred_output_contracts="$(
+                jq -cer '.deferred_output_contracts // []' <<< "$refresh_item"
+              )"
               refresh_lane=target
               refresh_finding="$REVIEW_FINDING"
               if [ "$refresh_index" -gt 0 ]; then
@@ -1483,7 +1508,8 @@ jobs:
               fi
               run_signed_encode \
                 "$refresh_citation" "$refresh_finding" false "$refresh_lane" \
-                "$refresh_rulespec_path" "" false
+                "$refresh_rulespec_path" "" false \
+                "$refresh_deferred_output_contracts"
               checkpoint_signed_changes \
                 "Refresh signed canonical module for ${refresh_citation}"
               cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
@@ -1855,6 +1881,7 @@ jobs:
                   "manifest_path",
                   "manifest_sha256",
                   "review_finding",
+                  "deferred_output_contracts",
               }
               and isinstance(item["citation"], str)
               and item["citation"]
@@ -1862,6 +1889,32 @@ jobs:
               and item["rulespec_path"]
               and isinstance(item["companion_path"], str)
               and item["companion_path"]
+              and isinstance(item["deferred_output_contracts"], list)
+              and len(item["deferred_output_contracts"]) <= 16
+              and all(
+                  isinstance(contract, dict)
+                  and set(contract) == {"output", "reason"}
+                  and all(
+                      isinstance(contract[field], str)
+                      and contract[field]
+                      and contract[field] == contract[field].strip()
+                      and "\r" not in contract[field]
+                      and not any(
+                          (ord(char) < 32 and char not in {"\n", "\t"})
+                          or ord(char) == 127
+                          for char in contract[field]
+                      )
+                      for field in ("output", "reason")
+                  )
+                  for contract in item["deferred_output_contracts"]
+              )
+              and len(
+                  {
+                      contract["output"]
+                      for contract in item["deferred_output_contracts"]
+                  }
+              )
+              == len(item["deferred_output_contracts"])
               and (
                   item["review_finding"] is None
                   or (

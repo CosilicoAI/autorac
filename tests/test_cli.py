@@ -65,6 +65,7 @@ from axiom_encode.cli import (
     _current_guard_encoder_execution_identity,
     _declared_rule_subsection_source_text,
     _default_generated_test_input_value,
+    _DeferredOutputReviewContract,
     _discover_rulespec_test_files,
     _effective_runner_specs,
     _ensure_no_unmanifested_preexisting_rulespec_changes,
@@ -40751,6 +40752,99 @@ rules:
             "target: statutes/42/new.yaml"
         ]
         assert supplemental == {}
+
+    def test_apply_overlay_checks_review_contract_before_success_snapshot(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-la"
+        target = policy_repo / "statutes/47/295.yaml"
+        generated = output_root / "codex-test-model/statutes/47/295.yaml"
+        target.parent.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        target.write_text("format: rulespec/v1\nrules: []\n")
+        output = "us-la:statutes/47/295/a#individual_louisiana_income_tax_amount"
+        expected_reason = "Exact source-bound missing dependency."
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  deferred_outputs:\n"
+            f"    - output: {output}\n"
+            "      reason: Wrong paraphrase.\n"
+            "rules: []\n"
+        )
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+            citation="us-la/statute/47:295",
+        )
+        contract = _DeferredOutputReviewContract(
+            citation="us-la/statute/47:295",
+            rulespec_path="us-la/statutes/47/295.yaml",
+            required_deferred_outputs=((output, expected_reason),),
+        )
+
+        class FakePipeline:
+            def __init__(self, **_kwargs):
+                pass
+
+            def validate(self, _path, *, skip_reviewers):
+                assert skip_reviewers is True
+                return SimpleNamespace(all_passed=True, results={})
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline", FakePipeline),
+            patch(
+                "axiom_encode.cli._record_successful_apply_validation"
+            ) as record_snapshot,
+        ):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+                deferred_output_review_contract=contract,
+            )
+
+        assert ok is False
+        assert supplemental == {}
+        assert len(issues) == 1
+        assert "byte-for-byte" in issues[0]
+        record_snapshot.assert_not_called()
+
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  deferred_outputs:\n"
+            f"    - output: {output}\n"
+            f"      reason: {expected_reason}\n"
+            "rules: []\n"
+        )
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline", FakePipeline),
+            patch(
+                "axiom_encode.cli._record_successful_apply_validation"
+            ) as record_snapshot,
+        ):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+                deferred_output_review_contract=contract,
+            )
+
+        assert ok is True
+        assert issues == []
+        assert supplemental == {}
+        record_snapshot.assert_called_once()
 
     def test_apply_overlay_reads_source_metadata_from_explicit_context_manifest(
         self, tmp_path

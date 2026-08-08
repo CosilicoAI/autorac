@@ -1073,6 +1073,174 @@ def _format_counter(counter: dict[str, int]) -> str:
     return ", ".join(f"{key}={value}" for key, value in counter.items())
 
 
+_MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS = 16
+_MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACT_JSON_BYTES = 64 * 1024
+_DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
+
+
+class _DeferredOutputReviewContract(NamedTuple):
+    citation: str
+    rulespec_path: str
+    required_deferred_outputs: tuple[tuple[str, str], ...]
+
+
+def _parse_deferred_output_review_contract_json(
+    raw: str,
+) -> _DeferredOutputReviewContract:
+    """Parse one citation- and path-bound exact apply-admission contract."""
+
+    if not isinstance(raw, str) or (
+        len(raw.encode("utf-8")) > _MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACT_JSON_BYTES
+    ):
+        raise argparse.ArgumentTypeError(
+            "review contract JSON exceeds the bounded size"
+        )
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise argparse.ArgumentTypeError("review contract must be valid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "citation",
+        "rulespec_path",
+        "required_deferred_outputs",
+    }:
+        raise argparse.ArgumentTypeError(
+            "review contract must contain exactly schema, citation, rulespec_path, "
+            "and required_deferred_outputs"
+        )
+    if payload["schema"] != _DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA:
+        raise argparse.ArgumentTypeError("review contract schema is unsupported")
+    citation = payload["citation"]
+    rulespec_path = payload["rulespec_path"]
+    if any(
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        for value in (citation, rulespec_path)
+    ):
+        raise argparse.ArgumentTypeError(
+            "review contract citation and rulespec_path must be normalized strings"
+        )
+    path = Path(rulespec_path)
+    if (
+        path.is_absolute()
+        or path.suffix != RULESPEC_FILE_SUFFIX
+        or len(path.parts) < 2
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or "\\" in rulespec_path
+    ):
+        raise argparse.ArgumentTypeError(
+            "review contract rulespec_path must be a canonical relative YAML path"
+        )
+    payload_contracts = payload["required_deferred_outputs"]
+    if (
+        not isinstance(payload_contracts, list)
+        or not payload_contracts
+        or len(payload_contracts) > _MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS
+    ):
+        raise argparse.ArgumentTypeError(
+            "review contract required_deferred_outputs must be a nonempty array with "
+            f"at most {_MAX_REQUIRED_DEFERRED_OUTPUT_CONTRACTS} entries"
+        )
+    contracts: list[tuple[str, str]] = []
+    seen_outputs: set[str] = set()
+    for index, item in enumerate(payload_contracts):
+        if not isinstance(item, dict) or set(item) != {"output", "reason"}:
+            raise argparse.ArgumentTypeError(
+                f"review contract deferred output #{index + 1} must contain "
+                "exactly output and reason"
+            )
+        output = item["output"]
+        reason = item["reason"]
+        if any(
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or "\r" in value
+            or any(
+                (ord(character) < 32 and character not in {"\n", "\t"})
+                or ord(character) == 127
+                for character in value
+            )
+            for value in (output, reason)
+        ):
+            raise argparse.ArgumentTypeError(
+                f"review contract deferred output #{index + 1} fields must be "
+                "nonempty normalized strings"
+            )
+        if output in seen_outputs:
+            raise argparse.ArgumentTypeError(
+                "review contract deferred outputs must be unique"
+            )
+        seen_outputs.add(output)
+        contracts.append((output, reason))
+    return _DeferredOutputReviewContract(
+        citation=citation,
+        rulespec_path=rulespec_path,
+        required_deferred_outputs=tuple(contracts),
+    )
+
+
+def _required_deferred_output_contract_issues(
+    output_file: Path,
+    contract: _DeferredOutputReviewContract | None,
+    *,
+    citation: str,
+    rulespec_path: str,
+) -> list[str]:
+    """Require exact output/reason pairs after YAML decoding and before apply."""
+
+    if contract is None:
+        return []
+    binding_issues: list[str] = []
+    if citation != contract.citation:
+        binding_issues.append(
+            "[required-deferred-output-contract] generated citation does not match "
+            "the signed dispatch review contract"
+        )
+    if rulespec_path != contract.rulespec_path:
+        binding_issues.append(
+            "[required-deferred-output-contract] generated RuleSpec path does not "
+            "match the signed dispatch review contract"
+        )
+    if binding_issues:
+        return binding_issues
+    try:
+        payload = yaml.safe_load(output_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        return [f"required deferred-output contract could not parse YAML: {exc}"]
+    module = payload.get("module") if isinstance(payload, dict) else None
+    deferred_outputs = (
+        module.get("deferred_outputs") if isinstance(module, dict) else None
+    )
+    records = deferred_outputs if isinstance(deferred_outputs, list) else []
+    issues: list[str] = []
+    for expected_output, expected_reason in contract.required_deferred_outputs:
+        matching_output = [
+            record
+            for record in records
+            if isinstance(record, dict) and record.get("output") == expected_output
+        ]
+        if len(matching_output) != 1:
+            issues.append(
+                "[required-deferred-output-contract] expected exactly one "
+                f"module.deferred_outputs entry with output `{expected_output}`; "
+                f"found {len(matching_output)}"
+            )
+            continue
+        actual_reason = matching_output[0].get("reason")
+        if actual_reason != expected_reason:
+            issues.append(
+                "[required-deferred-output-contract] YAML-decoded reason for "
+                f"`{expected_output}` must equal the signed dispatch contract "
+                "byte-for-byte; paraphrase, shortening, reordering, and synonym "
+                "substitution are not permitted"
+            )
+    return issues
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -2212,6 +2380,16 @@ def main():
         help=(
             "Independent-review findings that the generated encoding must address "
             "without narrowing unaffected source-backed behavior (repeatable)"
+        ),
+    )
+    encode_parser.add_argument(
+        "--review-contract-json",
+        type=_parse_deferred_output_review_contract_json,
+        default=None,
+        help=(
+            "Bounded citation- and path-bound review contract whose exact "
+            "deferred-output pairs the generated YAML must contain after decoding "
+            "before apply"
         ),
     )
     encode_parser.add_argument(
@@ -27479,6 +27657,8 @@ def _run_encode_attempt(
             )
         )
 
+    deferred_output_review_contract = getattr(args, "review_contract_json", None)
+
     def _validate_generated_encoding_in_policy_overlay(
         result,
         *,
@@ -27498,6 +27678,7 @@ def _run_encode_attempt(
             require_complete_source_unit=(
                 getattr(args, "require_complete_source_unit", False) is True
             ),
+            deferred_output_review_contract=deferred_output_review_contract,
         )
 
     skip_reviewers = bool(getattr(args, "skip_reviewers", False))
@@ -51324,6 +51505,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     validate_dependents: bool = True,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Validate generated artifacts in a temporary policy-repo overlay."""
     setattr(result, _APPLY_VALIDATION_SNAPSHOT_ATTR, None)
@@ -51643,6 +51825,23 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                         dependents=dependents,
                     )
                 if all(validation.all_passed for _, validation in validations):
+                    contract_issues = _required_deferred_output_contract_issues(
+                        overlay_target,
+                        deferred_output_review_contract,
+                        citation=str(getattr(result, "citation", "") or ""),
+                        rulespec_path=(
+                            policy_content_root.name + "/" + relative_output.as_posix()
+                        ),
+                    )
+                    if contract_issues:
+                        return (
+                            False,
+                            [
+                                f"{relative_output}: {issue}"
+                                for issue in contract_issues
+                            ],
+                            {},
+                        )
                     repaired_exact_paths = exact_relative_paths.intersection(
                         supplemental_files
                     )
@@ -52044,6 +52243,7 @@ def _run_generated_encoding_overlay_validation(
     validate_dependents: bool = True,
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
+    deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Dispatch a release-bound overlay run through the patchable test seam."""
 
@@ -52056,6 +52256,7 @@ def _run_generated_encoding_overlay_validation(
         validate_dependents=validate_dependents,
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
+        deferred_output_review_contract=deferred_output_review_contract,
     )
 
 
