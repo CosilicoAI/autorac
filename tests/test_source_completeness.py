@@ -6814,7 +6814,8 @@ def test_precise_root_state_deferral_retry_preserves_branch_in_output_path():
         "`us-la:statutes/47/295/c#federal_return_copy_becomes_part_of_state_return`"
         in issue
     )
-    assert "`us-la/statute/47:295(c)`" in issue
+    assert "branch citation in `reason` is already recognized" in issue
+    assert "literal canonical citation required" not in issue
 
 
 def test_root_deferral_retry_preserves_uppercase_federal_subparagraph():
@@ -7408,8 +7409,8 @@ module:
   deferred_outputs:
     - output: us-la:statutes/47/32/b#repealed_subsection
       reason: >-
-        La. R.S. 47:32(B) is repealed by Acts 2024, 3rd Ex. Sess., No. 11,
-        section 4, effective December 4, 2024, and supplies no operative rule.
+        La. R.S. 47:32(B) is repealed. Acts 2024, 3rd Ex. Sess., No. 11,
+        section 4, effective December 4, 2024.
     - output: us-la:statutes/47/32/c#corporate_income_tax_rate
       reason: >-
         La. R.S. 47:32(C) requires corporation taxable-income tax to be computed
@@ -7447,6 +7448,121 @@ be computed at the rates provided for in R.S. 47:287.12.
     assert not _has_issue(result, "source branch c", "neither encoded")
     assert not _has_issue(result, "deferred_outputs[0]", "deferral")
     assert not _has_issue(result, "deferred_outputs[1]", "deferral")
+    assert not _has_issue(result, "numeric-recall")
+
+
+@pytest.mark.parametrize(
+    "citation",
+    (
+        "R.S. 47:287.12",
+        "R.S.\n47:287.12",
+        "La. R.S. 47:287.12",
+        "LSA-R.S. 47:287.12",
+        "R.S. § 47:287.12",
+        "R.S. 47:287.12.1",
+        "R.S. 47:287-287.15",
+        "R.S. 47:287.12(C)(1)",
+    ),
+)
+def test_louisiana_rs_cross_reference_is_not_numeric_recall(citation: str):
+    cleaned = authoritative_numeric_recall_text(
+        f"The corporation rate is provided in {citation}."
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert inventory == []
+
+
+def test_louisiana_rs_cross_reference_does_not_hide_policy_values():
+    cleaned = authoritative_numeric_recall_text(
+        "The multiplier is 0.12 under R.S.\n47:287.12; the cap is 500 dollars."
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == [0.12, 500.0]
+
+
+@pytest.mark.parametrize(
+    "citation_list",
+    (
+        "R.S. 47:287.12, 47:287.13",
+        "R.S. 47:287.12, and 47:287.13",
+        "R.S. 47:287.12 and 47:287.13",
+        "R.S. 47:287.12 and/or 47:287.13",
+        "R.S. 47:287.12 or 47:287.13",
+        "R.S. 47:287.12 & 47:287.13",
+        "R.S. 47:287.12 through 47:287.15",
+        "R.S. 47:287.12 to 47:287.15",
+    ),
+)
+def test_louisiana_rs_cross_reference_lists_are_not_numeric_recall(
+    citation_list: str,
+):
+    cleaned = authoritative_numeric_recall_text(
+        f"The rates are provided in {citation_list}; the cap is 500 dollars."
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == [500.0]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Apply R.S. 47:287.12 and a 0.12 multiplier.",
+        "Apply R.S. 47:287.12 and/or 47 dollars.",
+        "Apply R.S. 47:287.12 & 47 dollars.",
+    ),
+)
+def test_louisiana_rs_cross_reference_list_connector_does_not_hide_policy_value(
+    source: str,
+):
+    cleaned = authoritative_numeric_recall_text(source)
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    expected = 0.12 if "multiplier" in source else 47.0
+    assert [occurrence.value for occurrence in inventory] == [expected]
+
+
+def test_bare_louisiana_number_shape_is_not_suppressed_as_a_citation():
+    cleaned = authoritative_numeric_recall_text("Bare 47:287.12 value.")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [(occurrence.value, occurrence.raw) for occurrence in inventory] == [
+        (47.0, "47")
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Under R.S. 47:287.12 (500 dollars), the multiplier is 0.12.",
+        "Under R.S. 47:287.12 (500), the multiplier is 0.12.",
+    ),
+)
+def test_louisiana_rs_citation_does_not_consume_parenthetical_values(source: str):
+    cleaned = authoritative_numeric_recall_text(source)
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == [500.0, 0.12]
 
 
 def test_louisiana_delegated_rate_accepts_archived_comma_reason():
@@ -7814,6 +7930,16 @@ C. Placeholder.
             "La. R.S. 47:32(B) is repealed by Acts 2024, No. 12, effective "
             "December 5, 2024."
         ),
+        (
+            "La. R.S. 47:32(B) is repealed. Acts 1999, No. 999, §7, effective "
+            "January 1, 2000."
+        ),
+        (
+            "La. R.S. 47:32(B) is repealed. Acts 2024, No. 12, effective "
+            "December 5, 2024."
+        ),
+        ("La. R.S. 47:32(B) is repealed. Acts 2024, No. 11. It remains operative."),
+        ("La. R.S. 47:32(B) is repealed. A report cites Acts 2024, No. 11."),
     ),
 )
 def test_repeal_coverage_requires_affirmative_reason(reason: str):
@@ -7837,6 +7963,35 @@ rules: []
     )
 
     assert _has_issue(result, "deferred_outputs[0]", "deferral")
+
+
+def test_repeal_retry_feedback_preserves_recognized_louisiana_citation():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-la/statute/47:32
+  deferred_outputs:
+    - output: us-la:statutes/47/32/b#repealed_subsection
+      reason: >-
+        La. R.S. 47:32(B) is repealed. A report cites Acts 2024, No. 11.
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        "B. Repealed by Acts 2024, No. 11.",
+        corpus_citation_path="us-la/statute/47:32",
+        test_cases=[],
+    )
+    feedback = next(
+        issue
+        for issue in result.issues
+        if "deferred_outputs[0]" in issue and "deferral" in issue
+    )
+
+    assert "branch citation in `reason` is already recognized" in feedback
+    assert "literal canonical citation required" not in feedback
 
 
 @pytest.mark.parametrize(
