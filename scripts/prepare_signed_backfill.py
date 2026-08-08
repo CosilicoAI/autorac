@@ -48,6 +48,9 @@ RULESPEC_ATOMIC_ROOTS = frozenset(
 MAX_SOURCE_BUNDLE_CITATIONS = 16
 MAX_SOURCE_BUNDLE_JSON_BYTES = 512 * 1024
 MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS = MAX_SOURCE_BUNDLE_CITATIONS - 1
+MAX_DEFERRED_OUTPUT_CONTRACTS = 16
+MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES = 64 * 1024
+DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v1"
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
@@ -93,6 +96,20 @@ REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
         ("us", "hard-cut/canonical-layout-us"),
     }
 )
+
+
+def _load_unambiguous_json(raw: str, *, label: str) -> object:
+    """Decode untrusted transaction JSON while rejecting duplicate object keys."""
+
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise ValueError(f"{label} contains duplicate JSON key {key!r}")
+            decoded[key] = value
+        return decoded
+
+    return json.loads(raw, object_pairs_hook=reject_duplicates)
 
 
 def _read_bounded_regular(
@@ -267,7 +284,7 @@ def split_atomic_source_input(atomic_source_json: str) -> dict[str, object]:
         raise ValueError("atomic source JSON must be a string")
     if len(atomic_source_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("atomic source JSON exceeds the maximum input size")
-    payload = json.loads(atomic_source_json)
+    payload = _load_unambiguous_json(atomic_source_json, label="atomic source JSON")
     if isinstance(payload, list):
         return {
             "canonical_refresh_bundle": [],
@@ -303,7 +320,7 @@ def parse_source_bundle(
         raise ValueError("source bundle JSON must be a string")
     if len(source_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("source bundle JSON exceeds the maximum input size")
-    payload = json.loads(source_bundle_json)
+    payload = _load_unambiguous_json(source_bundle_json, label="source bundle JSON")
     if not isinstance(payload, list):
         raise ValueError("source bundle JSON must be an array")
     if len(payload) > MAX_SOURCE_BUNDLE_CITATIONS:
@@ -483,7 +500,10 @@ def parse_canonical_refresh_bundle(
         raise ValueError("canonical refresh bundle JSON must be a string")
     if len(refresh_bundle_json.encode("utf-8")) > MAX_SOURCE_BUNDLE_JSON_BYTES:
         raise ValueError("canonical refresh bundle JSON exceeds the maximum input size")
-    payload = json.loads(refresh_bundle_json)
+    payload = _load_unambiguous_json(
+        refresh_bundle_json,
+        label="canonical refresh bundle JSON",
+    )
     if not isinstance(payload, list):
         raise ValueError("canonical refresh bundle JSON must be an array")
     if len(payload) > MAX_CANONICAL_REFRESH_BUNDLE_CITATIONS:
@@ -521,15 +541,19 @@ def parse_canonical_refresh_bundle(
             "RuleSpec path"
         )
 
-    requested: list[tuple[str, PurePosixPath, str | None]] = [
-        (primary_citation, primary_path, None)
-    ]
+    requested: list[
+        tuple[str, PurePosixPath, str | None, tuple[dict[str, str], ...]]
+    ] = [(primary_citation, primary_path, None, ())]
     seen_citations = {primary_citation}
     seen_paths = {primary_path}
     for index, value in enumerate(payload):
         label = f"canonical refresh addition #{index + 1}"
         required_fields = {"citation", "replace_rulespec_path"}
-        allowed_fields = {*required_fields, "review_finding"}
+        allowed_fields = {
+            *required_fields,
+            "review_finding",
+            "deferred_output_contracts",
+        }
         if (
             not isinstance(value, dict)
             or not required_fields.issubset(value)
@@ -537,11 +561,12 @@ def parse_canonical_refresh_bundle(
         ):
             raise ValueError(
                 f"{label} must contain citation and replace_rulespec_path, with "
-                "only an optional review_finding"
+                "only optional review_finding and deferred_output_contracts fields"
             )
         citation = value["citation"]
         raw_path = value["replace_rulespec_path"]
         review_finding = value.get("review_finding")
+        deferred_output_contracts = value.get("deferred_output_contracts", [])
         if (
             not isinstance(citation, str)
             or not citation
@@ -570,6 +595,48 @@ def parse_canonical_refresh_bundle(
             raise ValueError(
                 f"{label} review_finding must be a nonempty normalized string"
             )
+        if (
+            not isinstance(deferred_output_contracts, list)
+            or len(deferred_output_contracts) > MAX_DEFERRED_OUTPUT_CONTRACTS
+        ):
+            raise ValueError(
+                f"{label} deferred_output_contracts must be an array with at most "
+                f"{MAX_DEFERRED_OUTPUT_CONTRACTS} entries"
+            )
+        normalized_contracts: list[dict[str, str]] = []
+        seen_contract_outputs: set[str] = set()
+        for contract_index, contract in enumerate(deferred_output_contracts):
+            contract_label = f"{label} deferred output contract #{contract_index + 1}"
+            if not isinstance(contract, dict) or set(contract) != {
+                "output",
+                "reason",
+            }:
+                raise ValueError(
+                    f"{contract_label} must contain exactly output and reason"
+                )
+            output = contract["output"]
+            reason = contract["reason"]
+            if any(
+                not isinstance(field, str)
+                or not field
+                or field != field.strip()
+                or "\r" in field
+                or any(
+                    (ord(character) < 32 and character not in {"\n", "\t"})
+                    or ord(character) == 127
+                    for character in field
+                )
+                for field in (output, reason)
+            ):
+                raise ValueError(
+                    f"{contract_label} fields must be nonempty normalized strings"
+                )
+            if output in seen_contract_outputs:
+                raise ValueError(
+                    f"{label} deferred output contract outputs must be unique"
+                )
+            seen_contract_outputs.add(output)
+            normalized_contracts.append({"output": output, "reason": reason})
         try:
             citation = require_canonical_corpus_citation_path(citation)
         except ValueError as exc:
@@ -588,9 +655,25 @@ def parse_canonical_refresh_bundle(
             raise ValueError(
                 f"{label} path must equal the citation's canonical RuleSpec path"
             )
+        if normalized_contracts:
+            wrapped_contract = json.dumps(
+                {
+                    "schema": DEFERRED_OUTPUT_REVIEW_CONTRACT_SCHEMA,
+                    "citation": citation,
+                    "rulespec_path": path.as_posix(),
+                    "required_deferred_outputs": normalized_contracts,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(wrapped_contract) > MAX_DEFERRED_OUTPUT_REVIEW_CONTRACT_JSON_BYTES:
+                raise ValueError(
+                    f"{label} wrapped deferred output review contract exceeds "
+                    "the maximum input size"
+                )
         if citation in seen_citations or path in seen_paths:
             raise ValueError("canonical refresh citations and paths must be unique")
-        requested.append((citation, path, review_finding))
+        requested.append((citation, path, review_finding, tuple(normalized_contracts)))
         seen_citations.add(citation)
         seen_paths.add(path)
 
@@ -600,8 +683,9 @@ def parse_canonical_refresh_bundle(
             citation=citation,
             path=path,
             review_finding=review_finding,
+            deferred_output_contracts=deferred_output_contracts,
         )
-        for citation, path, review_finding in requested
+        for citation, path, review_finding, deferred_output_contracts in requested
     )
 
 
@@ -611,7 +695,8 @@ def _canonical_refresh_target_inventory(
     citation: str,
     path: PurePosixPath,
     review_finding: str | None,
-) -> dict[str, str | None]:
+    deferred_output_contracts: tuple[dict[str, str], ...],
+) -> dict[str, object]:
     """Bind one refresh target and its untrusted predecessor manifest to HEAD."""
 
     manifest_path = _existing_import_manifest_path(path)
@@ -737,6 +822,7 @@ def _canonical_refresh_target_inventory(
     return {
         "citation": citation,
         "review_finding": review_finding,
+        "deferred_output_contracts": list(deferred_output_contracts),
         "rulespec_path": path.as_posix(),
         "rulespec_sha256": target_sha256,
         "companion_path": companion_path.as_posix(),
@@ -749,7 +835,7 @@ def _canonical_refresh_target_inventory(
 def verify_canonical_refresh_target(
     repo: Path,
     target_json: str,
-) -> dict[str, str | None]:
+) -> dict[str, object]:
     """Require one normalized target to remain byte-identical before its lane."""
 
     try:
@@ -765,13 +851,18 @@ def verify_canonical_refresh_target(
         "manifest_path",
         "manifest_sha256",
         "review_finding",
+        "deferred_output_contracts",
     }
+    deferred_output_contracts = (
+        target.get("deferred_output_contracts") if isinstance(target, dict) else None
+    )
     if (
         not isinstance(target, dict)
         or set(target) != expected_fields
         or not all(
             isinstance(target[field], str) and target[field]
-            for field in expected_fields - {"companion_sha256", "review_finding"}
+            for field in expected_fields
+            - {"companion_sha256", "review_finding", "deferred_output_contracts"}
         )
         or (
             target["companion_sha256"] is not None
@@ -782,6 +873,34 @@ def verify_canonical_refresh_target(
         )
         or DIGEST_PATTERN.fullmatch(target["rulespec_sha256"]) is None
         or DIGEST_PATTERN.fullmatch(target["manifest_sha256"]) is None
+        or not isinstance(deferred_output_contracts, list)
+        or len(deferred_output_contracts) > MAX_DEFERRED_OUTPUT_CONTRACTS
+        or any(
+            not isinstance(contract, dict)
+            or set(contract) != {"output", "reason"}
+            or any(
+                not isinstance(contract[field], str)
+                or not contract[field]
+                or contract[field] != contract[field].strip()
+                or "\r" in contract[field]
+                or any(
+                    (ord(character) < 32 and character not in {"\n", "\t"})
+                    or ord(character) == 127
+                    for character in contract[field]
+                )
+                for field in ("output", "reason")
+            )
+            for contract in deferred_output_contracts or []
+        )
+        or len(
+            {
+                contract["output"]
+                for contract in deferred_output_contracts or []
+                if isinstance(contract, dict)
+                and isinstance(contract.get("output"), str)
+            }
+        )
+        != len(deferred_output_contracts or [])
         or (
             target["review_finding"] is not None
             and (

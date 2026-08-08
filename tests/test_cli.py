@@ -65,6 +65,7 @@ from axiom_encode.cli import (
     _current_guard_encoder_execution_identity,
     _declared_rule_subsection_source_text,
     _default_generated_test_input_value,
+    _DeferredOutputReviewContract,
     _discover_rulespec_test_files,
     _effective_runner_specs,
     _ensure_no_unmanifested_preexisting_rulespec_changes,
@@ -159,6 +160,7 @@ from axiom_encode.cli import (
     _repair_upstream_placement_duplicate_imports,
     _require_axiom_encode_version_provenance,
     _require_clean_axiom_encode_git_provenance,
+    _required_deferred_output_contract_issues,
     _required_generated_import_issues,
     _resolve_applied_manifest_placement,
     _resolve_encode_replacement_target,
@@ -12280,6 +12282,7 @@ class TestCmdEncode:
         args.mode = overrides.get("mode", "repo-augmented")
         args.allow_context = overrides.get("allow_context", [])
         args.review_findings = overrides.get("review_findings", [])
+        args.review_contract_json = overrides.get("review_contract_json", None)
         args.repair_candidate_root = overrides.get("repair_candidate_root", None)
         args.repair_candidate_path = overrides.get("repair_candidate_path", None)
         args.repair_candidate_rulespec_sha256 = overrides.get(
@@ -12961,6 +12964,84 @@ class TestCmdEncode:
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
+
+    def test_encode_contract_rejection_retries_with_exact_context_before_apply(
+        self, tmp_path
+    ):
+        output = "us:statutes/26/1/j/2#income_tax_amount"
+        expected_reason = "Exact source-bound missing dependency."
+        contract = _DeferredOutputReviewContract(
+            citation="26 USC 1(j)(2)",
+            rulespec_path="us/statutes/26/1/j/2.yaml",
+            required_deferred_outputs=((output, expected_reason),),
+        )
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            review_contract_json=contract,
+        )
+        generated_attempts = 0
+        apply_counts_at_validation: list[int] = []
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            result = self._make_eval_result(True)
+            result.runner = f"codex-{kwargs['runner_specs'][0].split(':', 1)[1]}"
+            result.model = kwargs["runner_specs"][0].split(":", 1)[1]
+            result.generation_prompt_sha256 = f"prompt-{generated_attempts}"
+            generated = args.output / result.runner / "statutes/26/1/j/2.yaml"
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            reason = "Wrong paraphrase." if generated_attempts == 1 else expected_reason
+            generated.write_text(
+                "format: rulespec/v1\n"
+                "module:\n"
+                "  deferred_outputs:\n"
+                f"    - output: {output}\n"
+                f"      reason: {reason}\n"
+                "rules: []\n"
+            )
+            generated.with_suffix(".test.yaml").write_text("[]\n")
+            result.output_file = str(generated)
+            return [result]
+
+        def validate(result, **_kwargs):
+            apply_counts_at_validation.append(mock_apply.call_count)
+            issues = _required_deferred_output_contract_issues(
+                Path(result.output_file),
+                contract,
+                citation=contract.citation,
+                rulespec_path=contract.rulespec_path,
+            )
+            return not issues, issues, {}
+
+        applied_file = args.policy_repo_path / contract.rulespec_path
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as mock_run,
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                side_effect=validate,
+            ),
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                return_value=[applied_file],
+            ) as mock_apply,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert apply_counts_at_validation == [0, 0]
+        mock_apply.assert_called_once()
+        assert [
+            call.kwargs["required_deferred_output_contracts"]
+            for call in mock_run.call_args_list
+        ] == [contract.required_deferred_outputs] * 2
 
     def test_encode_retry_feedback_includes_actionable_ci_issue(self):
         import axiom_encode.cli as cli_module
@@ -40751,6 +40832,99 @@ rules:
             "target: statutes/42/new.yaml"
         ]
         assert supplemental == {}
+
+    def test_apply_overlay_checks_review_contract_before_success_snapshot(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-la"
+        target = policy_repo / "statutes/47/295.yaml"
+        generated = output_root / "codex-test-model/statutes/47/295.yaml"
+        target.parent.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        target.write_text("format: rulespec/v1\nrules: []\n")
+        output = "us-la:statutes/47/295/a#individual_louisiana_income_tax_amount"
+        expected_reason = "Exact source-bound missing dependency."
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  deferred_outputs:\n"
+            f"    - output: {output}\n"
+            "      reason: Wrong paraphrase.\n"
+            "rules: []\n"
+        )
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+            citation="us-la/statute/47:295",
+        )
+        contract = _DeferredOutputReviewContract(
+            citation="us-la/statute/47:295",
+            rulespec_path="us-la/statutes/47/295.yaml",
+            required_deferred_outputs=((output, expected_reason),),
+        )
+
+        class FakePipeline:
+            def __init__(self, **_kwargs):
+                pass
+
+            def validate(self, _path, *, skip_reviewers):
+                assert skip_reviewers is True
+                return SimpleNamespace(all_passed=True, results={})
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline", FakePipeline),
+            patch(
+                "axiom_encode.cli._record_successful_apply_validation"
+            ) as record_snapshot,
+        ):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+                deferred_output_review_contract=contract,
+            )
+
+        assert ok is False
+        assert supplemental == {}
+        assert len(issues) == 1
+        assert "byte-for-byte" in issues[0]
+        record_snapshot.assert_not_called()
+
+        generated.write_text(
+            "format: rulespec/v1\n"
+            "module:\n"
+            "  deferred_outputs:\n"
+            f"    - output: {output}\n"
+            f"      reason: {expected_reason}\n"
+            "rules: []\n"
+        )
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline", FakePipeline),
+            patch(
+                "axiom_encode.cli._record_successful_apply_validation"
+            ) as record_snapshot,
+        ):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+                deferred_output_review_contract=contract,
+            )
+
+        assert ok is True
+        assert issues == []
+        assert supplemental == {}
+        record_snapshot.assert_called_once()
 
     def test_apply_overlay_reads_source_metadata_from_explicit_context_manifest(
         self, tmp_path

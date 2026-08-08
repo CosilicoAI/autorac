@@ -1506,6 +1506,7 @@ def run_model_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
@@ -1553,6 +1554,9 @@ def run_model_eval(
                         require_complete_source_unit=require_complete_source_unit,
                         target_relative_output=target_relative_output,
                         validation_retry_feedback=validation_retry_feedback,
+                        required_deferred_output_contracts=(
+                            required_deferred_output_contracts
+                        ),
                         validation_retry_candidate=validation_retry_candidate,
                         required_import_targets=required_import_targets,
                         legacy_replacement=legacy_replacement,
@@ -8462,6 +8466,7 @@ def _run_single_eval(
     require_complete_source_unit: bool = False,
     target_relative_output: Path | None = None,
     validation_retry_feedback: Sequence[str] = (),
+    required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     required_import_targets: Sequence[str] = (),
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
@@ -8529,6 +8534,7 @@ def _run_single_eval(
         policyengine_rule_hint=policyengine_rule_hint,
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
+        required_deferred_output_contracts=required_deferred_output_contracts,
         validation_retry_candidate=validation_retry_candidate,
         required_import_targets=required_import_targets,
     )
@@ -9443,6 +9449,46 @@ Deterministic validation feedback for the rejected candidate below:
 """
 
 
+def _format_required_deferred_output_contracts(
+    contracts: Sequence[tuple[str, str]],
+) -> str:
+    """Render exact apply-admission requirements on every generation attempt."""
+
+    if not contracts:
+        return ""
+    rendered: list[str] = []
+    for index, contract in enumerate(contracts):
+        if (
+            not isinstance(contract, tuple)
+            or len(contract) != 2
+            or any(not isinstance(value, str) or not value for value in contract)
+        ):
+            raise ValueError(
+                f"Required deferred output contract #{index + 1} is invalid"
+            )
+        output, reason = contract
+        rendered.append(
+            json.dumps(
+                {"output": output, "reason": reason},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    return f"""
+Structured deferred-output apply-admission contract:
+- The following JSON objects are trusted workflow requirements, not legal
+  authority. Their exact output/reason pairs must each appear exactly once in
+  `module.deferred_outputs`.
+- Equality is checked after YAML decoding. Preserve every character of each
+  JSON string exactly; do not paraphrase, normalize whitespace, or change case
+  or punctuation.
+
+=== BEGIN REQUIRED DEFERRED OUTPUT CONTRACT ===
+{chr(10).join(rendered)}
+=== END REQUIRED DEFERRED OUTPUT CONTRACT ===
+"""
+
+
 def _format_validation_retry_candidate(
     candidate: ValidationRetryCandidate | None,
     *,
@@ -9506,6 +9552,7 @@ def _build_rulespec_eval_prompt(
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
+    required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
     required_import_targets: Sequence[str] = (),
 ) -> str:
@@ -10061,6 +10108,9 @@ Preferred principal output:
     validation_retry_feedback_section = _format_validation_retry_feedback(
         validation_retry_feedback
     )
+    required_deferred_output_contract_section = (
+        _format_required_deferred_output_contracts(required_deferred_output_contracts)
+    )
     validation_retry_candidate_section = _format_validation_retry_candidate(
         validation_retry_candidate,
         target_file_name=target_file_name,
@@ -10164,7 +10214,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{validation_retry_feedback_section}{required_import_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{validation_retry_feedback_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -10995,6 +11045,7 @@ def _build_eval_prompt(
     include_corpus_context_injection: bool = True,
     require_complete_source_unit: bool = False,
     validation_retry_feedback: Sequence[str] = (),
+    required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
     required_import_targets: Sequence[str] = (),
 ) -> str:
@@ -11012,6 +11063,7 @@ def _build_eval_prompt(
         include_corpus_context_injection=include_corpus_context_injection,
         require_complete_source_unit=require_complete_source_unit,
         validation_retry_feedback=validation_retry_feedback,
+        required_deferred_output_contracts=required_deferred_output_contracts,
         validation_retry_candidate=validation_retry_candidate,
         required_import_targets=required_import_targets,
     )

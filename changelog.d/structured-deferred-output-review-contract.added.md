@@ -1,0 +1,1 @@
+Add a bounded, unambiguous, citation- and RuleSpec-path-bound deferred-output review contract to signed canonical refreshes. Exact YAML-decoded output/reason pairs are supplied to every generation attempt and enforced before the successful apply validation snapshot.
