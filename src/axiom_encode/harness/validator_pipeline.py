@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from bisect import bisect_left, bisect_right
 from calendar import monthrange
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1128,7 +1129,8 @@ _STRUCTURAL_SOURCE_CITATION_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _STRUCTURAL_SOURCE_PREFIX_PATTERN = re.compile(
-    r"^\s*(?:\d+(?:\.\d+){2,}\s+|\d+[A-Za-z]?\.\s+|\d+\s+(?=[A-Z][A-Za-z].*:)|\([0-9A-Za-zivxlcdm]+\)\s+)",
+    r"^\s*(?:(?P<bare_dotted>\d+(?:\.\d+){2,})\s+|\d+[A-Za-z]?\.\s+|"
+    r"\d+\s+(?=[A-Z][A-Za-z].*:)|\([0-9A-Za-zivxlcdm]+\)\s+)",
     re.IGNORECASE,
 )
 _STRUCTURAL_SOURCE_MANUAL_NUMBER_PATTERN = re.compile(
@@ -1226,6 +1228,9 @@ _STRUCTURAL_INLINE_NJ_LEGAL_ORDINAL_PATTERN = re.compile(
 )
 _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN = re.compile(
     r"(?<![\w$£€])\d+(?:\.\d+){2,}(?![\w%])"
+)
+_STRUCTURAL_SOURCE_DOTTED_SECTION_REFERENCE_PATTERN = re.compile(
+    r"§{1,2}[ \t]*\d+(?:\.\d+){2,}(?![\d.])"
 )
 _STRUCTURAL_SOURCE_SECTION_PATTERN = re.compile(
     r"(?:\b(?:section|sec\.?)|§{1,2})\s+\d+(?:[.-]\d+)*"
@@ -1750,6 +1755,18 @@ _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_GENERIC_RATE_MARKER_PATTERN = re.compile(
+    r"(?:"
+    r"%|"
+    r"\bp\.?[ \t]*c(?:\.(?!\w)|(?![\w.]))|"
+    r"\bpercent\b|"
+    r"\bper[ \t-]+cent(?:um)?\b|"
+    r"\bProzent\b|"
+    r"\b(?:Beitragssatz|Prozent)punkt(?:e|en|es|s)?\b|"
+    r"\bvom[ \t]+Hundert\b"
+    r")",
+    re.IGNORECASE,
+)
 _TABLE_RATE_HEADER_PATTERN = re.compile(
     r"(?:"
     r"\bpercent(?:age)?\b|"
@@ -1760,6 +1777,10 @@ _TABLE_RATE_HEADER_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_DANISH_RATE_MARKER_BODY = (
+    r"(?:\bpct(?:\.(?!\w)|(?![\w.]))|\bprocent(?:point|enhed(?:er)?)?\b)"
+)
+_DANISH_RATE_MARKER_PATTERN = re.compile(_DANISH_RATE_MARKER_BODY, re.IGNORECASE)
 _TEMPORAL_YEAR_BODY = r"(?:18|19|20)\d{2}"
 _TEMPORAL_YEAR_END = r"(?!\w|[.,]\d)"
 _TEMPORAL_YEAR_TOKEN_PATTERN = re.compile(
@@ -1825,6 +1846,16 @@ _TEMPORAL_PREPOSITION_YEAR_PATTERN = re.compile(
     rf"(?P<year>{_TEMPORAL_YEAR_BODY}){_TEMPORAL_YEAR_END}",
     re.IGNORECASE,
 )
+_DANISH_STRUCTURAL_REFERENCE_PATTERN = re.compile(
+    r"(?:§{1,2}\s*|\b(?:stk\.?|nr\.?)\s*)"
+    r"\d+(?:\s*[a-z](?![a-z]))?"
+    r"(?:\s*(?:,|og|til|[-–—])\s*\d+(?:\s*[a-z](?![a-z]))?)*",
+    re.IGNORECASE,
+)
+_DANISH_STRUCTURAL_SENTENCE_PATTERN = re.compile(
+    r"\b\d+\.(?:\s*(?:,|og|til|[-–—])\s*\d+\.)*\s*pkt\.",
+    re.IGNORECASE,
+)
 _GERMAN_STRUCTURAL_LABEL_PATTERN = re.compile(
     r"\b(?:Regelbedarfsstufe(?:n)?|Stufe(?:n)?|Anlage(?:n)?)\s+"
     r"\d+[a-z]?(?:\s*(?:,|und|bis|[-–—])\s*\d+[a-z]?)*",
@@ -1863,6 +1894,14 @@ _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
 )
 _CURRENCY_MARKER_AFTER_NUMBER_PATTERN = re.compile(
     r"^\s*(?:[$£€¥₹]|(?:euros?|eur|dollars?|usd|pounds?|gbp)\b)",
+    re.IGNORECASE,
+)
+_DANISH_CURRENCY_MARKER_PATTERN = re.compile(
+    r"(?:\bkr(?:\.(?!\w)|(?![\w.]))|\bkroner\b|\børe\b)",
+    re.IGNORECASE,
+)
+_GENERIC_CURRENCY_MARKER_PATTERN = re.compile(
+    r"(?:[$£€¥₹]|(?:euros?|eur|dollars?|usd|pounds?|gbp|cad|aud|chf)\b)",
     re.IGNORECASE,
 )
 _VEHICLE_TAX_FISCAL_POWER_TABLE_CELL_PATTERN = re.compile(
@@ -4932,8 +4971,440 @@ def _span_overlaps(
     )
 
 
-def _clean_source_text_for_numeric_extraction(text: str) -> str:
+def _span_containment_index(
+    spans: Sequence[tuple[int, int]],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Build a bisectable index for containment in possibly nested spans."""
+    starts: list[int] = []
+    prefix_max_ends: list[int] = []
+    max_end = -1
+    for start, end in sorted(spans):
+        starts.append(start)
+        max_end = max(max_end, end)
+        prefix_max_ends.append(max_end)
+    return tuple(starts), tuple(prefix_max_ends)
+
+
+def _span_is_contained_in_index(
+    span: tuple[int, int],
+    starts: Sequence[int],
+    prefix_max_ends: Sequence[int],
+) -> bool:
+    """Return whether a span is enclosed by an indexed source interval."""
+    index = bisect_right(starts, span[0]) - 1
+    return index >= 0 and prefix_max_ends[index] >= span[1]
+
+
+def _merge_numeric_spans(
+    spans: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Merge overlapping structural spans into ordered context walls."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+@dataclass(frozen=True)
+class _NumericContextBoundaries:
+    """Bisectable hard walls that local marker scans may not cross."""
+
+    spans: tuple[tuple[int, int], ...]
+    starts: tuple[int, ...]
+
+    @classmethod
+    def from_spans(
+        cls,
+        spans: Iterable[tuple[int, int]],
+    ) -> "_NumericContextBoundaries":
+        merged = _merge_numeric_spans(spans)
+        return cls(merged, tuple(start for start, _end in merged))
+
+    def lower_bound(self, position: int) -> int:
+        """Return the nearest wall edge at or before ``position``."""
+        index = bisect_right(self.starts, position) - 1
+        if index < 0:
+            return 0
+        _start, end = self.spans[index]
+        return position if end >= position else end
+
+    def upper_bound(self, position: int, text_length: int) -> int:
+        """Return the nearest wall edge at or after ``position``."""
+        previous = bisect_right(self.starts, position) - 1
+        if previous >= 0 and self.spans[previous][1] >= position:
+            return position
+        following = bisect_left(self.starts, position)
+        if following < len(self.spans):
+            return self.spans[following][0]
+        return text_length
+
+
+@dataclass(frozen=True)
+class _EqualLengthNumericMask:
+    """A space-masked parsing buffer whose offsets remain source offsets."""
+
+    text: str
+    spans: tuple[tuple[int, int], ...]
+
+
+def _apply_equal_length_numeric_mask(
+    text: str,
+    spans: Iterable[tuple[int, int]],
+) -> _EqualLengthNumericMask:
+    """Blank exact source spans without changing the buffer length."""
+    merged = _merge_numeric_spans(spans)
+    if not merged:
+        return _EqualLengthNumericMask(text, ())
+    characters = list(text)
+    for start, end in merged:
+        characters[start:end] = " " * (end - start)
+    return _EqualLengthNumericMask("".join(characters), merged)
+
+
+def _snap_mask_spans_to_numeric_envelopes(
+    text: str,
+    spans: Iterable[tuple[int, int]],
+    *,
+    profile: str,
+) -> tuple[tuple[int, int], ...]:
+    """Extend mask edges that fall strictly inside source numeric envelopes."""
+    merged = _merge_numeric_spans(spans)
+    if not merged:
+        return ()
+    envelopes = tuple(_iter_locale_numeric_envelopes(text, profile=profile))
+    if not envelopes:
+        return merged
+    envelope_starts = tuple(start for start, _end in envelopes)
+
+    def snapped_edge(position: int, *, toward_start: bool) -> int:
+        envelope_index = bisect_right(envelope_starts, position) - 1
+        if envelope_index < 0:
+            return position
+        envelope_start, envelope_end = envelopes[envelope_index]
+        if envelope_start < position < envelope_end:
+            return envelope_start if toward_start else envelope_end
+        return position
+
+    return _merge_numeric_spans(
+        (
+            snapped_edge(start, toward_start=True),
+            snapped_edge(end, toward_start=False),
+        )
+        for start, end in merged
+    )
+
+
+def _format_character_filtered_view(text: str) -> tuple[str, tuple[int, ...]]:
+    """Return a Cf-free scan buffer and retained-character source offsets."""
+    retained = [
+        (index, character)
+        for index, character in enumerate(text)
+        if unicodedata.category(character) != "Cf"
+    ]
+    return (
+        "".join(character for _index, character in retained),
+        tuple(index for index, _character in retained),
+    )
+
+
+def _numeric_joiner_filtered_view(text: str) -> tuple[str, tuple[int, ...]]:
+    """Return a joiner-free view while retaining separator-class format marks."""
+    retained = [
+        (index, character)
+        for index, character in enumerate(text)
+        if character not in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+    ]
+    return (
+        "".join(character for _index, character in retained),
+        tuple(index for index, _character in retained),
+    )
+
+
+def _format_ignorable_pattern_source_spans(
+    text: str,
+    patterns: Sequence[re.Pattern[str]],
+) -> tuple[tuple[int, int], ...]:
+    """Match while skipping Cf characters and map intervals to source text."""
+    scan_text, source_offsets = _format_character_filtered_view(text)
+    spans: set[tuple[int, int]] = set()
+    for pattern in patterns:
+        for match in pattern.finditer(scan_text):
+            if match.start() == match.end():
+                continue
+            spans.add(
+                (
+                    source_offsets[match.start()],
+                    source_offsets[match.end() - 1] + 1,
+                )
+            )
+    return tuple(sorted(spans))
+
+
+def _normalize_numeric_adjacency_context(text: str) -> str:
+    """Normalize a predicate-only context window and skip Unicode format marks."""
+    normalized = unicodedata.normalize("NFKC", text)
+    return "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
+
+
+def _normalized_numeric_context_before(
+    text: str,
+    start: int,
+    *,
+    retained_limit: int,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> str:
+    """Read leftward until the normalized view has enough non-Cf characters."""
+    lower_bound = boundaries.lower_bound(start) if boundaries is not None else 0
+    cursor = start
+    retained = 0
+    while cursor > lower_bound and retained < retained_limit:
+        cursor -= 1
+        retained += sum(
+            unicodedata.category(character) != "Cf"
+            for character in unicodedata.normalize("NFKC", text[cursor])
+        )
+    normalized = _normalize_numeric_adjacency_context(text[cursor:start])
+    while cursor > lower_bound and len(normalized) < retained_limit:
+        cursor -= 1
+        normalized = _normalize_numeric_adjacency_context(text[cursor:start])
+    return normalized[-retained_limit:]
+
+
+def _normalized_numeric_context_after(
+    text: str,
+    end: int,
+    *,
+    retained_limit: int,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> str:
+    """Read rightward until the normalized view has enough non-Cf characters."""
+    upper_bound = (
+        boundaries.upper_bound(end, len(text)) if boundaries is not None else len(text)
+    )
+    cursor = end
+    retained = 0
+    while cursor < upper_bound and retained < retained_limit:
+        retained += sum(
+            unicodedata.category(character) != "Cf"
+            for character in unicodedata.normalize("NFKC", text[cursor])
+        )
+        cursor += 1
+    normalized = _normalize_numeric_adjacency_context(text[end:cursor])
+    while cursor < upper_bound and len(normalized) < retained_limit:
+        cursor += 1
+        normalized = _normalize_numeric_adjacency_context(text[end:cursor])
+    return normalized[:retained_limit]
+
+
+def _danish_equal_length_numeric_mask(text: str) -> _EqualLengthNumericMask:
+    """Mask Danish structural scaffolding while preserving every source offset."""
+    mask_spans: list[tuple[int, int]] = list(
+        _format_ignorable_pattern_source_spans(
+            text,
+            (_STRUCTURAL_SOURCE_DOTTED_SECTION_REFERENCE_PATTERN,),
+        )
+    )
+    structural_spans = _structural_numeric_component_spans(text, profile="da-DK")
+
+    def masked_text() -> str:
+        return _apply_equal_length_numeric_mask(text, mask_spans).text
+
+    def add_matches(patterns: Sequence[re.Pattern[str]]) -> None:
+        current = masked_text()
+        mask_spans.extend(
+            match.span() for pattern in patterns for match in pattern.finditer(current)
+        )
+
+    preserve_split_schedule_value = False
+    line_offset = 0
+    for line_with_ending in text.splitlines(keepends=True):
+        line = line_with_ending.rstrip("\r\n")
+        line_span = (line_offset, line_offset + len(line))
+        stripped = line.strip()
+        structural_stripped = stripped.strip(_STRUCTURAL_SOURCE_QUOTE_CHARS)
+        if preserve_split_schedule_value and _SCHEDULE_SPLIT_VALUE_PATTERN.fullmatch(
+            structural_stripped
+        ):
+            preserve_split_schedule_value = False
+            line_offset += len(line_with_ending)
+            continue
+        preserve_split_schedule_value = False
+        if _SCHEDULE_SPLIT_ROW_KEY_PATTERN.fullmatch(structural_stripped):
+            preserve_split_schedule_value = True
+            line_offset += len(line_with_ending)
+            continue
+        if (
+            _STRUCTURAL_SOURCE_LINE_PATTERN.match(structural_stripped)
+            or _STRUCTURAL_SOURCE_HEADING_PATTERN.match(structural_stripped)
+            or _STRUCTURAL_SOURCE_CITATION_PATTERN.match(structural_stripped)
+            or _TABLE_HEADING_PATTERN.match(structural_stripped)
+            or _SYNTHETIC_MODELING_INSTRUCTION_PATTERN.match(structural_stripped)
+            or _SYNTHETIC_STATEWIDE_ALLOWANCE_RESTATEMENT_PATTERN.match(
+                structural_stripped
+            )
+        ):
+            mask_spans.append(line_span)
+            line_offset += len(line_with_ending)
+            continue
+
+        quote_prefix_length = len(line) - len(
+            line.lstrip(_STRUCTURAL_SOURCE_QUOTE_CHARS)
+        )
+        if quote_prefix_length:
+            mask_spans.append((line_offset, line_offset + quote_prefix_length))
+        normalized_start = quote_prefix_length
+        normalized_line = line[normalized_start:]
+        citation_prefix = _STRUCTURAL_SOURCE_CITATION_PREFIX_PATTERN.match(
+            normalized_line
+        )
+        if citation_prefix is not None:
+            mask_spans.append(
+                (
+                    line_offset + normalized_start + citation_prefix.start(),
+                    line_offset + normalized_start + citation_prefix.end(),
+                )
+            )
+            normalized_start += citation_prefix.end()
+            normalized_line = line[normalized_start:]
+
+        value_row_match = _VALUE_BEARING_TABLE_ROW_PATTERN.match(normalized_line)
+        schedule_row_match = (
+            _SCHEDULE_SIZE_ROW_PATTERN.fullmatch(normalized_line)
+            or _SCHEDULE_PIPE_ROW_PATTERN.fullmatch(normalized_line)
+            or _SCHEDULE_ARROW_ROW_PATTERN.fullmatch(normalized_line)
+            or _SCHEDULE_BARE_ARROW_ROW_PATTERN.fullmatch(normalized_line)
+        )
+        if value_row_match and not schedule_row_match:
+            value_start, value_end = value_row_match.span(1)
+            mask_spans.extend(
+                (
+                    (
+                        line_offset + normalized_start,
+                        line_offset + normalized_start + value_start,
+                    ),
+                    (
+                        line_offset + normalized_start + value_end,
+                        line_offset + len(line),
+                    ),
+                )
+            )
+            line_offset += len(line_with_ending)
+            continue
+
+        mask_spans.extend(
+            (
+                line_offset + normalized_start + match.start(),
+                line_offset + normalized_start + match.end(),
+            )
+            for match in _TABLE_ROW_LABEL_PATTERN.finditer(normalized_line)
+        )
+        structural_prefix = _STRUCTURAL_SOURCE_PREFIX_PATTERN.match(normalized_line)
+        if structural_prefix is not None:
+            prefix_span = (
+                line_offset + normalized_start + structural_prefix.start(),
+                line_offset + normalized_start + structural_prefix.end(),
+            )
+            preserve_dotted_amount = False
+            if structural_prefix.group("bare_dotted") is not None:
+                dotted_span = (
+                    line_offset
+                    + normalized_start
+                    + structural_prefix.start("bare_dotted"),
+                    line_offset
+                    + normalized_start
+                    + structural_prefix.end("bare_dotted"),
+                )
+                boundaries = _NumericContextBoundaries.from_spans(
+                    (*mask_spans, *structural_spans)
+                )
+                preserve_dotted_amount = _danish_grouped_scalar_has_context(
+                    masked_text(),
+                    dotted_span,
+                    boundaries=boundaries,
+                )
+            if not preserve_dotted_amount:
+                mask_spans.append(prefix_span)
+        line_offset += len(line_with_ending)
+
+    add_matches((_SOURCE_URL_PATTERN,))
+    current = masked_text()
+    for match in re.finditer(r"\[[^\]]*\d[^\]]*\]", current):
+        if _strip_superseded_bracketed_numeric_text(match) == " ":
+            mask_spans.append(match.span())
+    add_matches(
+        (
+            _STRUCTURAL_SOURCE_MANUAL_NUMBER_PATTERN,
+            _STRUCTURAL_SOURCE_MANUAL_VOLUME_PATTERN,
+            _STRUCTURAL_SOURCE_POLICY_LABEL_PATTERN,
+            _STRUCTURAL_SOURCE_BULLETIN_NUMBER_PATTERN,
+            _STRUCTURAL_SOURCE_REVISION_PATTERN,
+            _STRUCTURAL_SOURCE_REVISION_CODE_PATTERN,
+            _STRUCTURAL_SOURCE_HANDBOOK_SECTION_PATTERN,
+            _STRUCTURAL_SOURCE_FORM_NUMBER_PATTERN,
+            _STRUCTURAL_SOURCE_FORM_LINE_PATTERN,
+            _STRUCTURAL_SOURCE_CODE_CITATION_PATTERN,
+            _STRUCTURAL_SOURCE_LEGAL_EDITION_PATTERN,
+            _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
+        )
+    )
+
+    current = masked_text()
+    boundaries = _NumericContextBoundaries.from_spans((*mask_spans, *structural_spans))
+    for match in _STRUCTURAL_SOURCE_BARE_DOTTED_REFERENCE_PATTERN.finditer(current):
+        if not _danish_grouped_scalar_has_context(
+            current,
+            match.span(),
+            boundaries=boundaries,
+        ):
+            mask_spans.append(match.span())
+
+    add_matches(
+        (
+            _STRUCTURAL_SOURCE_SECTION_PATTERN,
+            GROUNDING_DATE_PATTERN,
+            GROUNDING_MONTH_PERIOD_PATTERN,
+            _DOTTED_DATE_PATTERN,
+            _MONTH_NAME_DATE_PATTERN,
+            _SLASH_DATE_PATTERN,
+            _MONTH_NAME_DAY_PATTERN,
+            _MONTH_DAY_OF_MONTH_PATTERN,
+            _STRUCTURAL_SOURCE_SUBDIVISION_MARKER_PATTERN,
+            _TABLE_KEY_ASSIGNMENT_PATTERN,
+        )
+    )
+    current = masked_text()
+    for match in _SCHEDULE_SIZE_CAP_RESTATEMENT_PATTERN.finditer(current):
+        value_start, value_end = match.span(1)
+        mask_spans.extend(
+            (
+                (match.start(), value_start),
+                (value_end, match.end()),
+            )
+        )
+    add_matches(_SOURCE_REFERENCE_PATTERNS)
+    snapped_spans = _snap_mask_spans_to_numeric_envelopes(
+        text,
+        mask_spans,
+        profile="da-DK",
+    )
+    return _apply_equal_length_numeric_mask(text, snapped_spans)
+
+
+def _clean_source_text_for_numeric_extraction(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> str:
     """Strip structural source scaffolding before numeric extraction."""
+    if profile == "da-DK":
+        return _danish_equal_length_numeric_mask(text).text
     text = re.sub(r"\\r\\n|\\n|\\r", "\n", text)
     text = text.replace(r"\t", "\t")
     # Detach the Ghana cedi symbol (and other cent/currency glyphs) glued to a
@@ -5017,7 +5488,11 @@ def _clean_source_text_for_numeric_extraction(text: str) -> str:
         if value_row_match and not schedule_row_match:
             normalized_line = value_row_match.group(1)
         normalized_line = _TABLE_ROW_LABEL_PATTERN.sub("size", normalized_line)
-        cleaned_lines.append(_STRUCTURAL_SOURCE_PREFIX_PATTERN.sub("", normalized_line))
+        normalized_line = _STRUCTURAL_SOURCE_PREFIX_PATTERN.sub(
+            "",
+            normalized_line,
+        )
+        cleaned_lines.append(normalized_line)
 
     cleaned = "\n".join(cleaned_lines)
     cleaned = _SOURCE_URL_PATTERN.sub(" ", cleaned)
@@ -5467,20 +5942,27 @@ class _NumericTokenization:
 def _numeric_occurrence_has_local_rate_context(
     text: str,
     span: tuple[int, int],
+    *,
+    profile: str = "legacy",
 ) -> bool:
     """Return whether adjacent or same-column evidence marks this as a rate."""
     _, end = span
     return bool(
-        _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(text, end)
-        or _numeric_occurrence_has_rate_table_header(text, span)
+        _local_rate_context_after_number(text, end, profile=profile)
+        or _numeric_occurrence_has_rate_table_header(text, span, profile=profile)
     )
 
 
 def _numeric_occurrence_has_rate_table_header(
     text: str,
     span: tuple[int, int],
+    *,
+    profile: str = "legacy",
 ) -> bool:
     """Recognize a percentage header for the occurrence's pipe-table column."""
+    if profile == "da-DK":
+        return False
+
     start, _ = span
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", start)
@@ -5502,12 +5984,340 @@ def _numeric_occurrence_has_rate_table_header(
         if "|" not in previous_line:
             break
         cells = previous_line.strip().strip("|").split("|")
-        if column < len(cells) and _TABLE_RATE_HEADER_PATTERN.search(cells[column]):
+        if column < len(cells) and _table_rate_header_matches(
+            cells[column],
+            profile=profile,
+        ):
             return True
     return False
 
 
-def _pipe_table_rate_cell_spans(text: str) -> tuple[tuple[int, int], ...]:
+_DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS = frozenset("\u200d\u200c\u2060\u00ad\ufeff")
+_STANDALONE_MARKER_WRAPPER_CHARS = frozenset("()[]\"\u00bb\u00ab'")
+_STANDALONE_MARKER_TERMINAL_CHARS = frozenset(",;:")
+_STANDALONE_MARKER_BOUNDARY_CHARS = (
+    _STANDALONE_MARKER_WRAPPER_CHARS | _STANDALONE_MARKER_TERMINAL_CHARS
+)
+_MARKER_GAP_BEFORE_NUMBER_CHARS = frozenset(")]\"\u00bb\u00ab',;:")
+_MARKER_GAP_AFTER_NUMBER_CHARS = frozenset("([\"\u00bb\u00ab',;:")
+
+
+def _previous_non_joiner_character(text: str, index: int) -> int:
+    """Return the preceding non-joiner index, or ``-1`` at the start."""
+    index -= 1
+    while index >= 0 and text[index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS:
+        index -= 1
+    return index
+
+
+def _next_non_joiner_character(text: str, index: int) -> int:
+    """Return the following non-joiner index, or ``len(text)`` at the end."""
+    while index < len(text) and text[index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS:
+        index += 1
+    return index
+
+
+def _marker_boundary_character_is_whitespace(character: str) -> bool:
+    """Treat separator-class format characters as standalone boundaries."""
+    return bool(
+        character.isspace()
+        or (
+            unicodedata.category(character) == "Cf"
+            and character not in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        )
+    )
+
+
+def _sentence_period_is_allowlisted(text: str, index: int, *, direction: int) -> bool:
+    """Accept a right-hand period only when it terminates a sentence."""
+    if direction <= 0 or text[index] != ".":
+        return False
+    following = _next_non_joiner_character(text, index + 1)
+    return following >= len(text) or _marker_boundary_character_is_whitespace(
+        text[following]
+    )
+
+
+def _marker_delimiter_run_is_detached(
+    text: str,
+    index: int,
+    *,
+    direction: int,
+) -> bool:
+    """Accept an allowlisted delimiter run only when detached outwardly."""
+    outward = index
+    while True:
+        outward = (
+            _previous_non_joiner_character(text, outward)
+            if direction < 0
+            else _next_non_joiner_character(text, outward + 1)
+        )
+        if (
+            outward < 0
+            or outward >= len(text)
+            or text[outward] not in _STANDALONE_MARKER_BOUNDARY_CHARS
+        ):
+            break
+    if outward < 0 or outward >= len(text):
+        return True
+    character = text[outward]
+    return _marker_boundary_character_is_whitespace(
+        character
+    ) or _sentence_period_is_allowlisted(text, outward, direction=direction)
+
+
+def _marker_neighbor_is_allowlisted(
+    text: str,
+    index: int,
+    *,
+    direction: int,
+) -> bool:
+    """Classify one real marker neighbor against the closed allowlist."""
+    if index < 0 or index >= len(text):
+        return True
+    character = text[index]
+    if _marker_boundary_character_is_whitespace(character):
+        return True
+    if character in _STANDALONE_MARKER_BOUNDARY_CHARS:
+        return _marker_delimiter_run_is_detached(text, index, direction=direction)
+    return _sentence_period_is_allowlisted(text, index, direction=direction)
+
+
+def _marker_span_has_standalone_boundaries(
+    text: str,
+    span: tuple[int, int],
+) -> bool:
+    """Require both joiner-skipping source neighbors to be allowlisted."""
+    before = _previous_non_joiner_character(text, span[0])
+    after = _next_non_joiner_character(text, span[1])
+    return _marker_neighbor_is_allowlisted(text, before, direction=-1) and (
+        _marker_neighbor_is_allowlisted(text, after, direction=1)
+    )
+
+
+def _raw_numeric_context_before_span(
+    text: str,
+    start: int,
+    *,
+    retained_limit: int,
+    boundaries: _NumericContextBoundaries | None,
+) -> tuple[int, int]:
+    lower_bound = boundaries.lower_bound(start) if boundaries is not None else 0
+    cursor = start
+    retained = 0
+    while cursor > lower_bound and retained < retained_limit:
+        cursor -= 1
+        retained += unicodedata.category(text[cursor]) != "Cf"
+    return cursor, start
+
+
+def _raw_numeric_context_after_span(
+    text: str,
+    end: int,
+    *,
+    retained_limit: int,
+    boundaries: _NumericContextBoundaries | None,
+) -> tuple[int, int]:
+    upper_bound = (
+        boundaries.upper_bound(end, len(text)) if boundaries is not None else len(text)
+    )
+    cursor = end
+    retained = 0
+    while cursor < upper_bound and retained < retained_limit:
+        retained += unicodedata.category(text[cursor]) != "Cf"
+        cursor += 1
+    return end, cursor
+
+
+def _marker_spans_in_source_window(
+    text: str,
+    window: tuple[int, int],
+    patterns: Sequence[re.Pattern[str]],
+) -> Iterator[tuple[int, int]]:
+    """Match markers through numeric joiners while preserving other boundaries."""
+    window_start, window_end = window
+    scan_text, source_offsets = _numeric_joiner_filtered_view(
+        text[window_start:window_end]
+    )
+    if not scan_text:
+        return
+    for pattern in patterns:
+        for match in pattern.finditer(scan_text):
+            if match.start() == match.end():
+                continue
+            yield (
+                window_start + source_offsets[match.start()],
+                window_start + source_offsets[match.end() - 1] + 1,
+            )
+
+
+def _marker_gap_is_allowlisted(
+    text: str,
+    span: tuple[int, int],
+    *,
+    allowed_punctuation: frozenset[str],
+) -> bool:
+    """Allow only whitespace, Cf, and directional wrappers in a marker gap."""
+    return all(
+        character.isspace()
+        or unicodedata.category(character) == "Cf"
+        or character in allowed_punctuation
+        for character in text[slice(*span)]
+    )
+
+
+def _number_has_adjacent_standalone_marker(
+    text: str,
+    span: tuple[int, int],
+    *,
+    direction: str,
+    patterns: Sequence[re.Pattern[str]],
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    """Find a source-exact marker adjacent to a number without crossing a wall."""
+    if direction == "before":
+        window = _raw_numeric_context_before_span(
+            text,
+            span[0],
+            retained_limit=80,
+            boundaries=boundaries,
+        )
+        allowed_gap = _MARKER_GAP_BEFORE_NUMBER_CHARS
+    elif direction == "after":
+        window = _raw_numeric_context_after_span(
+            text,
+            span[1],
+            retained_limit=80,
+            boundaries=boundaries,
+        )
+        allowed_gap = _MARKER_GAP_AFTER_NUMBER_CHARS
+    else:
+        raise ValueError(f"Unsupported marker direction: {direction}")
+
+    for marker_span in _marker_spans_in_source_window(text, window, patterns):
+        if not _marker_span_has_standalone_boundaries(text, marker_span):
+            continue
+        gap = (
+            (marker_span[1], span[0])
+            if direction == "before"
+            else (span[1], marker_span[0])
+        )
+        if _marker_gap_is_allowlisted(
+            text,
+            gap,
+            allowed_punctuation=allowed_gap,
+        ):
+            return True
+    return False
+
+
+def _local_rate_context_after_number(
+    text: str,
+    end: int,
+    *,
+    profile: str,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    """Return whether a profile-specific marker follows a numeric span."""
+    if profile == "da-DK":
+        return _number_has_adjacent_standalone_marker(
+            text,
+            (end, end),
+            direction="after",
+            patterns=(_GENERIC_RATE_MARKER_PATTERN, _DANISH_RATE_MARKER_PATTERN),
+            boundaries=boundaries,
+        )
+    return bool(_LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(text, end))
+
+
+def _table_rate_header_matches(text: str, *, profile: str) -> bool:
+    """Return whether a table header contains a profile-specific rate marker."""
+    if profile == "da-DK":
+        return False
+    return bool(_TABLE_RATE_HEADER_PATTERN.search(text))
+
+
+def _currency_marker_before_number(
+    text: str,
+    start: int,
+    *,
+    profile: str,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    """Return whether a profile-specific currency marker precedes a number."""
+    if profile == "da-DK":
+        return _number_has_adjacent_standalone_marker(
+            text,
+            (start, start),
+            direction="before",
+            patterns=(
+                _GENERIC_CURRENCY_MARKER_PATTERN,
+                _DANISH_CURRENCY_MARKER_PATTERN,
+            ),
+            boundaries=boundaries,
+        )
+    before = text[max(0, start - 80) : start]
+    return bool(_CURRENCY_MARKER_BEFORE_NUMBER_PATTERN.search(before))
+
+
+def _currency_marker_after_number(
+    text: str,
+    end: int,
+    *,
+    profile: str,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    """Return whether a profile-specific currency marker follows a number."""
+    if profile == "da-DK":
+        return _number_has_adjacent_standalone_marker(
+            text,
+            (end, end),
+            direction="after",
+            patterns=(
+                _GENERIC_CURRENCY_MARKER_PATTERN,
+                _DANISH_CURRENCY_MARKER_PATTERN,
+            ),
+            boundaries=boundaries,
+        )
+    after = text[end : min(len(text), end + 80)]
+    return bool(_CURRENCY_MARKER_AFTER_NUMBER_PATTERN.match(after))
+
+
+def _danish_grouped_scalar_has_context(
+    text: str,
+    span: tuple[int, int],
+    *,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    """Return whether a Danish multi-dot token is substantive scalar evidence."""
+    start, end = span
+    return bool(
+        _currency_marker_before_number(
+            text,
+            start,
+            profile="da-DK",
+            boundaries=boundaries,
+        )
+        or _currency_marker_after_number(
+            text,
+            end,
+            profile="da-DK",
+            boundaries=boundaries,
+        )
+        or _local_rate_context_after_number(
+            text,
+            end,
+            profile="da-DK",
+            boundaries=boundaries,
+        )
+    )
+
+
+def _pipe_table_rate_cell_spans(
+    text: str,
+    *,
+    profile: str = "legacy",
+) -> tuple[tuple[int, int], ...]:
     """Index cells whose pipe-table column has an explicit percentage header."""
     rate_cells: list[tuple[int, int]] = []
     rate_columns: set[int] = set()
@@ -5534,7 +6344,7 @@ def _pipe_table_rate_cell_spans(text: str) -> tuple[tuple[int, int], ...]:
             cells = cells[:-1]
 
         for column, (start, end) in enumerate(cells):
-            if _TABLE_RATE_HEADER_PATTERN.search(line[start:end]):
+            if _table_rate_header_matches(line[start:end], profile=profile):
                 rate_columns.add(column)
         for column in rate_columns:
             if column >= len(cells):
@@ -5771,6 +6581,20 @@ class _NumericTextView:
         return cls(source, source, tuple(range(len(source))))
 
     @classmethod
+    def equal_length_masked(cls, source: str, parsed: str) -> "_NumericTextView":
+        """Use identity provenance for an equal-length space-substitution mask."""
+        if len(source) != len(parsed):
+            raise ValueError("Equal-length numeric mask changed the source length")
+        if any(
+            source_character != parsed_character and parsed_character != " "
+            for source_character, parsed_character in zip(source, parsed, strict=True)
+        ):
+            raise ValueError(
+                "Numeric mask changed a source character without blanking it"
+            )
+        return cls(source, parsed, tuple(range(len(source))))
+
+    @classmethod
     def aligned(cls, source: str, parsed: str) -> "_NumericTextView":
         if parsed == source:
             return cls.identity(source)
@@ -5789,16 +6613,26 @@ class _NumericTextView:
                 offsets[index] = source_start + index - parsed_start
         return cls(source, parsed, tuple(offsets))
 
-    def source_span(self, span: tuple[int, int]) -> tuple[int, int]:
+    def source_span(
+        self,
+        span: tuple[int, int],
+        *,
+        require_exact: bool = False,
+    ) -> tuple[int, int]:
         """Map a parsed span to the exact source interval that supplied it."""
         start, end = span
+        raw = self.text[start:end]
+        if require_exact:
+            if len(self.source) != len(self.text) or self.source[start:end] != raw:
+                raise ValueError(f"Numeric token changed under source mask: {raw!r}")
+            return span
         mapped = [
             offset for offset in self.source_offsets[start:end] if offset is not None
         ]
         if mapped:
-            return min(mapped), max(mapped) + 1
+            mapped_span = (min(mapped), max(mapped) + 1)
+            return mapped_span
 
-        raw = self.text[start:end]
         candidates = [
             match.span() for match in re.finditer(re.escape(raw), self.source)
         ]
@@ -5836,22 +6670,64 @@ class _LegacyNumericCollector:
     """Collect exact typed emissions for both legacy public projections."""
 
     source: str
+    profile: str = "legacy"
+    masked_context_spans: tuple[tuple[int, int], ...] = ()
     grounding: list[NumericOccurrence] = field(default_factory=list)
     inventory: list[NumericOccurrence] = field(default_factory=list)
     rate_table_cell_spans: tuple[tuple[int, int], ...] = field(init=False)
+    rate_table_cell_span_starts: tuple[int, ...] = field(init=False)
+    rate_table_cell_prefix_max_ends: tuple[int, ...] = field(init=False)
     shared_rate_spans: tuple[tuple[int, int], ...] = field(init=False)
     temporal_component_spans: tuple[tuple[int, int], ...] = field(init=False)
     structural_component_spans: tuple[tuple[int, int], ...] = field(init=False)
+    structural_component_span_starts: tuple[int, ...] = field(init=False)
+    structural_component_prefix_max_ends: tuple[int, ...] = field(init=False)
+    context_boundaries: _NumericContextBoundaries = field(init=False)
     money_spans: tuple[tuple[int, int], ...] = field(init=False)
 
     def __post_init__(self) -> None:
-        self.rate_table_cell_spans = _pipe_table_rate_cell_spans(self.source)
+        self.rate_table_cell_spans = (
+            ()
+            if self.profile == "da-DK"
+            else _pipe_table_rate_cell_spans(
+                self.source,
+                profile=self.profile,
+            )
+        )
+        (
+            self.rate_table_cell_span_starts,
+            self.rate_table_cell_prefix_max_ends,
+        ) = _span_containment_index(self.rate_table_cell_spans)
         self.temporal_component_spans = _temporal_numeric_component_spans(self.source)
         self.structural_component_spans = _structural_numeric_component_spans(
-            self.source
+            self.source,
+            profile=self.profile,
+        )
+        (
+            self.structural_component_span_starts,
+            self.structural_component_prefix_max_ends,
+        ) = _span_containment_index(self.structural_component_spans)
+        self.context_boundaries = _NumericContextBoundaries.from_spans(
+            (*self.masked_context_spans, *self.structural_component_spans)
+            if self.profile == "da-DK"
+            else ()
         )
         money_spans = {
-            span for span, _value in _iter_raw_european_money_value_matches(self.source)
+            span
+            for span, _value in _iter_raw_european_money_value_matches(self.source)
+            if self.profile != "da-DK"
+            or _currency_marker_before_number(
+                self.source,
+                span[0],
+                profile=self.profile,
+                boundaries=self.context_boundaries,
+            )
+            or _currency_marker_after_number(
+                self.source,
+                span[1],
+                profile=self.profile,
+                boundaries=self.context_boundaries,
+            )
         }
         shared_rate_spans: set[tuple[int, int]] = set()
         for match in _TEMPORAL_YEAR_RANGE_PATTERN.finditer(self.source):
@@ -5863,23 +6739,29 @@ class _LegacyNumericCollector:
                     for money_start, money_end in money_spans
                 )
                 or bool(
-                    _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN.search(
-                        self.source[max(0, match.start() - 16) : match.start()]
+                    _currency_marker_before_number(
+                        self.source,
+                        match.start(),
+                        profile=self.profile,
+                        boundaries=self.context_boundaries,
                     )
                 )
                 or bool(
-                    _CURRENCY_MARKER_AFTER_NUMBER_PATTERN.match(
-                        self.source[
-                            match.end() : min(len(self.source), match.end() + 16)
-                        ]
+                    _currency_marker_after_number(
+                        self.source,
+                        match.end(),
+                        profile=self.profile,
+                        boundaries=self.context_boundaries,
                     )
                 )
             )
             if has_money_context:
                 money_spans.update(endpoint_spans)
-            if _LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(
+            if _local_rate_context_after_number(
                 self.source,
                 match.end(),
+                profile=self.profile,
+                boundaries=self.context_boundaries,
             ):
                 shared_rate_spans.update(endpoint_spans)
         self.money_spans = tuple(sorted(money_spans))
@@ -5897,15 +6779,26 @@ class _LegacyNumericCollector:
         is_word_number: bool = False,
         alternative_values: tuple[float, ...] = (),
     ) -> NumericOccurrence:
-        source_span = view.source_span(span)
+        source_span = view.source_span(
+            span,
+            require_exact=self.profile == "da-DK",
+        )
         start, end = source_span
-        has_table_rate_context = any(
-            start >= cell_start and end <= cell_end
-            for cell_start, cell_end in self.rate_table_cell_spans
+        has_table_rate_context = self.profile != "da-DK" and (
+            _span_is_contained_in_index(
+                source_span,
+                self.rate_table_cell_span_starts,
+                self.rate_table_cell_prefix_max_ends,
+            )
         )
         has_rate_context = (
             force_rate_context
-            or bool(_LOCAL_RATE_CONTEXT_AFTER_NUMBER_PATTERN.match(self.source, end))
+            or _local_rate_context_after_number(
+                self.source,
+                end,
+                profile=self.profile,
+                boundaries=self.context_boundaries,
+            )
             or has_table_rate_context
             or any(
                 start >= rate_start and end <= rate_end
@@ -5918,13 +6811,19 @@ class _LegacyNumericCollector:
                 for money_start, money_end in self.money_spans
             )
             or bool(
-                _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN.search(
-                    self.source[max(0, start - 16) : start]
+                _currency_marker_before_number(
+                    self.source,
+                    start,
+                    profile=self.profile,
+                    boundaries=self.context_boundaries,
                 )
             )
             or bool(
-                _CURRENCY_MARKER_AFTER_NUMBER_PATTERN.match(
-                    self.source[end : min(len(self.source), end + 16)]
+                _currency_marker_after_number(
+                    self.source,
+                    end,
+                    profile=self.profile,
+                    boundaries=self.context_boundaries,
                 )
             )
         )
@@ -5939,9 +6838,10 @@ class _LegacyNumericCollector:
         has_structural_context = (
             not has_rate_context
             and not has_money_context
-            and any(
-                start >= structural_start and end <= structural_end
-                for structural_start, structural_end in self.structural_component_spans
+            and _span_is_contained_in_index(
+                source_span,
+                self.structural_component_span_starts,
+                self.structural_component_prefix_max_ends,
             )
         )
         return NumericOccurrence(
@@ -5977,8 +6877,12 @@ class _LegacyNumericCollector:
         self.inventory.append(self.occurrence(view, span, value, **kwargs))
 
 
-_NUMERIC_EXTRACTION_PROFILES = frozenset({"legacy", "en-US", "en-GB", "de-DE"})
+_NUMERIC_EXTRACTION_PROFILES = frozenset({"legacy", "en-US", "en-GB", "de-DE", "da-DK"})
+_DECIMAL_COMMA_NUMERIC_PROFILES = frozenset({"de-DE", "da-DK"})
 _LOCALE_NUMERIC_GROUPING_SPACES = " \u00a0\u202f"
+# An ASCII space commonly separates adjacent Danish table values (for example,
+# a year followed by an amount), so only nonbreaking spaces can group digits.
+_DANISH_NUMERIC_GROUPING_SPACES = "\u00a0\u202f"
 _LOCALE_UNARY_SIGNS = "+-\u2013\u2212"
 _LOCALE_UNARY_PREFIXES = frozenset(
     "([{=:;,+*/|<>!%^&~?"
@@ -5990,6 +6894,20 @@ _LOCALE_UNARY_PREFIXES = frozenset(
     "\u2260"  # not equal
     "\u2264"  # less than or equal
     "\u2265"  # greater than or equal
+)
+_DANISH_ORDINAL_LIST_ITEM_OPENERS = _LOCALE_UNARY_PREFIXES - frozenset(
+    ".,Ee" + _LOCALE_UNARY_SIGNS
+)
+_DANISH_ORDINAL_RANGE_ITEM_PATTERN = r"\d+\.[-\u2013\u2014]\s*\d+\."
+_DANISH_ORDINAL_RANGE_SCAN_PATTERN = re.compile(
+    rf"(?<!\d)(?=(?P<range_item>{_DANISH_ORDINAL_RANGE_ITEM_PATTERN}))"
+)
+_DANISH_ORDINAL_LIST_ITEM_PATTERN = rf"(?:{_DANISH_ORDINAL_RANGE_ITEM_PATTERN}|\d+\.)"
+_DANISH_ORDINAL_LIST_SEPARATOR_PATTERN = re.compile(
+    rf"(?=(?P<boundary>^|[\s{re.escape(''.join(sorted(_DANISH_ORDINAL_LIST_ITEM_OPENERS)))}])"
+    rf"(?P<item_before>{_DANISH_ORDINAL_LIST_ITEM_PATTERN})"
+    r"(?P<comma>,)\s+"
+    rf"(?P<item_after>{_DANISH_ORDINAL_LIST_ITEM_PATTERN})(?=$|\s|,\s))"
 )
 _GERMAN_FRACTION_DENOMINATOR_VALUES = {
     "Einhundertzwanzigstel": 120.0,
@@ -6182,15 +7100,43 @@ def _numeric_profile_for_citation_path(citation_path: str | None) -> str:
         canonical = require_canonical_corpus_citation_path(citation_path)
     except (InvalidCorpusCitationError, TypeError, ValueError):
         return "legacy"
-    return "de-DE" if canonical.startswith("de/") else "legacy"
+    if canonical.startswith("de/"):
+        return "de-DE"
+    if canonical.startswith("dk/"):
+        return "da-DK"
+    return "legacy"
 
 
-def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
+def _locale_sign_is_unary(
+    text: str,
+    sign_index: int,
+    *,
+    profile: str,
+    boundaries: _NumericContextBoundaries | None = None,
+) -> bool:
+    lower_bound = boundaries.lower_bound(sign_index) if boundaries is not None else 0
+    if boundaries is not None:
+        wall_index = bisect_right(boundaries.starts, sign_index) - 1
+        if wall_index >= 0 and boundaries.spans[wall_index][1] >= sign_index:
+            return False
     prefix_index = sign_index - 1
-    while prefix_index >= 0 and text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES:
-        prefix_index -= 1
-    if prefix_index < 0:
-        return True
+    if profile == "da-DK" and text[sign_index] in "-\u2013\u2212":
+        while (
+            prefix_index >= lower_bound
+            and text[prefix_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        ):
+            prefix_index -= 1
+    else:
+        while prefix_index >= lower_bound and (
+            text[prefix_index] in _LOCALE_NUMERIC_GROUPING_SPACES
+            or (
+                profile == "da-DK"
+                and text[prefix_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+            )
+        ):
+            prefix_index -= 1
+    if prefix_index < lower_bound:
+        return lower_bound == 0
     prefix = text[prefix_index]
     return (
         prefix.isspace()
@@ -6199,16 +7145,27 @@ def _locale_sign_is_unary(text: str, sign_index: int) -> bool:
     )
 
 
-def _de_glued_sentence_marker_end(text: str, dot_index: int) -> int | None:
+def _locale_glued_sentence_marker_end(
+    text: str,
+    dot_index: int,
+    *,
+    profile: str,
+) -> int | None:
     """Return the end of a juris ``.3Die``-style marker prefix, if present."""
     if dot_index >= len(text) or text[dot_index] != ".":
         return None
 
     marker_end = dot_index + 1
     digit_count = 0
-    while marker_end < len(text) and digit_count < 2 and text[marker_end].isdecimal():
+    while digit_count < 2:
+        if profile == "da-DK":
+            marker_end = _next_numeric_joiner_end(text, marker_end)
+        if marker_end >= len(text) or not text[marker_end].isdecimal():
+            break
         marker_end += 1
         digit_count += 1
+    if profile == "da-DK":
+        marker_end = _next_numeric_joiner_end(text, marker_end)
 
     if (
         digit_count > 0
@@ -6219,79 +7176,405 @@ def _de_glued_sentence_marker_end(text: str, dot_index: int) -> int | None:
     return None
 
 
+def _locale_numeric_envelope_grammar_accepts(
+    character: str,
+    *,
+    profile: str,
+    grouping_characters: str,
+) -> bool:
+    """Define the complete character grammar shared by scan and continuation."""
+    return bool(
+        character.isdigit()
+        or character in ".,Ee"
+        or character in grouping_characters
+        or character in _LOCALE_UNARY_SIGNS
+        or (
+            profile == "da-DK" and character in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        )
+    )
+
+
+def _next_numeric_joiner_end(text: str, index: int) -> int:
+    """Return the first index after a contiguous Danish numeric-joiner run."""
+    while index < len(text) and text[index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS:
+        index += 1
+    return index
+
+
+def _numeric_grammar_run_end(
+    text: str,
+    index: int,
+    *,
+    run_characters: str,
+    profile: str,
+) -> tuple[int, int]:
+    """Consume one grammar-character run with interspersed Danish joiners."""
+    character_count = 0
+    while True:
+        while index < len(text) and text[index] in run_characters:
+            index += 1
+            character_count += 1
+        if profile != "da-DK":
+            return index, character_count
+        joiner_end = _next_numeric_joiner_end(text, index)
+        if joiner_end >= len(text) or text[joiner_end] not in run_characters:
+            return joiner_end, character_count
+        index = joiner_end
+
+
+def _danish_ordinal_list_match_has_admissible_left_boundary(
+    scan_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Reject a grouping-space boundary that continues an earlier digit run."""
+    boundary_start, boundary_end = match.span("boundary")
+    if (
+        boundary_start == boundary_end
+        or scan_text[boundary_start] not in _DANISH_NUMERIC_GROUPING_SPACES
+    ):
+        return True
+    previous = boundary_start - 1
+    while previous >= 0 and scan_text[previous] in _DANISH_NUMERIC_GROUPING_SPACES:
+        previous -= 1
+    return previous < 0 or not scan_text[previous].isdigit()
+
+
+def _danish_ordinal_list_match_starts_inside_range(
+    match: re.Match[str],
+    source_offsets: Sequence[int],
+    range_internal_starts: Sequence[int],
+    range_internal_prefix_max_ends: Sequence[int],
+) -> bool:
+    """Reject list items that restart strictly inside a range candidate."""
+    return any(
+        _span_is_contained_in_index(
+            (
+                source_offsets[match.start(group_name)],
+                source_offsets[match.start(group_name)] + 1,
+            ),
+            range_internal_starts,
+            range_internal_prefix_max_ends,
+        )
+        for group_name in ("item_before", "item_after")
+    )
+
+
+def _danish_ordinal_range_internal_index_from_view(
+    scan_text: str,
+    source_offsets: Sequence[int],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Index strict range interiors from a joiner-filtered source view."""
+    return _span_containment_index(
+        tuple(
+            (
+                source_offsets[match.start("range_item")] + 1,
+                source_offsets[match.end("range_item") - 1] + 1,
+            )
+            for match in _DANISH_ORDINAL_RANGE_SCAN_PATTERN.finditer(scan_text)
+        )
+    )
+
+
+def _danish_ordinal_range_internal_index(
+    text: str,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Index strict range interiors in source coordinates."""
+    return _danish_ordinal_range_internal_index_from_view(
+        *_numeric_joiner_filtered_view(text)
+    )
+
+
+def _danish_ordinal_list_separator_indices(
+    text: str,
+    *,
+    range_internal_index: tuple[Sequence[int], Sequence[int]] | None = None,
+) -> frozenset[int]:
+    """Locate separators bounded by two admissible ordinal-list items."""
+    scan_text, source_offsets = _numeric_joiner_filtered_view(text)
+    if range_internal_index is None:
+        range_internal_index = _danish_ordinal_range_internal_index_from_view(
+            scan_text,
+            source_offsets,
+        )
+    range_internal_starts, range_internal_prefix_max_ends = range_internal_index
+    return frozenset(
+        source_offsets[match.end("item_before") - 1]
+        for match in _DANISH_ORDINAL_LIST_SEPARATOR_PATTERN.finditer(scan_text)
+        if _danish_ordinal_list_match_has_admissible_left_boundary(scan_text, match)
+        and not _danish_ordinal_list_match_starts_inside_range(
+            match,
+            source_offsets,
+            range_internal_starts,
+            range_internal_prefix_max_ends,
+        )
+    )
+
+
+def _danish_repeated_leading_sign_run_start(
+    text: str,
+    sign_index: int,
+) -> int | None:
+    """Return the first sign in a joiner-transparent repeated run."""
+    start = sign_index
+    sign_count = 1
+    while True:
+        previous = _previous_non_joiner_character(text, start)
+        if previous < 0 or text[previous] not in _LOCALE_UNARY_SIGNS:
+            break
+        start = previous
+        sign_count += 1
+    return start if sign_count >= 2 else None
+
+
+@dataclass(frozen=True)
+class _LocaleNumericGrammarState:
+    """State shared by direct and joiner-mediated envelope continuation."""
+
+    exponent_seen: bool = False
+    exponent_digits_seen: bool = False
+
+
+def _advance_locale_numeric_grammar(
+    text: str,
+    index: int,
+    *,
+    profile: str,
+    grouping_characters: str,
+    state: _LocaleNumericGrammarState,
+    ordinal_list_separator_indices: frozenset[int] = frozenset(),
+) -> tuple[int, _LocaleNumericGrammarState, bool] | None:
+    """Advance one transition in the locale numeric-envelope grammar."""
+    if index >= len(text):
+        return None
+    character = text[index]
+    if not _locale_numeric_envelope_grammar_accepts(
+        character,
+        profile=profile,
+        grouping_characters=grouping_characters,
+    ):
+        return None
+    if character.isdigit():
+        return (
+            index + 1,
+            _LocaleNumericGrammarState(
+                exponent_seen=state.exponent_seen,
+                exponent_digits_seen=(
+                    state.exponent_digits_seen or state.exponent_seen
+                ),
+            ),
+            False,
+        )
+    if profile == "da-DK" and character in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS:
+        return None
+    if (
+        profile in _DECIMAL_COMMA_NUMERIC_PROFILES
+        and character == "."
+        and _locale_glued_sentence_marker_end(text, index, profile=profile) is not None
+    ):
+        return None
+    if character in ".,":
+        if profile == "da-DK" and index in ordinal_list_separator_indices:
+            return None
+        digit_index, separator_count = _numeric_grammar_run_end(
+            text,
+            index,
+            run_characters=".,",
+            profile=profile,
+        )
+        if digit_index < len(text) and text[digit_index].isdigit():
+            return digit_index, state, False
+        if profile == "da-DK" and separator_count >= 2:
+            return digit_index, state, True
+        return None
+    if character in grouping_characters:
+        digit_index, separator_count = _numeric_grammar_run_end(
+            text,
+            index,
+            run_characters=grouping_characters,
+            profile=profile,
+        )
+        if digit_index < len(text) and text[digit_index].isdigit():
+            return digit_index, state, False
+        if profile == "da-DK" and separator_count >= 2:
+            return digit_index, state, True
+        return None
+    if character in "Ee" and not state.exponent_seen:
+        return index + 1, _LocaleNumericGrammarState(exponent_seen=True), False
+    if (
+        character in _LOCALE_UNARY_SIGNS
+        and state.exponent_seen
+        and not state.exponent_digits_seen
+    ):
+        # Reserve malformed sign runs atomically; the strict parser rejects them.
+        return index + 1, state, False
+    return None
+
+
+def _advance_numeric_grammar_through_joiners(
+    text: str,
+    index: int,
+    *,
+    profile: str,
+    grouping_characters: str,
+    state: _LocaleNumericGrammarState,
+    ordinal_list_separator_indices: frozenset[int],
+) -> tuple[int, _LocaleNumericGrammarState, bool] | None:
+    """Skip joiners, then preserve the direct grammar's next transition."""
+    index = _next_numeric_joiner_end(text, index)
+    return _advance_locale_numeric_grammar(
+        text,
+        index,
+        profile=profile,
+        grouping_characters=grouping_characters,
+        state=state,
+        ordinal_list_separator_indices=ordinal_list_separator_indices,
+    )
+
+
 def _iter_locale_numeric_envelopes(
     text: str,
     *,
     profile: str,
+    boundaries: _NumericContextBoundaries | None = None,
+    danish_ordinal_range_internal_index: tuple[Sequence[int], Sequence[int]]
+    | None = None,
 ) -> Iterator[tuple[int, int]]:
     """Reserve each complete numeric-looking span before locale validation."""
+    grouping_spaces = (
+        _DANISH_NUMERIC_GROUPING_SPACES
+        if profile == "da-DK"
+        else _LOCALE_NUMERIC_GROUPING_SPACES
+    )
+    ordinal_list_separator_indices = (
+        _danish_ordinal_list_separator_indices(
+            text,
+            range_internal_index=danish_ordinal_range_internal_index,
+        )
+        if profile == "da-DK"
+        else frozenset()
+    )
     occupied_until = 0
     for digit_match in re.finditer(r"\d", text):
         digit_start = digit_match.start()
         if digit_start < occupied_until:
             continue
-        if profile == "de-DE" and digit_start > 0 and text[digit_start - 1] == ".":
-            marker_end = _de_glued_sentence_marker_end(text, digit_start - 1)
+        marker_dot = digit_start - 1
+        if profile == "da-DK":
+            while (
+                marker_dot >= 0
+                and text[marker_dot] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+            ):
+                marker_dot -= 1
+        if (
+            profile in _DECIMAL_COMMA_NUMERIC_PROFILES
+            and marker_dot >= 0
+            and text[marker_dot] == "."
+        ):
+            marker_end = _locale_glued_sentence_marker_end(
+                text,
+                marker_dot,
+                profile=profile,
+            )
             if marker_end is not None:
                 occupied_until = marker_end
                 continue
 
         start = digit_start
-        while start > 0 and text[start - 1] in ".,":
-            start -= 1
-        whitespace_start = start
-        while (
-            whitespace_start > 0
-            and text[whitespace_start - 1] in _LOCALE_NUMERIC_GROUPING_SPACES
-        ):
-            whitespace_start -= 1
-        sign_index = whitespace_start - 1
-        if (
+        prefix_cursor = digit_start
+        while True:
+            punctuation_index = prefix_cursor - 1
+            if profile == "da-DK":
+                while (
+                    punctuation_index >= 0
+                    and text[punctuation_index]
+                    in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+                ):
+                    punctuation_index -= 1
+            if punctuation_index < 0 or text[punctuation_index] not in ".,":
+                break
+            start = punctuation_index
+            prefix_cursor = punctuation_index
+
+        sign_search_cursor = start
+        while True:
+            grouping_index = sign_search_cursor - 1
+            if profile == "da-DK":
+                while (
+                    grouping_index >= 0
+                    and text[grouping_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+                ):
+                    grouping_index -= 1
+            if grouping_index < 0 or text[grouping_index] not in grouping_spaces:
+                break
+            sign_search_cursor = grouping_index
+
+        sign_index = sign_search_cursor - 1
+        if profile == "da-DK":
+            while (
+                sign_index >= 0
+                and text[sign_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+            ):
+                sign_index -= 1
+        sign_is_candidate = (
             sign_index >= 0
             and text[sign_index] in _LOCALE_UNARY_SIGNS
-            and _locale_sign_is_unary(text, sign_index)
+            and (
+                profile != "da-DK"
+                or text[sign_index] == "+"
+                or _next_numeric_joiner_end(text, sign_index + 1) == digit_start
+            )
+        )
+        repeated_sign_start = (
+            _danish_repeated_leading_sign_run_start(text, sign_index)
+            if profile == "da-DK" and sign_is_candidate
+            else None
+        )
+        if repeated_sign_start is not None:
+            start = repeated_sign_start
+        elif sign_is_candidate and _locale_sign_is_unary(
+            text,
+            sign_index,
+            profile=profile,
+            boundaries=boundaries,
         ):
             start = sign_index
 
         index = digit_start
-        exponent_seen = False
+        grammar_state = _LocaleNumericGrammarState()
         reserved_until = 0
         while index < len(text):
             char = text[index]
-            if char.isdigit():
-                index += 1
-                continue
-            if char in ".,":
-                if profile == "de-DE" and char == ".":
-                    marker_end = _de_glued_sentence_marker_end(text, index)
-                    if marker_end is not None:
-                        reserved_until = marker_end
-                        break
-                separator_end = index
-                while separator_end < len(text) and text[separator_end] in ".,":
-                    separator_end += 1
-                if separator_end < len(text) and text[separator_end].isdigit():
-                    index = separator_end
-                    continue
+            if profile == "da-DK" and char in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS:
+                advanced = _advance_numeric_grammar_through_joiners(
+                    text,
+                    index,
+                    profile=profile,
+                    grouping_characters=grouping_spaces,
+                    state=grammar_state,
+                    ordinal_list_separator_indices=ordinal_list_separator_indices,
+                )
+            else:
+                marker_end = (
+                    _locale_glued_sentence_marker_end(text, index, profile=profile)
+                    if profile in _DECIMAL_COMMA_NUMERIC_PROFILES and char == "."
+                    else None
+                )
+                if marker_end is not None:
+                    reserved_until = marker_end
+                    break
+                advanced = _advance_locale_numeric_grammar(
+                    text,
+                    index,
+                    profile=profile,
+                    grouping_characters=grouping_spaces,
+                    state=grammar_state,
+                    ordinal_list_separator_indices=ordinal_list_separator_indices,
+                )
+            if advanced is None:
                 break
-            if char in _LOCALE_NUMERIC_GROUPING_SPACES:
-                next_index = index
-                while (
-                    next_index < len(text)
-                    and text[next_index] in _LOCALE_NUMERIC_GROUPING_SPACES
-                ):
-                    next_index += 1
-                if next_index < len(text) and text[next_index].isdigit():
-                    index = next_index
-                    continue
+            index, grammar_state, terminal_invalid = advanced
+            if terminal_invalid:
                 break
-            if char in "Ee" and not exponent_seen:
-                exponent_seen = True
-                index += 1
-                while index < len(text) and text[index] in _LOCALE_UNARY_SIGNS:
-                    index += 1
-                continue
-            break
 
         occupied_until = max(index, reserved_until)
         yield start, index
@@ -6321,6 +7604,17 @@ def _valid_grouped_integer(
 
 
 def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
+    if profile == "da-DK":
+        raw = "".join(
+            character
+            for character in raw
+            if character not in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        )
+        if raw and (
+            raw[0] in _DANISH_NUMERIC_GROUPING_SPACES
+            or raw[-1] in _DANISH_NUMERIC_GROUPING_SPACES
+        ):
+            return None
     stripped = raw.strip(_LOCALE_NUMERIC_GROUPING_SPACES)
     sign = 1.0
     if stripped and stripped[0] in _LOCALE_UNARY_SIGNS:
@@ -6343,7 +7637,7 @@ def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
         .replace("\u2212", "-")
     )
 
-    if profile == "de-DE":
+    if profile in _DECIMAL_COMMA_NUMERIC_PROFILES:
         if mantissa.count(",") > 1:
             return None
         integer, comma, fraction = mantissa.partition(",")
@@ -6351,7 +7645,11 @@ def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
             return None
         valid, normalized_integer = _valid_grouped_integer(
             integer,
-            allowed_separators="." + _LOCALE_NUMERIC_GROUPING_SPACES,
+            allowed_separators=(
+                "." + _DANISH_NUMERIC_GROUPING_SPACES
+                if profile == "da-DK"
+                else "." + _LOCALE_NUMERIC_GROUPING_SPACES
+            ),
         )
         if not valid:
             return None
@@ -6380,9 +7678,26 @@ def _parse_locale_numeric_envelope(raw: str, profile: str) -> float | None:
 def _locale_numeric_envelope_has_token_boundaries(
     text: str,
     span: tuple[int, int],
+    *,
+    profile: str = "legacy",
+    source_text: str | None = None,
 ) -> bool:
-    before = text[span[0] - 1] if span[0] > 0 else ""
-    after = text[span[1]] if span[1] < len(text) else ""
+    boundary_text = text if source_text is None else source_text
+    before_index = span[0] - 1
+    after_index = span[1]
+    if profile == "da-DK":
+        while (
+            before_index >= 0
+            and boundary_text[before_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        ):
+            before_index -= 1
+        while (
+            after_index < len(boundary_text)
+            and boundary_text[after_index] in _DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+        ):
+            after_index += 1
+    before = boundary_text[before_index] if before_index >= 0 else ""
+    after = boundary_text[after_index] if after_index < len(boundary_text) else ""
     return not (
         (before and (before.isalnum() or before == "_"))
         or (after and (after.isalnum() or after == "_"))
@@ -6429,22 +7744,31 @@ def _temporal_numeric_component_spans(
 
 def _structural_numeric_component_spans(
     text: str,
+    *,
+    profile: str = "legacy",
 ) -> tuple[tuple[int, int], ...]:
     """Classify source spans whose numbers are only legal structural labels."""
-    spans = {
-        match.span()
-        for pattern in (
-            _GERMAN_STRUCTURAL_LABEL_PATTERN,
-            _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
-            _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
-            _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
-            _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
-            _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN,
-            _STRUCTURAL_LINE_MARKER_PATTERN,
-            _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
+    patterns = [
+        _GERMAN_STRUCTURAL_LABEL_PATTERN,
+        _GERMAN_STRUCTURAL_REFERENCE_PATTERN,
+        _ENGLISH_STRUCTURAL_REFERENCE_PATTERN,
+        _ENGLISH_STRUCTURAL_DIGIT_LABEL_PATTERN,
+        _STRUCTURAL_SOURCE_STATE_CODE_CITATION_PATTERN,
+        _STRUCTURAL_SOURCE_NJ_TITLE_54A_HEADING_PATTERN,
+        _STRUCTURAL_LINE_MARKER_PATTERN,
+        _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN,
+    ]
+    if profile == "da-DK":
+        danish_spans = _format_ignorable_pattern_source_spans(
+            text,
+            (
+                _DANISH_STRUCTURAL_REFERENCE_PATTERN,
+                _DANISH_STRUCTURAL_SENTENCE_PATTERN,
+            ),
         )
-        for match in pattern.finditer(text)
-    }
+    spans = {match.span() for pattern in patterns for match in pattern.finditer(text)}
+    if profile == "da-DK":
+        spans.update(danish_spans)
     spans.update(
         match.span("ordinal")
         for match in _STRUCTURAL_INLINE_NJ_LEGAL_ORDINAL_PATTERN.finditer(text)
@@ -6462,11 +7786,34 @@ def _has_malformed_profiled_numeric_envelope(
         return False
     if profile not in _NUMERIC_EXTRACTION_PROFILES:
         raise ValueError(f"Unsupported numeric profile: {profile}")
-    cleaned = _clean_source_text_for_numeric_extraction(text)
+    if profile == "da-DK":
+        ordinal_range_internal_index = _danish_ordinal_range_internal_index(text)
+        numeric_mask = _danish_equal_length_numeric_mask(text)
+        cleaned = numeric_mask.text
+        boundaries = _NumericContextBoundaries.from_spans(
+            (
+                *numeric_mask.spans,
+                *_structural_numeric_component_spans(text, profile=profile),
+            )
+        )
+    else:
+        cleaned = _clean_source_text_for_numeric_extraction(text, profile=profile)
+        boundaries = None
+        ordinal_range_internal_index = None
     return any(
-        _locale_numeric_envelope_has_token_boundaries(cleaned, span)
+        _locale_numeric_envelope_has_token_boundaries(
+            cleaned,
+            span,
+            profile=profile,
+            source_text=text if profile == "da-DK" else None,
+        )
         and _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile) is None
-        for span in _iter_locale_numeric_envelopes(cleaned, profile=profile)
+        for span in _iter_locale_numeric_envelopes(
+            cleaned,
+            profile=profile,
+            boundaries=boundaries,
+            danish_ordinal_range_internal_index=ordinal_range_internal_index,
+        )
     )
 
 
@@ -6630,7 +7977,11 @@ def _complete_typed_year_occurrences(
     typed_year_spans = {
         span
         for span in collector.temporal_component_spans
-        if _locale_numeric_envelope_has_token_boundaries(collector.source, span)
+        if _locale_numeric_envelope_has_token_boundaries(
+            collector.source,
+            span,
+            profile=collector.profile,
+        )
         if not (
             span[1] + 1 < len(collector.source)
             and collector.source[span[1]] in ".,"
@@ -6686,14 +8037,41 @@ def _tokenize_profiled_numeric_occurrences(
     profile: str,
 ) -> _NumericTokenization:
     """Tokenize strict locale-aware numeric envelopes without suffix fallback."""
-    cleaned = _clean_source_text_for_numeric_extraction(text)
-    view = _NumericTextView.aligned(text, cleaned)
-    collector = _LegacyNumericCollector(text)
+    if profile == "da-DK":
+        ordinal_range_internal_index = _danish_ordinal_range_internal_index(text)
+        numeric_mask = _danish_equal_length_numeric_mask(text)
+        cleaned = numeric_mask.text
+        view = _NumericTextView.equal_length_masked(text, cleaned)
+        masked_context_spans = numeric_mask.spans
+        numeric_boundaries = None
+    else:
+        cleaned = _clean_source_text_for_numeric_extraction(text, profile=profile)
+        view = _NumericTextView.aligned(text, cleaned)
+        masked_context_spans = ()
+        numeric_boundaries = None
+        ordinal_range_internal_index = None
+    collector = _LegacyNumericCollector(
+        text,
+        profile=profile,
+        masked_context_spans=masked_context_spans,
+    )
+    if profile == "da-DK":
+        numeric_boundaries = collector.context_boundaries
     grounding_occurrences: list[NumericOccurrence] = []
     inventory_occurrences: list[NumericOccurrence] = []
 
-    for span in _iter_locale_numeric_envelopes(cleaned, profile=profile):
-        if not _locale_numeric_envelope_has_token_boundaries(cleaned, span):
+    for span in _iter_locale_numeric_envelopes(
+        cleaned,
+        profile=profile,
+        boundaries=numeric_boundaries,
+        danish_ordinal_range_internal_index=ordinal_range_internal_index,
+    ):
+        if not _locale_numeric_envelope_has_token_boundaries(
+            cleaned,
+            span,
+            profile=profile,
+            source_text=text if profile == "da-DK" else None,
+        ):
             continue
         value = _parse_locale_numeric_envelope(cleaned[span[0] : span[1]], profile)
         if value is None:
