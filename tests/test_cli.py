@@ -14433,7 +14433,17 @@ class TestCmdEncode:
         source_file = tmp_path / "source.txt"
         source_file.write_text(source_text)
         context = tmp_path / "context.json"
-        context.write_text(json.dumps({"source_text_file": source_file.name}) + "\n")
+        context.write_text(
+            json.dumps(
+                {
+                    "source_text_file": source_file.name,
+                    "source_metadata": {
+                        "source_attestation": source_attestation,
+                    },
+                }
+            )
+            + "\n"
+        )
         result.context_manifest_file = str(context)
         result.context_manifest_sha256 = hashlib.sha256(
             context.read_bytes()
@@ -14441,6 +14451,42 @@ class TestCmdEncode:
         result.generation_prompt_sha256 = "prompt-sha"
         result.source_attestation = source_attestation
         result._axiom_legacy_replacement_contract = contract
+
+        def validate_recreated_destination_parent(
+            _pipeline,
+            *,
+            dependent_pipeline,
+            overlay_target,
+            dependents,
+        ):
+            del dependent_pipeline, dependents
+            assert overlay_target.parent.is_dir()
+            assert overlay_target.is_file()
+            assert overlay_target.read_bytes() == generated.read_bytes()
+            passed = SimpleNamespace(all_passed=True, results={})
+            return [(overlay_target, passed)]
+
+        with (
+            patch("axiom_encode.cli.ValidatorPipeline"),
+            patch(
+                "axiom_encode.cli._validate_overlay_files",
+                side_effect=validate_recreated_destination_parent,
+            ),
+            patch("axiom_encode.cli._record_successful_apply_validation"),
+        ):
+            can_apply, issues, supplemental = (
+                _validate_generated_encoding_in_policy_overlay(
+                    result,
+                    output_root=output_root,
+                    policy_repo_path=content_root,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    local_corpus_release=release,
+                )
+            )
+        assert can_apply is True, issues
+        assert issues == []
+        assert supplemental == {}
+
         self._record_apply_validation(
             result,
             output_root=output_root,

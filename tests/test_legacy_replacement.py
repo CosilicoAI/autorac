@@ -34,6 +34,7 @@ from axiom_encode.legacy_replacement import (
 )
 from axiom_encode.legacy_replacement_overlay import (
     LegacyReplacementOverlayError,
+    _prune_empty_overlay_parent_directories,
     scope_canonical_replacement_overlay,
     stage_legacy_replacement_overlay,
 )
@@ -1864,10 +1865,10 @@ def test_retained_successor_overlay_preflights_then_removes_one_composite(
     checkout = tmp_path / "rulespec-us"
     main = Path("us-la/statutes/47:32.yaml")
     main_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47:32.json")
-    old = Path("us-la/statutes/47:294.yaml")
-    old_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47:294.json")
-    successor = Path("us-la/statutes/47/294.yaml")
-    successor_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47/294.json")
+    old = Path("us-la/statutes/47:297/4.yaml")
+    old_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47:297/4.json")
+    successor = Path("us-la/statutes/47/297/4.yaml")
+    successor_manifest = Path(".axiom/encoding-manifests/us-la/statutes/47/297/4.json")
     metadata = Path("known-validation-gaps.yaml")
     for path, raw in {
         main: b"main\n",
@@ -1931,8 +1932,39 @@ def test_retained_successor_overlay_preflights_then_removes_one_composite(
     assert not (checkout / main_manifest).exists()
     assert not (checkout / old).exists()
     assert not (checkout / old_manifest).exists()
+    assert not (checkout / old.parent).exists()
+    assert not (checkout / old_manifest.parent).exists()
     assert (checkout / successor).read_bytes() == b"successor\n"
     assert (
         checkout / successor_manifest
     ).read_bytes() == successor_manifest_evidence.raw
     assert (checkout / metadata).read_bytes() == b"new metadata\n"
+
+
+def test_empty_overlay_pruning_preserves_unowned_legacy_content(tmp_path: Path) -> None:
+    checkout = tmp_path / "rulespec-us"
+    removed = checkout / "us-la/statutes/47:297/4.yaml"
+    sentinel = checkout / "us-la/statutes/47:297/unowned.yaml"
+    sentinel.parent.mkdir(parents=True)
+    removed.write_text("legacy\n")
+    sentinel.write_text("unowned\n")
+
+    removed.unlink()
+    _prune_empty_overlay_parent_directories(checkout, [removed])
+
+    assert sentinel.read_text() == "unowned\n"
+    assert sentinel.parent.is_dir()
+
+
+def test_empty_overlay_pruning_rejects_target_equal_to_protected_floor(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "rulespec-us"
+    protected_floor = checkout / "us-la/statutes"
+    protected_floor.mkdir(parents=True)
+
+    with pytest.raises(
+        LegacyReplacementOverlayError,
+        match="strict descendant of its protected prune floor",
+    ):
+        _prune_empty_overlay_parent_directories(checkout, [protected_floor])

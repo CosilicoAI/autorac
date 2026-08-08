@@ -51945,8 +51945,8 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 f"jurisdiction root: {overlay_content_root}"
             )
         overlay_target = overlay_content_root / relative_output
-        overlay_target.parent.mkdir(parents=True, exist_ok=True)
         if legacy_replacement is None:
+            overlay_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(output_file, overlay_target)
             if output_test.exists():
                 shutil.copy2(output_test, _rulespec_test_path(overlay_target))
@@ -52006,6 +52006,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 )
             except _LegacyReplacementOverlayError as exc:
                 return False, [str(exc)], {}
+            overlay_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(output_file, overlay_target)
             if output_test.exists():
                 shutil.copy2(output_test, _rulespec_test_path(overlay_target))

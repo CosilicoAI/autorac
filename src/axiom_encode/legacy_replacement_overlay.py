@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -271,6 +272,78 @@ def _require_overlay_file(
     return target
 
 
+def _overlay_prune_floor(checkout_root: Path, target: Path) -> Path:
+    """Return the protected root that empty-directory pruning cannot cross."""
+
+    relative = target.relative_to(checkout_root)
+    parts = relative.parts
+    if len(parts) >= 2 and parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        return checkout_root / parts[0] / parts[1]
+    if (
+        len(parts) >= 4
+        and parts[:2] == (".axiom", "encoding-manifests")
+        and parts[3] in RULESPEC_ATOMIC_MODULE_ROOTS
+    ):
+        return checkout_root.joinpath(*parts[:4])
+    return checkout_root
+
+
+def _prune_empty_overlay_parent_directories(
+    checkout_root: Path,
+    removed_targets: list[Path],
+) -> None:
+    """Remove only empty ancestors created by authenticated file retirement.
+
+    Git does not retain empty directories, so an atomic replacement postimage
+    must not retain an empty noncanonical directory after all of its bound files
+    are removed.  Only ancestors of authenticated removed files are considered,
+    and ``rmdir`` leaves any unowned content fail-closed in place.
+    """
+
+    root = checkout_root.resolve(strict=True)
+    candidates: set[Path] = set()
+    for target in removed_targets:
+        floor = _overlay_prune_floor(root, target)
+        try:
+            relative_to_floor = target.relative_to(floor)
+        except ValueError as exc:
+            raise LegacyReplacementOverlayError(
+                "Legacy replacement removed path has no protected prune floor: "
+                f"{target}"
+            ) from exc
+        if not relative_to_floor.parts:
+            raise LegacyReplacementOverlayError(
+                "Legacy replacement removed path must be a strict descendant of "
+                f"its protected prune floor: {target}"
+            )
+        parent = target.parent
+        while parent != floor:
+            candidates.add(parent)
+            parent = parent.parent
+
+    for directory in sorted(candidates, key=lambda path: len(path.parts), reverse=True):
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise LegacyReplacementOverlayError(
+                f"Cannot inspect legacy replacement empty directory: {directory}"
+            ) from exc
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise LegacyReplacementOverlayError(
+                f"Legacy replacement empty-directory candidate is unsafe: {directory}"
+            )
+        try:
+            directory.rmdir()
+        except OSError as exc:
+            if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                continue
+            raise LegacyReplacementOverlayError(
+                f"Cannot prune legacy replacement empty directory: {directory}"
+            ) from exc
+
+
 def stage_legacy_replacement_overlay(
     contract: LegacyReplacementContract,
     checkout_root: Path,
@@ -463,3 +536,13 @@ def stage_legacy_replacement_overlay(
         target.write_bytes(live_file.raw)
     for target, reconciliation in metadata_targets:
         target.write_bytes(reconciliation.raw)
+    _prune_empty_overlay_parent_directories(
+        root,
+        [
+            *deleted_targets,
+            manifest_target,
+            *retained_deleted_targets,
+            *retained_manifest_targets,
+            *predecessor_targets,
+        ],
+    )
