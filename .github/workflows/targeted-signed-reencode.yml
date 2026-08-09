@@ -1749,6 +1749,11 @@ jobs:
               UnsafeCorpusPathError,
               read_bounded_regular_file,
           )
+          from axiom_encode.legacy_replacement import (
+              RECEIPT_SCHEMA_V1,
+              RECEIPT_SCHEMAS,
+              RECEIPT_SCHEMAS_WITH_RETAINED_SUCCESSORS,
+          )
           from axiom_encode.rulespec_path_migration import (
               canonical_destination,
               rewrite_exact_references,
@@ -2254,14 +2259,12 @@ jobs:
                   receipt = json.loads(receipt_bytes)
                   receipt_replacement = receipt.get("replacement")
                   receipt_schema = receipt.get("schema_version")
+                  if receipt_schema not in RECEIPT_SCHEMAS:
+                      raise SystemExit(
+                          "legacy replacement receipt schema is unsupported"
+                      )
                   if (
-                      receipt_schema not in {
-                          "axiom-encode/legacy-fresh-reencode-receipt/v1",
-                          "axiom-encode/legacy-fresh-reencode-receipt/v2",
-                          "axiom-encode/legacy-fresh-reencode-receipt/v3",
-                          "axiom-encode/legacy-fresh-reencode-receipt/v4",
-                      }
-                      or not isinstance(receipt_replacement, dict)
+                      not isinstance(receipt_replacement, dict)
                       or receipt_replacement.get("source")
                       != legacy_source_path
                       or receipt_replacement.get("destination")
@@ -2283,7 +2286,7 @@ jobs:
                       or (
                           exact_dependent_paths
                           and receipt_schema
-                          == "axiom-encode/legacy-fresh-reencode-receipt/v1"
+                          == RECEIPT_SCHEMA_V1
                       )
                   ):
                       raise SystemExit(
@@ -2293,9 +2296,7 @@ jobs:
                   retained_successors = receipt_replacement.get(
                       "retained_successors"
                   )
-                  if receipt_schema == (
-                      "axiom-encode/legacy-fresh-reencode-receipt/v4"
-                  ):
+                  if receipt_schema in RECEIPT_SCHEMAS_WITH_RETAINED_SUCCESSORS:
                       if (
                           not isinstance(retained_successors, list)
                           or not isinstance(
