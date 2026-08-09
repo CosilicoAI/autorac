@@ -2556,11 +2556,17 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert commit_step["id"] == "commit_reviewed_lane_changes"
     assert f"workflow_python=({trusted_python} -I)" in commit_step["run"]
     assert '"${workflow_python[@]}" \\\n' in commit_step["run"]
+    assert "axiom-encode-signing-supervisor \\\n" in commit_step["run"]
+    assert "--trusted-signing-roots" in commit_step["run"]
+    assert "--trusted-python-runtime-root" in commit_step["run"]
+    assert "--trusted-python-import-root" in commit_step["run"]
+    assert "--trusted-python-package-root" in commit_step["run"]
     assert (
-        "axiom-encode/scripts/prepare_signed_backfill.py stage \\\n"
+        "-- /opt/axiom-verification/axiom-encode stage-signed-backfill"
         in (commit_step["run"])
     )
-    assert "--corpus-root axiom-corpus" in commit_step["run"]
+    assert '--repo "$RULESPEC_CHECKOUT"' in commit_step["run"]
+    assert '--corpus-path "$GITHUB_WORKSPACE/axiom-corpus"' in commit_step["run"]
 
     guard_step = next(
         step for step in steps if step.get("name") == "Verify generated provenance"

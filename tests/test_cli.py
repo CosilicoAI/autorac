@@ -266,6 +266,7 @@ from axiom_encode.cli import (
     cmd_session_start,
     cmd_session_stats,
     cmd_sessions,
+    cmd_stage_signed_backfill,
     cmd_stats,
     cmd_sync_agent_sessions,
     cmd_sync_transcripts,
@@ -39849,6 +39850,24 @@ rules: []
 
         assert exc_info.value.code == 1
         assert "Manual RuleSpec changes are not allowed." in capsys.readouterr().out
+
+    def test_stage_signed_backfill_uses_packaged_publication_contract(self, tmp_path):
+        repo = tmp_path / "rulespec-us"
+        corpus = tmp_path / "axiom-corpus"
+        args = SimpleNamespace(repo=repo, corpus_path=corpus)
+
+        with (
+            patch(
+                "axiom_encode.cli._resolve_canonical_rulespec_checkout",
+                return_value=repo,
+            ),
+            patch(
+                "axiom_encode.prepare_signed_backfill.stage_authorized_changes"
+            ) as stage,
+        ):
+            cmd_stage_signed_backfill(args)
+
+        stage.assert_called_once_with(repo, corpus_root=corpus)
 
 
 class TestApplyDependencyValidation:
