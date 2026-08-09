@@ -14864,16 +14864,47 @@ class TestCmdEncode:
             successor = checkout / f"us-la/statutes/47/{section}.yaml"
             legacy.parent.mkdir(parents=True, exist_ok=True)
             successor.parent.mkdir(parents=True, exist_ok=True)
+            legacy_rules = (
+                "rules:\n"
+                "  - name: later_low_income_percentage\n"
+                "    kind: parameter\n"
+                "    dtype: Rate\n"
+                "    versions:\n"
+                "      - effective_from: '0001-01-01'\n"
+                "        formula: '0.50'\n"
+                if section == 297
+                else "rules: []\n"
+            )
+            successor_rules = (
+                "rules:\n"
+                "  - name: low_income_percentage\n"
+                "    kind: parameter\n"
+                "    dtype: Rate\n"
+                "    versions:\n"
+                "      - effective_from: '2006-01-01'\n"
+                "        formula: '0.25'\n"
+                "      - effective_from: '2007-01-01'\n"
+                "        formula: '0.50'\n"
+                if section == 297
+                else "rules: []\n"
+            )
             legacy.write_text(
                 "format: rulespec/v1\n"
                 "module:\n"
                 "  source_verification:\n"
                 "    corpus_citation_path: us-la/statute/47/32\n"
                 f"    source_sha256: {source_attestation['source_sha256']}\n"
-                "rules: []\n"
+                f"{legacy_rules}"
             )
             legacy.with_name(f"47:{section}.test.yaml").write_text("[]\n")
-            successor.write_bytes(legacy.read_bytes())
+            successor.write_text(
+                "format: rulespec/v1\n"
+                "module:\n"
+                "  source_verification:\n"
+                "    corpus_citation_path: us-la/statute/47/32\n"
+                f"    source_sha256: {source_attestation['source_sha256']}\n"
+                f"{successor_rules}"
+            )
             successor.with_name(f"{section}.test.yaml").write_text("[]\n")
             retained_pairs.append(
                 (legacy.relative_to(checkout), successor.relative_to(checkout))
@@ -14902,6 +14933,7 @@ class TestCmdEncode:
             "    required: true\n"
             "imports:\n"
             "  - us-la:statutes/47:32#amount\n"
+            "  - us-la:statutes/47:297#later_low_income_percentage\n"
             "rules:\n"
             "  - name: liability\n"
             "    kind: derived\n"
@@ -14917,13 +14949,20 @@ class TestCmdEncode:
             "              output: amount\n"
             f"              hash: sha256:{source_before_sha256}\n"
             "          - path: versions[0].formula\n"
+            "            kind: import\n"
+            "            import:\n"
+            "              target: us-la:statutes/47:297#later_low_income_percentage\n"
+            "              output: later_low_income_percentage\n"
+            f"              hash: sha256:{_sha256_file(checkout / 'us-la/statutes/47:297.yaml')}\n"
+            "          - path: versions[0].formula\n"
             "            kind: parameter\n"
             "            source:\n"
             "              corpus_citation_path: us-la/statute/47/32\n"
             "              excerpt: Enter on Line 3 the Louisiana estimated standard deduction\n"
             "    versions:\n"
             "      - effective_from: '2026-01-01'\n"
-            "        formula: amount\n"
+            "        effective_to: '2026-12-31'\n"
+            "        formula: amount * later_low_income_percentage\n"
         )
         dependent_test.write_text("[]\n")
         second_dependent.parent.mkdir(parents=True, exist_ok=True)
@@ -15307,6 +15346,8 @@ class TestCmdEncode:
         for overlay_bytes in observed_overlay["bytes"]:
             assert b"us-la:statutes/47/32#amount" in overlay_bytes
             assert b"us-la:statutes/47:32#amount" not in overlay_bytes
+            assert b"us-la:statutes/47/297#low_income_percentage" in overlay_bytes
+            assert b"later_low_income_percentage" not in overlay_bytes
             assert f"hash: sha256:{_sha256_file(generated)}".encode() in overlay_bytes
             assert b"    corpus_citation_paths:\n" not in overlay_bytes
             assert b"    corpus_citation_path: us-la/statute/47/32\n" in overlay_bytes
@@ -15440,6 +15481,8 @@ class TestCmdEncode:
         assert destination.exists()
         assert destination_test.exists()
         assert b"us-la:statutes/47/32#amount" in dependent.read_bytes()
+        assert b"us-la:statutes/47/297#low_income_percentage" in dependent.read_bytes()
+        assert b"later_low_income_percentage" not in dependent.read_bytes()
         assert b"    corpus_citation_paths:\n" not in dependent.read_bytes()
         assert (
             b"    corpus_citation_path: us-la/statute/47/32\n" in dependent.read_bytes()
@@ -15453,6 +15496,11 @@ class TestCmdEncode:
         assert dependent_test.read_bytes() == dependent_test_before
         assert dependent_manifest.read_bytes() != dependent_manifest_before
         assert b"us-la:statutes/47/32#amount" in second_dependent.read_bytes()
+        assert (
+            b"us-la:statutes/47/297#low_income_percentage"
+            in second_dependent.read_bytes()
+        )
+        assert b"later_low_income_percentage" not in second_dependent.read_bytes()
         assert (
             f"hash: sha256:{_sha256_file(destination)}".encode()
             in second_dependent.read_bytes()
@@ -15492,7 +15540,7 @@ class TestCmdEncode:
         outer = json.loads(destination_manifest.read_text())
         receipt_path = checkout / outer["replacement"]["receipt_path"]
         receipt = json.loads(receipt_path.read_text())
-        assert receipt["schema_version"].endswith("/v6")
+        assert receipt["schema_version"].endswith("/v7")
         assert len(receipt["replacement"]["retained_successors"]) == 4
         assert {
             item["destination"]
@@ -15542,11 +15590,33 @@ class TestCmdEncode:
         }
         exact = exact_by_primary[dependent_relative.as_posix()]
         assert exact["primary"] == dependent_relative.as_posix()
-        assert exact["rewrites"][0]["proof_import_repairs"] == 1
+        exact_replacement_map = {
+            replacement["from"]: replacement["to"]
+            for rewrite in exact["rewrites"]
+            for replacement in rewrite["replacements"]
+        }
+        assert (
+            exact_replacement_map["us-la:statutes/47:297#later_low_income_percentage"]
+            == "us-la:statutes/47/297#low_income_percentage"
+        )
+        assert exact_replacement_map["later_low_income_percentage"] == (
+            "low_income_percentage"
+        )
+        assert exact["concept_replacements"] == [
+            {
+                "from": "later_low_income_percentage",
+                "to": "low_income_percentage",
+            },
+            {
+                "from": "us-la:statutes/47:297#later_low_income_percentage",
+                "to": "us-la:statutes/47/297#low_income_percentage",
+            },
+        ]
+        assert exact["rewrites"][0]["proof_import_repairs"] == 2
         assert exact["rewrites"][0]["proof_excerpt_reanchors"] == [
             {
                 "rule": "liability",
-                "atom_index": 1,
+                "atom_index": 2,
                 "field": "excerpt",
                 "corpus_citation_path": "us-la/statute/47/32",
                 "before": (
@@ -15688,10 +15758,17 @@ class TestCmdEncode:
             path: path.read_bytes() for path in persisted_manifests[1:]
         }
 
-        def rebind_linked_manifests(receipt_sha256: str) -> None:
+        def rebind_linked_manifests(
+            receipt_sha256: str,
+            receipt_relative: Path | None = None,
+        ) -> None:
             for path, original in linked_manifest_bytes.items():
                 payload = json.loads(original)
                 payload["legacy_migration"]["receipt_sha256"] = receipt_sha256
+                if receipt_relative is not None:
+                    payload["legacy_migration"]["receipt_path"] = (
+                        receipt_relative.as_posix()
+                    )
                 _sign_applied_encoding_manifest(
                     payload,
                     TEST_APPLY_SIGNING_BROKER,
@@ -15745,6 +15822,115 @@ class TestCmdEncode:
             )
         destination_manifest.write_bytes(outer_before_tamper)
         receipt_path.write_bytes(receipt_before_tamper)
+        restore_linked_manifests()
+
+        tampered_receipt = copy.deepcopy(receipt)
+        tampered_exact = tampered_receipt["replacement"]["exact_dependents"][0]
+        removed_concept_sources = {
+            record["from"] for record in tampered_exact["concept_replacements"]
+        }
+        tampered_exact["concept_replacements"] = []
+        for rewrite in tampered_exact["rewrites"]:
+            rewrite["replacements"] = [
+                record
+                for record in rewrite["replacements"]
+                if record["from"] not in removed_concept_sources
+            ]
+        _sign_applied_encoding_manifest(
+            tampered_receipt,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        from axiom_encode.legacy_replacement import (
+            receipt_identity_payload,
+            receipt_identity_sha256,
+        )
+
+        tampered_replacement = tampered_receipt["replacement"]
+        tampered_legacy = tampered_receipt["legacy"]
+        tampered_live_paths = {
+            item["path"] for item in tampered_replacement["live_files"]
+        }
+        tampered_deleted_files = [
+            {"path": item["path"], "deleted": True}
+            for item in tampered_legacy["files"]
+            if item["path"] not in tampered_live_paths
+        ]
+        tampered_deleted_files.extend(
+            {"path": item["path"], "deleted": True}
+            for successor in tampered_replacement["retained_successors"]
+            for item in successor["legacy_files"]
+        )
+        tampered_identity = receipt_identity_payload(
+            base_commit=tampered_receipt["repository"]["base_commit"],
+            base_tree=tampered_receipt["repository"]["base_tree"],
+            legacy_manifest_sha256=tampered_legacy["manifest"]["sha256"],
+            model_manifest_sha256=tampered_replacement["model_manifest_sha256"],
+            live_files=tampered_replacement["live_files"],
+            deleted_files=tampered_deleted_files,
+            rewrites=tampered_replacement["rewrites"],
+            scheduled_dependents=tampered_replacement["scheduled_dependents"],
+            exact_dependents=tampered_replacement["exact_dependents"],
+            destination_predecessor_class=tampered_replacement[
+                "destination_predecessor_class"
+            ],
+            destination_predecessor_files=tampered_replacement[
+                "destination_predecessor_files"
+            ],
+            retained_successors=tampered_replacement["retained_successors"],
+            metadata_reconciliations=tampered_replacement["metadata_reconciliations"],
+        )
+        tampered_receipt_relative = receipt_path.relative_to(checkout).with_name(
+            f"{receipt_identity_sha256(tampered_identity)}.json"
+        )
+        tampered_receipt_path = checkout / tampered_receipt_relative
+        receipt_path.unlink()
+        tampered_receipt_path.write_text(
+            json.dumps(tampered_receipt, indent=2, sort_keys=True) + "\n"
+        )
+        tampered_receipt_sha256 = hashlib.sha256(
+            tampered_receipt_path.read_bytes()
+        ).hexdigest()
+        tampered_outer = copy.deepcopy(outer)
+        tampered_outer["replacement"]["receipt_path"] = (
+            tampered_receipt_relative.as_posix()
+        )
+        tampered_outer["replacement"]["receipt_sha256"] = tampered_receipt_sha256
+        _sign_applied_encoding_manifest(
+            tampered_outer,
+            TEST_APPLY_SIGNING_BROKER,
+        )
+        destination_manifest.write_text(
+            json.dumps(tampered_outer, indent=2, sort_keys=True) + "\n"
+        )
+        rebind_linked_manifests(
+            tampered_receipt_sha256,
+            tampered_receipt_relative,
+        )
+        _verified, _root, _digest, issues = (
+            _load_verified_applied_encoding_manifest_payload(
+                checkout,
+                destination_manifest.relative_to(checkout).as_posix(),
+                signing_broker=TEST_APPLY_SIGNING_BROKER,
+                expected_waiver_set_sha256=post_migration_waiver_sha256,
+                expected_encoder_identity=TEST_PINNED_ENCODER_IDENTITY,
+                local_corpus_release=release,
+            )
+        )
+        assert any(
+            "concept rewrite proof is incomplete or stale" in issue for issue in issues
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+            ),
+            pytest.raises(ValueError, match="concept rewrite proof differs"),
+        ):
+            authorized_changed_paths(checkout, corpus_root=corpus_path)
+
+        tampered_receipt_path.unlink()
+        receipt_path.write_bytes(receipt_before_tamper)
+        destination_manifest.write_bytes(outer_before_tamper)
         restore_linked_manifests()
 
         tampered_receipt = copy.deepcopy(receipt)

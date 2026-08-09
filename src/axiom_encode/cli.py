@@ -263,6 +263,12 @@ from .harness.validator_pipeline import (
     repair_nonnegative_amount_reductions,
     repair_source_table_band_scalar_parameters,
 )
+from .legacy_exact_dependent_concepts import (
+    LegacyExactDependentConceptError,
+    canonicalized_concept_replacements,
+    derive_exact_dependent_parameter_replacements,
+    validate_exact_dependent_concept_rewrite,
+)
 from .legacy_replacement import (
     DESTINATION_PREDECESSOR_ABSENT as APPLIED_ENCODING_DESTINATION_PREDECESSOR_ABSENT,
 )
@@ -301,6 +307,9 @@ from .legacy_replacement import (
 )
 from .legacy_replacement import (
     RECEIPT_SCHEMA_V5 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+)
+from .legacy_replacement import (
+    RECEIPT_SCHEMA_V6 as APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
 )
 from .legacy_replacement import (
     RETAINED_SUCCESSOR_TOOL as APPLIED_ENCODING_LEGACY_RETAINED_SUCCESSOR_TOOL,
@@ -8670,6 +8679,7 @@ def _legacy_replacement_pending_paths(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -8735,6 +8745,7 @@ def _legacy_replacement_pending_paths(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         } and _legacy_destination_predecessor_issues(
             repo_path,
@@ -8916,6 +8927,7 @@ def _legacy_replacement_pending_paths(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -22985,6 +22997,7 @@ def _legacy_replacement_manifest_issues(
     if receipt_schema in {
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
     }:
         identity_deleted_files.extend(
@@ -23037,6 +23050,7 @@ def _legacy_replacement_manifest_issues(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -23048,6 +23062,7 @@ def _legacy_replacement_manifest_issues(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23063,6 +23078,7 @@ def _legacy_replacement_manifest_issues(
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23077,6 +23093,7 @@ def _legacy_replacement_manifest_issues(
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -23087,6 +23104,7 @@ def _legacy_replacement_manifest_issues(
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and isinstance(receipt_replacement, dict)
@@ -23108,6 +23126,7 @@ def _legacy_replacement_manifest_issues(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -23210,6 +23229,7 @@ def _legacy_replacement_manifest_issues(
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23224,6 +23244,7 @@ def _legacy_replacement_manifest_issues(
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23234,6 +23255,7 @@ def _legacy_replacement_manifest_issues(
                 in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }
                 else set()
@@ -23279,6 +23301,7 @@ def _legacy_replacement_manifest_issues(
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+        APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
         APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
     }:
         issues.extend(
@@ -23567,6 +23590,34 @@ def _legacy_replacement_manifest_issues(
     if not isinstance(exact_dependents, list):
         issues.append(f"{manifest_label} exact dependents are malformed")
         exact_dependents = []
+    receipt_retained_modules: list[tuple[Path, Path, bytes, bytes]] = []
+    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        for successor in receipt_retained_successors:
+            if not isinstance(successor, dict):
+                continue
+            source_raw = successor.get("source")
+            destination_raw = successor.get("destination")
+            if not isinstance(source_raw, str) or not isinstance(destination_raw, str):
+                continue
+            source_path = Path(source_raw)
+            destination_path = Path(destination_raw)
+            try:
+                source_module_raw = _rulespec_migration_base_blob(
+                    repo_path, base_commit, source_path
+                )
+                destination_module_raw = _rulespec_migration_base_blob(
+                    repo_path, base_commit, destination_path
+                )
+            except RuntimeError:
+                continue
+            receipt_retained_modules.append(
+                (
+                    source_path,
+                    destination_path,
+                    source_module_raw,
+                    destination_module_raw,
+                )
+            )
     seen_exact_primaries: set[str] = set()
     seen_exact_files: set[str] = set()
     for dependent in exact_dependents:
@@ -23579,9 +23630,12 @@ def _legacy_replacement_manifest_issues(
         }
         if receipt_schema in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }:
             expected_dependent_fields.add("source_verification_migration")
+        if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+            expected_dependent_fields.add("concept_replacements")
         if (
             not isinstance(dependent, dict)
             or set(dependent) != expected_dependent_fields
@@ -23598,6 +23652,7 @@ def _legacy_replacement_manifest_issues(
             if receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             else None
@@ -23716,6 +23771,7 @@ def _legacy_replacement_manifest_issues(
             legacy_manifest_payload = json.loads(legacy_manifest_raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError, RecursionError):
             legacy_manifest_payload = None
+        base_primary_raw = b""
         try:
             base_primary_raw = _rulespec_migration_base_blob(
                 repo_path, base_commit, primary_path
@@ -23724,6 +23780,37 @@ def _legacy_replacement_manifest_issues(
             base_primary_citations = ()
         else:
             base_primary_citations = _legacy_primary_source_citations(base_primary_raw)
+        exact_authoritative_replacements = authoritative_replacements
+        exact_concept_replacements: dict[str, str] = {}
+        if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+            try:
+                derived_concept_replacements = (
+                    derive_exact_dependent_parameter_replacements(
+                        dependent_primary_raw=base_primary_raw,
+                        retained_modules=receipt_retained_modules,
+                    )
+                )
+            except LegacyExactDependentConceptError as exc:
+                issues.append(
+                    f"{manifest_label} cannot derive exact-dependent concept "
+                    f"rewrites for {primary}: {exc}"
+                )
+                derived_concept_replacements = {}
+            expected_concept_records = [
+                {"from": old, "to": new}
+                for old, new in sorted(derived_concept_replacements.items())
+            ]
+            if dependent.get("concept_replacements") != expected_concept_records:
+                issues.append(
+                    f"{manifest_label} exact-dependent concept rewrite proof "
+                    f"is incomplete or stale for {primary}"
+                )
+            else:
+                exact_concept_replacements = derived_concept_replacements
+                exact_authoritative_replacements = {
+                    **authoritative_replacements,
+                    **exact_concept_replacements,
+                }
         legacy_manifest_issues = _legacy_receipt_v1_manifest_issues(
             legacy_manifest_payload,
             owner_class=legacy.get("owner_class"),
@@ -23768,22 +23855,44 @@ def _legacy_replacement_manifest_issues(
                     required_mode=0o644,
                 )
                 rewritten, counts = rewrite_exact_references(
-                    base_raw, authoritative_replacements
+                    base_raw, exact_authoritative_replacements
                 )
+                if exact_concept_replacements:
+                    path_rewritten, _path_counts = rewrite_exact_references(
+                        base_raw, authoritative_replacements
+                    )
+                    canonical_concepts = canonicalized_concept_replacements(
+                        exact_concept_replacements,
+                        path_replacements=authoritative_replacements,
+                    )
+                    concept_rewritten, _concept_counts = rewrite_exact_references(
+                        path_rewritten,
+                        canonical_concepts,
+                    )
+                    if concept_rewritten != rewritten:
+                        raise ValueError(
+                            "exact-dependent concept rewrite is not order-independent"
+                        )
+                    validate_exact_dependent_concept_rewrite(
+                        path_rewritten_raw=path_rewritten,
+                        concept_rewritten_raw=concept_rewritten,
+                        replacements=canonical_concepts,
+                        primary=path == primary_path,
+                    )
                 source_verification_migration = None
                 if path == primary_path and receipt_schema in {
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                     APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
                 }:
                     rewritten, source_verification_migration = (
                         _migrate_legacy_exact_dependent_source_verification(rewritten)
                     )
                 proof_excerpt_reanchors: tuple[dict[str, object], ...] = ()
-                if (
-                    path == primary_path
-                    and receipt_schema
-                    == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
-                ):
+                if path == primary_path and receipt_schema in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }:
                     receipt_rewrite = rewrite_by_path.get(path)
                     raw_reanchors = (
                         receipt_rewrite.get("proof_excerpt_reanchors")
@@ -23923,7 +24032,10 @@ def _legacy_replacement_manifest_issues(
                     "replacements",
                     "proof_import_repairs",
                 }
-                if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+                if receipt_schema in {
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+                    APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                }:
                     expected_rewrite_fields.add("proof_excerpt_reanchors")
                 if (
                     not isinstance(rewrite, dict)
@@ -23934,7 +24046,10 @@ def _legacy_replacement_manifest_issues(
                     or rewrite.get("proof_import_repairs") != proof_import_repairs
                     or (
                         receipt_schema
-                        == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA
+                        in {
+                            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
+                            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
+                        }
                         and rewrite.get("proof_excerpt_reanchors")
                         != list(proof_excerpt_reanchors)
                     )
@@ -23959,6 +24074,7 @@ def _legacy_replacement_manifest_issues(
             receipt_schema
             in {
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+                APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
                 APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
             }
             and receipt_source_verification_migration is not None
@@ -24522,6 +24638,7 @@ def _legacy_exact_dependent_manifest_issues(
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -24693,6 +24810,7 @@ def _legacy_retained_successor_manifest_issues(
         not in {
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V4,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V5,
+            APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V6,
             APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA,
         }
         or receipt.get("tool") != APPLIED_ENCODING_LEGACY_REPLACEMENT_TOOL
@@ -27403,6 +27521,42 @@ def _resolve_legacy_replacement_contract(
             dependent_manifest_raw,
         )
 
+    retained_modules = tuple(
+        (
+            successor.source,
+            successor.destination,
+            next(
+                item.raw
+                for item in successor.legacy_files
+                if item.path == successor.source
+            ),
+            next(
+                item.raw
+                for item in successor.successor_files
+                if item.path == successor.destination
+            ),
+        )
+        for successor in retained_successors
+    )
+    exact_concept_replacements: dict[Path, dict[str, str]] = {}
+    for primary, files in exact_legacy_files.items():
+        primary_raw = next(item.raw for item in files if item.path == primary)
+        concept_replacements = derive_exact_dependent_parameter_replacements(
+            dependent_primary_raw=primary_raw,
+            retained_modules=retained_modules,
+        )
+        conflicts = {
+            old
+            for old, new in concept_replacements.items()
+            if old in replacements and replacements[old] != new
+        }
+        if conflicts:
+            raise ValueError(
+                "legacy exact-dependent concept rewrites conflict with path "
+                "rewrites: " + ", ".join(sorted(conflicts))
+            )
+        exact_concept_replacements[primary] = concept_replacements
+
     pending_by_primary: dict[Path, list[_LegacyReplacementPendingFile]] = {
         primary: [] for primary in scheduled_groups
     }
@@ -27480,10 +27634,42 @@ def _resolve_legacy_replacement_contract(
             max_bytes=16 * 1024 * 1024,
             required_mode=0o644,
         )
-        rewritten, counts = rewrite_exact_references(raw, replacements)
+        dependent_primary = dependent_owner.get(relative)
+        file_replacements = replacements
+        concept_replacements: dict[str, str] = {}
+        if dependent_primary is not None and dependent_primary in exact_groups:
+            concept_replacements = exact_concept_replacements.get(dependent_primary, {})
+            file_replacements = {**replacements, **concept_replacements}
+        rewritten, counts = rewrite_exact_references(raw, file_replacements)
+        if concept_replacements:
+            path_rewritten, _path_counts = rewrite_exact_references(raw, replacements)
+            canonical_concepts = canonicalized_concept_replacements(
+                concept_replacements,
+                path_replacements=replacements,
+            )
+            concept_rewritten, _concept_counts = rewrite_exact_references(
+                path_rewritten,
+                canonical_concepts,
+            )
+            if concept_rewritten != rewritten:
+                raise ValueError(
+                    "legacy exact-dependent concept rewrite is not order-independent "
+                    f"for {relative}"
+                )
+            try:
+                validate_exact_dependent_concept_rewrite(
+                    path_rewritten_raw=path_rewritten,
+                    concept_rewritten_raw=concept_rewritten,
+                    replacements=canonical_concepts,
+                    primary=relative == dependent_primary,
+                )
+            except LegacyExactDependentConceptError as exc:
+                raise ValueError(
+                    "legacy exact-dependent concept rewrite is unsafe for "
+                    f"{relative}: {exc}"
+                ) from exc
         _source_verification_migration = None
         proof_excerpt_reanchors: tuple[dict[str, object], ...] = ()
-        dependent_primary = dependent_owner.get(relative)
         if (
             dependent_primary is not None
             and dependent_primary in exact_groups
@@ -27641,6 +27827,10 @@ def _resolve_legacy_replacement_contract(
                 legacy_files=exact_legacy_files[primary],
                 live_files=live_files,
                 rewrites=tuple(exact_rewrites_by_primary[primary]),
+                concept_replacements=tuple(
+                    {"from": old, "to": new}
+                    for old, new in sorted(exact_concept_replacements[primary].items())
+                ),
                 source_verification_migration=primary_source_migration,
             )
         )
@@ -49338,6 +49528,7 @@ def _build_apply_validation_snapshot(
                         {"path": item.path.as_posix(), "sha256": item.sha256}
                         for item in dependent.live_files
                     ],
+                    "concept_replacements": list(dependent.concept_replacements),
                     "source_verification_migration": (
                         {
                             "legacy_corpus_citation_paths": list(
@@ -49893,6 +50084,7 @@ def _stage_signed_legacy_replacement_provenance(
                 {"path": item.path.as_posix(), "sha256": item.sha256}
                 for item in dependent.live_files
             ],
+            "concept_replacements": list(dependent.concept_replacements),
             "source_verification_migration": (
                 {
                     "legacy_corpus_citation_paths": list(
