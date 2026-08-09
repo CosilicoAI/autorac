@@ -1476,7 +1476,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     assert len(expected_paths) == 32
 
     runtime = trusted_real_cli_runtime.__wrapped__(tmp_path_factory)
-    interpreter, _runtime_root, _package_root = runtime
+    interpreter, runtime_root, _package_root = runtime
     runtime_git = interpreter.parent / "git"
     runtime_git.unlink()
     production_git = Path("/usr/bin/git")
@@ -1488,6 +1488,21 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
         interpreter,
         production_git,
     )
+    warmed_git = subprocess.run(
+        [
+            runtime_git,
+            "-C",
+            str(rulespec_root),
+            "rev-parse",
+            "--show-toplevel",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"HOME": str(runtime_root), "PATH": str(interpreter.parent)},
+    )
+    assert Path(warmed_git.stdout.strip()).resolve() == rulespec_root.resolve()
 
     completed = _invoke(
         signing_supervisor,
