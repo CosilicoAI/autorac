@@ -11859,6 +11859,70 @@ rules:
     def test_normalize_test_case_value_preserves_invalid_numeric_expression(self):
         assert _normalize_test_case_value("30 / 0") == "30 / 0"
 
+    @pytest.mark.parametrize(
+        "literal",
+        (
+            "432.09845",
+            "117.60035",
+            "12345.67",
+            "+0.00035",
+            "-0.00035",
+        ),
+    )
+    def test_normalize_test_case_value_preserves_decimal_literal_precision(
+        self,
+        literal,
+    ):
+        assert _normalize_test_case_value(literal) == literal
+
+    def test_normalize_test_case_value_converts_plain_integer_literal(self):
+        assert _normalize_test_case_value("350") == 350
+
+    def test_materialize_eval_artifact_preserves_decimal_literal_precision(
+        self,
+        tmp_path,
+    ):
+        output_file = tmp_path / "source" / "kentucky_rate.yaml"
+        response = """=== FILE: kentucky_rate.yaml ===
+format: rulespec/v1
+module:
+  summary: Kentucky tax before credits is 3.5 percent of net income.
+rules:
+  - name: normal_tax_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: net_income * 0.035
+inputs:
+  - name: net_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+=== FILE: kentucky_rate.test.yaml ===
+- name: fractional_net_income_before_credits
+  period:
+    period_kind: tax_year
+    start: '2026-01-01'
+    end: '2026-12-31'
+  input:
+    '#input.net_income': '12345.67'
+  output:
+    '#normal_tax_before_credits': '432.09845'
+"""
+
+        wrote = _materialize_eval_artifact(response, output_file)
+
+        assert wrote is True
+        cases = yaml.safe_load(output_file.with_suffix(".test.yaml").read_text())
+        assert cases[0]["input"]["#input.net_income"] == "12345.67"
+        assert cases[0]["output"]["#normal_tax_before_credits"] == "432.09845"
+
     def test_materialize_eval_artifact_adds_missing_oracle_hint_output_from_rulespec(
         self, tmp_path
     ):

@@ -241,12 +241,16 @@ _LETTER_MARKER = re.compile(
 )
 _PARENTHESIZED_OUTLINE_MARKER = re.compile(
     r"(?m)^[ \t]*(?:[A-Z]\.)?"
-    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
+    r"(?P<marker>\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\)"
+    r"(?:[ \t]*\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))*)"
+    r"(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _INLINE_PARENTHESIZED_OUTLINE_MARKER = re.compile(
     r"(?:(?<=[.!?;:])[ \t]+|(?<=—)[ \t]*)"
-    r"(?P<marker>(?:\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))+)(?=\s|bis\b)",
+    r"(?P<marker>\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\)"
+    r"(?:[ \t]*\((?:\d+[a-z]?|[a-z]|[ivxlcdm]{2,15})\))*)"
+    r"(?=\s|bis\b)",
     flags=re.IGNORECASE,
 )
 _INLINE_OUTLINE_REFERENCE_CONTEXT = re.compile(
@@ -2045,6 +2049,30 @@ _SESSION_LAW_YEAR_CHAPTER = re.compile(
     r"(?:(?:P\.?\s*L\.?|L\.)\s*)?\d{4}\s*,\s*c\.\s*\d+",
     flags=re.IGNORECASE,
 )
+_ALABAMA_TERMINAL_ACT_HISTORY_ENTRY = re.compile(
+    r"\s*Acts?\s+"
+    r"(?:"
+    r"\d{4}\s*,\s*"
+    r"(?:"
+    r"(?:(?:\d+\s*(?:st|nd|rd|th|d)|"
+    r"[A-Za-z]+(?:[-\s]+[A-Za-z]+){0,3})\s+)?"
+    r"(?:E\.?\s*S\.?|Ex\.?|Extra\.?|Extraordinary)\s*"
+    r"(?:Sess\.?|Session)\s*,\s*"
+    r")?"
+    r"Nos?\.?\s*\d+(?:-\d+)?"
+    r"|\d{2}-\d+"
+    r")"
+    r"\s*,\s*p\.?\s*\d+"
+    r"(?:\s*,\s*§{1,2}\s*\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*)?"
+    r"\s*\.?\s*",
+    flags=re.IGNORECASE,
+)
+_ALABAMA_TERMINAL_CODE_HISTORY_ENTRY = re.compile(
+    r"\s*Code\s+\d{4}\s*,\s*T\.?\s*\d+\s*,\s*"
+    r"§{1,2}\s*\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)*"
+    r"\s*\.?\s*",
+    flags=re.IGNORECASE,
+)
 _FORMULA_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
 
@@ -2471,6 +2499,17 @@ _PARENTHESIZED_LEGAL_OUTLINE_LEVELS = (
     "numeric",
     "roman",
 )
+_NUMERIC_ROOT_PARENTHESIZED_LEGAL_OUTLINE_LEVELS = (
+    "numeric",
+    "lower-alpha",
+    "roman",
+    "upper-alpha",
+    "numeric",
+    "roman",
+    "upper-alpha",
+    "numeric",
+    "roman",
+)
 
 
 def _qualified_parenthesized_legal_outline_markers(
@@ -2501,6 +2540,13 @@ def _qualified_parenthesized_legal_outline_markers(
     if not matches:
         return ()
 
+    first_labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", matches[0].group("marker")))
+    outline_levels = (
+        _NUMERIC_ROOT_PARENTHESIZED_LEGAL_OUTLINE_LEVELS
+        if first_labels and first_labels[0][0].isdigit()
+        else _PARENTHESIZED_LEGAL_OUTLINE_LEVELS
+    )
+
     markers: list[_OutlineMarker] = []
     emitted_paths: set[tuple[str, ...]] = set()
     active: list[tuple[int, str, str, str]] = []
@@ -2517,6 +2563,7 @@ def _qualified_parenthesized_legal_outline_markers(
                 raw_label,
                 active=active,
                 attached_parent_level=attached_parent_level,
+                outline_levels=outline_levels,
             )
             if marker_start in inline_marker_starts and label_index == 0 and level == 0:
                 break
@@ -2545,13 +2592,11 @@ def _qualified_parenthesized_legal_outline_markers(
                 emitted_paths.add(path)
             attached_parent_level = level
 
-    root_labels = [
-        marker.path[0]
-        for marker in markers
-        if len(marker.path) == 1 and marker.label[1:-1].islower()
-    ]
+    root_category = outline_levels[0]
+    root_labels = [marker.label[1:-1] for marker in markers if len(marker.path) == 1]
     has_sequential_roots = any(
-        first == "a" and second == "b"
+        _parenthesized_outline_label_is_first(first, root_category)
+        and _parenthesized_outline_label_follows(first, second, root_category)
         for first, second in itertools.pairwise(root_labels)
     )
     return tuple(markers) if has_sequential_roots else ()
@@ -2577,12 +2622,11 @@ def _parenthesized_legal_outline_level(
     *,
     active: Sequence[tuple[int, str, str, str]],
     attached_parent_level: int | None,
+    outline_levels: Sequence[str],
 ) -> tuple[int, str]:
     categories = _parenthesized_legal_outline_categories(raw_label)
     candidate_levels = tuple(
-        level
-        for level, category in enumerate(_PARENTHESIZED_LEGAL_OUTLINE_LEVELS)
-        if category in categories
+        level for level, category in enumerate(outline_levels) if category in categories
     )
     if not candidate_levels:
         return 0, categories[0]
@@ -2592,7 +2636,7 @@ def _parenthesized_legal_outline_level(
             (level for level in candidate_levels if level > attached_parent_level),
             candidate_levels[-1],
         )
-        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+        return level, outline_levels[level]
 
     continuing = [
         (level, category)
@@ -2610,12 +2654,12 @@ def _parenthesized_legal_outline_level(
         if level > parent_level
         and _parenthesized_outline_label_is_first(
             raw_label,
-            _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level],
+            outline_levels[level],
         )
     ]
     if first_descending:
         level = first_descending[0]
-        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+        return level, outline_levels[level]
 
     same_category = [
         (level, category)
@@ -2628,10 +2672,10 @@ def _parenthesized_legal_outline_level(
     descending = [level for level in candidate_levels if level > parent_level]
     if descending:
         level = descending[0]
-        return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+        return level, outline_levels[level]
 
     level = min(candidate_levels, key=lambda item: abs(item - parent_level))
-    return level, _PARENTHESIZED_LEGAL_OUTLINE_LEVELS[level]
+    return level, outline_levels[level]
 
 
 def _parenthesized_legal_outline_categories(raw_label: str) -> tuple[str, ...]:
@@ -10893,6 +10937,22 @@ def _branch_citation(
 
 def _strip_terminal_session_law_history(source_text: str) -> str:
     """Remove only a fully validated terminal session-law history chain."""
+
+    terminal_parenthetical = re.search(
+        r"\s+\((?P<history>[^()]*)\)\s*$",
+        source_text,
+    )
+    if terminal_parenthetical is not None:
+        history_entries = tuple(
+            entry.strip()
+            for entry in terminal_parenthetical.group("history").split(";")
+        )
+        if history_entries and all(
+            _ALABAMA_TERMINAL_ACT_HISTORY_ENTRY.fullmatch(entry)
+            or _ALABAMA_TERMINAL_CODE_HISTORY_ENTRY.fullmatch(entry)
+            for entry in history_entries
+        ):
+            return source_text[: terminal_parenthetical.start()].rstrip()
 
     blank_lines = tuple(re.finditer(r"\n[ \t]*\n", source_text))
     if blank_lines:

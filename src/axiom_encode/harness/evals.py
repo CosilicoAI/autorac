@@ -236,6 +236,7 @@ SUPPORTED_EVAL_DTYPES = (
     "Float",
 )
 _PURE_NUMERIC_EXPRESSION_PATTERN = re.compile(r"^[\d\s()+\-*/.,]+$")
+_PLAIN_SIGNED_NUMERIC_LITERAL_PATTERN = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 _ISO_WEEK_PERIOD_PATTERN = re.compile(r"^\d{4}-W\d{2}(?:-\d)?$")
 _ADMIN_AGENCY_AGGREGATE_SUBJECT_PATTERN = re.compile(
     r"\b(?:FNS|State\s+agenc(?:y|ies)|State(?:'s)?\s+administration|"
@@ -15651,6 +15652,13 @@ def _normalize_test_case_value(value: object) -> object:
     if isinstance(value, str):
         expression = value.strip()
         if _PURE_NUMERIC_EXPRESSION_PATTERN.fullmatch(expression):
+            if _PLAIN_SIGNED_NUMERIC_LITERAL_PATTERN.fullmatch(expression):
+                if "." in expression:
+                    return expression
+                try:
+                    return int(expression)
+                except ValueError:
+                    return value
             try:
                 formatted = _format_safe_numeric_expression(expression)
                 if formatted is None:
