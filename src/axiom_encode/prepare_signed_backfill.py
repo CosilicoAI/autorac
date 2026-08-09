@@ -2797,15 +2797,15 @@ def authorized_changed_paths(
                         or manifest.get("path") != expected_manifest.as_posix()
                     ):
                         raise ValueError(f"{label}.legacy_manifest is malformed")
-                    live_files = dependent.get("live_files")
+                    dependent_live_files = dependent.get("live_files")
                     primary_records = (
                         [
                             item
-                            for item in live_files
+                            for item in dependent_live_files
                             if isinstance(item, dict)
                             and item.get("path") == primary.as_posix()
                         ]
-                        if isinstance(live_files, list)
+                        if isinstance(dependent_live_files, list)
                         else []
                     )
                     live_primary = _read_bounded_regular(
