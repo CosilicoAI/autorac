@@ -11,7 +11,7 @@ MODULE = "us-mn:policies/income_tax/pilot_liability_pipeline"
 OUTPUT = "mn_pit_pilot_schedule_tax"
 POLICYENGINE_VARIABLE = "mn_basic_tax"
 ORACLE_MERGE = "d616bd590833b349df7da1978127740fce0aaa1e"
-ENCODER_VERSION = "0.2.1643"
+ENCODER_VERSION = "0.2.1644"
 FALLBACK_TEXT = """  - legal_id_prefix: "us-mn:"
     country: us
     mapping_type: not_comparable
