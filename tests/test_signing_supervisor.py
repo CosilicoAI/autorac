@@ -48,7 +48,7 @@ from tests.release_object_fixtures import (
     bind_test_corpus_release,
 )
 from tests.signing_broker_fixtures import SigningBrokerFixture
-from tests.test_cli import TestCmdEncode
+from tests.test_cli import TestCmdEncode as _TestCmdEncode
 
 ROOT = Path(__file__).parents[1]
 SUPERVISOR_PACKAGE = "./cmd/axiom-encode-signing-supervisor"
@@ -1426,7 +1426,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
         apply_private_key=TEST_APPLY_PRIVATE_KEY_B64,
         apply_public_key=TEST_APPLY_PUBLIC_KEY_B64,
     )
-    test_case = TestCmdEncode()
+    test_case = _TestCmdEncode()
     preflights = test_case._neutralize_encode_preflights.__wrapped__(
         test_case,
         tmp_path,
