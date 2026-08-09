@@ -481,6 +481,15 @@ class TestTrustedGit:
                 ],
                 None,
             ),
+            (
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                ],
+                None,
+            ),
             (["remote", "get-url", "origin"], None),
             (["diff", "--binary", "HEAD", "--", "a.txt"], None),
             (
@@ -602,6 +611,12 @@ class TestTrustedGit:
                 "-z",
                 "--untracked-files=all",
                 "--ignored=matching",
+            ],
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
             ],
             ["diff", "--binary", "HEAD", "--", "a.txt"],
             [
@@ -955,6 +970,49 @@ class TestTrustedGit:
         assert not marker.exists()
         assert not subprocess.check_output(
             [git, "-C", str(repository), "diff", "--cached", "--name-only"]
+        )
+        for attribute in (
+            "text eol=lf",
+            "crlf",
+            "ident",
+            "working-tree-encoding=UTF-16",
+        ):
+            (repository / ".gitattributes").write_text(f"*.txt {attribute}\n")
+            refused_attribute = subprocess.run(
+                [str(wrapper), "-C", str(repository), "add", "--", "b.txt"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=clean_environment,
+            )
+            assert refused_attribute.returncode != 0
+            assert "refused content-transforming attribute" in (
+                refused_attribute.stderr
+            )
+            assert not subprocess.check_output(
+                [git, "-C", str(repository), "diff", "--cached", "--name-only"]
+            )
+
+        (repository / ".gitattributes").unlink()
+        subprocess.run(
+            [git, "-C", str(repository), "config", "core.autocrlf", "true"],
+            check=True,
+        )
+        (repository / "b.txt").write_bytes(b"changed\r\n")
+        subprocess.run(
+            [str(wrapper), "-C", str(repository), "add", "--", "b.txt"],
+            check=True,
+            capture_output=True,
+            env=clean_environment,
+        )
+        staged_object = subprocess.check_output(
+            [git, "-C", str(repository), "rev-parse", ":b.txt"], text=True
+        ).strip()
+        assert (
+            subprocess.check_output(
+                [git, "-C", str(repository), "cat-file", "blob", staged_object]
+            )
+            == b"changed\r\n"
         )
 
     def test_installed_wrapper_supports_migration_git_queries(

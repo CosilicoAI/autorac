@@ -3320,6 +3320,21 @@ def stage_authorized_changes(
     corpus_root: Path | None = None,
 ) -> None:
     authorized = authorized_changed_paths(repo, corpus_root=corpus_root)
+    authorized_bytes: dict[PurePosixPath, bytes | None] = {}
+    for path in authorized:
+        if not _checkout_path_exists_without_indirection(
+            repo,
+            path,
+            label="authorized publication path",
+        ):
+            authorized_bytes[path] = None
+            continue
+        authorized_bytes[path] = _read_bounded_regular(
+            repo,
+            path,
+            label="authorized publication file",
+            max_bytes=16 * 1024 * 1024,
+        )
     subprocess.run(
         [
             "git",
@@ -3345,6 +3360,45 @@ def stage_authorized_changes(
     }
     if staged != authorized:
         raise ValueError("staged paths differ from signed manifest authorization")
+    index_entries: dict[PurePosixPath, tuple[str, str, str]] = {}
+    for raw_entry in _git(repo, "ls-files", "--stage", "-z").split(b"\0"):
+        if not raw_entry:
+            continue
+        raw_metadata, separator, raw_path = raw_entry.partition(b"\t")
+        try:
+            mode, object_id, stage = raw_metadata.decode("ascii").split(" ")
+            path = PurePosixPath(raw_path.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("Git index contains a malformed staged entry") from exc
+        if path not in authorized:
+            continue
+        if not separator or path in index_entries:
+            raise ValueError("authorized path has ambiguous Git index entries")
+        index_entries[path] = (mode, object_id, stage)
+    for path, expected_bytes in authorized_bytes.items():
+        entry = index_entries.get(path)
+        if expected_bytes is None:
+            if entry is not None:
+                raise ValueError("deleted authorized path remains in the Git index")
+            continue
+        if (
+            entry is None
+            or entry[0] != "100644"
+            or COMMIT_PATTERN.fullmatch(entry[1]) is None
+            or entry[2] != "0"
+        ):
+            raise ValueError("authorized file has an invalid Git index entry")
+        staged_bytes = _git(repo, "cat-file", "blob", entry[1])
+        if staged_bytes != expected_bytes:
+            raise ValueError("staged file bytes differ from signed authorization")
+        live_bytes = _read_bounded_regular(
+            repo,
+            path,
+            label="authorized publication file after staging",
+            max_bytes=16 * 1024 * 1024,
+        )
+        if live_bytes != expected_bytes:
+            raise ValueError("authorized file changed while it was being staged")
 
 
 def main() -> None:
