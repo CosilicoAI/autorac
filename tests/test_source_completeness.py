@@ -1606,6 +1606,58 @@ def test_parenthesized_cfr_outline_keeps_colliding_branch_text_separate():
     assert "Canadian-born member" not in by_path[("c", "3")].text
 
 
+def test_numeric_root_parenthesized_outline_preserves_spaced_nested_markers():
+    source = """\
+(1) (a) Resident schedule.
+(i) 1. First band.
+2. Second band.
+3. Third band.
+(ii) Fourth-percent band.
+(iii) Fifth-percent band.
+(b) (i) Calendar-year exclusion.
+(ii) Scheduled later-year rates:
+1. First year.
+2. Second year.
+3. Third year.
+(2) S corporation exclusion.
+(3) Nonresident schedule.
+(4) Fiscal-year proration:
+(a) Earlier-year tax.
+(b) Later-year tax.
+"""
+
+    branches = recognize_source_structure(source)
+    assert [branch.path for branch in branches] == [
+        ("1",),
+        ("1", "a"),
+        ("1", "a", "i"),
+        ("1", "a", "i", "2"),
+        ("1", "a", "i", "3"),
+        ("1", "a", "ii"),
+        ("1", "a", "iii"),
+        ("1", "b"),
+        ("1", "b", "i"),
+        ("1", "b", "ii"),
+        ("1", "b", "ii", "1"),
+        ("1", "b", "ii", "2"),
+        ("1", "b", "ii", "3"),
+        ("2",),
+        ("3",),
+        ("4",),
+        ("4", "a"),
+        ("4", "b"),
+    ]
+    by_path = {branch.path: branch for branch in branches}
+    assert "Third band" in by_path[("1", "a", "i", "3")].text
+    assert "Third year" in by_path[("1", "b", "ii", "3")].text
+    assert "Nonresident schedule" in by_path[("3",)].text
+    assert "Fiscal-year proration" not in by_path[("3",)].text
+    assert ("ii",) not in by_path
+    assert by_path[("1",)].end == by_path[("2",)].start
+    assert by_path[("1", "a")].end == by_path[("1", "b")].start
+    assert by_path[("4", "a")].end == by_path[("4", "b")].start
+
+
 def test_parenthesized_cfr_outline_keeps_suffixed_numeric_siblings():
     source = """\
 (a) Status requirements.
@@ -13661,6 +13713,51 @@ def test_terminal_session_law_history_is_not_numeric_recall(history_tail):
     cleaned = authoritative_numeric_recall_text(f"{operative} {history_tail}")
 
     assert cleaned == operative
+
+
+def test_terminal_alabama_act_and_code_history_is_not_numeric_recall():
+    operative = (
+        "The tax is two percent of taxable income not in excess of five hundred "
+        "dollars ($500), four percent above $500 through $3,000, and five percent "
+        "above $3,000."
+    )
+    history = (
+        "(Acts 1935, No. 194, p. 256; Code 1940, T. 51, §377; Acts 1982, "
+        "No. 82-465, p. 759, §1; Acts 1982, 1st Ex. Sess., No. 82-667, "
+        "p. 85, §1; Act 98-502, p. 1083, §1.)"
+    )
+
+    cleaned = authoritative_numeric_recall_text(f"{operative} {history}")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="en-US",
+    )
+
+    assert cleaned == operative
+    assert [(item.value, item.raw) for item in inventory] == [
+        (500.0, "500"),
+        (500.0, "500"),
+        (3000.0, "3,000"),
+        (3000.0, "3,000"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The credit is 40%. (Acts 1935, No. 194, p. 256; operative amount $51.)",
+        "The credit is 40%. (Acts 1935, No. 194, p. 256.) Operative amount $51.",
+    ),
+)
+def test_alabama_shaped_history_does_not_hide_operative_amount(source):
+    cleaned = authoritative_numeric_recall_text(source)
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        cleaned,
+        profile="en-US",
+    )
+
+    assert "amount $51." in cleaned
+    assert any(item.value == 51.0 for item in inventory)
 
 
 def test_louisiana_session_law_citations_are_not_numeric_recall_values():

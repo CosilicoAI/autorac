@@ -1,0 +1,1 @@
+Preserve exact generated decimal test literals, recognize numeric-root U.S. statutory outlines with spaced nested markers, and exclude fully validated terminal Alabama Act/Code history from substantive numeric recall.
