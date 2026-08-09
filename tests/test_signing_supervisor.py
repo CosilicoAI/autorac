@@ -5221,6 +5221,7 @@ def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation
     }
 
 
+@pytest.mark.parametrize("receipt_version", [4, 5, 6, 7])
 @pytest.mark.parametrize(
     ("mutation", "error"),
     [
@@ -5231,13 +5232,17 @@ def test_targeted_metadata_uses_consumed_repair_identity_after_evidence_mutation
         ("tampered-evidence", "retained predecessor file digest differs"),
         ("missing-deleted-manifest", "deleted manifest inventory differs"),
         ("extra-deleted-manifest", "deleted manifest inventory differs"),
+        ("tampered-exact-binding", "exact dependent manifest binding differs"),
     ],
 )
-def test_targeted_artifact_packages_v4_retained_successor_closure(
+def test_targeted_artifact_packages_replacement_closure(
     tmp_path: Path,
+    receipt_version: int,
     mutation: str,
     error: str | None,
 ) -> None:
+    if mutation == "tampered-exact-binding" and receipt_version != 7:
+        pytest.skip("exact-dependent v7 binding case")
     script = _targeted_package_script()
     rulespec = tmp_path / "rulespec-us"
     rulespec.mkdir()
@@ -5313,6 +5318,19 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
                 "successor_files": successor_files,
             }
         )
+    exact_primary_path = "us/policies/income_tax/2026_resident_core.yaml"
+    exact_manifest_path = (
+        ".axiom/encoding-manifests/us/policies/income_tax/2026_resident_core.json"
+    )
+    exact_legacy_file: dict[str, str] | None = None
+    exact_legacy_manifest: dict[str, str] | None = None
+    if receipt_version == 7:
+        exact_legacy_file = evidence(
+            write(exact_primary_path, b"old exact dependent\n")
+        )
+        exact_legacy_manifest = evidence(
+            write(exact_manifest_path, b"old exact dependent manifest\n")
+        )
     subprocess.run(["git", "add", "."], cwd=rulespec, check=True)
     subprocess.run(["git", "commit", "-qm", "base"], cwd=rulespec, check=True)
     rulespec_ref = subprocess.check_output(
@@ -5326,6 +5344,32 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
             (rulespec / item["path"]).unlink()
         (rulespec / row["legacy_manifest"]["path"]).unlink()
     main_live = write("us/statutes/47/32.yaml", b"new main\n")
+    exact_dependents: list[dict[str, object]] = []
+    if receipt_version == 7:
+        assert exact_legacy_file is not None
+        assert exact_legacy_manifest is not None
+        exact_live = write(exact_primary_path, b"new exact dependent\n")
+        exact_live_file = evidence(exact_live)
+        exact_dependents.append(
+            {
+                "primary": exact_primary_path,
+                "legacy_manifest": exact_legacy_manifest,
+                "legacy_files": [exact_legacy_file],
+                "live_files": [exact_live_file],
+                "rewrites": [
+                    {
+                        "path": exact_primary_path,
+                        "before_sha256": exact_legacy_file["sha256"],
+                        "after_sha256": exact_live_file["sha256"],
+                        "replacements": [],
+                        "proof_import_repairs": 0,
+                        "proof_excerpt_reanchors": [],
+                    }
+                ],
+                "source_verification_migration": None,
+                "concept_replacements": [],
+            }
+        )
     citation = "us/statute/47:32"
     review_content = "Retain the canonical successors.\n"
     context_payload = {
@@ -5351,12 +5395,14 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
         "applied_files": [evidence(main_live)],
     }
     receipt_payload = {
-        "schema_version": "axiom-encode/legacy-fresh-reencode-receipt/v4",
+        "schema_version": (
+            f"axiom-encode/legacy-fresh-reencode-receipt/v{receipt_version}"
+        ),
         "replacement": {
             "source": "us/statutes/47:32.yaml",
             "destination": "us/statutes/47/32.yaml",
             "scheduled_dependents": [],
-            "exact_dependents": [],
+            "exact_dependents": exact_dependents,
             "retained_successors": retained_rows,
             "metadata_reconciliations": [],
         },
@@ -5394,6 +5440,33 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
         }
         (rulespec / row["successor_manifest"]["path"]).write_text(
             json.dumps(refreshed, sort_keys=True) + "\n"
+        )
+    exact_manifest: Path | None = None
+    if receipt_version == 7:
+        exact_migration = {
+            "receipt_path": receipt_path.relative_to(rulespec).as_posix(),
+            "receipt_sha256": receipt_digest,
+            "primary": exact_primary_path,
+        }
+        if mutation == "tampered-exact-binding":
+            exact_migration["receipt_sha256"] = "0" * 64
+        exact_manifest = write(
+            exact_manifest_path,
+            (
+                json.dumps(
+                    {
+                        "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
+                        "tool": (
+                            "axiom-encode encode --apply "
+                            "--legacy-exact-dependent-rulespec-path"
+                        ),
+                        "applied_files": exact_dependents[0]["live_files"],
+                        "legacy_migration": exact_migration,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode(),
         )
     outer = {
         "schema_version": APPLIED_ENCODING_MANIFEST_SCHEMA,
@@ -5441,6 +5514,9 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
             "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": json.dumps(
                 selected_inputs
             ),
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": (
+                exact_primary_path if receipt_version == 7 else ""
+            ),
         },
     )
 
@@ -5456,6 +5532,8 @@ def test_targeted_artifact_packages_v4_retained_successor_closure(
     assert {str(row["successor_manifest"]["path"]) for row in retained_rows}.issubset(
         inventory_paths
     )
+    if exact_manifest is not None:
+        assert exact_manifest.relative_to(rulespec).as_posix() in inventory_paths
 
 
 @pytest.mark.parametrize("receipt_version", [1, 2, 3])
