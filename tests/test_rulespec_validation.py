@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1645"')
+        .startswith('__version__ = "0.2.1646"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1645"
+    assert encoder_package["version"] == "0.2.1646"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1645"
+    assert project["project"]["version"] == "0.2.1646"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1645"')
+        .startswith('__version__ = "0.2.1646"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1645"
+    assert encoder_package["version"] == "0.2.1646"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1645"
+    assert project["project"]["version"] == "0.2.1646"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1645"')
+        .startswith('__version__ = "0.2.1646"')
     )
 
 
@@ -9855,6 +9855,3119 @@ def test_numeric_extraction_reads_single_dot_group_as_decimal_too():
     assert 12345678.0 not in multi_pct
 
 
+def _danish_numeric_rulespec(formula: str, *, citation_path: str) -> str:
+    return textwrap.dedent(
+        f"""
+        format: rulespec/v1
+        module:
+          source_verification:
+            corpus_citation_path: {citation_path}
+        rules:
+          - name: danish_value
+            kind: parameter
+            dtype: Decimal
+            versions:
+              - effective_from: '2026-01-01'
+                formula: '{formula}'
+        """
+    ).strip()
+
+
+def test_existing_percentage_point_grounding_conventions_are_pinned():
+    legacy = extract_typed_numeric_occurrences_from_text(
+        "1.9 percentage points",
+        profile="legacy",
+    )
+    german = extract_typed_numeric_occurrences_from_text(
+        "1,9 Prozentpunkte",
+        profile="de-DE",
+    )
+
+    # Legacy's special English parser retains only the scaled rate. Strict
+    # de-DE retains the written decimal and marks it as rate context, so both
+    # the written percentage-point value and its scaled rate ground formulas.
+    assert not numeric_value_is_grounded(1.9, legacy)
+    assert numeric_value_is_grounded(0.019, legacy)
+    assert numeric_value_is_grounded(1.9, german)
+    assert numeric_value_is_grounded(0.019, german)
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "source_text", "formula", "legacy_issues"),
+    (
+        (
+            "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1-a",
+            "svarende til 2 pct. af grundlaget",
+            "0.02",
+            [
+                "Ungrounded generated numeric literal: 0.02 does not appear as a "
+                "substantive numeric value in the source text."
+            ],
+        ),
+        (
+            "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1",
+            "med 1,9 procentenheder",
+            "0.019 + 1.9",
+            [
+                "Ungrounded generated numeric literal: 0.019 does not appear as a "
+                "substantive numeric value in the source text."
+            ],
+        ),
+    ),
+)
+def test_da_numeric_profile_grounds_live_rulespec_dk_failures(
+    citation_path,
+    source_text,
+    formula,
+    legacy_issues,
+):
+    content = _danish_numeric_rulespec(formula, citation_path=citation_path)
+
+    assert find_ungrounded_numeric_issues(content, source_text=source_text) == []
+    legacy_content = _danish_numeric_rulespec(
+        formula,
+        citation_path="us/statute/example/1",
+    )
+    assert (
+        find_ungrounded_numeric_issues(legacy_content, source_text=source_text)
+        == legacy_issues
+    )
+
+
+_DANISH_PENSIONS_TAX_SECTION_29_EXCERPT = """\
+§ 29.
+
+Ved udbetalinger, der ikke omfattes af § 20 eller §§ ‍29 A-C, fra en pensionsordning med løbende udbetalinger eller fra en rateforsikring eller rateopsparing i pensionsøjemed svares en afgift på 60 pct. af det udbetalte beløb, jf. dog 2.-4. pkt. Ved udbetaling af supplerende engangsydelser udgør afgiften som nævnt i 1. pkt. 52 pct. Ved udbetaling efter den tidligere ejers død udgør afgiften som nævnt i 1. og 2. pkt. 40 pct. Ved udbetalinger som nævnt i § 17, stk. 1, nr. 8, til selskaber, fonde og foreninger m.v., som er skattepligtige efter selskabsskatteloven eller fondsbeskatningsloven, udgør afgiften som nævnt i 1. og 2. pkt. 25 pct. Ved udbetalinger, der ikke omfattes af § 20, fra en indeksordning, herunder udbetalinger af indestående på en indeksordning, der er ophævet som følge af ejerens død, svares en afgift på 40 pct. af det udbetalte beløb. Ved udbetaling af en supplerende engangssum, som ikke omfattes af § 29 A, betales en afgift på 20 pct., jf. dog 7. og 8. pkt. Ved udbetaling efter den tidligere ejers død er udbetalingen som nævnt i 6. pkt. skatte- og afgiftsfri. § 28, stk. 2, 2.-4. pkt., finder tilsvarende anvendelse ved udbetaling af supplerende engangssum som nævnt i 6. pkt., for hvilken der i udlandet har været hel eller delvis fradrags- eller bortseelsesret for indbetalingerne."""
+
+
+def test_da_numeric_profile_preserves_long_corpus_rate_source_span():
+    assert (
+        hashlib.sha256(_DANISH_PENSIONS_TAX_SECTION_29_EXCERPT.encode()).hexdigest()
+        == "9cad5b56b19d5f79b31bb0c21e1a91031db9f8759453f33dba742abb08089f4b"
+    )
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        _DANISH_PENSIONS_TAX_SECTION_29_EXCERPT,
+        profile="da-DK",
+    )
+
+    assert any(
+        item.value == 20.0
+        and item.raw == "20"
+        and item.span == (965, 967)
+        and item.has_rate_context
+        for item in occurrences
+    )
+    assert numeric_value_is_grounded(0.2, occurrences)
+
+
+def test_da_numeric_profile_is_used_for_attached_amendment_hints():
+    citation_path = "dk/statute/example/1"
+    amendment_citation = "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1"
+    issues = find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec("0.019", citation_path=citation_path),
+        source_text="Den beregnede ændringsprocent nedsættes.",
+        amendment_source_texts={
+            amendment_citation: "med 1,9 procentenheder",
+        },
+    )
+
+    assert any(
+        "Attached-amendment grounding hint" in issue and amendment_citation in issue
+        for issue in issues
+    ), issues
+
+
+def test_da_numeric_profile_rejects_grouping_magnitude_poison():
+    citation_path = "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1-a"
+    source_text = "et bundfradrag på 700.000 kr. (2010-niveau)"
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw) for item in occurrences] == [
+        (700000.0, "700.000"),
+        (2010.0, "2010"),
+    ]
+    assert numeric_value_is_grounded(700000, occurrences)
+    assert not numeric_value_is_grounded(700.0, occurrences)
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec("700000", citation_path=citation_path),
+            source_text=source_text,
+        )
+        == []
+    )
+    poison_issues = find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec("700.0", citation_path=citation_path),
+        source_text=source_text,
+    )
+    assert any("700" in issue for issue in poison_issues), poison_issues
+
+
+def test_da_numeric_profile_preserves_grouped_quantity_without_currency():
+    citation_path = "dk/statute/example/1"
+    source_text = "medlemmet har fået indberettet mindst 3.848 løntimer"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw) for item in grounding] == [(3848.0, "3.848")]
+    assert [(item.value, item.raw) for item in inventory] == [(3848.0, "3.848")]
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec("3848", citation_path=citation_path),
+            source_text=source_text,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "written_value", "rate_value"),
+    (
+        (
+            "Efter 6 måneders bopæl eller beskæftigelse her i riget inden for de "
+            "seneste 10 år udbetales 8,3 pct. af ydelsen.",
+            8.3,
+            0.083,
+        ),
+        (
+            "Efter 66 måneders bopæl eller beskæftigelse her i riget inden for de "
+            "seneste 10 år udbetales 91,7 pct. af ydelsen.",
+            91.7,
+            0.917,
+        ),
+    ),
+)
+def test_da_numeric_profile_grounds_real_comma_decimal_percent_ladder_samples(
+    source_text,
+    written_value,
+    rate_value,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    percentage = next(item for item in occurrences if item.value == written_value)
+
+    assert percentage.has_rate_context
+    assert numeric_value_is_grounded(written_value, occurrences)
+    assert numeric_value_is_grounded(rate_value, occurrences)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "pct.",
+        "pct",
+        "procent",
+        "procentpoint",
+        "procentenhed",
+        "procentenheder",
+    ),
+)
+def test_da_numeric_profile_supports_danish_percent_marker_vocabulary(marker):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        f"Satsen er 8,3 {marker}",
+        profile="da-DK",
+    )
+
+    assert len(occurrences) == 1
+    assert occurrences[0].has_rate_context
+    assert numeric_value_is_grounded(8.3, occurrences)
+    assert numeric_value_is_grounded(0.083, occurrences)
+
+
+@pytest.mark.parametrize("suffix", (".kode", "værdi"))
+def test_da_numeric_profile_requires_complete_percent_marker_token(suffix):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        f"Satsen er 8,3 pct{suffix}",
+        profile="da-DK",
+    )
+
+    assert len(occurrences) == 1
+    assert not occurrences[0].has_rate_context
+    assert not numeric_value_is_grounded(0.083, occurrences)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("852.600 kr.", 852600.0),
+        ("852.600 kr", 852600.0),
+        ("2.507.900 kr.", 2507900.0),
+        ("1.234,56 kroner", 1234.56),
+        ("50 øre", 50.0),
+        ("kr. 852.600", 852600.0),
+    ),
+)
+def test_da_numeric_profile_parses_grouped_danish_currency(source_text, expected):
+    assert extract_numbers_from_text(source_text, profile="da-DK") == {expected}
+    assert extract_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    ) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        ("procenten for indkomståret 2021 4,09", {2021.0, 4.09}),
+        (
+            "April 1898 600,00 kr. - 1899 312,00 kr.",
+            {1898.0, 600.0, 1899.0, 312.0},
+        ),
+    ),
+)
+def test_da_numeric_profile_separates_adjacent_real_corpus_values(
+    source_text,
+    expected,
+):
+    assert extract_numbers_from_text(source_text, profile="da-DK") == expected
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_grounding"),
+    (
+        ("Efter 3. pkt. gælder reglen.", [(3.0, "3")]),
+        ("Efter 2.-5. pkt. gælder reglen.", [(2.0, "2"), (5.0, "5")]),
+        ("Efter 2. og 3. pkt. gælder reglen.", [(2.0, "2"), (3.0, "3")]),
+        (
+            "Efter 1., 3. og 4. pkt. gælder reglen.",
+            [(1.0, "1"), (3.0, "3"), (4.0, "4")],
+        ),
+        ("Reglen i stk. 1 gælder.", [(1.0, "1")]),
+        ("Reglen i stk. 1 og 2 gælder.", [(1.0, "1"), (2.0, "2")]),
+        ("Reglen i nr. 2 gælder.", [(2.0, "2")]),
+        (
+            "Reglen i nr. 1, 2 og 3 gælder.",
+            [(1.0, "1"), (2.0, "2"), (3.0, "3")],
+        ),
+        ("Reglen i § 1 a gælder.", []),
+        ("Reglen i § 123.456.789 gælder.", []),
+    ),
+)
+def test_da_structural_markers_match_grounding_only_convention(
+    source_text,
+    expected_grounding,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw) for item in grounding] == expected_grounding
+    assert all(item.has_structural_context for item in grounding)
+    assert not inventory
+    # Existing profiled structural references remain eligible to ground literals
+    # while staying out of scalar-recall inventory. da-DK applies that typed-stream
+    # convention to Danish markers.
+    assert all(numeric_value_is_grounded(item.value, grounding) for item in grounding)
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "123.456.789 Afsnit: anvend denne regel.",
+        "§123.456.789",
+        "§123.456.789%",
+        "Beløbet omtales i afsnit 123.456.789.",
+        "Kronebeløbet følger kapitel 123.456.789.",
+    ),
+)
+def test_da_numeric_profile_rejects_bare_multi_dot_structural_references(
+    source_text,
+):
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+    issues = find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "123456789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+    assert issues
+    assert any("123456789" in issue for issue in issues)
+
+
+_HOSTILE_DOTTED_SECTION_ALIGNMENT_TEXT = (
+    "Regelbedarfsstufe 2: 502 Euro. Efter 3. pkt. gælder reglen.. "
+    "Reglen i §§ 29, 30 og 31 gælder.. Beløbet er 1.234,56.3Det næste "
+    "punkt. Reglen i § 123.456.789% gælder.\n"
+    "von 277 826 Euro an:0,789 • x – 19 470,38.3Die Größe"
+)
+
+
+@pytest.mark.parametrize(
+    ("profile", "citation_path", "expected_value", "expected_raw", "expected_span"),
+    (
+        ("de-DE", "de/statute/example/1", 0.789, "0,789", (185, 190)),
+        ("legacy", "us/statute/example/1", 789.0, "789", (187, 190)),
+    ),
+)
+def test_dotted_section_cleanup_preserves_origin_cross_profile_alignment(
+    profile,
+    citation_path,
+    expected_value,
+    expected_raw,
+    expected_span,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        _HOSTILE_DOTTED_SECTION_ALIGNMENT_TEXT,
+        profile=profile,
+    )
+    coefficient = next(
+        occurrence
+        for occurrence in grounding
+        if occurrence.span == expected_span and occurrence.value == expected_value
+    )
+
+    assert (coefficient.raw, coefficient.has_rate_context) == (expected_raw, False)
+    assert not numeric_value_is_grounded(0.00789, grounding)
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec("0.00789", citation_path=citation_path),
+        source_text=_HOSTILE_DOTTED_SECTION_ALIGNMENT_TEXT,
+    ) == [
+        "Ungrounded generated numeric literal: 0.00789 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+def test_da_dotted_section_cleanup_keeps_coefficient_on_its_own_source_span():
+    grounding = extract_typed_numeric_occurrences_from_text(
+        _HOSTILE_DOTTED_SECTION_ALIGNMENT_TEXT,
+        profile="da-DK",
+    )
+    coefficient = next(
+        occurrence for occurrence in grounding if occurrence.value == 0.789
+    )
+
+    assert (
+        coefficient.raw,
+        coefficient.span,
+        coefficient.has_rate_context,
+    ) == ("0,789", (185, 190), False)
+    assert all(
+        occurrence.span != (152, 155) or occurrence.value != 0.789
+        for occurrence in grounding
+    )
+    assert not numeric_value_is_grounded(0.00789, grounding)
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "0.00789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=_HOSTILE_DOTTED_SECTION_ALIGNMENT_TEXT,
+    )
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "X 2.507.900 § 123.456.789 kr.",
+        "kr. § 123.456.789 2.507.900",
+        "X 2.507.900 § \u200d123.456.789 §§ 987.654.321 kr.",
+        "kr. §§ \u200d987.654.321 § 123.456.789 2.507.900",
+    ),
+)
+def test_da_masked_structural_spans_are_hard_amount_context_boundaries(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert grounding == []
+    assert inventory == []
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "2507900",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+def test_da_equal_length_mask_maps_repeated_numeric_tokens_by_identity():
+    source_text = "§123.456.789 789 §123.456.789"
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert len(numeric_mask.text) == len(source_text)
+    assert all(
+        source == masked or masked == " "
+        for source, masked in zip(source_text, numeric_mask.text, strict=True)
+    )
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (789.0, "789", (13, 16))
+    ]
+
+
+def test_da_mask_span_snap_extends_both_edges_to_numeric_envelope_boundaries():
+    source_text = "1\u200d234"
+
+    assert validator_pipeline._snap_mask_spans_to_numeric_envelopes(
+        source_text,
+        ((0, 2),),
+        profile="da-DK",
+    ) == ((0, 5),)
+    assert validator_pipeline._snap_mask_spans_to_numeric_envelopes(
+        source_text,
+        ((2, 5),),
+        profile="da-DK",
+    ) == ((0, 5),)
+
+
+@pytest.mark.parametrize(
+    ("format_character", "suffix_is_independent"),
+    (
+        ("\u200d", False),
+        ("\u200c", False),
+        ("\u2060", False),
+        ("\u00ad", False),
+        ("\ufeff", False),
+        ("\u200b", True),
+    ),
+)
+def test_da_structural_mask_edges_preserve_source_numeric_envelopes(
+    format_character,
+    suffix_is_independent,
+):
+    source_text = f"Form A123{format_character}9"
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+    source_envelopes = tuple(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert all(
+        mask_start <= envelope_start and mask_end >= envelope_end
+        for mask_start, mask_end in numeric_mask.spans
+        for envelope_start, envelope_end in source_envelopes
+        if mask_start < envelope_end and envelope_start < mask_end
+    )
+    if suffix_is_independent:
+        expected = [(9.0, "9", (10, 11))]
+        assert numeric_mask.spans == ((0, 9),)
+    else:
+        expected = []
+        assert numeric_mask.spans == ((0, 11),)
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+    assert [(item.value, item.raw, item.span) for item in inventory] == expected
+    assert (
+        bool(
+            find_ungrounded_numeric_issues(
+                _danish_numeric_rulespec(
+                    "9",
+                    citation_path="dk/statute/example/1",
+                ),
+                source_text=source_text,
+            )
+        )
+        is not suffix_is_independent
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_span"),
+    (
+        ("2026-08-123.456 kr.", (8, 15)),
+        ("X 2026-08-123.456 kr.", (10, 17)),
+    ),
+)
+def test_da_unary_sign_scan_stops_at_mask_walls(source_text, expected_span):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    expected = [(123456.0, "123.456", expected_span)]
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+    assert [(item.value, item.raw, item.span) for item in inventory] == expected
+    assert numeric_value_is_grounded(123456, grounding)
+    assert not numeric_value_is_grounded(-123456, grounding)
+
+
+def test_da_equal_length_heading_mask_cannot_transfer_rate_context():
+    source_text = "CHAPTER x 42 pct.\nx 42\nCHAPTER x 42 pct."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == [(42.0, "42", (20, 22), False)]
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "0.42",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "formula"),
+    (
+        ("123.456.789 kr.−overskriften:", "123456789"),
+        ("123.456.789 kr.'s-overskrift:", "123456789"),
+        ("123.456.789 pct.−point:", "1234567.89"),
+    ),
+)
+def test_da_marker_allowlist_rejects_round_three_compounds(source_text, formula):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert grounding == []
+    assert inventory == []
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            formula,
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "formula"),
+    (
+        ("123.456.789 (kr.)-overskriften:", "123456789"),
+        ("overskrift-(kr.) 123.456.789", "123456789"),
+        ("123.456.789 (pct.)-overskriften:", "1234567.89"),
+    ),
+)
+def test_da_marker_allowlist_scans_outward_through_wrappers(source_text, formula):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert grounding == []
+    assert inventory == []
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            formula,
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize("delimiter", tuple("()[]\"\u00bb\u00ab',;:"))
+@pytest.mark.parametrize("direction", ("before", "after"))
+def test_da_marker_allowlist_rejects_attachments_beyond_every_delimiter(
+    delimiter,
+    direction,
+):
+    source_text = (
+        f"overskrift-{delimiter}kr. 123.456.789"
+        if direction == "before"
+        else f"123.456.789 kr.{delimiter}-overskrift"
+    )
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "attachment",
+    ("-", "−", "‐", "‑", "‒", "–", "—", "―", "a", "1", "*", "_"),
+)
+@pytest.mark.parametrize(
+    ("marker", "formula"), (("kr.", "123456789"), ("pct.", "1234567.89"))
+)
+def test_da_marker_allowlist_rejects_every_nonlisted_neighbor(
+    marker,
+    formula,
+    attachment,
+):
+    source_text = f"123.456.789 {marker}{attachment}overskrift"
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            formula,
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize("attachment", ("'s", "''s", "'\u200d's"))
+def test_da_marker_allowlist_rejects_apostrophe_attachments(attachment):
+    source_text = f"123.456.789 kr.{attachment}-overskrift"
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "123456789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_span"),
+    (
+        ("Beløbet er 2.507.900 (kr.)", (11, 20)),
+        ("Beløb (kr.) 2.507.900", (12, 21)),
+        ("Beløbet er 2.507.900 ((kr.))", (11, 20)),
+        ("Beløb ((kr.)) 2.507.900", (14, 23)),
+    ),
+)
+def test_da_parenthesized_currency_markers_ground_in_both_directions(
+    source_text,
+    expected_span,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    expected = [(2507900.0, "2.507.900", expected_span)]
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+    assert [(item.value, item.raw, item.span) for item in inventory] == expected
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "2507900",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+
+
+def test_da_marker_allowlist_distinguishes_sentence_period_from_attachment():
+    accepted = extract_typed_numeric_occurrences_from_text(
+        "2.507.900 kroner.",
+        profile="da-DK",
+    )
+    rejected = extract_typed_numeric_occurrences_from_text(
+        "2.507.900 kroner.heading",
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw) for item in accepted] == [(2507900.0, "2.507.900")]
+    assert rejected == []
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    ("2.507.900 'kr.'.", "2.507.900 'kr.'. Rest"),
+)
+def test_da_marker_allowlist_accepts_quoted_marker_before_sentence_period(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (2507900.0, "2.507.900", (0, 9))
+    ]
+
+
+@pytest.mark.parametrize("terminal", (",", ";", ":"))
+def test_da_marker_allowlist_accepts_terminal_punctuation_at_a_boundary(terminal):
+    source_text = f"2.507.900 kr.{terminal} Rest"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (2507900.0, "2.507.900", (0, 9))
+    ]
+
+
+@pytest.mark.parametrize("separator", ("\u200b", "\u200e"))
+@pytest.mark.parametrize(
+    ("marker", "direction"),
+    (("kr.", "before"), ("kr.", "after"), ("pct.", "after")),
+)
+def test_da_separator_format_characters_are_marker_boundaries(
+    separator,
+    marker,
+    direction,
+):
+    source_text = (
+        f"Rest{separator}{marker} 2.507.900"
+        if direction == "before"
+        else f"2.507.900 {marker}{separator}Rest"
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    number_start = source_text.index("2.507.900")
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (2507900.0, "2.507.900", (number_start, number_start + 9))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("marker", "direction"),
+    (("kr.", "before"), ("kr.", "after"), ("pct.", "after")),
+)
+def test_da_joiner_format_characters_are_not_marker_boundaries(marker, direction):
+    source_text = (
+        f"Rest\u200d{marker} 2.507.900"
+        if direction == "before"
+        else f"2.507.900 {marker}\u200dRest"
+    )
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+def test_da_numeric_envelope_consumes_internal_format_characters_once():
+    source_text = "123.4\u200d56.789 kr."
+    raw_number = "123.4\u200d56.789"
+    expected = [(123456789.0, raw_number, (0, len(raw_number)))]
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+    assert [(item.value, item.raw, item.span) for item in inventory] == expected
+    assert grounding[0].raw == source_text[slice(*grounding[0].span)]
+    assert not any(item.value == 56789.0 for item in grounding)
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "123456789",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "56789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    "format_character",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+def test_da_numeric_envelope_continuation_uses_the_full_exponent_grammar(
+    format_character,
+):
+    source_text = f"1e{format_character}37 pct."
+    raw_number = f"1e{format_character}37"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    expected = [(1e37, raw_number, (0, len(raw_number)), True)]
+
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == expected
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in inventory
+    ] == expected
+    assert grounding[0].raw == source_text[slice(*grounding[0].span)]
+    assert numeric_value_is_grounded(1e37, grounding)
+    assert not numeric_value_is_grounded(37, grounding)
+    assert not numeric_value_is_grounded(0.37, grounding)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_value"),
+    (
+        ("1e-\u200d37 pct.", 1e-37),
+        ("1e\u200d-37 pct.", 1e-37),
+        ("1e+\u200d37 pct.", 1e37),
+        ("1e\u200d+37 pct.", 1e37),
+    ),
+)
+def test_da_numeric_envelope_joiners_preserve_exponent_signs(
+    source_text,
+    expected_value,
+):
+    raw_number = source_text.split()[0]
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (expected_value, raw_number, (0, len(raw_number)))
+    ]
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize(
+    ("sign", "expected_value"),
+    (("-", -123.0), ("\u2013", -123.0), ("\u2212", -123.0), ("+", 123.0)),
+)
+def test_da_numeric_envelope_joiners_preserve_leading_unary_signs(
+    joiner,
+    sign,
+    expected_value,
+):
+    raw_number = f"{sign}{joiner}123"
+    source_text = f"{raw_number} pct."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (expected_value, raw_number, (0, len(raw_number)))
+    ]
+
+
+@pytest.mark.parametrize("joiner", ("", "\u200d"))
+@pytest.mark.parametrize("first_sign", ("+", "-", "\u2013", "\u2212"))
+@pytest.mark.parametrize("second_sign", ("+", "-", "\u2013", "\u2212"))
+def test_da_repeated_leading_sign_runs_are_atomic(
+    joiner,
+    first_sign,
+    second_sign,
+):
+    raw_number = f"{first_sign}{joiner}{second_sign}37"
+    source_text = f"{raw_number} pct."
+
+    assert [
+        (span, source_text[slice(*span)])
+        for span in validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [((0, len(raw_number)), raw_number)]
+    assert (
+        validator_pipeline._parse_locale_numeric_envelope(raw_number, "da-DK") is None
+    )
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    for formula in ("37", "-37", "0.37", "-0.37"):
+        assert find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                formula,
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw_number", "expected_value", "expected_rate"),
+    (("+37", 37.0, 0.37), ("\u221237", -37.0, -0.37)),
+)
+def test_da_single_leading_signs_remain_grounded(
+    raw_number,
+    expected_value,
+    expected_rate,
+):
+    source_text = f"{raw_number} pct."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == [(expected_value, raw_number, (0, len(raw_number)), True)]
+    assert numeric_value_is_grounded(expected_value, grounding)
+    assert numeric_value_is_grounded(expected_rate, grounding)
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    ("§§ 100 a --103 b.", "§§ 100 a -\u200d-103 b."),
+)
+def test_da_repeated_sign_runs_remain_atomic_at_structural_boundaries(source_text):
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+def test_da_repeated_sign_run_reservation_overrides_a_context_wall():
+    source_text = "--37"
+    boundaries = validator_pipeline._NumericContextBoundaries.from_spans(((0, 2),))
+
+    assert list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+            boundaries=boundaries,
+        )
+    ) == [(0, len(source_text))]
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "-\u200d\u00a0123 pct.",
+        "-\u00a0\u200d123 pct.",
+    ),
+)
+def test_da_leading_sign_requires_joiner_only_glue_to_digits(source_text):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (123.0, "123", (source_text.index("123"), source_text.index("123") + 3))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_value", "expected_raw"),
+    (
+        ("+\u00a0\u200d123 pct.", 123.0, "+\u00a0\u200d123"),
+        ("Beløb +37 kr.", 37.0, "37"),
+    ),
+)
+def test_da_plus_keeps_existing_sign_behavior(
+    source_text,
+    expected_value,
+    expected_raw,
+):
+    start = source_text.index(expected_raw)
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(expected_value, expected_raw, (start, start + len(expected_raw)))]
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("", "\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize("sign", ("-", "\u2013", "\u2212"))
+def test_da_prose_negative_signs_are_unary_when_glued(sign, joiner):
+    raw_number = f"{sign}{joiner}37"
+    source_text = f"Beløb {raw_number} kr."
+    start = source_text.index(sign)
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    expected = [(-37.0, raw_number, (start, start + len(raw_number)))]
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+    assert [(item.value, item.raw, item.span) for item in inventory] == expected
+    assert numeric_value_is_grounded(-37, grounding)
+    assert not numeric_value_is_grounded(37, grounding)
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "-37",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "37",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "raw_number"),
+    (
+        ("-37 kr.", "-37"),
+        (";-37 kr.", "-37"),
+        ("=-37 kr.", "-37"),
+        ("=\u200d-\u200d37 kr.", "-\u200d37"),
+    ),
+)
+def test_da_glued_negative_unary_prefix_controls(source_text, raw_number):
+    start = source_text.index("-")
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(-37.0, raw_number, (start, start + len(raw_number)))]
+
+
+def test_da_space_delimited_range_sign_is_binary():
+    source_text = "20 \u2212 37"
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(20.0, "20", (0, 2)), (37.0, "37", (5, 7))]
+
+
+def test_da_wall_abutting_sign_remains_non_unary_without_a_joiner():
+    source_text = "2026-08-123.456 kr."
+    start = source_text.index("123")
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(123456.0, "123.456", (start, start + 7))]
+
+
+def test_da_structural_range_endpoint_sign_remains_non_unary():
+    source_text = "§§ 100 a -103 b."
+    start = source_text.index("103")
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+    boundaries = validator_pipeline._NumericContextBoundaries.from_spans(
+        (
+            *numeric_mask.spans,
+            *validator_pipeline._structural_numeric_component_spans(
+                source_text,
+                profile="da-DK",
+            ),
+        )
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (numeric_mask.text[slice(*span)], span)
+        for span in validator_pipeline._iter_locale_numeric_envelopes(
+            numeric_mask.text,
+            profile="da-DK",
+            boundaries=boundaries,
+        )
+    ] == [("103", (start, start + 3))]
+    assert [
+        (item.value, item.raw, item.span, item.has_structural_context)
+        for item in grounding
+    ] == [(103.0, "103", (start, start + 3), True)]
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "Beløb x -37 y kr.",
+        "a -37 b",
+        "X a -37 b Y",
+        "2026-08 x -37 y",
+        "Form A123X x -37 y",
+    ),
+)
+def test_da_single_letter_prose_does_not_create_a_structural_sign_wall(source_text):
+    start = source_text.index("-37")
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(-37.0, "-37", (start, start + 3))]
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+def test_da_leading_sign_scan_does_not_cross_a_structural_mask_wall(joiner):
+    source_text = f"2026-08-{joiner}123.456 kr."
+    number_start = source_text.index("123")
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (123456.0, "123.456", (number_start, number_start + 7))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    (
+        (
+            "1e3\u200d-4 pct.",
+            [
+                (1000.0, "1e3", (0, 3), False),
+                (4.0, "4", (5, 6), True),
+            ],
+        ),
+        (
+            "1\u200d+2 pct.",
+            [
+                (1.0, "1", (0, 1), False),
+                (2.0, "2", (3, 4), True),
+            ],
+        ),
+    ),
+)
+def test_da_numeric_envelope_does_not_consume_a_joiner_before_a_binary_sign(
+    source_text,
+    expected,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == expected
+    assert all(
+        item.raw == source_text[slice(*item.span)] and not item.raw.endswith("\u200d")
+        for item in grounding
+    )
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize(
+    "source_text_template",
+    ("A{joiner}123 pct.", "123{joiner}A pct."),
+)
+def test_da_numeric_token_boundaries_are_joiner_transparent(
+    joiner,
+    source_text_template,
+):
+    source_text = source_text_template.format(joiner=joiner)
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("format_character", "suffix_is_independent"),
+    (
+        ("\u200d", False),
+        ("\u200c", False),
+        ("\u2060", False),
+        ("\u00ad", False),
+        ("\ufeff", False),
+        ("\u200b", True),
+    ),
+)
+def test_da_masked_token_boundaries_use_joiner_transparent_source_context(
+    format_character,
+    suffix_is_independent,
+):
+    source_text = f"Form A123X{format_character}9 pct."
+    suffix_start = source_text.index("9")
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    expected = (
+        [(9.0, "9", (suffix_start, suffix_start + 1))] if suffix_is_independent else []
+    )
+    assert [(item.value, item.raw, item.span) for item in grounding] == expected
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+def test_da_joiner_continuation_uses_glued_marker_grammar(joiner):
+    source_text = f"1{joiner}.3Overskrift pct."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (1.0, "1", (0, 1))
+    ]
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize(
+    "source_text_template",
+    (
+        "1.{joiner}3Overskrift pct.",
+        "1.3{joiner}4{joiner}Overskrift pct.",
+    ),
+)
+def test_da_glued_marker_digits_are_joiner_transparent(
+    joiner,
+    source_text_template,
+):
+    source_text = source_text_template.format(joiner=joiner)
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in grounding] == [
+        (1.0, "1", (0, 1))
+    ]
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize("grouping_space", ("\u00a0", "\u202f"))
+def test_da_joiner_transparent_glued_marker_cannot_expose_a_numeric_suffix(
+    joiner,
+    grouping_space,
+):
+    source_text = f".{joiner}1E1e{grouping_space}1"
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+def test_da_separator_format_character_splits_glued_marker_like_space():
+    with_separator = extract_typed_numeric_occurrences_from_text(
+        "X 1.\u200b3Overskrift pct.",
+        profile="da-DK",
+    )
+    with_space = extract_typed_numeric_occurrences_from_text(
+        "X 1. 3Overskrift pct.",
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.has_rate_context) for item in with_separator
+    ] == [(item.value, item.raw, item.has_rate_context) for item in with_space]
+
+
+def test_da_repeated_exponent_signs_are_reserved_as_one_invalid_envelope():
+    source_text = "1e" + ("\u200d+" * 2_000) + "\u200d3"
+    spans = list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    )
+
+    assert [(span, source_text[slice(*span)]) for span in spans] == [
+        ((0, len(source_text)), source_text),
+    ]
+    assert (
+        validator_pipeline._parse_locale_numeric_envelope(source_text, "da-DK") is None
+    )
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text + " pct.",
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize(
+    "source_text_template",
+    (
+        "1.{joiner}.1 pct.",
+        "1.{joiner},1 pct.",
+        "1,{joiner},1 pct.",
+        "1\u00a0{joiner}\u202f1 pct.",
+    ),
+)
+def test_da_joiners_preserve_atomic_invalid_separator_runs(
+    joiner,
+    source_text_template,
+):
+    source_text = source_text_template.format(joiner=joiner)
+    spans = list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    )
+    raw_number = source_text.split(" pct.", maxsplit=1)[0]
+
+    assert spans == [(0, len(raw_number))]
+    assert (
+        validator_pipeline._parse_locale_numeric_envelope(raw_number, "da-DK") is None
+    )
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize(
+    "raw_number_template",
+    (
+        "37.{joiner}.",
+        "37,{joiner},",
+        "37.{joiner},",
+        "37,{joiner}.",
+        "37\u00a0{joiner}\u202f",
+    ),
+)
+def test_da_trailing_malformed_separator_runs_are_atomic(
+    joiner,
+    raw_number_template,
+):
+    raw_number = raw_number_template.format(joiner=joiner)
+    source_text = f"Sats {raw_number} pct."
+    start = source_text.index("37")
+    spans = list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    )
+
+    assert spans == [(start, start + len(raw_number))]
+    assert (
+        validator_pipeline._parse_locale_numeric_envelope(raw_number, "da-DK") is None
+    )
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "0.37",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_span"),
+    (("er 37.", (3, 5)), ("37, ", (0, 2))),
+)
+def test_da_single_trailing_prose_separator_keeps_the_numeric_prefix(
+    source_text,
+    expected_span,
+):
+    expected = [(37.0, "37", expected_span)]
+
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == expected
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    "raw_number",
+    ("37..", "37,,", "37.,", "37,.", "37\u00a0\u202f"),
+)
+def test_da_direct_trailing_repeated_separators_are_atomic(raw_number):
+    assert list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            raw_number,
+            profile="da-DK",
+        )
+    ) == [(0, len(raw_number))]
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            f"Sats {raw_number} pct.",
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize("ending", ("pkt. gælder reglen.", "ledighedsdag"))
+def test_da_ordinal_list_punctuation_is_not_a_numeric_separator_run(joiner, ending):
+    source_text = f"Efter 1.{joiner},  {joiner} 2.{joiner}, {joiner}3. og 4. {ending}"
+
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(1.0, "1"), (2.0, "2"), (3.0, "3"), (4.0, "4")]
+
+
+_DANISH_ORDINAL_LIST_TEST_JOINERS = (
+    "",
+    "\u200d",
+    "\u200c",
+    "\u2060",
+    "\u00ad",
+    "\ufeff",
+)
+_DANISH_ORDINAL_LIST_TEST_DASHES = ("-", "\u2013", "\u2014")
+_DANISH_ORDINAL_LIST_TEST_POST_DASH_WHITESPACE = (" ", "\t", "\u00a0", "\u202f")
+_DANISH_ORDINAL_LIST_TEST_MASKED_RANGE_PREFIXES = ("§ 1.1", "Form A1")
+_DANISH_ORDINAL_LIST_TEST_EXCLUDED_BOUNDARIES = tuple(
+    sorted(
+        (
+            set(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "abcdefghijklmnopqrstuvwxyz"
+                "0123456789.,)[]}'\""
+            )
+            | set(validator_pipeline._LOCALE_UNARY_SIGNS)
+            | set("\u00bb\u00ab\u201c\u201d")
+        )
+        - validator_pipeline._DANISH_ORDINAL_LIST_ITEM_OPENERS
+    )
+)
+
+
+def _da_occurrence_semantic_signature(extractor, source_text):
+    return [
+        (
+            item.value,
+            item.raw,
+            item.has_rate_context,
+            item.has_temporal_context,
+            item.has_structural_context,
+            item.source_value,
+            item.requires_rate_context,
+            item.is_word_number,
+            item.alternative_values,
+        )
+        for item in extractor(source_text, profile="da-DK")
+    ]
+
+
+def _assert_da_masked_range_endpoint_is_atomic_invalid(source_text):
+    range_internal_index = validator_pipeline._danish_ordinal_range_internal_index(
+        source_text
+    )
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(source_text)
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(
+        numeric_mask.text,
+        range_internal_index=range_internal_index,
+    )
+    assert [
+        (
+            validator_pipeline._numeric_joiner_filtered_view(
+                numeric_mask.text[start:end]
+            )[0],
+            validator_pipeline._parse_locale_numeric_envelope(
+                numeric_mask.text[start:end],
+                "da-DK",
+            ),
+        )
+        for start, end in validator_pipeline._iter_locale_numeric_envelopes(
+            numeric_mask.text,
+            profile="da-DK",
+            danish_ordinal_range_internal_index=range_internal_index,
+        )
+    ] == [("4.,", None), ("6", 6.0)]
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(6.0, "6")]
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(6.0, "6")]
+    assert validator_pipeline._has_malformed_profiled_numeric_envelope(
+        source_text,
+        profile="da-DK",
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "4",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    ) == [
+        "Ungrounded generated numeric literal: 4 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+@pytest.mark.parametrize("dash", ("-", "\u2013", "\u2014"))
+@pytest.mark.parametrize("post_dash_spacing", ("", " "))
+@pytest.mark.parametrize("joiner", _DANISH_ORDINAL_LIST_TEST_JOINERS)
+def test_da_ordinal_list_exception_accepts_a_range_as_the_following_item(
+    dash,
+    post_dash_spacing,
+    joiner,
+):
+    source_text = (
+        f"Efter 11{joiner}.{joiner},{joiner} {joiner}"
+        f"12{joiner}.{joiner}{dash}{joiner}{post_dash_spacing}{joiner}"
+        f"14{joiner}. pkt."
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw) for item in grounding] == [
+        (11.0, "11"),
+        (12.0, "12"),
+        (14.0, "14"),
+    ]
+    assert all(item.has_structural_context for item in grounding)
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    first_item_period = source_text.index(".", source_text.index("11"))
+    assert (
+        first_item_period
+        in validator_pipeline._danish_ordinal_list_separator_indices(source_text)
+    )
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "11",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_values", "expected_separator_count"),
+    (
+        ("Efter 1., 2.-4. dag.", [1.0, 2.0, 4.0], 1),
+        (
+            "Efter 11.-13., 14.-16., 17.",
+            [11.0, 13.0, 14.0, 16.0, 17.0],
+            2,
+        ),
+    ),
+)
+def test_da_ordinal_list_exception_restores_reference_range_shapes(
+    source_text,
+    expected_values,
+    expected_separator_count,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [item.value for item in grounding] == expected_values
+    assert [item.value for item in inventory] == expected_values
+    assert (
+        len(validator_pipeline._danish_ordinal_list_separator_indices(source_text))
+        == expected_separator_count
+    )
+
+
+def test_da_ordinal_list_exception_preserves_audit7_left_boundary_matrix():
+    expected_openers = frozenset(
+        "!%&(*/:;<=>?[^{|~\u00b7\u00d7\u00f7\u2022\u2219\u2260\u2264\u2265"
+    )
+    allowed = (
+        "",
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\u00a0",
+        "\u202f",
+        *sorted(expected_openers),
+    )
+    excluded = _DANISH_ORDINAL_LIST_TEST_EXCLUDED_BOUNDARIES
+
+    assert validator_pipeline._DANISH_ORDINAL_LIST_ITEM_OPENERS == expected_openers
+    assert len(allowed) == 32
+    assert len(excluded) == 77
+    for boundary in allowed:
+        source_text = f"{boundary}37., 3." if not boundary else f"X{boundary}37., 3."
+        assert validator_pipeline._danish_ordinal_list_separator_indices(source_text)
+    for boundary in excluded:
+        source_text = f"X{boundary}37., 3."
+        assert not validator_pipeline._danish_ordinal_list_separator_indices(
+            source_text
+        )
+
+
+def test_da_ordinal_list_exception_preserves_grouping_space_directionality():
+    case_count = 0
+    for grouping_space in ("\u00a0", "\u202f"):
+        for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS:
+            boundary = f"{joiner}{grouping_space}{joiner}" if joiner else grouping_space
+            assert validator_pipeline._danish_ordinal_list_separator_indices(
+                f"Efter{boundary}37., 3."
+            )
+            assert not validator_pipeline._danish_ordinal_list_separator_indices(
+                f"Sats 1{boundary}234., 3."
+            )
+            case_count += 2
+
+    assert case_count == 24
+
+
+@pytest.mark.parametrize(
+    ("spaced_source", "control_source", "endpoint", "expected_envelopes", "expected"),
+    (
+        (
+            "Efter )1.- 4., 6.",
+            "Efter )1.-4., 6.",
+            4.0,
+            [("1", 1.0), ("4.,", None), ("6", 6.0)],
+            [(1.0, "1"), (6.0, "6")],
+        ),
+        (
+            "Efter X1.- 4., 6.",
+            "Efter X1.-4., 6.",
+            4.0,
+            [("1", 1.0), ("4.,", None), ("6", 6.0)],
+            [(6.0, "6")],
+        ),
+        (
+            "Efter 1,5.- 4., 6.",
+            "Efter 1,5.-4., 6.",
+            4.0,
+            [("1,5", 1.5), ("4.,", None), ("6", 6.0)],
+            [(1.5, "1,5"), (6.0, "6")],
+        ),
+        (
+            "Efter 1.000.- 4., 6.",
+            "Efter 1.000.-4., 6.",
+            4.0,
+            [("1.000", 1000.0), ("4.,", None), ("6", 6.0)],
+            [(1000.0, "1.000"), (6.0, "6")],
+        ),
+        (
+            "Efter -1.- 4., 6.",
+            "Efter -1.-4., 6.",
+            4.0,
+            [("-1", -1.0), ("4.,", None), ("6", 6.0)],
+            [(-1.0, "-1"), (6.0, "6")],
+        ),
+        (
+            "Sats 1\u00a0234.- 5., 6.",
+            "Sats 1\u00a0234.-5., 6.",
+            5.0,
+            [("1\u00a0234", 1234.0), ("5.,", None), ("6", 6.0)],
+            [(1234.0, "1\u00a0234"), (6.0, "6")],
+        ),
+    ),
+)
+def test_da_ordinal_list_exception_rejects_range_internal_endpoint_rematches(
+    spaced_source,
+    control_source,
+    endpoint,
+    expected_envelopes,
+    expected,
+):
+    def envelope_signature(source_text):
+        return [
+            (
+                source_text[start:end],
+                validator_pipeline._parse_locale_numeric_envelope(
+                    source_text[start:end],
+                    "da-DK",
+                ),
+            )
+            for start, end in validator_pipeline._iter_locale_numeric_envelopes(
+                source_text,
+                profile="da-DK",
+            )
+        ]
+
+    def occurrence_signature(extractor, source_text):
+        return [
+            (
+                item.value,
+                item.raw,
+                item.has_rate_context,
+                item.has_temporal_context,
+                item.has_structural_context,
+                item.source_value,
+                item.requires_rate_context,
+                item.is_word_number,
+                item.alternative_values,
+            )
+            for item in extractor(source_text, profile="da-DK")
+        ]
+
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(spaced_source)
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(control_source)
+    assert envelope_signature(spaced_source) == envelope_signature(control_source)
+    assert envelope_signature(spaced_source) == expected_envelopes
+
+    grounding = extract_typed_numeric_occurrences_from_text(
+        spaced_source,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        spaced_source,
+        profile="da-DK",
+    )
+    assert [(item.value, item.raw) for item in grounding] == expected
+    assert [(item.value, item.raw) for item in inventory] == expected
+    assert occurrence_signature(
+        extract_typed_numeric_occurrences_from_text,
+        spaced_source,
+    ) == occurrence_signature(
+        extract_typed_numeric_occurrences_from_text,
+        control_source,
+    )
+    assert occurrence_signature(
+        extract_typed_numeric_inventory_occurrences_from_text,
+        spaced_source,
+    ) == occurrence_signature(
+        extract_typed_numeric_inventory_occurrences_from_text,
+        control_source,
+    )
+    assert not numeric_value_is_grounded(endpoint, grounding)
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            str(int(endpoint)),
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=spaced_source,
+    ) == [
+        f"Ungrounded generated numeric literal: {int(endpoint)} does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+
+
+@pytest.mark.parametrize(
+    "masked_range_prefix",
+    _DANISH_ORDINAL_LIST_TEST_MASKED_RANGE_PREFIXES,
+    ids=("section", "form"),
+)
+@pytest.mark.parametrize("dash", _DANISH_ORDINAL_LIST_TEST_DASHES)
+@pytest.mark.parametrize(
+    "post_dash_spacing",
+    _DANISH_ORDINAL_LIST_TEST_POST_DASH_WHITESPACE,
+)
+@pytest.mark.parametrize("joiner", _DANISH_ORDINAL_LIST_TEST_JOINERS)
+def test_da_ordinal_list_exception_range_containment_survives_structural_start_masks(
+    masked_range_prefix,
+    dash,
+    post_dash_spacing,
+    joiner,
+):
+    source_text = (
+        f"{masked_range_prefix}{joiner}.{joiner}{dash}{joiner}"
+        f"{post_dash_spacing}{joiner}4{joiner}.{joiner},{joiner} "
+        f"{joiner}6{joiner}."
+    )
+    no_space_control = (
+        f"{masked_range_prefix}{joiner}.{joiner}{dash}{joiner}"
+        f"4{joiner}.{joiner},{joiner} {joiner}6{joiner}."
+    )
+
+    _assert_da_masked_range_endpoint_is_atomic_invalid(source_text)
+    for extractor in (
+        extract_typed_numeric_occurrences_from_text,
+        extract_typed_numeric_inventory_occurrences_from_text,
+    ):
+        assert _da_occurrence_semantic_signature(
+            extractor,
+            source_text,
+        ) == _da_occurrence_semantic_signature(extractor, no_space_control)
+
+
+@pytest.mark.parametrize(
+    "masked_range_prefix",
+    _DANISH_ORDINAL_LIST_TEST_MASKED_RANGE_PREFIXES,
+    ids=("section", "form"),
+)
+@pytest.mark.parametrize("dash", _DANISH_ORDINAL_LIST_TEST_DASHES)
+@pytest.mark.parametrize("joiner", _DANISH_ORDINAL_LIST_TEST_JOINERS)
+def test_da_ordinal_list_exception_masked_range_no_space_controls_remain_fail_closed(
+    masked_range_prefix,
+    dash,
+    joiner,
+):
+    source_text = (
+        f"{masked_range_prefix}{joiner}.{joiner}{dash}{joiner}"
+        f"4{joiner}.{joiner},{joiner} {joiner}6{joiner}."
+    )
+
+    _assert_da_masked_range_endpoint_is_atomic_invalid(source_text)
+
+
+def test_da_ordinal_list_exception_range_containment_preserves_disjoint_masks():
+    source_text = "§ 1.1 Efter 1.- 4., 6."
+    range_internal_index = validator_pipeline._danish_ordinal_range_internal_index(
+        source_text
+    )
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+    range_endpoint_period = source_text.index(".", source_text.index("4"))
+
+    assert numeric_mask.spans == ((0, 5),)
+    assert validator_pipeline._danish_ordinal_list_separator_indices(
+        numeric_mask.text,
+        range_internal_index=range_internal_index,
+    ) == frozenset({range_endpoint_period})
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(1.0, "1"), (4.0, "4"), (6.0, "6")]
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(1.0, "1"), (4.0, "4"), (6.0, "6")]
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "4",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+
+
+def test_da_ordinal_list_exception_fails_closed_when_mask_covers_entire_range():
+    source_text = "[1.\u2013 4.], 6."
+    range_internal_index = validator_pipeline._danish_ordinal_range_internal_index(
+        source_text
+    )
+    numeric_mask = validator_pipeline._danish_equal_length_numeric_mask(source_text)
+
+    assert numeric_mask.spans == ((0, 8),)
+    assert numeric_mask.text == "        , 6."
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(
+        numeric_mask.text,
+        range_internal_index=range_internal_index,
+    )
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(6.0, "6", (10, 11))]
+    assert [
+        (item.value, item.raw, item.span)
+        for item in extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(6.0, "6", (10, 11))]
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "4",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    ) == [
+        "Ungrounded generated numeric literal: 4 does not appear as a "
+        "substantive numeric value in the source text."
+    ]
+    assert (
+        find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                "6",
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+        == []
+    )
+
+
+def test_da_ordinal_list_exception_prescans_overlapping_range_candidates():
+    source_text = "Efter )1.-2.- 3., 4."
+
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(source_text)
+    assert [
+        (source_text[start:end], start, end)
+        for start, end in validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [
+        ("1", 7, 8),
+        ("2", 10, 11),
+        ("3.,", 14, 17),
+        ("4", 18, 19),
+    ]
+
+
+def test_da_ordinal_list_exception_prescans_only_range_digit_run_starts():
+    source_text = f"{'9' * 256}.- 4., 6."
+    scan_text, _source_offsets = validator_pipeline._numeric_joiner_filtered_view(
+        source_text
+    )
+
+    assert [
+        match.span("range_item")
+        for match in validator_pipeline._DANISH_ORDINAL_RANGE_SCAN_PATTERN.finditer(
+            scan_text
+        )
+    ] == [(0, source_text.index(","))]
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    _DANISH_ORDINAL_LIST_TEST_EXCLUDED_BOUNDARIES,
+)
+def test_da_ordinal_list_exception_rejects_spaced_range_endpoint_boundary_matrix(
+    boundary,
+):
+    case_count = 0
+    for dash in _DANISH_ORDINAL_LIST_TEST_DASHES:
+        for post_dash_spacing in _DANISH_ORDINAL_LIST_TEST_POST_DASH_WHITESPACE:
+            for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS:
+                source_text = (
+                    f"X{boundary}{joiner}1{joiner}.{joiner}{dash}{joiner}"
+                    f"{post_dash_spacing}{joiner}4{joiner}.{joiner},{joiner} "
+                    f"{joiner}6{joiner}."
+                )
+                assert not validator_pipeline._danish_ordinal_list_separator_indices(
+                    source_text
+                )
+                case_count += 1
+
+    assert len(_DANISH_ORDINAL_LIST_TEST_EXCLUDED_BOUNDARIES) == 77
+    assert case_count == 72
+
+
+@pytest.mark.parametrize("grouping_space", ("\u00a0", "\u202f"))
+def test_da_ordinal_list_exception_rejects_spaced_range_endpoint_grouping_matrix(
+    grouping_space,
+):
+    case_count = 0
+    for dash in _DANISH_ORDINAL_LIST_TEST_DASHES:
+        for post_dash_spacing in _DANISH_ORDINAL_LIST_TEST_POST_DASH_WHITESPACE:
+            for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS:
+                grouping_boundary = (
+                    f"{joiner}{grouping_space}{joiner}" if joiner else grouping_space
+                )
+                source_text = (
+                    f"Sats 1{grouping_boundary}234{joiner}.{joiner}{dash}{joiner}"
+                    f"{post_dash_spacing}{joiner}5{joiner}.{joiner},{joiner} "
+                    f"{joiner}6{joiner}."
+                )
+                assert not validator_pipeline._danish_ordinal_list_separator_indices(
+                    source_text
+                )
+                case_count += 1
+
+    assert case_count == 72
+
+
+@pytest.mark.parametrize(
+    "post_dash_spacing",
+    _DANISH_ORDINAL_LIST_TEST_POST_DASH_WHITESPACE,
+)
+def test_da_ordinal_list_exception_preserves_admissible_spaced_range_matrix(
+    post_dash_spacing,
+):
+    case_count = 0
+    for dash in _DANISH_ORDINAL_LIST_TEST_DASHES:
+        for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS:
+            source_text = (
+                f"Efter {joiner}1{joiner}.{joiner}{dash}{joiner}"
+                f"{post_dash_spacing}{joiner}4{joiner}.{joiner},{joiner} "
+                f"{joiner}6{joiner}."
+            )
+            grounding = extract_typed_numeric_occurrences_from_text(
+                source_text,
+                profile="da-DK",
+            )
+            inventory = extract_typed_numeric_inventory_occurrences_from_text(
+                source_text,
+                profile="da-DK",
+            )
+            endpoint_period = source_text.index(".", source_text.index("4"))
+
+            assert [(item.value, item.raw) for item in grounding] == [
+                (1.0, "1"),
+                (4.0, "4"),
+                (6.0, "6"),
+            ]
+            assert [(item.value, item.raw) for item in inventory] == [
+                (1.0, "1"),
+                (4.0, "4"),
+                (6.0, "6"),
+            ]
+            assert validator_pipeline._danish_ordinal_list_separator_indices(
+                source_text
+            ) == frozenset({endpoint_period})
+            assert (
+                find_ungrounded_numeric_issues(
+                    _danish_numeric_rulespec(
+                        "4",
+                        citation_path="dk/statute/example/1",
+                    ),
+                    source_text=source_text,
+                )
+                == []
+            )
+            case_count += 1
+
+    assert case_count == 18
+
+
+@pytest.mark.parametrize("dash", _DANISH_ORDINAL_LIST_TEST_DASHES)
+@pytest.mark.parametrize("post_dash_spacing", ("", " "))
+@pytest.mark.parametrize("joiner", _DANISH_ORDINAL_LIST_TEST_JOINERS)
+def test_da_ordinal_list_exception_preserves_complete_range_overlap(
+    dash,
+    post_dash_spacing,
+    joiner,
+):
+    def range_item(start, end):
+        return (
+            f"{start}{joiner}.{joiner}{dash}{joiner}{post_dash_spacing}{joiner}"
+            f"{end}{joiner}."
+        )
+
+    chain = (
+        f"Efter {range_item(1, 2)}{joiner},{joiner} {joiner}"
+        f"{range_item(3, 4)}{joiner},{joiner} {joiner}{range_item(5, 6)}"
+    )
+    chain_periods = [index for index, character in enumerate(chain) if character == "."]
+    assert validator_pipeline._danish_ordinal_list_separator_indices(
+        chain
+    ) == frozenset({chain_periods[1], chain_periods[3]})
+    assert [
+        item.value
+        for item in extract_typed_numeric_occurrences_from_text(
+            chain,
+            profile="da-DK",
+        )
+    ] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+    middle_range = (
+        f"Efter 1{joiner}.{joiner},{joiner} {joiner}{range_item(2, 3)}"
+        f"{joiner},{joiner} {joiner}4{joiner}."
+    )
+    middle_periods = [
+        index for index, character in enumerate(middle_range) if character == "."
+    ]
+    assert validator_pipeline._danish_ordinal_list_separator_indices(
+        middle_range
+    ) == frozenset({middle_periods[0], middle_periods[2]})
+    assert [
+        item.value
+        for item in extract_typed_numeric_occurrences_from_text(
+            middle_range,
+            profile="da-DK",
+        )
+    ] == [1.0, 2.0, 3.0, 4.0]
+
+
+_DANISH_ORDINAL_LIST_EXCLUDED_RANGE_FRAGMENTS = (
+    "1. -4., 6.",
+    "1.--4., 6.",
+    "1.---4., 6.",
+    "1.\u22124., 6.",
+    "1.-+4., 6.",
+    "1.-1\u00a0000., 6.",
+    "1.-1.000., 6.",
+    "1.-1,5., 6.",
+    "1.-4.,6.",
+    "37. -3., 4.",
+    "1,5.-4., 6.",
+    "1.000.-4., 6.",
+    "-1.-4., 6.",
+    "+1.-4., 6.",
+    "1e3.-4., 6.",
+    ")1.-4., 6.",
+    '"1.-4., 6.',
+)
+
+
+@pytest.mark.parametrize(
+    "range_fragment",
+    _DANISH_ORDINAL_LIST_EXCLUDED_RANGE_FRAGMENTS,
+)
+def test_da_ordinal_list_exception_rejects_audit7_range_forms(range_fragment):
+    assert len(_DANISH_ORDINAL_LIST_EXCLUDED_RANGE_FRAGMENTS) == 17
+    assert len(set(_DANISH_ORDINAL_LIST_EXCLUDED_RANGE_FRAGMENTS)) == 17
+    assert not validator_pipeline._danish_ordinal_list_separator_indices(
+        f"Efter {range_fragment}"
+    )
+
+
+@pytest.mark.parametrize("joiner", _DANISH_ORDINAL_LIST_TEST_JOINERS[1:])
+def test_da_ordinal_list_exception_rejects_joined_range_leak_shapes(joiner):
+    invalid_left_items = (
+        f"1.{joiner} {joiner}-{joiner}4.{joiner},{joiner} 6.",
+        f"1.{joiner}-{joiner}-{joiner}4.{joiner},{joiner} 6.",
+        f"1.{joiner}\u2212{joiner}4.{joiner},{joiner} 6.",
+        f"1.{joiner}-{joiner}1{joiner}.{joiner}000.{joiner},{joiner} 6.",
+        f"1.{joiner}-{joiner}1{joiner}\u00a0{joiner}000.{joiner},{joiner} 6.",
+        f"1.{joiner}-{joiner}1{joiner}\u202f{joiner}000.{joiner},{joiner} 6.",
+        f"37.{joiner} {joiner}-{joiner}3.{joiner},{joiner} 4.",
+    )
+    invalid_following_items = (
+        f"12.{joiner}-{joiner}-{joiner}14.",
+        f"12.{joiner}\u2212{joiner}14.",
+        f"12.{joiner}-{joiner}1{joiner}.{joiner}000.",
+        f"12.{joiner}-{joiner}1{joiner}\u00a0{joiner}000.",
+        f"12.{joiner}-{joiner}1{joiner}\u202f{joiner}000.",
+    )
+
+    for item in invalid_left_items:
+        assert not validator_pipeline._danish_ordinal_list_separator_indices(
+            f"Efter {item}"
+        )
+    for item in invalid_following_items:
+        assert not validator_pipeline._danish_ordinal_list_separator_indices(
+            f"Efter 11., {item}"
+        )
+
+
+def test_da_ordinal_list_exception_preserves_audit7_following_item_matrix():
+    valid_tails = (
+        "",
+        " ",
+        "\t",
+        "\n",
+        "\u00a0",
+        "\u202f",
+        ", ",
+        ",\t",
+        ",\n",
+        ",\u00a0",
+        ",\u202f",
+    )
+    directly_excluded_tails = (
+        "A",
+        "0",
+        ".",
+        ",",
+        ";",
+        ")",
+        '"',
+    )
+    joined_excluded_tails = tuple(
+        f"{joiner}{continuation}"
+        for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS[1:]
+        for continuation in ("A", "0", ",")
+    )
+    accepted_count = 0
+
+    for tail in valid_tails:
+        assert validator_pipeline._danish_ordinal_list_separator_indices(
+            f"Efter 37., 12.{tail}"
+        )
+        accepted_count += 1
+    for joiner in _DANISH_ORDINAL_LIST_TEST_JOINERS[1:]:
+        for suffix in ("", f"{joiner} og", f"{joiner},{joiner} 13."):
+            source_text = f"Efter 37.{joiner},{joiner} {joiner}12{joiner}.{suffix}"
+            assert validator_pipeline._danish_ordinal_list_separator_indices(
+                source_text
+            )
+            accepted_count += 1
+
+    assert accepted_count == 26
+    assert len(joined_excluded_tails) == 15
+    assert len(set(joined_excluded_tails)) == 15
+    for tail in (*directly_excluded_tails, *joined_excluded_tails):
+        assert not validator_pipeline._danish_ordinal_list_separator_indices(
+            f"Efter 37., 12.{tail}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("malformed_prefix", "leaked_value"),
+    (
+        ("37,5", 37.5),
+        ("123.456", 123456.0),
+        ("1e3", 1000.0),
+        ("1e+3", 1000.0),
+        ("1e-3", 0.001),
+        ("-37", -37.0),
+        ("+37", 37.0),
+        ("37\u200d,\u200d5", 37.5),
+        ("123\u200d.\u200d456", 123456.0),
+        ("1\u200de\u200d3", 1000.0),
+        ("1\u00a0234", 1234.0),
+        ("1\u202f234", 1234.0),
+        ("1\u200d\u00a0\u200d234", 1234.0),
+        ("1\u200d\u202f\u200d234", 1234.0),
+    ),
+)
+def test_da_ordinal_list_exception_rejects_noninteger_prefixes(
+    malformed_prefix,
+    leaked_value,
+):
+    source_text = f"Sats {malformed_prefix}., 3. dag."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    first_span = next(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    )
+    first_raw = source_text[slice(*first_span)]
+
+    assert first_raw.endswith(".,")
+    assert validator_pipeline._parse_locale_numeric_envelope(first_raw, "da-DK") is None
+    assert validator_pipeline._has_malformed_profiled_numeric_envelope(
+        source_text,
+        profile="da-DK",
+    )
+    assert [(item.value, item.raw) for item in grounding] == [(3.0, "3")]
+    assert [(item.value, item.raw) for item in inventory] == [(3.0, "3")]
+    assert not numeric_value_is_grounded(leaked_value, grounding)
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_grounding", "expected_inventory"),
+    (
+        ("37., 3.", [(37.0, "37"), (3.0, "3")], [(3.0, "3")]),
+        ("37., 12. pct.", [(37.0, "37"), (12.0, "12")], [(12.0, "12")]),
+        ("2.507.900., 2. kr.", [(2.0, "2")], [(2.0, "2")]),
+        ("37., 38., 39 kr.", [(37.0, "37"), (39.0, "39")], [(39.0, "39")]),
+        ("37., 1.000.", [(1000.0, "1.000")], [(1000.0, "1.000")]),
+        (
+            "37.\u200d,\u200d \u200d3\u200d.",
+            [(37.0, "37"), (3.0, "3")],
+            [(3.0, "3")],
+        ),
+        (
+            "Efter 1.-4., 6. og 7. pkt.",
+            [(1.0, "1"), (4.0, "4"), (6.0, "6"), (7.0, "7")],
+            [],
+        ),
+        (
+            "Efter 1.- 4., 6. og 7. pkt.",
+            [(1.0, "1"), (4.0, "4"), (6.0, "6"), (7.0, "7")],
+            [],
+        ),
+        (
+            "Efter 1.\u200d-\u200d4.\u200d, 6. og 7. pkt.",
+            [(1.0, "1"), (4.0, "4"), (6.0, "6"), (7.0, "7")],
+            [],
+        ),
+        (
+            "Efter\u00a037., 3.",
+            [(37.0, "37"), (3.0, "3")],
+            [(37.0, "37"), (3.0, "3")],
+        ),
+        (
+            "Efter\u202f37., 3.",
+            [(37.0, "37"), (3.0, "3")],
+            [(37.0, "37"), (3.0, "3")],
+        ),
+        ("(37., 3.", [(37.0, "37"), (3.0, "3")], [(37.0, "37"), (3.0, "3")]),
+        ("Sats 37. -3., 4.", [(37.0, "37"), (4.0, "4")], [(37.0, "37"), (4.0, "4")]),
+        ("37., 3.A", [(3.0, "3")], [(3.0, "3")]),
+        ("37., 3.pct.", [(3.0, "3")], [(3.0, "3")]),
+    ),
+)
+def test_da_ordinal_list_exception_requires_admissible_items(
+    source_text,
+    expected_grounding,
+    expected_inventory,
+):
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == expected_grounding
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == expected_inventory
+
+
+def test_da_prose_period_comma_run_is_not_an_ordinal_list_separator():
+    source_text = "Sats 37., 3 pct."
+    start = source_text.index("37")
+
+    assert [
+        (source_text[slice(*span)], span)
+        for span in validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [("37.,", (start, start + 4)), ("3", (10, 11))]
+    assert [
+        (item.value, item.raw)
+        for item in extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+    ] == [(3.0, "3")]
+
+
+@pytest.mark.parametrize("raw_number", ("37.,9", "37.\u200d,\u200d9"))
+def test_da_zero_gap_period_comma_run_remains_atomic(raw_number):
+    source_text = f"Sats {raw_number} pct."
+    start = source_text.index("37")
+
+    assert list(
+        validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    ) == [(start, start + len(raw_number))]
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "joiner",
+    ("\u200d", "\u200c", "\u2060", "\u00ad", "\ufeff"),
+)
+@pytest.mark.parametrize("continuation", ("e", "e+", "e-"))
+def test_da_joiners_preserve_failed_exponent_transitions(joiner, continuation):
+    direct = f"3{continuation}"
+    joined = joiner.join(direct)
+
+    def signature(source_text):
+        return [
+            (
+                "".join(
+                    character
+                    for character in source_text[slice(*span)]
+                    if character
+                    not in validator_pipeline._DANISH_NUMERIC_JOINER_FORMAT_CHARACTERS
+                ),
+                validator_pipeline._parse_locale_numeric_envelope(
+                    source_text[slice(*span)],
+                    "da-DK",
+                ),
+            )
+            for span in validator_pipeline._iter_locale_numeric_envelopes(
+                source_text,
+                profile="da-DK",
+            )
+        ]
+
+    assert signature(joined) == signature(direct) == [(direct, None)]
+    assert extract_typed_numeric_occurrences_from_text(joined, profile="da-DK") == []
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            joined,
+            profile="da-DK",
+        )
+        == []
+    )
+
+
+def test_da_separator_format_character_splits_repeated_separator_run_like_space():
+    with_separator = extract_typed_numeric_occurrences_from_text(
+        "X 1.\u200b.1 pct.",
+        profile="da-DK",
+    )
+    with_space = extract_typed_numeric_occurrences_from_text(
+        "X 1. .1 pct.",
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.has_rate_context) for item in with_separator
+    ] == [(item.value, item.raw, item.has_rate_context) for item in with_space]
+
+
+@pytest.mark.parametrize("profile", ("da-DK", "de-DE", "en-US", "en-GB"))
+@pytest.mark.parametrize("signs", ("+-", "--", "++", "-+"))
+def test_profiled_numeric_envelopes_reserve_invalid_exponent_sign_runs(
+    profile,
+    signs,
+):
+    source_text = f"1e{signs}37 pct."
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile=profile,
+        )
+        == []
+    )
+
+
+def test_da_separator_format_character_splits_scientific_numeric_envelopes():
+    source_text = "1e\u200b37 pct."
+    envelopes = [
+        (
+            span,
+            source_text[slice(*span)],
+            validator_pipeline._parse_locale_numeric_envelope(
+                source_text[slice(*span)],
+                "da-DK",
+            ),
+        )
+        for span in validator_pipeline._iter_locale_numeric_envelopes(
+            source_text,
+            profile="da-DK",
+        )
+    ]
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    space_control = extract_typed_numeric_occurrences_from_text(
+        "1e 37 pct.",
+        profile="da-DK",
+    )
+
+    assert envelopes == [((0, 2), "1e", None), ((3, 5), "37", 37.0)]
+    assert (
+        validator_pipeline._parse_locale_numeric_envelope("1e\u200b37", "da-DK") is None
+    )
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == [(37.0, "37", (3, 5), True)]
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == [
+        (item.value, item.raw, item.span, item.has_rate_context)
+        for item in space_control
+    ]
+    assert numeric_value_is_grounded(37, grounding)
+    assert numeric_value_is_grounded(0.37, grounding)
+
+
+@pytest.mark.parametrize("separator", ("\u200b", "\u200e"))
+def test_da_separator_format_characters_split_year_and_rate_tokens(separator):
+    source_text = f"procenten for indkomståret 2021{separator}4,09{separator}pct."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    expected = [
+        (2021.0, "2021", (27, 31), False),
+        (4.09, "4,09", (32, 36), True),
+    ]
+
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in grounding
+    ] == expected
+    assert [
+        (item.value, item.raw, item.span, item.has_rate_context) for item in inventory
+    ] == expected
+    assert not numeric_value_is_grounded(20214.09, grounding)
+    assert not numeric_value_is_grounded(202.1409, grounding)
+    assert numeric_value_is_grounded(2021, grounding)
+    assert numeric_value_is_grounded(4.09, grounding)
+    assert numeric_value_is_grounded(0.0409, grounding)
+
+
+def test_da_numeric_envelope_does_not_consume_trailing_format_characters():
+    source_text = "Reglen i §\u200d\u200d\u200d \u200d3\u200d\u200d, gælder."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.has_structural_context) for item in grounding
+    ] == [
+        (3.0, "3", True),
+    ]
+    assert inventory == []
+
+
+@pytest.mark.parametrize("marker", ("kr.", "pct."))
+def test_da_structural_span_wall_blocks_following_amount_marker(marker):
+    source_text = f"Reglen i stk. 15 {marker}"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.has_structural_context) for item in grounding
+    ] == [(15.0, "15", True)]
+    assert inventory == []
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        "123.456.789 kr.-overskriften:",
+        "123.456.789 pct.-overskriften:",
+        "123.456.789 p.c.heading:",
+    ),
+)
+def test_da_multi_dot_amount_context_requires_standalone_marker(source_text):
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "123456789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("marker", "fabricated_formula"),
+    (
+        ("pct.-overskriften", "1.23"),
+        ("percent-heading", "1.23"),
+        ("%-heading", "1.23"),
+        ("p.c.-heading", "1.23"),
+        ("p.c.heading", "1.23"),
+        ("kr.-overskriften", None),
+        ("euro-heading", None),
+        ("$-heading", None),
+    ),
+)
+def test_da_ordinary_numeric_context_requires_standalone_marker(
+    marker,
+    fabricated_formula,
+):
+    source_text = f"Reglen i stk. 123 {marker}:"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (
+            item.value,
+            item.raw,
+            item.has_rate_context,
+            item.has_structural_context,
+        )
+        for item in grounding
+    ] == [(123.0, "123", False, True)]
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    if fabricated_formula is not None:
+        assert find_ungrounded_numeric_issues(
+            _danish_numeric_rulespec(
+                fabricated_formula,
+                citation_path="dk/statute/example/1",
+            ),
+            source_text=source_text,
+        )
+
+
+@pytest.mark.parametrize(
+    "format_character",
+    ("\u200d", "\u200c", "\u00ad", "\u2060", "\ufeff", "\u200b"),
+)
+def test_da_section_veto_skips_unicode_format_characters(format_character):
+    source_text = f"§§ {format_character}123.456.789 kr."
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "123456789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize("marker", ("kr.", "pct.", "%", "p.c."))
+def test_da_compound_marker_scan_skips_arbitrary_format_character_runs(marker):
+    source_text = f"123.456.789 {marker}{chr(0x200D) * 100}-overskriften:"
+
+    assert (
+        extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert (
+        extract_typed_numeric_inventory_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        == []
+    )
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "123456789",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+def test_da_ordinary_rate_scan_skips_arbitrary_format_character_runs():
+    source_text = f"Reglen i stk. 123 pct.{chr(0x200D) * 100}-overskriften:"
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.has_rate_context, item.has_structural_context)
+        for item in grounding
+    ] == [(123.0, False, True)]
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            "1.23",
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected_span"),
+    (
+        ("Beløbet er 2.507.900\u200d kr.", (11, 20)),
+        ("kr.\u200d 2.507.900", (5, 14)),
+    ),
+)
+def test_da_amount_marker_scan_preserves_source_spans_across_format_characters(
+    source_text,
+    expected_span,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [(item.value, item.raw, item.span) for item in occurrences] == [
+        (2507900.0, "2.507.900", expected_span)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("format_character", "expected_grounding"),
+    (
+        ("\u200d", [(15.0, "1\u200d5")]),
+        ("\u200c", [(15.0, "1\u200c5")]),
+        ("\u00ad", [(15.0, "1\u00ad5")]),
+        ("\u2060", [(15.0, "1\u20605")]),
+        ("\ufeff", [(15.0, "1\ufeff5")]),
+        ("\u200b", [(1.0, "1"), (5.0, "5")]),
+    ),
+)
+def test_da_structural_reference_scan_consumes_numeric_format_characters(
+    format_character,
+    expected_grounding,
+):
+    source_text = f"Reglen i stk. {format_character}1{format_character}5 gælder."
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert [
+        (item.value, item.raw, item.has_structural_context) for item in grounding
+    ] == [(value, raw, True) for value, raw in expected_grounding]
+    assert inventory == []
+
+
+@pytest.mark.parametrize(
+    ("source_text", "formula"),
+    (
+        (
+            "| Værdi | Procent |\n| --- | --- |\n| note \\| 123 |",
+            "1.23",
+        ),
+        (
+            "| Værdi | kr. |\n| --- | --- |\n| note \\| 2.507.900 |",
+            "2507900",
+        ),
+        (
+            "| Ref | kr.**-overskriften** |\n| --- | --- |\n| x | 2.507.900 |",
+            "2507900",
+        ),
+        (
+            "| År | Sats (kr.) |\n| --- | --- |\n| 2026 | 2.507.900 |",
+            "2507900",
+        ),
+    ),
+)
+def test_da_constructed_pipe_tables_without_adjacent_markers_fail_closed(
+    source_text,
+    formula,
+):
+    occurrences = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="da-DK",
+    )
+
+    assert not numeric_value_is_grounded(float(formula), occurrences)
+    assert find_ungrounded_numeric_issues(
+        _danish_numeric_rulespec(
+            formula,
+            citation_path="dk/statute/example/1",
+        ),
+        source_text=source_text,
+    )
+
+
+def test_da_structural_span_lookup_scales_near_linearly(monkeypatch):
+    unit = "nr. 2 "
+    operation_count = 0
+    original_predicate = validator_pipeline._span_is_contained_in_index
+
+    def counted_predicate(*args, **kwargs):
+        nonlocal operation_count
+        operation_count += 1
+        return original_predicate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        validator_pipeline,
+        "_span_is_contained_in_index",
+        counted_predicate,
+    )
+
+    def timed_extract(target):
+        nonlocal operation_count
+        operation_count = 0
+        repetitions = target // len(unit)
+        source_text = unit * repetitions + "20 pct."
+        start = monotonic()
+        occurrences = extract_typed_numeric_occurrences_from_text(
+            source_text,
+            profile="da-DK",
+        )
+        return (
+            source_text,
+            repetitions,
+            occurrences,
+            monotonic() - start,
+            operation_count,
+        )
+
+    extract_typed_numeric_occurrences_from_text(unit * 1_000, profile="da-DK")
+    source_100k, repetitions_100k, occurrences_100k, _, ops_100k = timed_extract(
+        100_000
+    )
+    _, _, _, elapsed_200k, ops_200k = timed_extract(200_000)
+
+    assert ops_100k > 0
+    assert ops_200k <= 2.5 * ops_100k
+    assert elapsed_200k < 30
+
+    assert len(occurrences_100k) == repetitions_100k + 1
+    assert all(
+        occurrence.value == 2.0
+        and occurrence.raw == "2"
+        and occurrence.span == (6 * index + 4, 6 * index + 5)
+        and occurrence.has_structural_context
+        and not occurrence.has_rate_context
+        for index, occurrence in enumerate(occurrences_100k[:-1])
+    )
+    terminal = occurrences_100k[-1]
+    assert (
+        terminal.value,
+        terminal.raw,
+        terminal.span,
+        terminal.has_structural_context,
+        terminal.has_rate_context,
+    ) == (
+        20.0,
+        "20",
+        (len(source_100k) - 7, len(source_100k) - 5),
+        False,
+        True,
+    )
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source_100k,
+        profile="da-DK",
+    )
+    assert [(item.value, item.raw, item.span) for item in inventory] == [
+        (20.0, "20", terminal.span)
+    ]
+
+
+def test_da_numeric_profile_terminates_at_glued_juris_sentence_marker():
+    source_text = "Beløbet er 1.234,56.3Det næste punkt"
+
+    assert extract_numbers_from_text(source_text, profile="da-DK") == {1234.56}
+
+
+@pytest.mark.parametrize(
+    ("citation_path", "expected"),
+    (
+        (
+            "dk/statute/lbk-603-2025/boerne-og-ungeydelsesloven/paragraf-1",
+            "da-DK",
+        ),
+        ("de/statute/estg/32a", "de-DE"),
+        ("us/statute/example/1", "legacy"),
+        (None, "legacy"),
+    ),
+)
+def test_numeric_profile_selection_uses_canonical_citation_country(
+    citation_path,
+    expected,
+):
+    assert (
+        validator_pipeline._numeric_profile_for_citation_path(citation_path) == expected
+    )
+
+
 _GERMAN_SECTION_32A_FORMULA_TEXT = (
     ":(914,51 \u2022 y + 1 400) \u2022 y;\n"
     ":(173,10 \u2022 z + 2 397) \u2022 z + 1 034,87;\n"
@@ -9993,6 +13106,10 @@ def test_de_numeric_profile_preserves_section_32a_raw_spans():
         ("de-DE", "1,234.56", set()),
         ("de-DE", "1.234,56", {1234.56}),
         ("de-DE", "1 234,56", {1234.56}),
+        ("da-DK", "1,234.56", set()),
+        ("da-DK", "1.234,56", {1234.56}),
+        ("da-DK", "1 234,56", {1.0, 234.56}),
+        ("da-DK", "2.507.900", set()),
     ),
 )
 def test_numeric_profile_convention_matrix(profile, source_text, expected):
