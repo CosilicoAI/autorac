@@ -27,7 +27,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from axiom_encode import __version__
-from axiom_encode import prepare_signed_backfill as packaged_backfill
 from axiom_encode.cli import (
     APPLIED_ENCODING_MANIFEST_SCHEMA,
     APPLIED_ENCODING_MODEL_TOOL,
@@ -35,6 +34,7 @@ from axiom_encode.cli import (
 )
 from axiom_encode.harness.dependency_stubs import validate_explicit_context_file
 from axiom_encode.harness.evals import resolve_corpus_source_unit
+from scripts import prepare_signed_backfill as compatibility_backfill
 from scripts import provision_verification_supervisor as provisioner
 from scripts.prepare_signed_backfill import parse_canonical_refresh_bundle
 from tests.eval_evidence_fixtures import (
@@ -1437,7 +1437,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     class TransactionCaptured(Exception):
         pass
 
-    real_authorized = packaged_backfill.authorized_changed_paths
+    real_authorized = compatibility_backfill.authorized_changed_paths
 
     def capture_transaction(repo: Path, *, corpus_root: Path) -> tuple[Path, ...]:
         captured["repo"] = Path(repo)
@@ -1452,8 +1452,9 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
                 return_value={"unmanifested_paths": []},
             ),
             patch("axiom_encode.cli.guard_generated_change_issues", return_value=[]),
-            patch(
-                "axiom_encode.prepare_signed_backfill.authorized_changed_paths",
+            patch.object(
+                compatibility_backfill,
+                "authorized_changed_paths",
                 side_effect=capture_transaction,
             ),
             pytest.raises(TransactionCaptured),
