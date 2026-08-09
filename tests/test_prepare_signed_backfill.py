@@ -2141,6 +2141,36 @@ def test_stage_authorized_changes_stages_only_manifest_and_applied_files(
     )
 
 
+def test_stage_authorized_changes_rejects_git_transformed_index_bytes(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    attributes = repo / ".gitattributes"
+    attributes.write_text("*.yaml text eol=lf\n", encoding="utf-8")
+    _git(repo, "add", ".gitattributes")
+    _git(repo, "commit", "-m", "add transforming attributes")
+    rule, _manifest = _write_signed_change(repo)
+    rule.write_bytes(b"rules: []\r\n")
+
+    with pytest.raises(
+        ValueError,
+        match="staged file bytes differ from signed authorization",
+    ):
+        stage_authorized_changes(repo)
+
+    staged_object = _git(repo, "rev-parse", ":us/regulations/example.yaml")
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(repo), "cat-file", "blob", staged_object]
+        )
+        == b"rules: []\n"
+    )
+    assert rule.read_bytes() == b"rules: []\r\n"
+    assert _git(repo, "log", "-1", "--format=%s").strip() == (
+        "add transforming attributes"
+    )
+
+
 def _write_model_change_with_unchanged_companion(
     repo: Path,
     *,

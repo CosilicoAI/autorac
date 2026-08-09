@@ -481,6 +481,15 @@ class TestTrustedGit:
                 ],
                 None,
             ),
+            (
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                ],
+                None,
+            ),
             (["remote", "get-url", "origin"], None),
             (["diff", "--binary", "HEAD", "--", "a.txt"], None),
             (
@@ -602,6 +611,12 @@ class TestTrustedGit:
                 "-z",
                 "--untracked-files=all",
                 "--ignored=matching",
+            ],
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
             ],
             ["diff", "--binary", "HEAD", "--", "a.txt"],
             [
@@ -814,6 +829,191 @@ class TestTrustedGit:
             assert refused_gitlink.returncode != 0
             assert "refused gitlink at sub" in refused_gitlink.stderr
         assert not marker.exists()
+
+    def test_installed_wrapper_stages_only_explicit_safe_paths(self, tmp_path):
+        git = shutil.which("git")
+        if git is None:
+            pytest.skip("Git is required")
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        wrapper = provisioner._install_trusted_git_wrapper(
+            destination,
+            Path(sys.executable).resolve(),
+            provisioner._resolve_trusted_git(Path(git).resolve()),
+        )
+        repository = (tmp_path / "rulespec-us").resolve()
+        subprocess.run([git, "init", "--quiet", str(repository)], check=True)
+        for name in ("a.txt", "b.txt"):
+            (repository / name).write_text("original\n")
+        subprocess.run([git, "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            [
+                git,
+                "-c",
+                "user.name=Axiom test",
+                "-c",
+                "user.email=test@axiom.invalid",
+                "-C",
+                str(repository),
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        for name in ("a.txt", "b.txt"):
+            (repository / name).write_text("changed\n")
+        clean_environment = {
+            "HOME": str(tmp_path),
+            "PATH": str(destination),
+        }
+
+        subprocess.run(
+            [str(wrapper), "-C", str(repository), "add", "--", "a.txt"],
+            check=True,
+            capture_output=True,
+            env=clean_environment,
+        )
+        cached = subprocess.run(
+            [
+                str(wrapper),
+                "-C",
+                str(repository),
+                "diff",
+                "--cached",
+                "--name-only",
+                "--no-renames",
+                "-z",
+            ],
+            check=True,
+            capture_output=True,
+            env=clean_environment,
+        )
+        assert cached.stdout == b"a.txt\0"
+
+        refused_arguments = (
+            ["add", "a.txt"],
+            ["add", "--"],
+            ["add", "--all"],
+            ["add", "--", "../b.txt"],
+            ["add", "--", "./b.txt"],
+            ["add", "--", str(repository / "b.txt")],
+            ["add", "--", ":(glob)*"],
+            ["add", "--", "*.txt"],
+            ["add", "--", "b?.txt"],
+            ["add", "--", "[ab].txt"],
+            ["add", "--", "b\\*.txt"],
+            ["add", "--", "-b.txt"],
+        )
+        for command in refused_arguments:
+            refused = subprocess.run(
+                [str(wrapper), "-C", str(repository), *command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=clean_environment,
+            )
+            assert refused.returncode != 0
+            assert "refused arguments for add" in refused.stderr
+        refused_without_repository = subprocess.run(
+            [str(wrapper), "add", "--", "b.txt"],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=clean_environment,
+        )
+        assert refused_without_repository.returncode != 0
+        assert "refused arguments for add" in refused_without_repository.stderr
+        assert (
+            subprocess.check_output(
+                [git, "-C", str(repository), "diff", "--cached", "--name-only"]
+            )
+            == b"a.txt\n"
+        )
+
+        subprocess.run(
+            [git, "-C", str(repository), "reset", "--quiet", "HEAD"], check=True
+        )
+        marker = tmp_path / "filter-executed"
+        helper = tmp_path / "hostile-filter"
+        helper.write_text(
+            f"#!{Path(sys.executable).resolve()}\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).touch()\n"
+            "sys.stdout.buffer.write(sys.stdin.buffer.read())\n"
+        )
+        helper.chmod(0o755)
+        (repository / ".gitattributes").write_text("*.txt filter=hostile\n")
+        subprocess.run(
+            [
+                git,
+                "-C",
+                str(repository),
+                "config",
+                "filter.hostile.clean",
+                str(helper),
+            ],
+            check=True,
+        )
+        refused_filter = subprocess.run(
+            [str(wrapper), "-C", str(repository), "add", "--", "b.txt"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=clean_environment,
+        )
+        assert refused_filter.returncode != 0
+        assert "refused worktree filter for" in refused_filter.stderr
+        assert not marker.exists()
+        assert not subprocess.check_output(
+            [git, "-C", str(repository), "diff", "--cached", "--name-only"]
+        )
+        for attribute in (
+            "text eol=lf",
+            "crlf",
+            "ident",
+            "working-tree-encoding=UTF-16",
+        ):
+            (repository / ".gitattributes").write_text(f"*.txt {attribute}\n")
+            refused_attribute = subprocess.run(
+                [str(wrapper), "-C", str(repository), "add", "--", "b.txt"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=clean_environment,
+            )
+            assert refused_attribute.returncode != 0
+            assert "refused content-transforming attribute" in (
+                refused_attribute.stderr
+            )
+            assert not subprocess.check_output(
+                [git, "-C", str(repository), "diff", "--cached", "--name-only"]
+            )
+
+        (repository / ".gitattributes").unlink()
+        subprocess.run(
+            [git, "-C", str(repository), "config", "core.autocrlf", "true"],
+            check=True,
+        )
+        (repository / "b.txt").write_bytes(b"changed\r\n")
+        subprocess.run(
+            [str(wrapper), "-C", str(repository), "add", "--", "b.txt"],
+            check=True,
+            capture_output=True,
+            env=clean_environment,
+        )
+        staged_object = subprocess.check_output(
+            [git, "-C", str(repository), "rev-parse", ":b.txt"], text=True
+        ).strip()
+        assert (
+            subprocess.check_output(
+                [git, "-C", str(repository), "cat-file", "blob", staged_object]
+            )
+            == b"changed\r\n"
+        )
 
     def test_installed_wrapper_supports_migration_git_queries(
         self, tmp_path, monkeypatch

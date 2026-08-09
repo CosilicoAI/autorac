@@ -2308,6 +2308,21 @@ def main():
         "--json", action="store_true", help="Output guard result as JSON"
     )
 
+    stage_signed_backfill_parser = subparsers.add_parser(
+        "stage-signed-backfill",
+        help=(
+            "Reverify and stage exactly the signed RuleSpec publication set "
+            "under a protected signing broker"
+        ),
+    )
+    stage_signed_backfill_parser.add_argument(
+        "--repo",
+        type=Path,
+        required=True,
+        help="Exact canonical rulespec-<country> checkout to stage",
+    )
+    _add_required_corpus_path_argument(stage_signed_backfill_parser)
+
     signed_import_parser = subparsers.add_parser(
         "signed-import-inventory",
         help=(
@@ -3409,6 +3424,8 @@ def main():
         cmd_migrate_rulespec_paths(args)
     elif args.command == "guard-generated":
         cmd_guard_generated(args)
+    elif args.command == "stage-signed-backfill":
+        cmd_stage_signed_backfill(args)
     elif args.command == "signed-import-inventory":
         cmd_signed_import_inventory(args)
     elif args.command == "manifest-census":
@@ -7170,6 +7187,17 @@ def cmd_guard_generated(args):
         else:
             print("All changed RuleSpec files have encoder apply manifests.")
     sys.exit(0 if not issues else 1)
+
+
+def cmd_stage_signed_backfill(args):
+    """Stage only the live paths authorized by signed apply evidence."""
+    from .prepare_signed_backfill import stage_authorized_changes
+
+    repo_path = _resolve_canonical_rulespec_checkout(
+        args.repo,
+        label="RuleSpec checkout",
+    )
+    stage_authorized_changes(repo_path, corpus_root=Path(args.corpus_path))
 
 
 def cmd_signed_import_inventory(args):

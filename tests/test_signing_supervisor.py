@@ -16,6 +16,7 @@ import threading
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import _cffi_backend
 import cryptography
@@ -33,9 +34,21 @@ from axiom_encode.cli import (
 )
 from axiom_encode.harness.dependency_stubs import validate_explicit_context_file
 from axiom_encode.harness.evals import resolve_corpus_source_unit
+from scripts import prepare_signed_backfill as compatibility_backfill
+from scripts import provision_verification_supervisor as provisioner
 from scripts.prepare_signed_backfill import parse_canonical_refresh_bundle
-from tests.release_object_fixtures import bind_test_corpus_release
+from tests.eval_evidence_fixtures import (
+    TEST_APPLY_PRIVATE_KEY_B64,
+    TEST_APPLY_PUBLIC_KEY_B64,
+    TEST_EVAL_PUBLIC_KEY_B64,
+    install_test_eval_evidence_keys,
+)
+from tests.release_object_fixtures import (
+    TEST_RELEASE_PUBLIC_KEY,
+    bind_test_corpus_release,
+)
 from tests.signing_broker_fixtures import SigningBrokerFixture
+from tests.test_cli import TestCmdEncode as _TestCmdEncode
 
 ROOT = Path(__file__).parents[1]
 SUPERVISOR_PACKAGE = "./cmd/axiom-encode-signing-supervisor"
@@ -829,6 +842,7 @@ def _invoke(
     environment: dict[str, str] | None = None,
     command_args: tuple[str, ...] = (),
     supervisor_args: tuple[str, ...] = (),
+    timeout: int = 30,
 ) -> subprocess.CompletedProcess[str]:
     signer_arguments: list[str] = []
     if descriptors:
@@ -851,7 +865,7 @@ def _invoke(
         pass_fds=tuple(descriptors),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=timeout,
     )
 
 
@@ -1397,6 +1411,156 @@ def test_verification_only_supervisor_accepts_retired_release_key_from_v3_keyrin
         "passed": True,
         "issues": [],
     }
+
+
+def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transaction(
+    signing_supervisor: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Exercise the installed staging command through every protected seam."""
+
+    install_test_eval_evidence_keys(
+        monkeypatch,
+        apply_private_key=TEST_APPLY_PRIVATE_KEY_B64,
+        apply_public_key=TEST_APPLY_PUBLIC_KEY_B64,
+    )
+    test_case = _TestCmdEncode()
+    preflights = test_case._neutralize_encode_preflights.__wrapped__(
+        test_case,
+        tmp_path,
+    )
+    next(preflights)
+    captured: dict[str, object] = {}
+
+    class TransactionCaptured(Exception):
+        pass
+
+    real_authorized = compatibility_backfill.authorized_changed_paths
+
+    def capture_transaction(repo: Path, *, corpus_root: Path) -> tuple[Path, ...]:
+        captured["repo"] = Path(repo)
+        captured["corpus"] = Path(corpus_root)
+        captured["paths"] = tuple(real_authorized(repo, corpus_root=corpus_root))
+        raise TransactionCaptured
+
+    try:
+        with (
+            patch(
+                "axiom_encode.cli._manifest_census",
+                return_value={"unmanifested_paths": []},
+            ),
+            patch("axiom_encode.cli.guard_generated_change_issues", return_value=[]),
+            patch.object(
+                compatibility_backfill,
+                "authorized_changed_paths",
+                side_effect=capture_transaction,
+            ),
+            pytest.raises(TransactionCaptured),
+        ):
+            test_case.test_apply_atomically_migrates_exact_legacy_dependent(
+                tmp_path,
+                "manual",
+            )
+    finally:
+        with pytest.raises(StopIteration):
+            next(preflights)
+
+    rulespec_root = captured["repo"]
+    corpus_root = captured["corpus"]
+    expected_paths = captured["paths"]
+    assert isinstance(rulespec_root, Path)
+    assert isinstance(corpus_root, Path)
+    assert isinstance(expected_paths, tuple)
+    assert len(expected_paths) == 32
+
+    runtime = trusted_real_cli_runtime.__wrapped__(tmp_path_factory)
+    interpreter, runtime_root, _package_root = runtime
+    runtime_git = interpreter.parent / "git"
+    runtime_git.unlink()
+    production_git = Path("/usr/bin/git")
+    if not production_git.is_file():
+        pytest.skip("Protected staging requires production Git at /usr/bin/git")
+    production_git = provisioner._resolve_trusted_git(production_git)
+    provisioner._install_trusted_git_wrapper(
+        interpreter.parent,
+        interpreter,
+        production_git,
+    )
+    warmed_git = subprocess.run(
+        [
+            runtime_git,
+            "-C",
+            str(rulespec_root),
+            "rev-parse",
+            "--show-toplevel",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"HOME": str(runtime_root), "PATH": str(interpreter.parent)},
+    )
+    assert Path(warmed_git.stdout.strip()).resolve() == rulespec_root.resolve()
+
+    completed = _invoke(
+        signing_supervisor,
+        runtime,
+        _launcher(tmp_path, runtime),
+        _trust_config(
+            tmp_path,
+            TEST_APPLY_PUBLIC_KEY_B64,
+            TEST_EVAL_PUBLIC_KEY_B64,
+            TEST_RELEASE_PUBLIC_KEY,
+        ),
+        [],
+        command_args=(
+            "stage-signed-backfill",
+            "--repo",
+            str(rulespec_root),
+            "--corpus-path",
+            str(corpus_root),
+        ),
+        timeout=90,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    staged_raw = subprocess.run(
+        [
+            production_git,
+            "-C",
+            str(rulespec_root),
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "-z",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    staged_paths = {item.decode() for item in staged_raw.split(b"\0") if item}
+    assert staged_paths == {path.as_posix() for path in expected_paths}
+    for relative in expected_paths:
+        live = rulespec_root / relative
+        indexed = subprocess.run(
+            [
+                production_git,
+                "-C",
+                str(rulespec_root),
+                "show",
+                f":{relative.as_posix()}",
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if live.exists():
+            assert indexed.returncode == 0, indexed.stderr.decode()
+            assert indexed.stdout == live.read_bytes()
+        else:
+            assert indexed.returncode != 0
 
 
 def test_supervised_validate_uses_signed_release_and_current_engine_end_to_end(
@@ -2556,11 +2720,17 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert commit_step["id"] == "commit_reviewed_lane_changes"
     assert f"workflow_python=({trusted_python} -I)" in commit_step["run"]
     assert '"${workflow_python[@]}" \\\n' in commit_step["run"]
+    assert "axiom-encode-signing-supervisor \\\n" in commit_step["run"]
+    assert "--trusted-signing-roots" in commit_step["run"]
+    assert "--trusted-python-runtime-root" in commit_step["run"]
+    assert "--trusted-python-import-root" in commit_step["run"]
+    assert "--trusted-python-package-root" in commit_step["run"]
     assert (
-        "axiom-encode/scripts/prepare_signed_backfill.py stage \\\n"
+        "-- /opt/axiom-verification/axiom-encode stage-signed-backfill"
         in (commit_step["run"])
     )
-    assert "--corpus-root axiom-corpus" in commit_step["run"]
+    assert '--repo "$RULESPEC_CHECKOUT"' in commit_step["run"]
+    assert '--corpus-path "$GITHUB_WORKSPACE/axiom-corpus"' in commit_step["run"]
 
     guard_step = next(
         step for step in steps if step.get("name") == "Verify generated provenance"
