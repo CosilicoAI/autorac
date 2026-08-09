@@ -1479,13 +1479,14 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     interpreter, _runtime_root, _package_root = runtime
     runtime_git = interpreter.parent / "git"
     runtime_git.unlink()
-    real_git = shutil.which("git")
-    if real_git is None:
-        pytest.skip("Git is required for protected staging")
+    production_git = Path("/usr/bin/git")
+    if not production_git.is_file():
+        pytest.skip("Protected staging requires production Git at /usr/bin/git")
+    production_git = provisioner._resolve_trusted_git(production_git)
     provisioner._install_trusted_git_wrapper(
         interpreter.parent,
         interpreter,
-        provisioner._resolve_trusted_git(Path(real_git).resolve()),
+        production_git,
     )
 
     completed = _invoke(
@@ -1513,7 +1514,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     assert completed.stderr == ""
     staged_raw = subprocess.run(
         [
-            real_git,
+            production_git,
             "-C",
             str(rulespec_root),
             "diff",
@@ -1530,7 +1531,13 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     for relative in expected_paths:
         live = rulespec_root / relative
         indexed = subprocess.run(
-            [real_git, "-C", str(rulespec_root), "show", f":{relative.as_posix()}"],
+            [
+                production_git,
+                "-C",
+                str(rulespec_root),
+                "show",
+                f":{relative.as_posix()}",
+            ],
             check=False,
             capture_output=True,
         )
