@@ -1940,8 +1940,7 @@ def test_exact_dependent_metadata_reconciliation_is_complete() -> None:
     new_module = moves[0].destination.as_posix()
     dependent = "us-la/policies/income_tax/2026_resident_core.yaml"
     dependent_manifest = (
-        ".axiom/encoding-manifests/us-la/policies/income_tax/"
-        "2026_resident_core.json"
+        ".axiom/encoding-manifests/us-la/policies/income_tax/2026_resident_core.json"
     )
     postimage = (
         "module:\n"

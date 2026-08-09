@@ -2466,6 +2466,7 @@ def _refresh_legacy_receipt_bindings(
 )
 def test_stage_accepts_v2_exact_dependent_with_unchanged_companion(
     tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
     legacy_owner_class: str,
     generated_exact_dependent: bool,
 ) -> None:
@@ -2485,6 +2486,7 @@ def test_stage_accepts_v2_exact_dependent_with_unchanged_companion(
         "us/policies/income_tax/composite.test.yaml"
         not in _git(repo, "diff", "--cached", "--name-only").splitlines()
     )
+    assert capfd.readouterr().err == ""
 
 
 def test_stage_accepts_v5_singular_exact_dependent_noop_migration(

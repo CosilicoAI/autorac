@@ -24423,9 +24423,7 @@ def _legacy_replacement_manifest_issues(
                 moves=primary_moves,
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
                 retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
-                retired_schema_modules=frozenset(
-                    exact_metadata_retired_schema_modules
-                ),
+                retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
                 reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (OSError, RuntimeError, UnsafeCorpusPathError, ValueError) as exc:
@@ -24457,9 +24455,7 @@ def _legacy_replacement_manifest_issues(
                 moves=primary_moves,
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
                 retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
-                retired_schema_modules=frozenset(
-                    exact_metadata_retired_schema_modules
-                ),
+                retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
                 reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (RuntimeError, ValueError):
@@ -26543,9 +26539,9 @@ def _reindex_exact_dependent_modules(
     rewritten["provisions"] = {
         citation: sorted(
             records,
-            key=lambda record: str(record.get("module", ""))
-            if isinstance(record, dict)
-            else "",
+            key=lambda record: (
+                str(record.get("module", "")) if isinstance(record, dict) else ""
+            ),
         )
         for citation, records in sorted(provisions.items())
     }

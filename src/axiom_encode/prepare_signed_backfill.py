@@ -1530,6 +1530,15 @@ def _git(repo: Path, *args: str) -> bytes:
     return subprocess.check_output(["git", "-C", str(repo), *args])
 
 
+def _git_quiet(repo: Path, *args: str) -> bytes:
+    """Run a Git probe whose failure is handled without leaking diagnostics."""
+
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args],
+        stderr=subprocess.PIPE,
+    )
+
+
 def _changed_paths(repo: Path) -> set[PurePosixPath]:
     output = _git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     paths: set[PurePosixPath] = set()
@@ -2826,7 +2835,7 @@ def authorized_changed_paths(
                         exact_metadata_retired_schema_modules.add(primary.as_posix())
             post_migration_waiver_sha256: str | None = None
             try:
-                base_waiver_raw = _git(
+                base_waiver_raw = _git_quiet(
                     repo,
                     "show",
                     "HEAD:known-validation-gaps.yaml",
@@ -2907,7 +2916,11 @@ def authorized_changed_paths(
             expected_metadata_paths: set[PurePosixPath] = set()
             for metadata_path in LEGACY_REPLACEMENT_METADATA_PATHS:
                 try:
-                    base_raw = _git(repo, "show", f"HEAD:{metadata_path.as_posix()}")
+                    base_raw = _git_quiet(
+                        repo,
+                        "show",
+                        f"HEAD:{metadata_path.as_posix()}",
+                    )
                 except subprocess.CalledProcessError:
                     continue
                 try:
