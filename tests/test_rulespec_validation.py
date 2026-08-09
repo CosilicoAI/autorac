@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1643"')
+        .startswith('__version__ = "0.2.1644"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1643"
+    assert encoder_package["version"] == "0.2.1644"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1643"
+    assert project["project"]["version"] == "0.2.1644"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1643"')
+        .startswith('__version__ = "0.2.1644"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1643"
+    assert encoder_package["version"] == "0.2.1644"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1643"
+    assert project["project"]["version"] == "0.2.1644"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1643"')
+        .startswith('__version__ = "0.2.1644"')
     )
 
 
@@ -25692,6 +25692,207 @@ rules:
           resident_individual
           and insufficient_tax_liability_for_section_119_credit
           and expenses_would_be_allowed_under_section_21
+"""
+
+    assert find_source_scope_consistency_issues(content) == []
+
+
+def test_source_scope_consistency_accepts_individual_tax_credit_amount_on_taxunit():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_nominal_earned_income_tax_credit
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    unit: USD
+    period: Year
+    source: La. R.S. 47:297.8(A)(2)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-la/statute/47:297.8
+              excerpt: |-
+                There shall be a credit against the tax imposed by this Chapter
+                for individuals in an amount equal to five percent of the federal
+                earned income tax credit for which the individual is eligible.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_earned_income_tax_credit * earned_income_tax_credit_rate
+"""
+
+    assert find_source_scope_consistency_issues(content) == []
+
+
+def test_source_scope_consistency_still_rejects_individual_tax_credit_eligibility_on_taxunit():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_earned_income_tax_credit_eligible
+    kind: derived
+    entity: TaxUnit
+    dtype: Judgment
+    period: Year
+    source: La. R.S. 47:297.8(A)(2)
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: condition
+            source:
+              excerpt: |-
+                There shall be a credit against the tax imposed by this Chapter
+                for individuals in an amount equal to five percent of the federal
+                earned income tax credit for which the individual is eligible.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: individual_is_eligible_for_federal_earned_income_tax_credit
+"""
+
+    issues = find_source_scope_consistency_issues(content)
+
+    assert issues == [
+        "Source scope mismatch: `resident_earned_income_tax_credit_eligible` "
+        "is declared on `TaxUnit`, but the embedded source states an "
+        "individual/person/member-scoped eligibility or disqualification. "
+        "Encode the rule at the person/member scope or cite source text that "
+        "states the unit-level test."
+    ]
+
+
+def test_source_scope_consistency_still_rejects_person_payment_amount_on_taxunit():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_assistance_amount
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    unit: USD
+    period: Year
+    source: state assistance manual
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: condition
+            source:
+              excerpt: An individual is eligible for an assistance payment.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: individual_assistance_payment
+"""
+
+    issues = find_source_scope_consistency_issues(content)
+
+    assert issues == [
+        "Source scope mismatch: `resident_assistance_amount` is declared on "
+        "`TaxUnit`, but the embedded source states an "
+        "individual/person/member-scoped eligibility or disqualification. "
+        "Encode the rule at the person/member scope or cite source text that "
+        "states the unit-level test."
+    ]
+
+
+def test_source_scope_consistency_still_rejects_mixed_person_proof_on_tax_credit_amount():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_nominal_earned_income_tax_credit
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    unit: USD
+    period: Year
+    source: state income tax statute
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              excerpt: |-
+                There shall be a credit against the tax imposed by this Chapter
+                for individuals in an amount equal to five percent of the federal
+                earned income tax credit for which the individual is eligible.
+          - path: versions[0].formula
+            kind: condition
+            source:
+              excerpt: Each individual who is disabled is eligible for the credit.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_earned_income_tax_credit * earned_income_tax_credit_rate
+"""
+
+    issues = find_source_scope_consistency_issues(content)
+
+    assert issues == [
+        "Source scope mismatch: `resident_nominal_earned_income_tax_credit` is "
+        "declared on `TaxUnit`, but the embedded source states an "
+        "individual/person/member-scoped eligibility or disqualification. "
+        "Encode the rule at the person/member scope or cite source text that "
+        "states the unit-level test."
+    ]
+
+
+def test_source_scope_consistency_still_rejects_inserted_person_clause_in_credit_excerpt():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_nominal_earned_income_tax_credit
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    unit: USD
+    period: Year
+    source: state income tax statute
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              excerpt: |-
+                There shall be a credit against the tax imposed by this Chapter
+                for individuals who are disabled and eligible for assistance in
+                an amount equal to five percent of the federal earned income tax
+                credit for which the individual is eligible.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_earned_income_tax_credit * earned_income_tax_credit_rate
+"""
+
+    issues = find_source_scope_consistency_issues(content)
+
+    assert len(issues) == 1
+    assert "individual/person/member-scoped eligibility" in issues[0]
+
+
+def test_source_scope_consistency_accepts_combined_tax_credit_amount_paragraphs():
+    content = """format: rulespec/v1
+rules:
+  - name: resident_nominal_earned_income_tax_credit
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    unit: USD
+    period: Year
+    source: state income tax statute
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              excerpt: |-
+                There shall be a credit against the tax imposed by this Chapter
+                for individuals in an amount equal to three and one-half percent
+                of the federal earned income tax credit for which the individual
+                is eligible. There shall be a credit against the tax imposed by
+                this Chapter for individuals in an amount equal to five percent
+                of the federal earned income tax credit for which the individual
+                is eligible.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: federal_earned_income_tax_credit * earned_income_tax_credit_rate
 """
 
     assert find_source_scope_consistency_issues(content) == []
