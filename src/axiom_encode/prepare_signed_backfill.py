@@ -46,6 +46,7 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
         PurePosixPath("known-validation-gaps.yaml"),
         PurePosixPath("oracle-coverage-pending.yaml"),
         PurePosixPath("tests/test_encoding_manifests.py"),
+        PurePosixPath("tests/test_legacy_rulespec_freeze.py"),
     }
 )
 RULESPEC_ATOMIC_ROOTS = frozenset(
@@ -2852,6 +2853,37 @@ def authorized_changed_paths(
                 ).hexdigest()
             except (subprocess.CalledProcessError, ValueError):
                 pass
+            retired_schema_count_transition: tuple[int, int] | None = None
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V7:
+                try:
+                    base_retired_freeze_raw = _git_quiet(
+                        repo,
+                        "show",
+                        "HEAD:.axiom/retired-schema-freeze.json",
+                    )
+                    rewritten_retired_freeze_raw, _retired_freeze_operations = (
+                        _legacy_metadata_reconciliation_bytes(
+                            Path(".axiom/retired-schema-freeze.json"),
+                            base_retired_freeze_raw,
+                            moves=primary_moves,
+                            retired_schema_modules=frozenset(
+                                exact_metadata_retired_schema_modules
+                            ),
+                        )
+                    )
+                    before_retired_count = len(
+                        json.loads(base_retired_freeze_raw)["artifacts"]
+                    )
+                    after_retired_count = len(
+                        json.loads(rewritten_retired_freeze_raw)["artifacts"]
+                    )
+                    if after_retired_count < before_retired_count:
+                        retired_schema_count_transition = (
+                            before_retired_count,
+                            after_retired_count,
+                        )
+                except (subprocess.CalledProcessError, ValueError):
+                    pass
             metadata_paths: set[PurePosixPath] = set()
             for index, reconciliation in enumerate(metadata_reconciliations):
                 if not isinstance(reconciliation, dict) or set(reconciliation) != {
@@ -2894,6 +2926,9 @@ def authorized_changed_paths(
                             retired_schema_modules=frozenset(
                                 exact_metadata_retired_schema_modules
                             ),
+                            retired_schema_count_transition=(
+                                retired_schema_count_transition
+                            ),
                             reindexed_modules=exact_metadata_reindexed_modules,
                         )
                     )
@@ -2935,6 +2970,9 @@ def authorized_changed_paths(
                             ),
                             retired_schema_modules=frozenset(
                                 exact_metadata_retired_schema_modules
+                            ),
+                            retired_schema_count_transition=(
+                                retired_schema_count_transition
                             ),
                             reindexed_modules=exact_metadata_reindexed_modules,
                         )

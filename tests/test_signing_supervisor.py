@@ -15,7 +15,7 @@ import tarfile
 import threading
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import _cffi_backend
@@ -1473,7 +1473,11 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     assert isinstance(rulespec_root, Path)
     assert isinstance(corpus_root, Path)
     assert isinstance(expected_paths, tuple)
-    assert len(expected_paths) == 32
+    assert len(expected_paths) == 34
+    assert {
+        PurePosixPath(".axiom/retired-schema-freeze.json"),
+        PurePosixPath("tests/test_legacy_rulespec_freeze.py"),
+    } <= set(expected_paths)
 
     runtime = trusted_real_cli_runtime.__wrapped__(tmp_path_factory)
     interpreter, runtime_root, _package_root = runtime

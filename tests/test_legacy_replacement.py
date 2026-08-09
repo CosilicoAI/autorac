@@ -2014,6 +2014,36 @@ def test_exact_dependent_metadata_reconciliation_is_complete() -> None:
         {"operation": "remove_migrated_retired_schema_modules", "count": 1},
     )
 
+    count_test = (
+        "def test_frozen_legacy_inventory_matches_repository():\n"
+        '    retired = {"artifacts": {}}\n'
+        '    assert len(retired["artifacts"]) == 2\n'
+    ).encode()
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("tests/test_legacy_rulespec_freeze.py"),
+        count_test,
+        moves=moves,
+        retired_schema_count_transition=(2, 1),
+    )
+    assert b'assert len(retired["artifacts"]) == 1' in rewritten
+    assert operations == (
+        {"operation": "decrement_retired_schema_artifact_count", "count": 1},
+    )
+    with pytest.raises(ValueError, match="exact base-count assertion"):
+        _legacy_metadata_reconciliation_bytes(
+            Path("tests/test_legacy_rulespec_freeze.py"),
+            count_test,
+            moves=moves,
+            retired_schema_count_transition=(3, 1),
+        )
+    with pytest.raises(ValueError, match="not decrement-only"):
+        _legacy_metadata_reconciliation_bytes(
+            Path("tests/test_legacy_rulespec_freeze.py"),
+            count_test,
+            moves=moves,
+            retired_schema_count_transition=(2, 2),
+        )
+
 
 def test_toolchain_reconciliation_binds_exact_post_migration_waiver_digest() -> None:
     moves = (

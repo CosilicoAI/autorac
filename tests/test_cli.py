@@ -15215,6 +15215,30 @@ class TestCmdEncode:
             )
             + "    'keep.json',\n}\n"
         )
+        retired_freeze = checkout / ".axiom/retired-schema-freeze.json"
+        retired_freeze.write_text(
+            json.dumps(
+                {
+                    "format": "axiom/retired-schema-freeze/v1",
+                    "artifacts": {
+                        dependent_relative.as_posix(): _sha256_file(dependent),
+                        second_dependent_relative.as_posix(): _sha256_file(
+                            second_dependent
+                        ),
+                        "us-hi/policies/keep.yaml": "a" * 64,
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        retired_freeze_test = checkout / "tests/test_legacy_rulespec_freeze.py"
+        retired_freeze_test.write_text(
+            "def test_frozen_legacy_inventory_matches_repository():\n"
+            "    retired = {'artifacts': {}}\n"
+            '    assert len(retired["artifacts"]) == 3\n'
+        )
         _git(checkout, "init", "-b", "main")
         _git(checkout, "config", "user.email", "test@example.com")
         _git(checkout, "config", "user.name", "Test User")
@@ -15569,10 +15593,12 @@ class TestCmdEncode:
         assert {item["path"] for item in metadata_reconciliations} == {
             ".axiom/index/provisions_to_rules.json",
             ".axiom/pending-validation-fingerprints.json",
+            ".axiom/retired-schema-freeze.json",
             ".axiom/toolchain.toml",
             "known-validation-gaps.yaml",
             "oracle-coverage-pending.yaml",
             "tests/test_encoding_manifests.py",
+            "tests/test_legacy_rulespec_freeze.py",
         }
         for reconciliation in metadata_reconciliations:
             metadata_path = checkout / reconciliation["path"]
@@ -15590,6 +15616,13 @@ class TestCmdEncode:
             )
         assert source_manifest.relative_to(checkout).as_posix().encode() not in (
             manifest_inventory.read_bytes()
+        )
+        retired_artifact_count = len(
+            json.loads(retired_freeze.read_text())["artifacts"]
+        )
+        assert (
+            f'assert len(retired["artifacts"]) == {retired_artifact_count}'
+            in retired_freeze_test.read_text()
         )
         assert receipt["legacy"]["owner_class"] == "v1-hmac-untrusted"
         assert receipt["replacement"]["destination_predecessor_class"] == (
