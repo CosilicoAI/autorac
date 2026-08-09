@@ -12573,6 +12573,20 @@ _PERSON_SCOPE_SOURCE_PATTERN = re.compile(
     r"allowed\s+(?:a\s+)?credit)",
     flags=re.IGNORECASE,
 )
+_INDIVIDUAL_TAX_CREDIT_AMOUNT_SOURCE_PATTERN = re.compile(
+    r"\bcredit\s+against\s+the\s+tax\s+imposed\b"
+    r"[\s\S]{0,240}?\b(?:resident\s+)?individuals?\b"
+    r"[\s\S]{0,240}?\bin\s+an?\s+amount\s+equal\s+to\b"
+    r"[\s\S]{0,300}?\bfederal\s+earned\s+income\s+tax\s+credit\s+"
+    r"(?P<eligibility_phrase>for\s+which\s+the\s+individual\s+is\s+eligible)\b",
+    flags=re.IGNORECASE,
+)
+_INDIVIDUAL_TAX_CREDIT_RESIDUAL_PERSON_SCOPE_PATTERN = re.compile(
+    r"\b(?:individuals?|persons?)\b[\s\S]{0,180}\b"
+    r"(?:eligible|ineligible|disqualif|excluded?|participat|"
+    r"allowed\s+(?:a\s+)?credit)\b",
+    flags=re.IGNORECASE,
+)
 _HEAD_OF_HOUSEHOLD_FILING_STATUS_PATTERN = re.compile(
     r"\bhead(?:\s+|\s*[-‐‑‒–—―−]\s*)of"
     r"(?:\s+|\s*[-‐‑‒–—―−]\s*)household\b",
@@ -12968,6 +12982,48 @@ def _person_rule_can_use_unit_scoped_chip_income_source(
     return bool(_CHIP_PERSON_ELIGIBILITY_CONTEXT_PATTERN.search(eligibility_context))
 
 
+def _taxunit_money_rule_can_use_individual_tax_credit_amount_source(
+    rule: dict[str, Any],
+) -> bool:
+    """Allow a filed tax-credit amount whose statute calls the filer individual.
+
+    State income-tax statutes commonly grant a credit against tax "for
+    individuals" and describe the federal credit for which "the individual is
+    eligible." That wording establishes the taxpayer class and amount base; it
+    does not turn the resulting monetary credit against tax into a person-level
+    eligibility judgment.
+    """
+    if str(rule.get("entity") or "").strip().lower() != "taxunit":
+        return False
+    if str(rule.get("dtype") or "").strip().lower() != "money":
+        return False
+    name = str(rule.get("name") or "").strip()
+    if not _FINAL_AMOUNT_NAME_PATTERN.search(name):
+        return False
+    saw_tax_credit_amount_source = False
+    for excerpt in _rule_proof_source_excerpts(rule):
+        matches = list(_INDIVIDUAL_TAX_CREDIT_AMOUNT_SOURCE_PATTERN.finditer(excerpt))
+        if matches:
+            saw_tax_credit_amount_source = True
+            remaining_characters = list(excerpt)
+            for match in matches:
+                phrase_start, phrase_end = match.span("eligibility_phrase")
+                remaining_characters[phrase_start:phrase_end] = " " * (
+                    phrase_end - phrase_start
+                )
+            remaining_text = "".join(remaining_characters)
+        else:
+            remaining_text = excerpt
+        classification_text = _mask_household_filing_statuses(remaining_text)
+        if _PERSON_SCOPE_SOURCE_PATTERN.search(
+            classification_text
+        ) or _INDIVIDUAL_TAX_CREDIT_RESIDUAL_PERSON_SCOPE_PATTERN.search(
+            classification_text
+        ):
+            return False
+    return saw_tax_credit_amount_source
+
+
 def _medicaid_magi_rule_has_income_only_formula(rule: dict[str, Any]) -> bool:
     versions = rule.get("versions")
     if not isinstance(versions, list):
@@ -13110,6 +13166,8 @@ def find_source_scope_consistency_issues(content: str) -> list[str]:
             source_scope == _SOURCE_SCOPE_PERSON
             and normalized_entity in _UNIT_SCOPED_ENTITY_NAMES
         ):
+            if _taxunit_money_rule_can_use_individual_tax_credit_amount_source(rule):
+                continue
             issues.append(
                 "Source scope mismatch: "
                 f"`{name}` is declared on `{entity}`, but the embedded source "
