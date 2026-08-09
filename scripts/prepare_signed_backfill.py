@@ -31,6 +31,11 @@ for _name in dir(_implementation):
         globals()[_name] = getattr(_implementation, _name)
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "stage":
+        sys.argv[2:] = [
+            "--corpus-path" if argument == "--corpus-root" else argument
+            for argument in sys.argv[2:]
+        ]
     _implementation.main()
 else:
     sys.modules[__name__] = _implementation

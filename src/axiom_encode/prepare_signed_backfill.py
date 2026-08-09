@@ -3423,7 +3423,7 @@ def main() -> None:
     base_parser.add_argument("pr_base_branch", nargs="?", default="main")
     stage_parser = subparsers.add_parser("stage")
     stage_parser.add_argument("repo", type=Path)
-    stage_parser.add_argument("--corpus-root", type=Path)
+    stage_parser.add_argument("--corpus-path", dest="corpus_root", type=Path)
     cascade_parser = subparsers.add_parser("validate-dependent-cascade")
     cascade_parser.add_argument("repo", type=Path)
     cascade_parser.add_argument("target_citation")
