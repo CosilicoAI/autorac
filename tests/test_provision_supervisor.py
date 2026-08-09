@@ -885,6 +885,10 @@ class TestTrustedGit:
             ["add", "--", "./b.txt"],
             ["add", "--", str(repository / "b.txt")],
             ["add", "--", ":(glob)*"],
+            ["add", "--", "*.txt"],
+            ["add", "--", "b?.txt"],
+            ["add", "--", "[ab].txt"],
+            ["add", "--", "b\\*.txt"],
             ["add", "--", "-b.txt"],
         )
         for command in refused_arguments:

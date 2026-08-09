@@ -515,6 +515,7 @@ def _install_trusted_git_wrapper(
         "    return (\n"
         "        bool(value)\n"
         "        and not value.startswith(('-', ':', '/'))\n"
+        "        and not any(character in value for character in '*?[\\\\')\n"
         "        and all(part not in {'', '.', '..'} for part in value.split('/'))\n"
         "    )\n"
         "def allowed_options():\n"
