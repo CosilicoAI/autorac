@@ -41,6 +41,7 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
     {
         PurePosixPath(".axiom/index/provisions_to_rules.json"),
         PurePosixPath(".axiom/pending-validation-fingerprints.json"),
+        PurePosixPath(".axiom/retired-schema-freeze.json"),
         PurePosixPath(".axiom/toolchain.toml"),
         PurePosixPath("known-validation-gaps.yaml"),
         PurePosixPath("oracle-coverage-pending.yaml"),
@@ -96,6 +97,10 @@ REVIEWED_RULESPEC_REFS = frozenset(
         (
             "us",
             "e942ce50546b1c3a1c0c8f3f0404a217eddbe071",
+        ),
+        (
+            "us",
+            "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c",
         ),
         (
             "us",
