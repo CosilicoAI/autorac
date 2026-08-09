@@ -3415,7 +3415,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_protected_branch_tip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "rulespec-us"
-    reviewed_ref = "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c"
+    reviewed_ref = "2a503a5c9a2227c363aceaece6c547429c3c0878"
     git_calls: list[tuple[str, ...]] = []
 
     def fake_git(_repo: Path, *args: str) -> bytes:
