@@ -23,6 +23,13 @@ _implementation = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _implementation
 _spec.loader.exec_module(_implementation)
 
+# ``runpy.run_path`` returns this wrapper's globals rather than consulting the
+# replacement in ``sys.modules``.  Preserve the historical helper contract for
+# callers that load this script that way (notably extract_repair_candidate.py).
+for _name in dir(_implementation):
+    if not _name.startswith("_"):
+        globals()[_name] = getattr(_implementation, _name)
+
 if __name__ == "__main__":
     _implementation.main()
 else:
