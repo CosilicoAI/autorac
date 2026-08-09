@@ -1442,9 +1442,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
     def capture_transaction(repo: Path, *, corpus_root: Path) -> tuple[Path, ...]:
         captured["repo"] = Path(repo)
         captured["corpus"] = Path(corpus_root)
-        captured["paths"] = tuple(
-            real_authorized(repo, corpus_root=corpus_root)
-        )
+        captured["paths"] = tuple(real_authorized(repo, corpus_root=corpus_root))
         raise TransactionCaptured
 
     try:
@@ -1526,9 +1524,7 @@ def test_protected_supervisor_stages_authenticated_v7_exact_dependent_transactio
         check=True,
         capture_output=True,
     ).stdout
-    staged_paths = {
-        item.decode() for item in staged_raw.split(b"\0") if item
-    }
+    staged_paths = {item.decode() for item in staged_raw.split(b"\0") if item}
     assert staged_paths == {path.as_posix() for path in expected_paths}
     for relative in expected_paths:
         live = rulespec_root / relative
