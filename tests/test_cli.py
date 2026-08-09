@@ -15112,10 +15112,28 @@ class TestCmdEncode:
         provision_index.write_text(
             json.dumps(
                 {
-                    "records": [
-                        *[{"module": module} for module in old_modules],
-                        *[{"module": module} for module in canonical_modules],
-                    ]
+                    "schema": "axiom.rulespec.provisions_to_rules/v1",
+                    "description": "exact dependent migration fixture",
+                    "provisions": {
+                        "us-la/statute/47/32": [
+                            *[
+                                {"module": module, "via": ["module"]}
+                                for module in old_modules
+                            ],
+                            *[
+                                {"module": module, "via": ["module"]}
+                                for module in canonical_modules
+                            ],
+                            {
+                                "module": dependent_relative.as_posix(),
+                                "via": ["module", "proof_atom"],
+                            },
+                            {
+                                "module": second_dependent_relative.as_posix(),
+                                "via": ["module", "proof_atom"],
+                            },
+                        ]
+                    },
                 },
                 indent=2,
             )
