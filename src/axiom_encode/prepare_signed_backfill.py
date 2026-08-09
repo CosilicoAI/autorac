@@ -41,6 +41,7 @@ LEGACY_REPLACEMENT_METADATA_PATHS = frozenset(
     {
         PurePosixPath(".axiom/index/provisions_to_rules.json"),
         PurePosixPath(".axiom/pending-validation-fingerprints.json"),
+        PurePosixPath(".axiom/retired-schema-freeze.json"),
         PurePosixPath(".axiom/toolchain.toml"),
         PurePosixPath("known-validation-gaps.yaml"),
         PurePosixPath("oracle-coverage-pending.yaml"),
@@ -96,6 +97,10 @@ REVIEWED_RULESPEC_REFS = frozenset(
         (
             "us",
             "e942ce50546b1c3a1c0c8f3f0404a217eddbe071",
+        ),
+        (
+            "us",
+            "dc87ef6212accbc4ff67b81f97b6ddf0cf3b5a5c",
         ),
         (
             "us",
@@ -1525,6 +1530,15 @@ def _git(repo: Path, *args: str) -> bytes:
     return subprocess.check_output(["git", "-C", str(repo), *args])
 
 
+def _git_quiet(repo: Path, *args: str) -> bytes:
+    """Run a Git probe whose failure is handled without leaking diagnostics."""
+
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args],
+        stderr=subprocess.PIPE,
+    )
+
+
 def _changed_paths(repo: Path) -> set[PurePosixPath]:
     output = _git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     paths: set[PurePosixPath] = set()
@@ -2772,9 +2786,56 @@ def authorized_changed_paths(
                 for old, new in authoritative_replacements.items()
                 if old.endswith(".yaml") and not old.endswith(".test.yaml")
             ]
+            exact_metadata_manifest_paths: set[str] = set()
+            exact_metadata_retired_schema_modules: set[str] = set()
+            exact_metadata_reindexed_modules: dict[str, bytes] = {}
+            if receipt_schema == LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V7:
+                assert isinstance(exact_dependents, list)
+                for index, dependent in enumerate(exact_dependents):
+                    label = f"{relative} exact_dependents[{index}]"
+                    if not isinstance(dependent, dict):
+                        raise ValueError(f"{label} is malformed")
+                    primary = _safe_relative_path(
+                        dependent.get("primary"),
+                        label=f"{label}.primary",
+                    )
+                    manifest = dependent.get("legacy_manifest")
+                    expected_manifest = MANIFEST_ROOT / primary.with_suffix(".json")
+                    if (
+                        not isinstance(manifest, dict)
+                        or manifest.get("path") != expected_manifest.as_posix()
+                    ):
+                        raise ValueError(f"{label}.legacy_manifest is malformed")
+                    dependent_live_files = dependent.get("live_files")
+                    primary_records = (
+                        [
+                            item
+                            for item in dependent_live_files
+                            if isinstance(item, dict)
+                            and item.get("path") == primary.as_posix()
+                        ]
+                        if isinstance(dependent_live_files, list)
+                        else []
+                    )
+                    live_primary = _read_bounded_regular(
+                        repo,
+                        primary,
+                        label="legacy exact dependent primary",
+                        max_bytes=16 * 1024 * 1024,
+                    )
+                    if (
+                        len(primary_records) != 1
+                        or primary_records[0].get("sha256")
+                        != hashlib.sha256(live_primary).hexdigest()
+                    ):
+                        raise ValueError(f"{label}.live_files do not bind primary")
+                    exact_metadata_manifest_paths.add(expected_manifest.as_posix())
+                    exact_metadata_reindexed_modules[primary.as_posix()] = live_primary
+                    if dependent.get("source_verification_migration") is not None:
+                        exact_metadata_retired_schema_modules.add(primary.as_posix())
             post_migration_waiver_sha256: str | None = None
             try:
-                base_waiver_raw = _git(
+                base_waiver_raw = _git_quiet(
                     repo,
                     "show",
                     "HEAD:known-validation-gaps.yaml",
@@ -2827,6 +2888,13 @@ def authorized_changed_paths(
                             base_raw,
                             moves=primary_moves,
                             validation_waiver_set_sha256=(post_migration_waiver_sha256),
+                            retired_manifest_paths=frozenset(
+                                exact_metadata_manifest_paths
+                            ),
+                            retired_schema_modules=frozenset(
+                                exact_metadata_retired_schema_modules
+                            ),
+                            reindexed_modules=exact_metadata_reindexed_modules,
                         )
                     )
                 except ValueError as exc:
@@ -2848,7 +2916,11 @@ def authorized_changed_paths(
             expected_metadata_paths: set[PurePosixPath] = set()
             for metadata_path in LEGACY_REPLACEMENT_METADATA_PATHS:
                 try:
-                    base_raw = _git(repo, "show", f"HEAD:{metadata_path.as_posix()}")
+                    base_raw = _git_quiet(
+                        repo,
+                        "show",
+                        f"HEAD:{metadata_path.as_posix()}",
+                    )
                 except subprocess.CalledProcessError:
                     continue
                 try:
@@ -2858,6 +2930,13 @@ def authorized_changed_paths(
                             base_raw,
                             moves=primary_moves,
                             validation_waiver_set_sha256=(post_migration_waiver_sha256),
+                            retired_manifest_paths=frozenset(
+                                exact_metadata_manifest_paths
+                            ),
+                            retired_schema_modules=frozenset(
+                                exact_metadata_retired_schema_modules
+                            ),
+                            reindexed_modules=exact_metadata_reindexed_modules,
                         )
                     )
                 except ValueError:

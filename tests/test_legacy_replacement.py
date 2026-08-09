@@ -1929,6 +1929,92 @@ def test_five_inventory_reconciliation_is_exact_and_deterministic() -> None:
         assert old_manifest.encode() not in rewritten
 
 
+def test_exact_dependent_metadata_reconciliation_is_complete() -> None:
+    moves = (
+        PlannedMove(
+            source=Path("us-la/statutes/47:32.yaml"),
+            destination=Path("us-la/statutes/47/32.yaml"),
+        ),
+    )
+    old_module = moves[0].source.as_posix()
+    new_module = moves[0].destination.as_posix()
+    dependent = "us-la/policies/income_tax/2026_resident_core.yaml"
+    dependent_manifest = (
+        ".axiom/encoding-manifests/us-la/policies/income_tax/2026_resident_core.json"
+    )
+    postimage = (
+        "module:\n"
+        "  source_verification:\n"
+        "    corpus_citation_path: us-la/statute/47:32\n"
+        "rules:\n"
+        "  - name: amount\n"
+        "    metadata:\n"
+        "      proof:\n"
+        "        atoms:\n"
+        "          - source:\n"
+        "              corpus_citation_path: us-la/statute/47:44.1\n"
+    ).encode()
+    index = {
+        "schema": "axiom.rulespec.provisions_to_rules/v1",
+        "description": "test",
+        "provisions": {
+            "us-la/statute/47:32": [
+                {"module": old_module, "via": ["module"]},
+                {"module": new_module, "via": ["module"]},
+                {"module": dependent, "via": ["module", "proof_atom"]},
+            ],
+            "us-la/statute/47:44.1": [
+                {"module": dependent, "via": ["proof_atom"]},
+            ],
+        },
+    }
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path(".axiom/index/provisions_to_rules.json"),
+        (json.dumps(index, indent=2) + "\n").encode(),
+        moves=moves,
+        reindexed_modules={dependent: postimage},
+    )
+    payload = json.loads(rewritten)
+    assert operations == (
+        {"operation": "remove_legacy_module_records", "count": 1},
+        {"operation": "reindex_exact_dependent_modules", "count": 1},
+    )
+    assert payload["provisions"]["us-la/statute/47:32"] == [
+        {"module": dependent, "via": ["module"]},
+        {"module": new_module, "via": ["module"]},
+    ]
+    assert payload["provisions"]["us-la/statute/47:44.1"] == [
+        {"module": dependent, "via": ["proof_atom"]},
+    ]
+
+    allowlist = f"ALLOW = {{\n    '{dependent_manifest}',\n    'keep.json',\n}}\n"
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path("tests/test_encoding_manifests.py"),
+        allowlist.encode(),
+        moves=moves,
+        retired_manifest_paths=frozenset({dependent_manifest}),
+    )
+    assert dependent_manifest.encode() not in rewritten
+    assert operations == (
+        {"operation": "remove_retired_manifest_allowances", "count": 1},
+    )
+
+    freeze = {
+        "format": "axiom/retired-schema-freeze/v1",
+        "artifacts": {dependent: "a" * 64, "us-hi/policies/keep.yaml": "b" * 64},
+    }
+    rewritten, operations = _legacy_metadata_reconciliation_bytes(
+        Path(".axiom/retired-schema-freeze.json"),
+        (json.dumps(freeze, indent=2) + "\n").encode(),
+        moves=moves,
+        retired_schema_modules=frozenset({dependent}),
+    )
+    assert dependent not in json.loads(rewritten)["artifacts"]
+    assert operations == (
+        {"operation": "remove_migrated_retired_schema_modules", "count": 1},
+    )
+
+
 def test_toolchain_reconciliation_binds_exact_post_migration_waiver_digest() -> None:
     moves = (
         PlannedMove(

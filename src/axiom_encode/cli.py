@@ -597,6 +597,7 @@ _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
     {
         Path(".axiom/index/provisions_to_rules.json"),
         Path(".axiom/pending-validation-fingerprints.json"),
+        Path(".axiom/retired-schema-freeze.json"),
         Path(".axiom/toolchain.toml"),
         Path("known-validation-gaps.yaml"),
         Path("oracle-coverage-pending.yaml"),
@@ -23648,6 +23649,9 @@ def _legacy_replacement_manifest_issues(
             )
     seen_exact_primaries: set[str] = set()
     seen_exact_files: set[str] = set()
+    exact_metadata_manifest_paths: set[str] = set()
+    exact_metadata_retired_schema_modules: set[str] = set()
+    exact_metadata_reindexed_modules: dict[str, bytes] = {}
     for dependent in exact_dependents:
         expected_dependent_fields = {
             "primary",
@@ -23872,6 +23876,7 @@ def _legacy_replacement_manifest_issues(
             issues.append(f"{manifest_label} exact dependent rewrites are malformed")
             continue
         expected_rewrite_paths: set[Path] = set()
+        live_primary_raw: bytes | None = None
         for path in sorted(expected_group, key=Path.as_posix):
             try:
                 base_raw = _rulespec_migration_base_blob(repo_path, base_commit, path)
@@ -23882,6 +23887,8 @@ def _legacy_replacement_manifest_issues(
                     max_bytes=16 * 1024 * 1024,
                     required_mode=0o644,
                 )
+                if path == primary_path:
+                    live_primary_raw = live_raw
                 rewritten, counts = rewrite_exact_references(
                     base_raw, exact_authoritative_replacements
                 )
@@ -24160,6 +24167,11 @@ def _legacy_replacement_manifest_issues(
                 f"{manifest_label} exact dependent lacks its authenticated v5 "
                 f"migration manifest for {primary}"
             )
+        if live_primary_raw is not None:
+            exact_metadata_manifest_paths.add(dependent_manifest_path.as_posix())
+            exact_metadata_reindexed_modules[primary] = live_primary_raw
+            if receipt_source_verification_migration is not None:
+                exact_metadata_retired_schema_modules.add(primary)
 
     retained_successors = replacement.get("retained_successors", [])
     retained_deleted_entries: list[dict[str, object]] = []
@@ -24410,6 +24422,9 @@ def _legacy_replacement_manifest_issues(
                 base_raw,
                 moves=primary_moves,
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
+                retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
+                retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
+                reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (OSError, RuntimeError, UnsafeCorpusPathError, ValueError) as exc:
             issues.append(
@@ -24439,6 +24454,9 @@ def _legacy_replacement_manifest_issues(
                 base_raw,
                 moves=primary_moves,
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
+                retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
+                retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
+                reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (RuntimeError, ValueError):
             continue
@@ -26437,6 +26455,99 @@ def _index_module_record_counts(value: object) -> Counter[str]:
     return counts
 
 
+def _rulespec_index_references(raw: bytes) -> dict[str, set[str]]:
+    """Return the reverse-index references for one authenticated module postimage."""
+
+    try:
+        payload = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("exact dependent postimage is not valid UTF-8 YAML") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("exact dependent postimage is not a RuleSpec mapping")
+    references: dict[str, set[str]] = {}
+    module = payload.get("module")
+    verification = (
+        module.get("source_verification") if isinstance(module, dict) else None
+    )
+    if isinstance(verification, dict):
+        citations: list[object] = [verification.get("corpus_citation_path")]
+        plural = verification.get("corpus_citation_paths")
+        if isinstance(plural, list):
+            citations.extend(plural)
+        for value in citations:
+            if isinstance(value, str) and value.strip():
+                references.setdefault(value.strip(), set()).add("module")
+    rules = payload.get("rules")
+    if isinstance(rules, list):
+        for rule in rules:
+            metadata = rule.get("metadata") if isinstance(rule, dict) else None
+            proof = metadata.get("proof") if isinstance(metadata, dict) else None
+            atoms = proof.get("atoms") if isinstance(proof, dict) else None
+            if not isinstance(atoms, list):
+                continue
+            for atom in atoms:
+                source = atom.get("source") if isinstance(atom, dict) else None
+                citation = (
+                    source.get("corpus_citation_path")
+                    if isinstance(source, dict)
+                    else None
+                )
+                if isinstance(citation, str) and citation.strip():
+                    references.setdefault(citation.strip(), set()).add("proof_atom")
+    return references
+
+
+def _reindex_exact_dependent_modules(
+    value: object,
+    *,
+    modules: Mapping[str, bytes],
+) -> tuple[object, int]:
+    """Replace reverse-index records for exact dependent module postimages."""
+
+    if not modules:
+        return value, 0
+    if not isinstance(value, dict) or not isinstance(value.get("provisions"), dict):
+        raise ValueError("legacy provision index has an unsupported schema")
+    before_counts = _index_module_record_counts(value)
+    missing = sorted(module for module in modules if before_counts[module] == 0)
+    if missing:
+        raise ValueError(
+            "legacy provision index lacks exact dependent module records: "
+            + ", ".join(missing)
+        )
+    rewritten, removed = _remove_index_module_records(
+        value,
+        old_modules=set(modules),
+    )
+    if removed != sum(before_counts[module] for module in modules):
+        raise ValueError("exact dependent provision index removal is inconsistent")
+    assert isinstance(rewritten, dict)
+    provisions = rewritten.get("provisions")
+    assert isinstance(provisions, dict)
+    for citation in list(provisions):
+        records = provisions[citation]
+        if not isinstance(records, list):
+            raise ValueError("legacy provision index records are malformed")
+        if not records:
+            del provisions[citation]
+    for module_path, module_raw in sorted(modules.items()):
+        for citation, kinds in sorted(_rulespec_index_references(module_raw).items()):
+            records = provisions.setdefault(citation, [])
+            if not isinstance(records, list):
+                raise ValueError("legacy provision index records are malformed")
+            records.append({"module": module_path, "via": sorted(kinds)})
+    rewritten["provisions"] = {
+        citation: sorted(
+            records,
+            key=lambda record: (
+                str(record.get("module", "")) if isinstance(record, dict) else ""
+            ),
+        )
+        for citation, records in sorted(provisions.items())
+    }
+    return rewritten, len(modules)
+
+
 def _line_preserving_yaml_mapping_removal(
     raw: bytes,
     *,
@@ -26619,6 +26730,9 @@ def _legacy_metadata_reconciliation_bytes(
     *,
     moves: Sequence[PlannedMove],
     validation_waiver_set_sha256: str | None = None,
+    retired_manifest_paths: frozenset[str] = frozenset(),
+    retired_schema_modules: frozenset[str] = frozenset(),
+    reindexed_modules: Mapping[str, bytes] | None = None,
 ) -> tuple[bytes, tuple[dict[str, object], ...]]:
     """Apply one audited metadata cleanup from an explicit move set."""
 
@@ -26626,7 +26740,8 @@ def _legacy_metadata_reconciliation_bytes(
     old_identities = {rulespec_identity(move.source) for move in moves}
     old_manifests = {
         _applied_encoding_manifest_path(move.source).as_posix() for move in moves
-    }
+    } | set(retired_manifest_paths)
+    reindexed_modules = dict(reindexed_modules or {})
     if path == Path(".axiom/toolchain.toml"):
         if (
             validation_waiver_set_sha256 is None
@@ -26670,8 +26785,24 @@ def _legacy_metadata_reconciliation_bytes(
         after, count = _remove_index_module_records(before, old_modules=old_modules)
         if count != sum(module_counts[module] for module in old_modules):
             raise ValueError("legacy provision index removal count is inconsistent")
+        after, reindexed_count = _reindex_exact_dependent_modules(
+            after,
+            modules=reindexed_modules,
+        )
         rewritten = (json.dumps(after, indent=2, ensure_ascii=False) + "\n").encode()
-        operations = ({"operation": "remove_legacy_module_records", "count": count},)
+        operations = (
+            {"operation": "remove_legacy_module_records", "count": count},
+            *(
+                (
+                    {
+                        "operation": "reindex_exact_dependent_modules",
+                        "count": reindexed_count,
+                    },
+                )
+                if reindexed_modules
+                else ()
+            ),
+        )
     elif path == Path(".axiom/pending-validation-fingerprints.json"):
         try:
             before = json.loads(raw.decode("utf-8"))
@@ -26680,6 +26811,41 @@ def _legacy_metadata_reconciliation_bytes(
         after, count = _remove_nested_mapping_keys(before, old_modules)
         rewritten = (json.dumps(after, indent=2, ensure_ascii=True) + "\n").encode()
         operations = ({"operation": "remove_legacy_fingerprints", "count": count},)
+    elif path == Path(".axiom/retired-schema-freeze.json"):
+        try:
+            before = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("retired-schema freeze is invalid JSON") from exc
+        if (
+            not isinstance(before, dict)
+            or set(before) != {"format", "artifacts"}
+            or before.get("format") != "axiom/retired-schema-freeze/v1"
+            or not isinstance(before.get("artifacts"), dict)
+        ):
+            raise ValueError("retired-schema freeze has an unsupported schema")
+        artifacts = before["artifacts"]
+        assert isinstance(artifacts, dict)
+        missing = sorted(set(retired_schema_modules) - set(artifacts))
+        if missing:
+            raise ValueError(
+                "retired-schema freeze lacks migrated exact dependents: "
+                + ", ".join(missing)
+            )
+        after = copy.deepcopy(before)
+        after_artifacts = after["artifacts"]
+        assert isinstance(after_artifacts, dict)
+        removed_modules = set(retired_schema_modules) | (old_modules & set(artifacts))
+        for module in removed_modules:
+            del after_artifacts[module]
+        rewritten = (
+            json.dumps(after, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+        ).encode()
+        operations = (
+            {
+                "operation": "remove_migrated_retired_schema_modules",
+                "count": len(removed_modules),
+            },
+        )
     elif path == Path("known-validation-gaps.yaml"):
         rewritten, count = _line_preserving_yaml_mapping_removal(raw, keys=old_modules)
         operations = ({"operation": "remove_legacy_validation_gaps", "count": count},)
@@ -26731,6 +26897,7 @@ def _legacy_metadata_reconciliations(
     base_commit: str,
     tracked: Mapping[Path, str],
     moves: Sequence[PlannedMove],
+    exact_dependents: Sequence[_LegacyReplacementExactDependent] = (),
 ) -> tuple[_LegacyReplacementRewrite, ...]:
     """Build audited path-move metadata and its derived toolchain binding."""
 
@@ -26738,12 +26905,29 @@ def _legacy_metadata_reconciliations(
         return ()
     old_modules = {move.source.as_posix() for move in moves}
     old_identities = {rulespec_identity(move.source) for move in moves}
+    retired_manifest_paths = frozenset(
+        dependent.legacy_manifest.path.as_posix() for dependent in exact_dependents
+    )
     old_manifests = {
         _applied_encoding_manifest_path(move.source).as_posix() for move in moves
+    } | set(retired_manifest_paths)
+    retired_schema_modules = frozenset(
+        dependent.primary.as_posix()
+        for dependent in exact_dependents
+        if dependent.source_verification_migration is not None
+    )
+    reindexed_modules = {
+        dependent.primary.as_posix(): next(
+            item.raw for item in dependent.live_files if item.path == dependent.primary
+        )
+        for dependent in exact_dependents
     }
     relevant_values = {
-        Path(".axiom/index/provisions_to_rules.json"): old_modules,
+        Path(".axiom/index/provisions_to_rules.json"): old_modules
+        | set(reindexed_modules),
         Path(".axiom/pending-validation-fingerprints.json"): old_modules,
+        Path(".axiom/retired-schema-freeze.json"): old_modules
+        | set(retired_schema_modules),
         Path("known-validation-gaps.yaml"): old_modules,
         Path("oracle-coverage-pending.yaml"): old_identities,
         Path("tests/test_encoding_manifests.py"): old_manifests,
@@ -26795,6 +26979,9 @@ def _legacy_metadata_reconciliations(
             raw,
             moves=moves,
             validation_waiver_set_sha256=post_migration_waiver_sha256,
+            retired_manifest_paths=retired_manifest_paths,
+            retired_schema_modules=retired_schema_modules,
+            reindexed_modules=reindexed_modules,
         )
         if rewritten == raw:
             continue
@@ -27614,14 +27801,23 @@ def _resolve_legacy_replacement_contract(
         ],
         *[item.successor_manifest.path for item in retained_successors],
     }
-    metadata_reconciliations = _legacy_metadata_reconciliations(
+    # Shared metadata affected by path moves is known now; exact-dependent
+    # metadata is completed after those authenticated postimages are built.
+    preliminary_metadata_reconciliations = _legacy_metadata_reconciliations(
         checkout_root=policy_checkout_path,
         base_commit=base_commit,
         tracked=tracked,
         moves=all_moves,
     )
-    metadata_reconciliation_paths = {item.path for item in metadata_reconciliations}
-    excluded.update(metadata_reconciliation_paths)
+    excluded.update(item.path for item in preliminary_metadata_reconciliations)
+    if exact_groups:
+        excluded.update(
+            {
+                Path(".axiom/index/provisions_to_rules.json"),
+                Path(".axiom/retired-schema-freeze.json"),
+                Path("tests/test_encoding_manifests.py"),
+            }
+        )
     for successor in retained_successors:
         for item in successor.successor_files:
             _unused, successor_counts = rewrite_exact_references(
@@ -27862,6 +28058,14 @@ def _resolve_legacy_replacement_contract(
                 source_verification_migration=primary_source_migration,
             )
         )
+
+    metadata_reconciliations = _legacy_metadata_reconciliations(
+        checkout_root=policy_checkout_path,
+        base_commit=base_commit,
+        tracked=tracked,
+        moves=all_moves,
+        exact_dependents=exact_dependents,
+    )
 
     return _LegacyReplacementContract(
         base_commit=base_commit,
