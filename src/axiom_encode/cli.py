@@ -593,6 +593,7 @@ _LEGACY_REPLACEMENT_RECEIPT_FIELDS = frozenset(
         "signature",
     }
 )
+_RETIRED_SCHEMA_COUNT_TEST_PATH = Path("tests/test_legacy_rulespec_freeze.py")
 _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
     {
         Path(".axiom/index/provisions_to_rules.json"),
@@ -602,6 +603,7 @@ _LEGACY_REPLACEMENT_METADATA_REWRITE_PATHS = frozenset(
         Path("known-validation-gaps.yaml"),
         Path("oracle-coverage-pending.yaml"),
         Path("tests/test_encoding_manifests.py"),
+        _RETIRED_SCHEMA_COUNT_TEST_PATH,
     }
 )
 _MODEL_APPLIED_FILE_FIELDS = frozenset({"path", "sha256"})
@@ -24387,6 +24389,35 @@ def _legacy_replacement_manifest_issues(
         post_migration_waiver_sha256 = hashlib.sha256(rewritten_waiver_raw).hexdigest()
     except (RuntimeError, ValueError):
         pass
+    retired_schema_count_transition: tuple[int, int] | None = None
+    if receipt_schema == APPLIED_ENCODING_LEGACY_REPLACEMENT_RECEIPT_SCHEMA:
+        try:
+            base_retired_freeze_raw = _rulespec_migration_base_blob(
+                repo_path,
+                base_commit,
+                Path(".axiom/retired-schema-freeze.json"),
+            )
+            rewritten_retired_freeze_raw, _retired_freeze_operations = (
+                _legacy_metadata_reconciliation_bytes(
+                    Path(".axiom/retired-schema-freeze.json"),
+                    base_retired_freeze_raw,
+                    moves=primary_moves,
+                    retired_schema_modules=frozenset(
+                        exact_metadata_retired_schema_modules
+                    ),
+                )
+            )
+            before_retired_count = len(json.loads(base_retired_freeze_raw)["artifacts"])
+            after_retired_count = len(
+                json.loads(rewritten_retired_freeze_raw)["artifacts"]
+            )
+            if after_retired_count < before_retired_count:
+                retired_schema_count_transition = (
+                    before_retired_count,
+                    after_retired_count,
+                )
+        except (RuntimeError, ValueError):
+            pass
     listed_metadata_paths: set[Path] = set()
     for reconciliation in metadata_reconciliations:
         if not isinstance(reconciliation, dict) or set(reconciliation) != {
@@ -24424,6 +24455,7 @@ def _legacy_replacement_manifest_issues(
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
                 retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
                 retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
+                retired_schema_count_transition=retired_schema_count_transition,
                 reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (OSError, RuntimeError, UnsafeCorpusPathError, ValueError) as exc:
@@ -24456,6 +24488,7 @@ def _legacy_replacement_manifest_issues(
                 validation_waiver_set_sha256=post_migration_waiver_sha256,
                 retired_manifest_paths=frozenset(exact_metadata_manifest_paths),
                 retired_schema_modules=frozenset(exact_metadata_retired_schema_modules),
+                retired_schema_count_transition=retired_schema_count_transition,
                 reindexed_modules=exact_metadata_reindexed_modules,
             )
         except (RuntimeError, ValueError):
@@ -26732,6 +26765,7 @@ def _legacy_metadata_reconciliation_bytes(
     validation_waiver_set_sha256: str | None = None,
     retired_manifest_paths: frozenset[str] = frozenset(),
     retired_schema_modules: frozenset[str] = frozenset(),
+    retired_schema_count_transition: tuple[int, int] | None = None,
     reindexed_modules: Mapping[str, bytes] | None = None,
 ) -> tuple[bytes, tuple[dict[str, object], ...]]:
     """Apply one audited metadata cleanup from an explicit move set."""
@@ -26846,6 +26880,50 @@ def _legacy_metadata_reconciliation_bytes(
                 "count": len(removed_modules),
             },
         )
+    elif path == _RETIRED_SCHEMA_COUNT_TEST_PATH:
+        if (
+            retired_schema_count_transition is None
+            or len(retired_schema_count_transition) != 2
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in retired_schema_count_transition
+            )
+        ):
+            raise ValueError(
+                "retired-schema count assertion lacks an exact count transition"
+            )
+        before_count, after_count = retired_schema_count_transition
+        if after_count >= before_count:
+            raise ValueError("retired-schema count transition is not decrement-only")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("retired-schema count test is not UTF-8") from exc
+        pattern = re.compile(
+            r'(?m)^(?P<indent>[ \t]*)assert len\(retired\["artifacts"\]\) == '
+            r"(?P<count>[0-9]+)(?P<trailing>[ \t]*)$"
+        )
+        matches = list(pattern.finditer(text))
+        if len(matches) != 1 or int(matches[0].group("count")) != before_count:
+            raise ValueError(
+                "retired-schema count test lacks one exact base-count assertion"
+            )
+        rewritten_text, count = pattern.subn(
+            lambda match: (
+                f'{match.group("indent")}assert len(retired["artifacts"]) == '
+                f"{after_count}{match.group('trailing')}"
+            ),
+            text,
+        )
+        if count != 1:
+            raise ValueError("retired-schema count assertion rewrite is not exact")
+        rewritten = rewritten_text.encode("utf-8")
+        operations = (
+            {
+                "operation": "decrement_retired_schema_artifact_count",
+                "count": before_count - after_count,
+            },
+        )
     elif path == Path("known-validation-gaps.yaml"):
         rewritten, count = _line_preserving_yaml_mapping_removal(raw, keys=old_modules)
         operations = ({"operation": "remove_legacy_validation_gaps", "count": count},)
@@ -26922,6 +27000,29 @@ def _legacy_metadata_reconciliations(
         )
         for dependent in exact_dependents
     }
+    retired_schema_count_transition: tuple[int, int] | None = None
+    retired_freeze_path = Path(".axiom/retired-schema-freeze.json")
+    if retired_freeze_path in tracked:
+        retired_freeze_raw = read_bounded_regular_file(
+            checkout_root,
+            checkout_root / retired_freeze_path,
+            label="legacy retired-schema count reconciliation",
+            max_bytes=16 * 1024 * 1024,
+            required_mode=0o644,
+        )
+        rewritten_retired_freeze, _operations = _legacy_metadata_reconciliation_bytes(
+            retired_freeze_path,
+            retired_freeze_raw,
+            moves=moves,
+            retired_schema_modules=retired_schema_modules,
+        )
+        before_retired_count = len(json.loads(retired_freeze_raw)["artifacts"])
+        after_retired_count = len(json.loads(rewritten_retired_freeze)["artifacts"])
+        if after_retired_count < before_retired_count:
+            retired_schema_count_transition = (
+                before_retired_count,
+                after_retired_count,
+            )
     relevant_values = {
         Path(".axiom/index/provisions_to_rules.json"): old_modules
         | set(reindexed_modules),
@@ -26931,6 +27032,7 @@ def _legacy_metadata_reconciliations(
         Path("known-validation-gaps.yaml"): old_modules,
         Path("oracle-coverage-pending.yaml"): old_identities,
         Path("tests/test_encoding_manifests.py"): old_manifests,
+        _RETIRED_SCHEMA_COUNT_TEST_PATH: set(),
     }
     post_migration_waiver_sha256: str | None = None
     waiver_path = Path("known-validation-gaps.yaml")
@@ -26966,7 +27068,10 @@ def _legacy_metadata_reconciliations(
             max_bytes=16 * 1024 * 1024,
             required_mode=0o644,
         )
-        if path != Path(".axiom/toolchain.toml") and not any(
+        if path == _RETIRED_SCHEMA_COUNT_TEST_PATH:
+            if retired_schema_count_transition is None:
+                continue
+        elif path != Path(".axiom/toolchain.toml") and not any(
             value.encode() in raw for value in relevant_values[path]
         ):
             continue
@@ -26981,6 +27086,7 @@ def _legacy_metadata_reconciliations(
             validation_waiver_set_sha256=post_migration_waiver_sha256,
             retired_manifest_paths=retired_manifest_paths,
             retired_schema_modules=retired_schema_modules,
+            retired_schema_count_transition=retired_schema_count_transition,
             reindexed_modules=reindexed_modules,
         )
         if rewritten == raw:
