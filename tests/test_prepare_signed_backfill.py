@@ -1184,6 +1184,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
         "axiom-encode/legacy-fresh-reencode-receipt/v4",
         "axiom-encode/legacy-fresh-reencode-receipt/v5",
         "axiom-encode/legacy-fresh-reencode-receipt/v6",
+        "axiom-encode/legacy-fresh-reencode-receipt/v7",
     }:
         assert isinstance(retained_successors, list)
         deleted_files.extend(
@@ -1211,6 +1212,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
                 "axiom-encode/legacy-fresh-reencode-receipt/v6",
+                "axiom-encode/legacy-fresh-reencode-receipt/v7",
             }
             else None
         ),
@@ -1222,6 +1224,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
                 "axiom-encode/legacy-fresh-reencode-receipt/v6",
+                "axiom-encode/legacy-fresh-reencode-receipt/v7",
             }
             else None
         ),
@@ -1233,6 +1236,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
                 "axiom-encode/legacy-fresh-reencode-receipt/v6",
+                "axiom-encode/legacy-fresh-reencode-receipt/v7",
             }
             else None
         ),
@@ -1243,6 +1247,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
                 "axiom-encode/legacy-fresh-reencode-receipt/v6",
+                "axiom-encode/legacy-fresh-reencode-receipt/v7",
             }
             else None
         ),
@@ -1253,6 +1258,7 @@ def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:
                 "axiom-encode/legacy-fresh-reencode-receipt/v4",
                 "axiom-encode/legacy-fresh-reencode-receipt/v5",
                 "axiom-encode/legacy-fresh-reencode-receipt/v6",
+                "axiom-encode/legacy-fresh-reencode-receipt/v7",
             }
             else None
         ),

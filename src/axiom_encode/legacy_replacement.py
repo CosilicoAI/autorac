@@ -34,7 +34,8 @@ RECEIPT_SCHEMA_V2: Final = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 RECEIPT_SCHEMA_V3: Final = "axiom-encode/legacy-fresh-reencode-receipt/v3"
 RECEIPT_SCHEMA_V4: Final = "axiom-encode/legacy-fresh-reencode-receipt/v4"
 RECEIPT_SCHEMA_V5: Final = "axiom-encode/legacy-fresh-reencode-receipt/v5"
-RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v6"
+RECEIPT_SCHEMA_V6: Final = "axiom-encode/legacy-fresh-reencode-receipt/v6"
+RECEIPT_SCHEMA: Final = "axiom-encode/legacy-fresh-reencode-receipt/v7"
 RECEIPT_DIR: Final = ".axiom/legacy-replacements"
 DESTINATION_PREDECESSOR_ABSENT: Final = "absent"
 DESTINATION_PREDECESSOR_CANONICALIZED_UNOWNED_DUPLICATE: Final = (
@@ -156,6 +157,7 @@ class LegacyReplacementExactDependent(NamedTuple):
     legacy_files: tuple[LegacyReplacementFile, ...]
     live_files: tuple[LegacyReplacementFile, ...]
     rewrites: tuple[LegacyReplacementRewrite, ...]
+    concept_replacements: tuple[dict[str, str], ...] = ()
     source_verification_migration: (
         LegacyReplacementSourceVerificationMigration | None
     ) = None
