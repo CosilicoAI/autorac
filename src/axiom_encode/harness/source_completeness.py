@@ -32,6 +32,7 @@ from typing import Any, Mapping, Protocol
 
 import yaml
 
+from axiom_encode.harness.proof_validator import _normalize_atom_path
 from axiom_encode.statute import (
     CitationParts,
     normalize_rulespec_path_segment,
@@ -161,6 +162,36 @@ class _FormulaExecution:
     evaluated_value: tuple[str, str] | None
     evaluates_to_zero: bool
     constant_environment: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _SourceConditionClause:
+    """One exact source proposition owned by a formula proof excerpt."""
+
+    branch_path: tuple[str, ...]
+    start: int
+    end: int
+    text: str
+
+
+@dataclass(frozen=True)
+class _TerminalGateAlternative:
+    """Terminal facts used by one active formula path and temporal partition."""
+
+    names: frozenset[str]
+    start: str | None
+    end: str | None
+    resolved: bool = True
+
+
+@dataclass(frozen=True)
+class _TerminalGateEvidence:
+    """Semantic evidence from one terminal with fail-closed polarity metadata."""
+
+    entities: frozenset[str]
+    predicates: frozenset[str]
+    polarity_conflict: bool
+    explicit_name_polarities: frozenset[tuple[str, bool]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -4357,6 +4388,15 @@ def _analyze_rulespec_payload(
     )
     issues: list[str] = []
     issues.extend(imprecise_deferrals)
+    issues.extend(
+        _opaque_same_source_condition_input_issues(
+            payload,
+            source_text=source_text,
+            branches=branches,
+            principal_rules=principal_rules,
+            corpus_citation_path=corpus_citation_path,
+        )
+    )
 
     for branch in branches:
         if _path_covered(
@@ -4562,6 +4602,11 @@ def _analyze_rulespec_payload(
         issues.extend(
             _companion_test_issues(
                 principal_rules,
+                parameter_rules={
+                    name: rule
+                    for name, rule in named_rules.items()
+                    if str(rule.get("kind") or "").strip().lower() == "parameter"
+                },
                 principal_rule_paths=principal_rule_paths,
                 principal_formula_clause_rules=principal_formula_clause_rules,
                 formula_branches=formula_branches,
@@ -4654,13 +4699,26 @@ def _rule_source_excerpts(rule: dict[str, Any]) -> Iterable[tuple[str, str]]:
     )
 
 
+_PROOF_ATOM_PATH_INDEX_PATTERN = re.compile(r"\[\s*(\d+)\s*\]")
+
+
+def _formula_proof_version_index(path: str) -> int | None:
+    """Normalize a formula proof path the same way as proof validation."""
+
+    normalized = re.sub(r"\s+", "", str(path)).strip().rstrip(".")
+    normalized = _PROOF_ATOM_PATH_INDEX_PATTERN.sub(r"[\1]", normalized)
+    normalized = re.sub(r"^versions\.", "versions[0].", normalized)
+    match = re.match(r"^versions\[(\d+)\]\.formula\b", normalized)
+    return int(match.group(1)) if match is not None else None
+
+
 def _rule_formula_source_excerpts(
     rule: dict[str, Any],
 ) -> Iterable[tuple[str, str]]:
     return tuple(
         (citation_path, excerpt)
         for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
-        if re.fullmatch(r"versions(?:\[\d+\])?\.formula", path)
+        if _formula_proof_version_index(path) is not None
     )
 
 
@@ -4677,7 +4735,11 @@ def _rule_source_excerpt_atoms(
     excerpts: list[tuple[str, str, str]] = []
     for atom in atoms:
         source = atom.get("source") if isinstance(atom, dict) else None
-        path = str(atom.get("path") or "").strip() if isinstance(atom, dict) else ""
+        path = (
+            _normalize_atom_path(str(atom.get("path") or ""))
+            if isinstance(atom, dict)
+            else ""
+        )
         excerpt = source.get("excerpt") if isinstance(source, dict) else None
         citation_path = (
             str(source.get("corpus_citation_path") or "").strip()
@@ -11802,18 +11864,1644 @@ _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP = re.compile(
     r"\bmax\s*\(\s*(?:0+(?:\.0+)?)\s*,\s*"
     r"(?P<input>[A-Za-z_][A-Za-z0-9_]*)\s*\)"
 )
+_NEGATIVE_LOCAL_INPUT_CLAMP_DIAGNOSTIC_LIMIT = 8
 
 
-def _rule_formula_identifiers(rule: Mapping[str, Any]) -> set[str]:
-    identifiers: set[str] = set()
+_SOURCE_EXPLICIT_CONDITION_DIAGNOSTIC_LIMIT = 8
+_SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT = 64
+_SOURCE_EXPLICIT_CONDITION_DEPENDENCY_NODE_LIMIT = 128
+_SOURCE_EXPLICIT_CONDITION_DEPENDENCY_DEPTH_LIMIT = (
+    _SOURCE_EXPLICIT_CONDITION_DEPENDENCY_NODE_LIMIT + 1
+)
+_SOURCE_EXPLICIT_CONDITION_AST_DEPTH_LIMIT = 32
+_SOURCE_GATE_ENTITIES = frozenset(
+    {
+        "applicant",
+        "child",
+        "claimant",
+        "individual",
+        "parent",
+        "person",
+        "spouse",
+        "taxpayer",
+        "widow",
+        "widower",
+    }
+)
+_SOURCE_GATE_STOPWORDS = frozenset(
+    {
+        "a",
+        "additional",
+        "all",
+        "an",
+        "and",
+        "another",
+        "any",
+        "apply",
+        "applies",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "before",
+        "being",
+        "by",
+        "close",
+        "credit",
+        "dollar",
+        "each",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "if",
+        "in",
+        "is",
+        "kentucky",
+        "no",
+        "nor",
+        "not",
+        "of",
+        "on",
+        "or",
+        "otherwise",
+        "provided",
+        "taxable",
+        "than",
+        "that",
+        "the",
+        "then",
+        "to",
+        "under",
+        "unless",
+        "was",
+        "were",
+        "when",
+        "whose",
+        "with",
+        "without",
+        "year",
+    }
+)
+_SOURCE_GATE_PREDICATE_LANGUAGE = re.compile(
+    r"\b(?:is|are|was|were|has|have|had|file|files|filed|filing|made|"
+    r"attain(?:ed|s)?|own(?:ed|s)?|employ(?:ed|ment)?|work(?:ed|ing|s)?|"
+    r"insur(?:ed|ance)|live(?:d|s)?|resid(?:e|ed|es|ent|ence)|"
+    r"receive(?:d|s)?|earn(?:ed|ing|ings|s)?|support(?:ed|ing|s)?|"
+    r"qualif(?:y|ied|ies)|meet(?:s)?|exceed(?:ed|s)?)\b",
+    flags=re.IGNORECASE,
+)
+_SOURCE_GATE_NOMINAL_PREDICATES = frozenset(
+    {"age", "blind", "dependent", "income", "insurance", "married", "resident"}
+)
+_SOURCE_GATE_POLARITY_PREDICATES = frozenset({"no_income", "not_dependent"})
+_SOURCE_GATE_UNKNOWN_POLARITY_PREDICATES = frozenset(
+    {"unknown_income", "unknown_dependent"}
+)
+_SOURCE_GATE_POLARITY_BASE = {
+    "no_income": "income",
+    "not_dependent": "dependent",
+    "unknown_income": "income",
+    "unknown_dependent": "dependent",
+}
+_SOURCE_GATE_ADMINISTRATIVE_PREDICATES = frozenset(
+    {
+        "administrative",
+        "complete",
+        "document",
+        "record",
+        "review",
+        "scan",
+        "signoff",
+        "status",
+        "supervisor",
+        "workflow",
+    }
+)
+_SOURCE_INDEPENDENT_CONDITION_BOUNDARY = re.compile(
+    r",\s+(?:and|or)\s+(?=(?:(?:the|a|an|each|any|every|no|taxpayer|claimant|"
+    r"applicant|person|individual)\b|(?:is|are|was|were|has|have|had)\b)"
+    r"[^,;.!?]{0,120}\b(?:if|when|unless|provided\s+that)\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _source_gate_normalized_token(token: str) -> str:
+    normalized = re.sub(r"['’]s$", "", token.casefold())
+    aliases = {
+        "abode": "resident",
+        "aged": "age",
+        "attained": "attain",
+        "blindness": "blind",
+        "dependence": "dependent",
+        "dependency": "dependent",
+        "earning": "income",
+        "employed": "employ",
+        "employment": "employ",
+        "filed": "file",
+        "filing": "file",
+        "home": "home",
+        "house": "home",
+        "insured": "insurance",
+        "made": "file",
+        "owned": "own",
+        "ownership": "own",
+        "residence": "resident",
+        "working": "employ",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if (
+        len(normalized) > 4
+        and normalized.endswith("s")
+        and not normalized.endswith("ss")
+    ):
+        normalized = normalized[:-1]
+    return aliases.get(normalized, normalized)
+
+
+def _source_gate_semantic_tokens(text: str) -> frozenset[str]:
+    tokens = {
+        normalized
+        for token in re.findall(r"[A-Za-z][A-Za-z'-]*", text)
+        if (normalized := _source_gate_normalized_token(token.strip("'-")))
+        and normalized not in _SOURCE_GATE_STOPWORDS
+        and len(normalized) > 1
+    }
+    for base_predicate, negative in _source_gate_predicate_polarities(text).items():
+        if negative is None:
+            polarity_predicate = f"unknown_{base_predicate}"
+        else:
+            polarity_predicate = (
+                "no_income" if base_predicate == "income" else "not_dependent"
+            )
+        tokens.discard(base_predicate)
+        tokens.discard(f"unknown_{base_predicate}")
+        if negative is None:
+            tokens.add(polarity_predicate)
+        else:
+            tokens.add(polarity_predicate if negative else base_predicate)
+    return frozenset(tokens)
+
+
+_SOURCE_GATE_PREDICATE_SCAN_LIMIT = 16
+_SOURCE_GATE_CONTRACTION_REPLACEMENTS = {
+    "aren't": "are not",
+    "aren’t": "are not",
+    "arent": "are not",
+    "aren t": "are not",
+    "can't": "can not",
+    "can’t": "can not",
+    "cannot": "can not",
+    "cant": "can not",
+    "can t": "can not",
+    "didn't": "did not",
+    "didn’t": "did not",
+    "didnt": "did not",
+    "didn t": "did not",
+    "doesn't": "does not",
+    "doesn’t": "does not",
+    "doesnt": "does not",
+    "doesn t": "does not",
+    "don't": "do not",
+    "don’t": "do not",
+    "dont": "do not",
+    "don t": "do not",
+    "hadn't": "had not",
+    "hadn’t": "had not",
+    "hadnt": "had not",
+    "hadn t": "had not",
+    "hasn't": "has not",
+    "hasn’t": "has not",
+    "hasnt": "has not",
+    "hasn t": "has not",
+    "haven't": "have not",
+    "haven’t": "have not",
+    "havent": "have not",
+    "haven t": "have not",
+    "isn't": "is not",
+    "isn’t": "is not",
+    "isnt": "is not",
+    "isn t": "is not",
+    "wasn't": "was not",
+    "wasn’t": "was not",
+    "wasnt": "was not",
+    "wasn t": "was not",
+    "weren't": "were not",
+    "weren’t": "were not",
+    "werent": "were not",
+    "weren t": "were not",
+}
+
+
+def _normalized_source_gate_polarity_text(text: str) -> str:
+    """Normalize identifier separators and bounded English contractions."""
+
+    normalized = re.sub(r"_+", " ", text.casefold())
+    for contraction, replacement in _SOURCE_GATE_CONTRACTION_REPLACEMENTS.items():
+        normalized = re.sub(
+            rf"\b{re.escape(contraction)}\b",
+            replacement,
+            normalized,
+        )
+    normalized = re.sub(r"\bnot\s+only\b", "only", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+@dataclass(frozen=True)
+class _SourceGatePredicateReading:
+    base_predicate: str
+    negative: bool | None
+
+
+_SOURCE_GATE_WORD = re.compile(r"[a-z]+|0")
+_SOURCE_GATE_CLAUSE_BOUNDARY = re.compile(
+    r"[;.!?]+|\b(?:whereas|however|but|although|though)\b",
+)
+_SOURCE_GATE_ENTITY_PATTERN = (
+    "(?:" + "|".join(map(re.escape, sorted(_SOURCE_GATE_ENTITIES))) + ")"
+)
+_SOURCE_GATE_INDEPENDENT_COORDINATION = re.compile(
+    r"\b(?:and|or|nor)\b(?=\s+(?:(?:the|a|an)\s+)?"
+    rf"(?:{_SOURCE_GATE_ENTITY_PATTERN}|it)\b)",
+)
+_SOURCE_GATE_CONJUNCTIVE_SEPARATOR = re.compile(
+    r"\b(?:and|nor)\b",
+    flags=re.IGNORECASE,
+)
+_SOURCE_GATE_YET = re.compile(r"\byet\b", flags=re.IGNORECASE)
+_SOURCE_GATE_YET_PREFIX_CHARACTER_LIMIT = 32
+_SOURCE_GATE_YET_SUBJECT_CHARACTER_LIMIT = 96
+_SOURCE_GATE_YET_SUBJECT_TOKEN_LIMIT = 8
+_SOURCE_GATE_YET_PRONOUNS = frozenset({"he", "it", "she", "they"})
+_SOURCE_GATE_AMBIGUOUS_YET_MARKER = "sourcegateambiguousyet"
+_SOURCE_GATE_INCOME_BASES = frozenset({"income", "earning", "earnings"})
+_SOURCE_GATE_INCOME_BLOCKERS = frozenset(
+    {
+        "document",
+        "documentation",
+        "evidence",
+        "proof",
+        "record",
+        "report",
+        "reported",
+        "reporting",
+        "reports",
+        "tax",
+        "taxed",
+        "taxes",
+    }
+)
+_SOURCE_GATE_DEPENDENT_BLOCKERS = frozenset(
+    {
+        "live",
+        "lived",
+        "lives",
+        "living",
+        "report",
+        "reported",
+        "reporting",
+        "reports",
+        "responsible",
+        "responsibility",
+    }
+)
+_SOURCE_GATE_INCOME_MODIFIERS = (
+    r"(?:(?:adjusted|annual|earned|federal|gross|kentucky|state|taxable|total)\s+)*"
+)
+_SOURCE_GATE_INCOME_NEGATIVE_PATTERNS = (
+    rf"(?:no|zero|0|nil)\s+{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"devoid\s+of\s+{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"without\s+{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"(?:an?\s+)?absence\s+of\s+{_SOURCE_GATE_INCOME_MODIFIERS}"
+    rf"(?:income|earnings?)",
+    rf"lack(?:s|ed|ing)?\s+{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"never\s+(?:has|have|had|receive(?:d|s)?|earn(?:ed|s)?)\s+"
+    rf"{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"fail(?:s|ed)?\s+to\s+(?:receive|earn)\s+"
+    rf"{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+    rf"(?:do|does|did|has|have|had)\s+not\s+"
+    rf"(?:have|receive|earn)\s+{_SOURCE_GATE_INCOME_MODIFIERS}"
+    rf"(?:income|earnings?)",
+    rf"not\s+in\s+receipt\s+of\s+{_SOURCE_GATE_INCOME_MODIFIERS}"
+    rf"(?:income|earnings?)",
+)
+_SOURCE_GATE_INCOME_POSITIVE_PATTERNS = (
+    rf"(?:has|have|had|receive(?:d|s)?|earn(?:ed|s)?)\s+"
+    rf"{_SOURCE_GATE_INCOME_MODIFIERS}(?:income|earnings?)",
+)
+_SOURCE_GATE_INCOME_NEGATION_MARKERS = frozenset(
+    {
+        "0",
+        "absence",
+        "devoid",
+        "fail",
+        "failed",
+        "fails",
+        "lack",
+        "lacked",
+        "lacking",
+        "lacks",
+        "never",
+        "nil",
+        "no",
+        "not",
+        "without",
+        "zero",
+    }
+)
+_SOURCE_GATE_DEPENDENT_OBJECT = (
+    r"(?:(?:a|an|another|any|other|the)\s+)?"
+    r"(?:(?:other|taxpayer|taxpayers|taxpayer\s+s)\s+)*dependent"
+)
+_SOURCE_GATE_DEPENDENT_NEGATIVE_PATTERNS = (
+    rf"(?:is|are|was|were)\s+not\s+{_SOURCE_GATE_DEPENDENT_OBJECT}",
+    rf"(?:can\s+not|unable\s+to|ineligible\s+to)\s+be\s+claimed\s+"
+    rf"(?:as\s+)?"
+    rf"{_SOURCE_GATE_DEPENDENT_OBJECT}",
+    rf"not\s+eligible\s+to\s+be\s+claimed\s+(?:as\s+)?"
+    rf"{_SOURCE_GATE_DEPENDENT_OBJECT}",
+)
+_SOURCE_GATE_DEPENDENT_POSITIVE_PATTERNS = (
+    rf"(?:is|are|was|were)\s+{_SOURCE_GATE_DEPENDENT_OBJECT}",
+    rf"(?:(?:is|are|was|were)\s+)?claimed\s+(?:as\s+)?"
+    rf"{_SOURCE_GATE_DEPENDENT_OBJECT}",
+    rf"(?:can\s+be|eligible\s+to\s+be)\s+claimed\s+(?:as\s+)?"
+    rf"{_SOURCE_GATE_DEPENDENT_OBJECT}",
+)
+_SOURCE_GATE_DEPENDENT_NEGATION_MARKERS = frozenset(
+    {"cannot", "ineligible", "not", "unable"}
+)
+
+
+def _source_gate_polarity_clauses(text: str) -> tuple[str, ...]:
+    normalized = _normalized_source_gate_polarity_text(text)
+    normalized = _SOURCE_GATE_CLAUSE_BOUNDARY.sub("\n", normalized)
+    normalized = _SOURCE_GATE_INDEPENDENT_COORDINATION.sub("\n", normalized)
+    normalized = _source_gate_replace_guarded_yet(
+        normalized,
+        independent_replacement="\n",
+        ambiguous_replacement=f"\n{_SOURCE_GATE_AMBIGUOUS_YET_MARKER} ",
+    )
+    return tuple(
+        clause.strip(" ,:") for clause in normalized.splitlines() if clause.strip(" ,:")
+    )
+
+
+def _source_gate_yet_classification(text: str, match: re.Match[str]) -> str:
+    """Classify one bounded temporal, independent, or ambiguous ``yet``."""
+
+    prefix = text[
+        max(0, match.start() - _SOURCE_GATE_YET_PREFIX_CHARACTER_LIMIT) : match.start()
+    ]
+    prefix_tokens = _SOURCE_GATE_WORD.findall(prefix.casefold())
+    suffix = text[match.end() :]
+    if prefix_tokens and prefix_tokens[-1] == "not":
+        return "temporal"
+    if re.match(r"^\s+to\b", suffix, flags=re.IGNORECASE):
+        return "temporal"
+    subject_tokens = _SOURCE_GATE_WORD.findall(
+        suffix[:_SOURCE_GATE_YET_SUBJECT_CHARACTER_LIMIT].casefold()
+    )[:_SOURCE_GATE_YET_SUBJECT_TOKEN_LIMIT]
+    if (_SOURCE_GATE_ENTITIES | _SOURCE_GATE_YET_PRONOUNS).intersection(subject_tokens):
+        return "independent"
+    return "ambiguous"
+
+
+def _source_gate_replace_guarded_yet(
+    text: str,
+    *,
+    independent_replacement: str,
+    ambiguous_replacement: str,
+) -> str:
+    """Replace bounded adversatives and poison ambiguous continuations."""
+
+    pieces: list[str] = []
+    prior_end = 0
+    for match in _SOURCE_GATE_YET.finditer(text):
+        classification = _source_gate_yet_classification(text, match)
+        if classification == "temporal":
+            continue
+        if classification == "ambiguous":
+            replacement = ambiguous_replacement
+        else:
+            replacement = independent_replacement
+        pieces.extend((text[prior_end : match.start()], replacement))
+        prior_end = match.end()
+    pieces.append(text[prior_end:])
+    return "".join(pieces)
+
+
+def _source_gate_split_conjunctive_conditions(text: str) -> list[str]:
+    """Split conjunctions and the same bounded adversative boundaries."""
+
+    with_yet_boundaries = _source_gate_replace_guarded_yet(
+        text,
+        independent_replacement="\n",
+        ambiguous_replacement=f"\n{_SOURCE_GATE_AMBIGUOUS_YET_MARKER} ",
+    )
+    return [
+        part
+        for line in with_yet_boundaries.splitlines()
+        for part in _SOURCE_GATE_CONJUNCTIVE_SEPARATOR.split(line)
+    ]
+
+
+def _source_gate_unwrap_negation(tokens: list[str]) -> tuple[list[str], int]:
+    """Remove only clause-leading sentential negations and return their parity."""
+
+    parity = 0
+    while tokens:
+        wrapper_length = 0
+        if tokens[:3] == ["not", "true", "that"]:
+            wrapper_length = 3
+        elif tokens[:4] == ["not", "the", "case", "that"]:
+            wrapper_length = 4
+        elif tokens[:5] == ["it", "is", "not", "true", "that"]:
+            wrapper_length = 5
+        elif tokens[:6] == ["it", "is", "not", "the", "case", "that"]:
+            wrapper_length = 6
+        if not wrapper_length:
+            break
+        parity ^= 1
+        tokens = tokens[wrapper_length:]
+    return tokens, parity
+
+
+def _source_gate_tail_match_start(
+    tokens: Sequence[str],
+    *,
+    end: int,
+    patterns: Sequence[str],
+) -> int | None:
+    start = max(0, end - _SOURCE_GATE_PREDICATE_SCAN_LIMIT)
+    tail = " ".join(tokens[start : end + 1])
+    starts: list[int] = []
+    for pattern in patterns:
+        match = re.search(rf"(?P<construct>{pattern})$", tail)
+        if match is None:
+            continue
+        starts.append(start + tail[: match.start("construct")].count(" "))
+    return max(starts, default=None)
+
+
+def _source_gate_local_blocked(
+    tokens: Sequence[str],
+    *,
+    index: int,
+    blockers: frozenset[str],
+) -> bool:
+    before = tokens[max(0, index - 4) : index]
+    after = tokens[index + 1 : index + 4]
+    return bool(blockers.intersection(before) or blockers.intersection(after))
+
+
+def _source_gate_has_temporal_yet_prefix(
+    tokens: Sequence[str],
+    *,
+    construct_start: int,
+) -> bool:
+    temporal_prefix = " ".join(tokens[max(0, construct_start - 8) : construct_start])
+    return bool(
+        re.search(
+            r"(?:\bnot\s+yet(?:\s+[a-z]+){0,3}|"
+            r"\b(?:has|have|had)\s+yet\s+to(?:\s+be)?)\s*$",
+            temporal_prefix,
+        )
+    )
+
+
+def _source_gate_income_reading(
+    tokens: Sequence[str],
+    *,
+    index: int,
+    wrapper_parity: int,
+    out_of_window_negation: bool,
+    has_temporal_yet: bool,
+) -> _SourceGatePredicateReading | None:
+    if _source_gate_local_blocked(
+        tokens,
+        index=index,
+        blockers=_SOURCE_GATE_INCOME_BLOCKERS,
+    ):
+        return _SourceGatePredicateReading("income", None)
+    prefix_start = max(0, index - _SOURCE_GATE_PREDICATE_SCAN_LIMIT)
+    if out_of_window_negation:
+        return _SourceGatePredicateReading("income", None)
+    negative_start = _source_gate_tail_match_start(
+        tokens,
+        end=index,
+        patterns=_SOURCE_GATE_INCOME_NEGATIVE_PATTERNS,
+    )
+    if negative_start is not None:
+        direct_outer = negative_start > 0 and tokens[negative_start - 1] == "not"
+        return _SourceGatePredicateReading(
+            "income",
+            not bool(wrapper_parity ^ direct_outer),
+        )
+    positive_start = _source_gate_tail_match_start(
+        tokens,
+        end=index,
+        patterns=_SOURCE_GATE_INCOME_POSITIVE_PATTERNS,
+    )
+    if positive_start is not None:
+        if (
+            _source_gate_has_temporal_yet_prefix(
+                tokens,
+                construct_start=positive_start,
+            )
+            or has_temporal_yet
+        ):
+            return _SourceGatePredicateReading("income", None)
+        return _SourceGatePredicateReading("income", bool(wrapper_parity))
+    local_prefix = tokens[prefix_start:index]
+    if _SOURCE_GATE_INCOME_NEGATION_MARKERS.intersection(local_prefix):
+        return _SourceGatePredicateReading("income", None)
+    if index + 1 < len(tokens) and tokens[index + 1] == "fact":
+        return None
+    return _SourceGatePredicateReading("income", None)
+
+
+def _source_gate_dependent_reading(
+    tokens: Sequence[str],
+    *,
+    index: int,
+    wrapper_parity: int,
+    out_of_window_negation: bool,
+    has_temporal_yet: bool,
+) -> _SourceGatePredicateReading | None:
+    if _source_gate_local_blocked(
+        tokens,
+        index=index,
+        blockers=_SOURCE_GATE_DEPENDENT_BLOCKERS,
+    ):
+        return _SourceGatePredicateReading("dependent", None)
+    prefix_start = max(0, index - _SOURCE_GATE_PREDICATE_SCAN_LIMIT)
+    if out_of_window_negation:
+        return _SourceGatePredicateReading("dependent", None)
+    negative_start = _source_gate_tail_match_start(
+        tokens,
+        end=index,
+        patterns=_SOURCE_GATE_DEPENDENT_NEGATIVE_PATTERNS,
+    )
+    if negative_start is not None:
+        direct_outer = negative_start > 0 and tokens[negative_start - 1] == "not"
+        return _SourceGatePredicateReading(
+            "dependent",
+            not bool(wrapper_parity ^ direct_outer),
+        )
+    positive_start = _source_gate_tail_match_start(
+        tokens,
+        end=index,
+        patterns=_SOURCE_GATE_DEPENDENT_POSITIVE_PATTERNS,
+    )
+    if positive_start is not None:
+        if (
+            _source_gate_has_temporal_yet_prefix(
+                tokens,
+                construct_start=positive_start,
+            )
+            or has_temporal_yet
+        ):
+            return _SourceGatePredicateReading("dependent", None)
+        return _SourceGatePredicateReading("dependent", bool(wrapper_parity))
+    local_prefix = tokens[prefix_start:index]
+    if _SOURCE_GATE_DEPENDENT_NEGATION_MARKERS.intersection(local_prefix):
+        return _SourceGatePredicateReading("dependent", None)
+    if index + 1 < len(tokens) and tokens[index + 1] == "fact":
+        return None
+    return _SourceGatePredicateReading("dependent", None)
+
+
+def _source_gate_predicate_readings(
+    text: str,
+) -> tuple[_SourceGatePredicateReading, ...]:
+    readings: list[_SourceGatePredicateReading] = []
+    for clause in _source_gate_polarity_clauses(text):
+        clause_tokens, wrapper_parity = _source_gate_unwrap_negation(
+            _SOURCE_GATE_WORD.findall(clause)
+        )
+        has_ambiguous_yet = _SOURCE_GATE_AMBIGUOUS_YET_MARKER in clause_tokens
+        # Independent and ambiguous uses were replaced before tokenization, so
+        # every literal ``yet`` remaining in this clause is temporal state.
+        has_temporal_yet = "yet" in clause_tokens
+        income_negation_prefix = [0]
+        dependent_negation_prefix = [0]
+        for token in clause_tokens:
+            income_negation_prefix.append(
+                income_negation_prefix[-1]
+                + int(token in _SOURCE_GATE_INCOME_NEGATION_MARKERS)
+            )
+            dependent_negation_prefix.append(
+                dependent_negation_prefix[-1]
+                + int(token in _SOURCE_GATE_DEPENDENT_NEGATION_MARKERS)
+            )
+        for index, token in enumerate(clause_tokens):
+            reading: _SourceGatePredicateReading | None = None
+            prefix_start = max(0, index - _SOURCE_GATE_PREDICATE_SCAN_LIMIT)
+            if token in _SOURCE_GATE_INCOME_BASES:
+                reading = _source_gate_income_reading(
+                    clause_tokens,
+                    index=index,
+                    wrapper_parity=wrapper_parity,
+                    out_of_window_negation=(income_negation_prefix[prefix_start] > 0),
+                    has_temporal_yet=has_temporal_yet,
+                )
+            elif token in {"dependence", "dependency", "dependent"}:
+                reading = _source_gate_dependent_reading(
+                    clause_tokens,
+                    index=index,
+                    wrapper_parity=wrapper_parity,
+                    out_of_window_negation=(
+                        dependent_negation_prefix[prefix_start] > 0
+                    ),
+                    has_temporal_yet=has_temporal_yet,
+                )
+            if reading is not None:
+                if has_ambiguous_yet:
+                    reading = _SourceGatePredicateReading(
+                        reading.base_predicate,
+                        None,
+                    )
+                readings.append(reading)
+    return tuple(readings)
+
+
+def _source_gate_predicate_polarities(text: str) -> dict[str, bool | None]:
+    grouped: dict[str, list[bool | None]] = {}
+    for reading in _source_gate_predicate_readings(text):
+        grouped.setdefault(reading.base_predicate, []).append(reading.negative)
+    polarities: dict[str, bool | None] = {}
+    for base_predicate, values in grouped.items():
+        known = {value for value in values if value is not None}
+        polarities[base_predicate] = (
+            next(iter(known)) if None not in values and len(known) == 1 else None
+        )
+    return polarities
+
+
+def _source_gate_explicit_polarities(text: str) -> dict[str, bool]:
+    """Return unambiguous base-predicate polarity, where true means negative."""
+
+    return {
+        base_predicate: negative
+        for base_predicate, negative in _source_gate_predicate_polarities(text).items()
+        if negative is not None
+    }
+
+
+def _source_conjunctive_fact_gates(
+    text: str,
+) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
+    """Return distinct entity/predicate signatures from one condition."""
+
+    conditional = re.search(
+        r"\b(?:if|when|provided\s+that|unless)\b(?P<body>.+)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if conditional is None:
+        return ()
+    body = conditional.group("body")
+    segments = _source_gate_split_conjunctive_conditions(body)
+    if len(segments) < 2:
+        return ()
+    gates: list[tuple[frozenset[str], frozenset[str]]] = []
+    inherited_entities: frozenset[str] = frozenset()
+    for segment in segments:
+        tokens = _source_gate_semantic_tokens(segment)
+        explicit_entities = tokens & _SOURCE_GATE_ENTITIES
+        is_subject_continuation = bool(
+            re.match(
+                r"^[\s,]*(?:if\s+)?(?:is|are|was|were|has|have|had)\b",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        )
+        if explicit_entities and not is_subject_continuation:
+            inherited_entities = explicit_entities
+        entities = (
+            explicit_entities | inherited_entities
+            if is_subject_continuation
+            else explicit_entities or inherited_entities
+        )
+        predicates = tokens - _SOURCE_GATE_ENTITIES
+        if not predicates:
+            continue
+        if not (
+            _SOURCE_GATE_PREDICATE_LANGUAGE.search(segment)
+            or predicates
+            & (
+                _SOURCE_GATE_NOMINAL_PREDICATES
+                | _SOURCE_GATE_POLARITY_PREDICATES
+                | _SOURCE_GATE_UNKNOWN_POLARITY_PREDICATES
+            )
+        ):
+            continue
+        gates.append((entities, predicates))
+    return tuple(gates) if len(gates) >= 2 else ()
+
+
+def _source_conjunctive_fact_gate_count(text: str) -> int:
+    """Count distinct predicate/entity occurrences in one condition."""
+
+    return len(_source_conjunctive_fact_gates(text))
+
+
+def _rule_cited_source_paths(
+    rule: Mapping[str, Any],
+    *,
+    branches: Sequence[SourceStructureBranch],
+    corpus_citation_path: str,
+) -> set[tuple[str, ...]]:
+    source = str(rule.get("source") or "").strip()
+    paths = _paths_from_source_reference(
+        source,
+        corpus_citation_path=corpus_citation_path,
+    )
+    if paths:
+        return paths
+    krs_section = re.search(r"/krs/(?P<section>[^/]+)", corpus_citation_path, re.I)
+    if krs_section is None or not re.search(
+        rf"\bKRS\s+{re.escape(krs_section.group('section'))}\b",
+        source,
+        flags=re.IGNORECASE,
+    ):
+        return set()
+    suffix = source[re.search(r"\bKRS\b", source, re.I).end() :]
+    candidates = {
+        branch.path
+        for branch in branches
+        if branch.path
+        and all(
+            re.search(
+                rf"(?:\(\s*{re.escape(part)}\s*\)|\b{re.escape(part)}[.)])", suffix
+            )
+            for part in branch.path
+        )
+    }
+    if not candidates:
+        return {()}
+    maximum_depth = max(map(len, candidates))
+    return {path for path in candidates if len(path) == maximum_depth}
+
+
+def _source_proposition_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    boundaries = [0, len(text)]
+    boundaries.extend(
+        match.end()
+        for match in re.finditer(
+            r";|[.!?](?=\s+(?:[A-Z(]|\d+\s*[.)]))",
+            text,
+        )
+    )
+    boundaries.extend(
+        match.start() for match in _SOURCE_INDEPENDENT_CONDITION_BOUNDARY.finditer(text)
+    )
+    ordered = sorted(set(boundaries))
+    return (
+        max(position for position in ordered if position <= start),
+        min(position for position in ordered if position >= end),
+    )
+
+
+def _source_condition_clauses_owned_by_excerpt(
+    excerpt: str,
+    *,
+    rule: Mapping[str, Any],
+    source_text: str,
+    branches: Sequence[SourceStructureBranch],
+    corpus_citation_path: str,
+) -> tuple[tuple[_SourceConditionClause, ...], bool]:
+    """Resolve exact proof text to rule-cited propositions, reporting ambiguity."""
+
+    excerpt_text = _collapse_text(excerpt)
+    if not excerpt_text:
+        return (), False
+    pattern = re.compile(
+        r"\s+".join(re.escape(part) for part in excerpt_text.split()),
+        flags=re.IGNORECASE,
+    )
+    matches = tuple(pattern.finditer(source_text))
+    if not matches:
+        return (), False
+    cited_paths = _rule_cited_source_paths(
+        rule,
+        branches=branches,
+        corpus_citation_path=corpus_citation_path,
+    )
+
+    def containing_branch(start: int, end: int) -> SourceStructureBranch | None:
+        candidates = [
+            branch for branch in branches if branch.start <= start and end <= branch.end
+        ]
+        return max(
+            candidates,
+            key=lambda branch: (len(branch.path), -(branch.end - branch.start)),
+            default=None,
+        )
+
+    located = [(match, containing_branch(*match.span())) for match in matches]
+    restricted = [
+        (match, branch)
+        for match, branch in located
+        if not cited_paths
+        or any(
+            path == ()
+            or branch is not None
+            and len(branch.path) >= len(path)
+            and branch.path[: len(path)] == path
+            for path in cited_paths
+        )
+    ]
+    citation_mismatch = bool(cited_paths and located and not restricted)
+    selected = restricted or located
+    clauses: dict[tuple[tuple[str, ...], int, int], _SourceConditionClause] = {}
+    for match, branch in selected:
+        branch_path = branch.path if branch is not None else ()
+        container_start = branch.start if branch is not None else 0
+        container_text = branch.text if branch is not None else source_text
+        local_start = match.start() - container_start
+        local_end = match.end() - container_start
+        proposition_start, proposition_end = _source_proposition_bounds(
+            container_text,
+            local_start,
+            local_end,
+        )
+        absolute_start = container_start + proposition_start
+        absolute_end = container_start + proposition_end
+        identity = (branch_path, absolute_start, absolute_end)
+        clauses[identity] = _SourceConditionClause(
+            branch_path,
+            absolute_start,
+            absolute_end,
+            container_text[proposition_start:proposition_end].strip(" ;,"),
+        )
+    ordered = tuple(
+        clauses[key]
+        for key in sorted(clauses, key=lambda item: (item[1], item[2], item[0]))
+    )
+    return ordered, citation_mismatch or len(ordered) != 1
+
+
+def _effective_formula_version_intervals(
+    rule: Mapping[str, Any],
+) -> tuple[tuple[int, str, str | None, str | None], ...]:
+    """Return unambiguous intervals in which each formula version is selected."""
+
     versions = rule.get("versions")
-    if not isinstance(versions, list):
-        return identifiers
-    for version in versions:
-        formula = version.get("formula") if isinstance(version, dict) else None
-        if isinstance(formula, str):
-            identifiers.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula))
-    return identifiers
+    if (
+        not isinstance(versions, list)
+        or len(versions) > _TEMPORAL_WITNESS_VERSION_LIMIT
+    ):
+        return ()
+    formulas = [
+        (index, version, str(version.get("formula")))
+        for index, version in enumerate(versions)
+        if isinstance(version, dict) and version.get("formula") is not None
+    ]
+    if not formulas:
+        return ()
+    has_temporal_metadata = any(
+        str(version.get("effective_from") or "").strip()
+        or str(version.get("effective_to") or "").strip()
+        for _index, version, _formula in formulas
+    )
+    if not has_temporal_metadata:
+        if len(formulas) != 1:
+            return ()
+        index, _version, formula = formulas[0]
+        return ((index, formula, None, None),)
+
+    starts: list[str] = []
+    for _index, version, _formula in formulas:
+        start = str(version.get("effective_from") or "").strip()
+        end = str(version.get("effective_to") or "").strip()
+        if (
+            not _is_iso_calendar_date(start)
+            or (end and not _is_iso_calendar_date(end))
+            or (end and end < start)
+        ):
+            return ()
+        starts.append(start)
+    if len(set(starts)) != len(starts):
+        return ()
+
+    intervals: list[tuple[int, str, str | None, str | None]] = []
+    for index, version, formula in formulas:
+        start = str(version.get("effective_from") or "").strip()
+        explicit_end = str(version.get("effective_to") or "").strip() or None
+        next_start = min((value for value in starts if value > start), default=None)
+        selected_end = explicit_end
+        if next_start is not None:
+            superseded_end = _shift_iso_date(next_start, -1)
+            if superseded_end is None:
+                return ()
+            selected_end = min(
+                (
+                    value
+                    for value in (explicit_end, superseded_end)
+                    if value is not None
+                ),
+                default=None,
+            )
+        if selected_end is not None and selected_end < start:
+            continue
+        intervals.append((index, formula, start, selected_end))
+    return tuple(intervals)
+
+
+def _formula_intervals_overlap(
+    left_start: str | None,
+    left_end: str | None,
+    right_start: str | None,
+    right_end: str | None,
+) -> bool:
+    return not (
+        left_end is not None
+        and right_start is not None
+        and left_end < right_start
+        or right_end is not None
+        and left_start is not None
+        and right_end < left_start
+    )
+
+
+def _formula_interval_intersection(
+    left_start: str | None,
+    left_end: str | None,
+    right_start: str | None,
+    right_end: str | None,
+) -> tuple[str | None, str | None] | None:
+    if not _formula_intervals_overlap(
+        left_start,
+        left_end,
+        right_start,
+        right_end,
+    ):
+        return None
+    starts = [value for value in (left_start, right_start) if value is not None]
+    ends = [value for value in (left_end, right_end) if value is not None]
+    return (max(starts, default=None), min(ends, default=None))
+
+
+def _terminal_gate_evidence(
+    payload: Mapping[str, Any],
+) -> dict[str, _TerminalGateEvidence]:
+    evidence: dict[str, _TerminalGateEvidence] = {}
+
+    def build(name: str, description: str = "") -> _TerminalGateEvidence:
+        name_text = name.replace("_", " ")
+        name_tokens = _source_gate_semantic_tokens(name_text)
+        description_tokens = _source_gate_semantic_tokens(description)
+        name_polarities = _source_gate_predicate_polarities(name_text)
+        description_polarities = _source_gate_predicate_polarities(description)
+        polarity_conflict = (
+            None in name_polarities.values()
+            or None in description_polarities.values()
+            or any(
+                predicate in description_polarities
+                and description_polarities[predicate] != negative
+                for predicate, negative in name_polarities.items()
+            )
+        )
+        effective_polarities = description_polarities | name_polarities
+        tokens = set(name_tokens | description_tokens)
+        for base_predicate, negative in effective_polarities.items():
+            if negative is None:
+                polarity_predicate = f"unknown_{base_predicate}"
+            else:
+                polarity_predicate = (
+                    "no_income" if base_predicate == "income" else "not_dependent"
+                )
+            tokens.discard(base_predicate)
+            tokens.discard(f"unknown_{base_predicate}")
+            if negative is None:
+                tokens.add(polarity_predicate)
+            else:
+                tokens.add(polarity_predicate if negative else base_predicate)
+        return _TerminalGateEvidence(
+            frozenset(tokens) & _SOURCE_GATE_ENTITIES,
+            frozenset(tokens) - _SOURCE_GATE_ENTITIES,
+            polarity_conflict,
+            frozenset(
+                (base_predicate, negative)
+                for base_predicate, negative in name_polarities.items()
+                if negative is not None
+            ),
+        )
+
+    for item in payload.get("inputs", ()) or ():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        evidence[name] = build(name, str(item.get("description") or ""))
+    for item in payload.get("imports", ()) or ():
+        if not isinstance(item, str) or "#" not in item:
+            continue
+        name = item.rsplit("#", 1)[-1].strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        evidence[name] = build(name)
+    return evidence
+
+
+def _terminal_names_corroborate_source_gates(
+    names: frozenset[str],
+    gates: tuple[tuple[frozenset[str], frozenset[str]], ...],
+    *,
+    terminal_evidence: Mapping[str, _TerminalGateEvidence],
+    neutral_polarity_imports: frozenset[str] = frozenset(),
+) -> bool:
+    """Require a distinct semantically related terminal for every source gate."""
+
+    if not gates:
+        return True
+    if (
+        len(gates) > _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT
+        or len(names) > _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT
+    ):
+        return False
+    repeated_predicates = [
+        frozenset().union(
+            *(
+                predicates & other_predicates
+                for other_index, (_entities, other_predicates) in enumerate(gates)
+                if other_index != index
+            )
+        )
+        for index, (_entities, predicates) in enumerate(gates)
+    ]
+    candidates: list[tuple[str, ...]] = []
+    for index, (entities, predicates) in enumerate(gates):
+        if predicates & _SOURCE_GATE_UNKNOWN_POLARITY_PREDICATES:
+            candidates.append(())
+            continue
+        matches: list[str] = []
+        for name in sorted(names):
+            evidence = terminal_evidence.get(
+                name,
+                _TerminalGateEvidence(frozenset(), frozenset(), True),
+            )
+            if evidence.polarity_conflict:
+                continue
+            terminal_entities = evidence.entities
+            terminal_predicates = evidence.predicates
+            source_administrative = predicates & _SOURCE_GATE_ADMINISTRATIVE_PREDICATES
+            terminal_administrative = (
+                terminal_predicates & _SOURCE_GATE_ADMINISTRATIVE_PREDICATES
+            )
+            if terminal_administrative and not (
+                terminal_administrative & source_administrative
+            ):
+                continue
+            is_neutral_import_fact = False
+            polarity_mismatch = False
+            for base_predicate, negative_predicate in (
+                ("income", "no_income"),
+                ("dependent", "not_dependent"),
+            ):
+                source_negative = negative_predicate in predicates
+                source_positive = base_predicate in predicates
+                if not source_negative and not source_positive:
+                    continue
+                terminal_negative = negative_predicate in terminal_predicates
+                terminal_positive = base_predicate in terminal_predicates
+                explicit_name_polarities = dict(evidence.explicit_name_polarities)
+                neutral_for_base = (
+                    source_negative
+                    and name in neutral_polarity_imports
+                    and "fact" in terminal_predicates
+                    and base_predicate not in explicit_name_polarities
+                    and terminal_positive
+                )
+                is_neutral_import_fact |= neutral_for_base
+                if source_negative:
+                    polarity_mismatch |= not terminal_negative and not neutral_for_base
+                else:
+                    polarity_mismatch |= terminal_negative or not terminal_positive
+            if polarity_mismatch:
+                continue
+            predicate_overlap = predicates & terminal_predicates
+            if is_neutral_import_fact:
+                predicate_overlap |= {
+                    _SOURCE_GATE_POLARITY_BASE[predicate]
+                    for predicate in predicates & _SOURCE_GATE_POLARITY_PREDICATES
+                } & terminal_predicates
+            entity_overlap = entities & terminal_entities
+            if not predicate_overlap:
+                continue
+            if len(predicate_overlap) < 2 and not entity_overlap:
+                continue
+            if repeated_predicates[index] and entities and not entity_overlap:
+                continue
+            matches.append(name)
+        candidates.append(tuple(matches))
+    if any(not values for values in candidates):
+        return False
+    order = sorted(range(len(gates)), key=lambda index: (len(candidates[index]), index))
+
+    matched_gate_by_terminal: dict[str, int] = {}
+
+    def augment(gate_index: int, seen: set[str]) -> bool:
+        for name in candidates[gate_index]:
+            if name in seen:
+                continue
+            seen.add(name)
+            previous_gate = matched_gate_by_terminal.get(name)
+            if previous_gate is None or augment(previous_gate, seen):
+                matched_gate_by_terminal[name] = gate_index
+                return True
+        return False
+
+    return all(augment(gate_index, set()) for gate_index in order)
+
+
+def _opaque_same_source_condition_input_issues(
+    payload: Mapping[str, Any],
+    *,
+    source_text: str,
+    branches: Sequence[SourceStructureBranch],
+    principal_rules: Mapping[str, dict[str, Any]],
+    corpus_citation_path: str,
+) -> list[str]:
+    """Reject terminal selectors that collapse explicit same-source fact gates."""
+
+    inputs = payload.get("inputs")
+    declared_inputs = {
+        str(item.get("name") or "").strip()
+        for item in inputs or ()
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    imported_names = {
+        str(item).rsplit("#", 1)[-1].strip()
+        for item in payload.get("imports", ()) or ()
+        if isinstance(item, str)
+        and "#" in item
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item.rsplit("#", 1)[-1].strip())
+    }
+    named_rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in payload.get("rules", ()) or ()
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
+    terminal_evidence = _terminal_gate_evidence(payload)
+
+    authoritative_path = corpus_citation_path.strip("/").casefold()
+    numeric_or_judgment_dtypes = {
+        "count",
+        "decimal",
+        "integer",
+        "judgment",
+        "money",
+        "rate",
+    }
+    interval_cache = {
+        name: _effective_formula_version_intervals(rule)
+        for name, rule in named_rules.items()
+    }
+    selector_cache: dict[tuple[str, bool], tuple[frozenset[str], ...]] = {}
+    source_gate_cache: dict[
+        tuple[tuple[str, ...], int, int],
+        tuple[tuple[frozenset[str], frozenset[str]], ...],
+    ] = {}
+    expansion_cache: dict[
+        tuple[str, int, str | None, str | None],
+        tuple[_TerminalGateAlternative, ...],
+    ] = {}
+    dependency_budget_cache: dict[
+        tuple[str, str, bool, str | None, str | None], bool
+    ] = {}
+
+    def formula_selector_groups(
+        formula: str,
+        *,
+        include_result_leaves: bool,
+    ) -> tuple[frozenset[str], ...]:
+        key = (formula, include_result_leaves)
+        if key not in selector_cache:
+            selector_cache[key] = _formula_control_selector_name_groups(
+                formula,
+                include_result_leaves=include_result_leaves,
+            )
+        return selector_cache[key]
+
+    def source_clause_gates(
+        clause: _SourceConditionClause,
+    ) -> tuple[tuple[frozenset[str], frozenset[str]], ...]:
+        identity = (clause.branch_path, clause.start, clause.end)
+        if identity not in source_gate_cache:
+            source_gate_cache[identity] = _source_conjunctive_fact_gates(clause.text)
+        return source_gate_cache[identity]
+
+    def dependency_expansion_is_bounded(
+        root_name: str,
+        formula: str,
+        *,
+        include_result_leaves: bool,
+        start: str | None,
+        end: str | None,
+    ) -> bool:
+        """Bound the temporally reachable dependency graph before recursion."""
+
+        cache_key = (root_name, formula, include_result_leaves, start, end)
+        if cache_key in dependency_budget_cache:
+            return dependency_budget_cache[cache_key]
+        initial_names = frozenset().union(
+            *formula_selector_groups(
+                formula,
+                include_result_leaves=include_result_leaves,
+            )
+        )
+        pending = [
+            (False, name, start, end) for name in sorted(initial_names, reverse=True)
+        ]
+        dependencies: set[str] = set()
+        active_names = {root_name}
+        completed_states: set[tuple[str, str | None, str | None]] = set()
+        while pending:
+            exiting, name, dependency_start, dependency_end = pending.pop()
+            state = (name, dependency_start, dependency_end)
+            if exiting:
+                active_names.remove(name)
+                completed_states.add(state)
+                continue
+            if (
+                state in completed_states
+                or name in declared_inputs
+                or name in imported_names
+            ):
+                continue
+            dependency = named_rules.get(name)
+            if dependency is None:
+                dependency_budget_cache[cache_key] = False
+                return False
+            if name in active_names:
+                dependency_budget_cache[cache_key] = False
+                return False
+            dependencies.add(name)
+            if len(dependencies) > _SOURCE_EXPLICIT_CONDITION_DEPENDENCY_NODE_LIMIT:
+                dependency_budget_cache[cache_key] = False
+                return False
+            dependency_includes_leaves = str(
+                dependency.get("dtype") or ""
+            ).strip().lower() in {"judgment", "boolean", "bool"}
+            child_states: set[tuple[str, str | None, str | None]] = set()
+            for (
+                _index,
+                dependency_formula,
+                version_start,
+                version_end,
+            ) in interval_cache.get(name, ()):
+                overlap = _formula_interval_intersection(
+                    dependency_start,
+                    dependency_end,
+                    version_start,
+                    version_end,
+                )
+                if overlap is None:
+                    continue
+                for group in formula_selector_groups(
+                    dependency_formula,
+                    include_result_leaves=dependency_includes_leaves,
+                ):
+                    derived_dependencies = {
+                        selector_name
+                        for selector_name in group
+                        if selector_name not in declared_inputs
+                        and selector_name not in imported_names
+                    }
+                    if any(
+                        selector_name not in named_rules
+                        for selector_name in derived_dependencies
+                    ):
+                        dependency_budget_cache[cache_key] = False
+                        return False
+                    child_states.update(
+                        (selector_name, overlap[0], overlap[1])
+                        for selector_name in derived_dependencies
+                    )
+            active_names.add(name)
+            pending.append((True, name, dependency_start, dependency_end))
+            pending.extend(
+                (False, child_name, child_start, child_end)
+                for child_name, child_start, child_end in sorted(
+                    child_states,
+                    key=lambda value: (
+                        value[0],
+                        value[1] or "",
+                        value[2] or "~",
+                    ),
+                    reverse=True,
+                )
+            )
+        dependency_budget_cache[cache_key] = True
+        return True
+
+    def bounded_alternatives(
+        values: Iterable[_TerminalGateAlternative],
+        *,
+        fallback_start: str | None,
+        fallback_end: str | None,
+    ) -> tuple[_TerminalGateAlternative, ...]:
+        unique = sorted(
+            set(values),
+            key=lambda value: (
+                value.resolved,
+                value.start or "",
+                value.end or "~",
+                len(value.names),
+                tuple(sorted(value.names)),
+            ),
+        )
+        minimal = [
+            value
+            for value in unique
+            if not any(
+                candidate.start == value.start
+                and candidate.end == value.end
+                and candidate.resolved == value.resolved
+                and candidate.names < value.names
+                for candidate in unique
+            )
+        ]
+        if len(minimal) <= _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT:
+            return tuple(minimal)
+        return tuple(
+            (
+                *minimal[: _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT - 1],
+                _TerminalGateAlternative(
+                    frozenset(),
+                    fallback_start,
+                    fallback_end,
+                    False,
+                ),
+            )
+        )
+
+    def expand_name(
+        name: str,
+        *,
+        start: str | None,
+        end: str | None,
+        stack: frozenset[str],
+    ) -> tuple[_TerminalGateAlternative, ...]:
+        if name in declared_inputs or name in imported_names:
+            return (_TerminalGateAlternative(frozenset({name}), start, end),)
+        if name in stack:
+            return (_TerminalGateAlternative(frozenset(), start, end, False),)
+        if len(stack) >= _SOURCE_EXPLICIT_CONDITION_DEPENDENCY_DEPTH_LIMIT:
+            return (_TerminalGateAlternative(frozenset(), start, end, False),)
+        dependency = named_rules.get(name)
+        if dependency is None:
+            return (_TerminalGateAlternative(frozenset(), start, end, False),)
+        choices: list[_TerminalGateAlternative] = []
+        saw_overlap = False
+        for version_index, formula, version_start, version_end in interval_cache.get(
+            name, ()
+        ):
+            overlap = _formula_interval_intersection(
+                start,
+                end,
+                version_start,
+                version_end,
+            )
+            if overlap is None:
+                continue
+            saw_overlap = True
+            overlap_start, overlap_end = overlap
+            key = (
+                name,
+                version_index,
+                overlap_start,
+                overlap_end,
+            )
+            # Preflight proves the dependency graph acyclic, so an otherwise
+            # identical expansion does not depend on its traversal path.
+            cached = expansion_cache.get(key)
+            if cached is None:
+                cached = expand_formula(
+                    formula,
+                    start=overlap_start,
+                    end=overlap_end,
+                    stack=stack | {name},
+                    include_result_leaves=(
+                        str(dependency.get("dtype") or "").strip().lower()
+                        in {"judgment", "boolean", "bool"}
+                    ),
+                )
+                expansion_cache[key] = cached
+            choices.extend(cached)
+        if not saw_overlap:
+            return (_TerminalGateAlternative(frozenset(), start, end, False),)
+        return bounded_alternatives(
+            choices,
+            fallback_start=start,
+            fallback_end=end,
+        )
+
+    def expand_formula(
+        formula: str,
+        *,
+        start: str | None,
+        end: str | None,
+        stack: frozenset[str],
+        include_result_leaves: bool,
+    ) -> tuple[_TerminalGateAlternative, ...]:
+        expanded_groups: list[_TerminalGateAlternative] = []
+        for selector_group in formula_selector_groups(
+            formula,
+            include_result_leaves=include_result_leaves,
+        ):
+            choices: tuple[_TerminalGateAlternative, ...] = (
+                _TerminalGateAlternative(frozenset(), start, end),
+            )
+            for selector_name in sorted(selector_group):
+                selector_choices = expand_name(
+                    selector_name,
+                    start=start,
+                    end=end,
+                    stack=stack,
+                )
+                combined: list[_TerminalGateAlternative] = []
+                for left in choices:
+                    for right in selector_choices:
+                        overlap = _formula_interval_intersection(
+                            left.start,
+                            left.end,
+                            right.start,
+                            right.end,
+                        )
+                        if overlap is None:
+                            continue
+                        combined.append(
+                            _TerminalGateAlternative(
+                                left.names | right.names,
+                                overlap[0],
+                                overlap[1],
+                                left.resolved and right.resolved,
+                            )
+                        )
+                choices = bounded_alternatives(
+                    combined,
+                    fallback_start=start,
+                    fallback_end=end,
+                )
+            expanded_groups.extend(choices)
+        return bounded_alternatives(
+            expanded_groups,
+            fallback_start=start,
+            fallback_end=end,
+        )
+
+    proof_excerpts: dict[str, dict[int, tuple[str, ...]]] = {}
+    for rule_name, rule in named_rules.items():
+        formula_versions = interval_cache.get(rule_name, ())
+        formula_indexes = {index for index, _formula, _start, _end in formula_versions}
+        by_version: dict[int, list[str]] = {}
+        for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule):
+            if citation_path.strip("/").casefold() != authoritative_path:
+                continue
+            indexed = re.fullmatch(r"versions\[(\d+)\]\.formula", path)
+            if indexed is not None:
+                version_index = int(indexed.group(1))
+                if version_index in formula_indexes:
+                    by_version.setdefault(version_index, []).append(excerpt)
+                continue
+            if path == "versions.formula" and len(formula_indexes) == 1:
+                by_version.setdefault(next(iter(formula_indexes)), []).append(excerpt)
+        proof_excerpts[rule_name] = {
+            index: tuple(dict.fromkeys(excerpts))
+            for index, excerpts in by_version.items()
+        }
+
+    findings: list[tuple[str, int, int, frozenset[str]]] = []
+    for rule_name, rule in sorted(principal_rules.items()):
+        if (
+            str(rule.get("dtype") or "").strip().lower()
+            not in numeric_or_judgment_dtypes
+        ):
+            continue
+        for version_index, formula, start, end in interval_cache.get(rule_name, ()):
+            excerpts = proof_excerpts.get(rule_name, {}).get(version_index, ())
+            gate_sets: dict[
+                tuple[tuple[str, ...], int, int],
+                tuple[tuple[frozenset[str], frozenset[str]], ...],
+            ] = {}
+            ambiguous_ownership = False
+            for excerpt in excerpts:
+                owned_clauses, ambiguous = _source_condition_clauses_owned_by_excerpt(
+                    excerpt,
+                    rule=rule,
+                    source_text=source_text,
+                    branches=branches,
+                    corpus_citation_path=corpus_citation_path,
+                )
+                excerpt_has_gates = False
+                for clause in owned_clauses:
+                    gates = source_clause_gates(clause)
+                    if len(gates) < 2:
+                        continue
+                    excerpt_has_gates = True
+                    gate_sets[(clause.branch_path, clause.start, clause.end)] = gates
+                ambiguous_ownership |= ambiguous and excerpt_has_gates
+            gate_count = max((len(gates) for gates in gate_sets.values()), default=0)
+            if gate_count < 2:
+                continue
+            include_result_leaves = str(rule.get("dtype") or "").strip().lower() in {
+                "judgment",
+                "boolean",
+                "bool",
+            }
+            selector_groups = formula_selector_groups(
+                formula,
+                include_result_leaves=include_result_leaves,
+            )
+            direct_selectors = frozenset().union(*selector_groups)
+            if dependency_expansion_is_bounded(
+                rule_name,
+                formula,
+                include_result_leaves=include_result_leaves,
+                start=start,
+                end=end,
+            ):
+                terminal_choices = expand_formula(
+                    formula,
+                    start=start,
+                    end=end,
+                    stack=frozenset({rule_name}),
+                    include_result_leaves=include_result_leaves,
+                )
+            else:
+                terminal_choices = (
+                    _TerminalGateAlternative(frozenset(), start, end, False),
+                )
+            if not terminal_choices:
+                # A formula that is provably inactive on every path cannot grant
+                # the source benefit while bypassing its factual conditions.
+                continue
+            failing_choices = [
+                choice
+                for choice in terminal_choices
+                if not choice.resolved
+                or any(
+                    not _terminal_names_corroborate_source_gates(
+                        choice.names,
+                        gates,
+                        terminal_evidence=terminal_evidence,
+                        neutral_polarity_imports=frozenset(imported_names),
+                    )
+                    for gates in gate_sets.values()
+                )
+            ]
+            if not failing_choices and not ambiguous_ownership:
+                continue
+            least_supported = min(
+                failing_choices or terminal_choices,
+                key=lambda value: (
+                    value.resolved,
+                    len(value.names),
+                    tuple(sorted(value.names)),
+                ),
+            )
+            findings.append(
+                (
+                    rule_name,
+                    version_index,
+                    gate_count,
+                    direct_selectors | least_supported.names,
+                )
+            )
+    if not findings:
+        return []
+
+    findings.sort(key=lambda item: (item[0], item[1], tuple(sorted(item[3]))))
+    rendered = [
+        f"`{rule_name}` versions[{version_index}] "
+        f"({_bounded_identifier_feedback(tuple(evidence_names)) or 'no resolved fact selectors'} "
+        f"for {gate_count} source gates)"
+        for rule_name, version_index, gate_count, evidence_names in findings[
+            :_SOURCE_EXPLICIT_CONDITION_DIAGNOSTIC_LIMIT
+        ]
+    ]
+    if len(findings) > _SOURCE_EXPLICIT_CONDITION_DIAGNOSTIC_LIMIT:
+        rendered.append(
+            f"... ({len(findings) - _SOURCE_EXPLICIT_CONDITION_DIAGNOSTIC_LIMIT} "
+            "additional formula versions omitted)"
+        )
+    return [
+        "[complete-source-unit:source-explicit-conditions] Derived formula "
+        "version(s) delegate multiple conjunctive factual gates stated in their "
+        "exact authoritative source clause to too few terminal local inputs or "
+        f"canonical imports: {'; '.join(rendered)}. Encode the source-stated facts "
+        "as distinct local inputs or canonical imports, combine them in a "
+        "source-proved derived Judgment, and test each gate. Reserve aggregate "
+        "boundary statuses for source-atomic or externally determined conditions."
+    ]
 
 
 def _direct_local_input_clamps(
@@ -11836,35 +13524,565 @@ def _direct_local_input_clamps(
     return clamped
 
 
+def _selected_rule_formula_is_local_rule_alias(
+    rule: dict[str, Any],
+    *,
+    case: dict[str, Any],
+    principal_rule_names: set[str],
+) -> bool:
+    """Return whether the case-selected formula is a bare local-rule alias."""
+
+    formula = _rule_formula_text_for_case(rule, case)
+    if formula is None:
+        return False
+    return (
+        isinstance(expression := _parse_formula_expression(formula), ast.Name)
+        and expression.id in principal_rule_names
+    )
+
+
+_CLAMP_STRUCTURAL_LEAF_LIMIT = 64
+_CLAMP_TEMPORAL_CONTEXT_LIMIT = 128
+
+
+def _formula_structural_leaves(formula: str) -> tuple[str, ...] | None:
+    """Expand bounded control flow into every computational formula leaf.
+
+    Clamp claimant competition must see an inactive computation branch before
+    the case selector chooses another branch. Returning ``None`` fails closed
+    when a malformed or oversized branch tree cannot be inspected completely.
+    """
+
+    leaves: set[str] = set()
+
+    def expand(text: str, *, depth: int = 0) -> bool:
+        if depth > 32:
+            return False
+        selected_text = text.strip()
+        node = _first_formula_branch_node(selected_text)
+        if node is None:
+            if _rule_text_has_branching_formula(selected_text) or not (
+                _formula_leaf_has_executable_syntax(selected_text)
+            ):
+                return False
+            leaves.add(selected_text)
+            return len(leaves) <= _CLAMP_STRUCTURAL_LEAF_LIMIT
+        if not all(
+            _formula_text_has_executable_branch_tree(selector)
+            for selector in node.selectors
+        ) or not all(
+            _formula_text_has_executable_branch_tree(choice) for choice in node.choices
+        ):
+            return False
+        for choice in node.choices:
+            selected_body = textwrap.dedent(choice).strip()
+            if not selected_body or not expand(
+                selected_text[: node.start] + selected_body + selected_text[node.end :],
+                depth=depth + 1,
+            ):
+                return False
+        return True
+
+    return tuple(sorted(leaves)) if expand(formula) else None
+
+
+def _selected_formula_structural_source_branches(
+    rule: dict[str, Any],
+    *,
+    case: dict[str, Any],
+    formula_branches: Sequence[SourceStructureBranch],
+    source_formula_intervals: Mapping[
+        SourceStructureBranch,
+        _NumericInterval | None,
+    ],
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> tuple[SourceStructureBranch, ...]:
+    """Find selected-version source computations without trusting ownership."""
+
+    formula = _rule_formula_text_for_case(rule, case)
+    if formula is None:
+        return ()
+    leaves = _formula_structural_leaves(formula)
+    if leaves is None:
+        return tuple(formula_branches)
+    constant_environment = _formula_environment_for_case(formula_environment, case)
+    candidate_executions = tuple(
+        _FormulaExecution(
+            trace=(),
+            leaf=leaf,
+            evaluated_value=None,
+            evaluates_to_zero=False,
+            constant_environment=constant_environment,
+        )
+        for leaf in leaves
+    )
+    executions = tuple(
+        execution
+        for execution in candidate_executions
+        if _formula_execution_leaf_is_computational(execution)
+    )
+    return tuple(
+        branch
+        for branch in formula_branches
+        if any(
+            _formula_execution_matches_source_branch(
+                execution,
+                branch,
+                interval=source_formula_intervals[branch],
+                formula_environment=formula_environment,
+                execution_environment=constant_environment,
+                extract_numeric_occurrences=extract_numeric_occurrences,
+                numeric_value_is_grounded=numeric_value_is_grounded,
+            )
+            for execution in executions
+        )
+    )
+
+
 def _negative_local_input_clamp_test_issues(
     principal_rules: dict[str, dict[str, Any]],
     *,
+    parameter_rules: Mapping[str, dict[str, Any]],
+    principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
+    formula_branches: Sequence[SourceStructureBranch],
     cases: Sequence[dict[str, Any]],
     declared_input_names: set[str],
+    formula_environment: dict[str, Any],
+    corpus_citation_path: str,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+    numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> list[str]:
     """Require negative evidence for direct max(0, local_input) clamps."""
 
-    dependencies = {
-        name: _rule_formula_identifiers(rule) & principal_rules.keys()
-        for name, rule in principal_rules.items()
+    principal_rule_names = set(principal_rules)
+    source_formula_intervals = {
+        branch: _formula_branch_interval(
+            branch,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+        )
+        for branch in formula_branches
     }
-    issues: list[str] = []
-    for owner, rule in principal_rules.items():
-        for input_name in sorted(
-            _direct_local_input_clamps(rule, declared_input_names)
-        ):
-            downstream = {
-                candidate
-                for candidate in principal_rules
-                if candidate != owner
-                and _formula_rule_depends_on(
-                    candidate,
-                    owner,
-                    dependencies=dependencies,
+    source_formula_branches_by_rule = {
+        name: tuple(
+            branch
+            for branch in formula_branches
+            if name in principal_formula_clause_rules.get(branch, set())
+        )
+        for name in principal_rules
+    }
+    selected_dependencies_by_period: dict[str, dict[str, set[str]]] = {}
+    selected_source_branches_by_period: dict[
+        str,
+        dict[str, tuple[SourceStructureBranch, ...]],
+    ] = {}
+    selected_structural_source_branches_by_period: dict[
+        str,
+        dict[str, tuple[SourceStructureBranch, ...]],
+    ] = {}
+    asserted_dependencies_by_case: dict[int, dict[str, Any]] = {}
+    execution_environments_by_case: dict[int, dict[str, Any] | None] = {}
+
+    def selected_period_context(
+        case: dict[str, Any],
+    ) -> tuple[
+        dict[str, set[str]],
+        dict[str, tuple[SourceStructureBranch, ...]],
+        dict[str, tuple[SourceStructureBranch, ...]],
+    ]:
+        """Cache selected dependencies, competitors, and proof owners."""
+
+        period = _normalized_case_period(case)
+        if period not in selected_dependencies_by_period:
+            selected_dependencies_by_period[period] = {
+                name: (
+                    set(_FORMULA_IDENTIFIER.findall(formula)) & principal_rule_names
+                    if (formula := _rule_formula_text_for_case(rule, case)) is not None
+                    else set()
+                )
+                for name, rule in principal_rules.items()
+            }
+            selected_source_branches_by_period[period] = {
+                name: tuple(
+                    branch
+                    for branch in owned_branches
+                    if _selected_principal_formula_has_exact_source_proof(
+                        principal_rules[name],
+                        case=case,
+                        branch=branch,
+                        corpus_citation_path=corpus_citation_path,
+                    )
+                )
+                for name, owned_branches in source_formula_branches_by_rule.items()
+                if owned_branches
+                and not _selected_rule_formula_is_local_rule_alias(
+                    principal_rules[name],
+                    case=case,
+                    principal_rule_names=principal_rule_names,
                 )
             }
-            principal_outputs = downstream or {owner}
-            witnessed = False
+            selected_structural_source_branches_by_period[period] = {
+                name: tuple(
+                    dict.fromkeys(
+                        (
+                            *_selected_formula_structural_source_branches(
+                                rule,
+                                case=case,
+                                formula_branches=formula_branches,
+                                source_formula_intervals=source_formula_intervals,
+                                formula_environment=formula_environment,
+                                extract_numeric_occurrences=(
+                                    extract_numeric_occurrences
+                                ),
+                                numeric_value_is_grounded=numeric_value_is_grounded,
+                            ),
+                            *selected_source_branches_by_period[period].get(name, ()),
+                        )
+                    )
+                )
+                for name, rule in principal_rules.items()
+                if not _selected_rule_formula_is_local_rule_alias(
+                    rule,
+                    case=case,
+                    principal_rule_names=principal_rule_names,
+                )
+                and _rule_formula_text_for_case(rule, case) is not None
+            }
+        return (
+            selected_dependencies_by_period[period],
+            selected_structural_source_branches_by_period[period],
+            selected_source_branches_by_period[period],
+        )
+
+    all_version_dependencies = {
+        name: set(_FORMULA_IDENTIFIER.findall(_rule_formula_text(rule)))
+        & principal_rule_names
+        for name, rule in principal_rules.items()
+    }
+    parameter_rule_names = set(parameter_rules)
+
+    def bounded_dependency_closure(
+        seeds: Iterable[str],
+        *,
+        dependencies: Mapping[str, set[str]],
+    ) -> set[str] | None:
+        """Return a bounded principal dependency closure or fail closed."""
+
+        closure: set[str] = set()
+        pending = list(seeds)
+        while pending:
+            current = pending.pop()
+            if current in closure:
+                continue
+            closure.add(current)
+            if len(closure) > _CLAMP_TEMPORAL_CONTEXT_LIMIT:
+                return None
+            pending.extend(dependencies.get(current, set()) - closure)
+        return closure
+
+    def temporal_control_names(
+        rule_formulas: Iterable[tuple[dict[str, Any], str]],
+    ) -> set[str] | None:
+        """Return bounded temporal parameter selectors or fail closed.
+
+        Parameter aliases are already flattened into ``formula_environment``;
+        retaining the selected alias version and value therefore also captures
+        changes in a transitive parameter dependency.  A referenced parameter
+        missing from that environment is ambiguous (including cyclic or
+        oversized alias graphs), so it cannot safely share a clamp witness.
+        """
+
+        selector_names: set[str] = set()
+
+        def clamp_formula_control_names(
+            rule: dict[str, Any],
+            formula: str,
+        ) -> set[str] | None:
+            names: set[str] = set()
+            inspect_boolean_leaf = str(rule.get("dtype") or "").strip().lower() in {
+                "bool",
+                "boolean",
+                "judgment",
+            }
+
+            def inspect(text: str, *, depth: int = 0) -> bool:
+                if depth > 32:
+                    return False
+                node = _first_formula_branch_node(text)
+                if node is None:
+                    if inspect_boolean_leaf:
+                        names.update(_formula_exception_selector_names(text))
+                    return True
+                for selector in node.selectors:
+                    names.update(_exception_condition_names(selector))
+                if not all(
+                    inspect(textwrap.dedent(choice).strip(), depth=depth + 1)
+                    for choice in node.choices
+                ):
+                    return False
+                remainder = text[: node.start] + text[node.end :]
+                return not remainder.strip() or inspect(remainder, depth=depth + 1)
+
+            return names if inspect(formula) else None
+
+        for rule, formula in rule_formulas:
+            formula_selector_names = clamp_formula_control_names(rule, formula)
+            if formula_selector_names is None:
+                return None
+            selector_names.update(formula_selector_names)
+            if len(selector_names) > _CLAMP_TEMPORAL_CONTEXT_LIMIT:
+                return None
+        referenced_parameters = selector_names & parameter_rule_names
+        if any(name not in formula_environment for name in referenced_parameters):
+            return None
+        temporal_names = {
+            name
+            for name in referenced_parameters
+            if isinstance(formula_environment[name], _TemporalFormulaValue)
+        }
+        return (
+            temporal_names
+            if len(temporal_names) <= _CLAMP_TEMPORAL_CONTEXT_LIMIT
+            else None
+        )
+
+    def selected_temporal_control_topology(
+        case: dict[str, Any],
+        *,
+        topology_names: set[str],
+    ) -> tuple[tuple[str, int, str, str], ...] | None:
+        """Identify selected temporal parameter controls for one topology."""
+
+        rule_formulas: list[tuple[dict[str, Any], str]] = []
+        for name in topology_names:
+            rule = principal_rules[name]
+            formula = _rule_formula_text_for_case(rule, case)
+            if formula is None:
+                return None
+            rule_formulas.append((rule, formula))
+        control_names = temporal_control_names(rule_formulas)
+        if control_names is None:
+            return None
+        selected: list[tuple[str, int, str, str]] = []
+        for name in sorted(control_names):
+            temporal_value = formula_environment[name]
+            indexes = _selected_temporal_version_indexes(temporal_value, case)
+            if len(indexes) != 1:
+                return None
+            index = indexes[0]
+            value = temporal_value.versions[index][2]
+            selected.append((name, index, type(value).__name__, repr(value)))
+        return tuple(selected)
+
+    def clamp_context(
+        case: dict[str, Any],
+        *,
+        owner: str,
+        rule: dict[str, Any],
+        input_name: str,
+    ) -> (
+        tuple[
+            tuple[Any, ...],
+            set[str],
+            dict[str, tuple[SourceStructureBranch, ...]],
+            bool,
+        ]
+        | None
+    ):
+        """Return one selected temporal claimant topology for a direct clamp."""
+
+        selected_formula = _rule_formula_text_for_case(rule, case)
+        if selected_formula is None or not any(
+            match.group("input") == input_name
+            for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(
+                selected_formula
+            )
+        ):
+            return None
+        (
+            selected_dependencies,
+            selected_structural_source_branches,
+            selected_source_branches,
+        ) = selected_period_context(case)
+        competing_downstream = {
+            candidate
+            for candidate, owned_branches in selected_structural_source_branches.items()
+            if owned_branches
+            and candidate != owner
+            and _formula_rule_depends_on(
+                candidate,
+                owner,
+                dependencies=selected_dependencies,
+            )
+        }
+        downstream_branch_owners: dict[SourceStructureBranch, set[str]] = {}
+        for candidate in competing_downstream:
+            for branch in selected_structural_source_branches[candidate]:
+                downstream_branch_owners.setdefault(branch, set()).add(candidate)
+        unambiguous_downstream_source_branches = {
+            candidate: tuple(
+                branch
+                for branch in selected_source_branches[candidate]
+                if len(downstream_branch_owners.get(branch, ())) == 1
+            )
+            for candidate in competing_downstream & set(selected_source_branches)
+        }
+        downstream = {
+            candidate
+            for candidate, owned_branches in (
+                unambiguous_downstream_source_branches.items()
+            )
+            if owned_branches
+        }
+        principal_outputs = downstream if competing_downstream else {owner}
+
+        topology_names = bounded_dependency_closure(
+            {owner, *competing_downstream},
+            dependencies=selected_dependencies,
+        )
+        if topology_names is None:
+            return ((), set(), {}, False)
+        temporal_control_topology = selected_temporal_control_topology(
+            case,
+            topology_names=topology_names,
+        )
+        if temporal_control_topology is None:
+            return ((), set(), {}, False)
+        dependency_topology = tuple(
+            (
+                name,
+                _selected_rule_formula_version_index(principal_rules[name], case),
+                _rule_formula_text_for_case(principal_rules[name], case),
+                tuple(sorted(selected_dependencies.get(name, set()) & topology_names)),
+            )
+            for name in sorted(topology_names)
+        )
+        claimant_topology = tuple(
+            (
+                candidate,
+                selected_structural_source_branches[candidate],
+                selected_source_branches.get(candidate, ()),
+            )
+            for candidate in sorted(competing_downstream)
+        )
+        return (
+            (
+                dependency_topology,
+                claimant_topology,
+                temporal_control_topology,
+            ),
+            principal_outputs,
+            unambiguous_downstream_source_branches,
+            True,
+        )
+
+    def temporal_context_cases(owner: str) -> tuple[dict[str, str], ...] | None:
+        """Return bounded representatives for owner/downstream change segments."""
+
+        potential_claimants = {
+            name
+            for name in principal_rules
+            if name == owner
+            or _formula_rule_depends_on(
+                name,
+                owner,
+                dependencies=all_version_dependencies,
+            )
+        }
+        potentially_relevant = bounded_dependency_closure(
+            potential_claimants,
+            dependencies=all_version_dependencies,
+        )
+        if potentially_relevant is None:
+            return None
+        all_version_rule_formulas: list[tuple[dict[str, Any], str]] = []
+        for name in potentially_relevant:
+            rule = principal_rules[name]
+            versions = rule.get("versions")
+            if not isinstance(versions, list):
+                return None
+            all_version_rule_formulas.extend(
+                (rule, str(version["formula"]))
+                for version in versions
+                if isinstance(version, dict) and version.get("formula") is not None
+            )
+        all_version_temporal_controls = temporal_control_names(
+            all_version_rule_formulas
+        )
+        if all_version_temporal_controls is None:
+            return None
+        change_points = {
+            period
+            for case in cases
+            if _is_iso_calendar_date(period := _normalized_case_period(case))
+        }
+        for name in potentially_relevant:
+            versions = principal_rules[name].get("versions")
+            if not isinstance(versions, list):
+                continue
+            for version in versions:
+                if not isinstance(version, dict) or version.get("formula") is None:
+                    continue
+                start = str(version.get("effective_from") or "").strip()
+                end = str(version.get("effective_to") or "").strip()
+                if _is_iso_calendar_date(start):
+                    change_points.add(start)
+                if (
+                    end
+                    and _is_iso_calendar_date(end)
+                    and (after_end := _shift_iso_date(end, 1)) is not None
+                ):
+                    change_points.add(after_end)
+                if len(change_points) > _CLAMP_TEMPORAL_CONTEXT_LIMIT:
+                    return None
+        for name in all_version_temporal_controls:
+            temporal_value = formula_environment[name]
+            for start, end, _value in temporal_value.versions:
+                if not _is_iso_calendar_date(start) or (
+                    end and not _is_iso_calendar_date(end)
+                ):
+                    return None
+                change_points.add(start)
+                if end and (after_end := _shift_iso_date(end, 1)) is not None:
+                    change_points.add(after_end)
+                if len(change_points) > _CLAMP_TEMPORAL_CONTEXT_LIMIT:
+                    return None
+        return tuple({"period": point} for point in sorted(change_points))
+
+    missing_clamps: set[tuple[str, str]] = set()
+    for owner, rule in principal_rules.items():
+        clamped_inputs = _direct_local_input_clamps(rule, declared_input_names)
+        if not clamped_inputs:
+            continue
+        context_cases = temporal_context_cases(owner)
+        for input_name in sorted(clamped_inputs):
+            if context_cases is None:
+                missing_clamps.add((owner, input_name))
+                continue
+            required_contexts: set[tuple[Any, ...]] = set()
+            unresolved_context = False
+            for context_case in context_cases:
+                context = clamp_context(
+                    context_case,
+                    owner=owner,
+                    rule=rule,
+                    input_name=input_name,
+                )
+                if context is None:
+                    continue
+                context_key, _outputs, _branches, resolved = context
+                if not resolved:
+                    unresolved_context = True
+                    break
+                required_contexts.add(context_key)
+            if unresolved_context:
+                missing_clamps.add((owner, input_name))
+                continue
+            if not required_contexts:
+                missing_clamps.add((owner, input_name))
+                continue
+            witnessed_contexts: set[tuple[Any, ...]] = set()
             for case in cases:
                 inputs = case.get("input")
                 if not isinstance(inputs, dict):
@@ -11880,28 +14098,127 @@ def _negative_local_input_clamp_test_issues(
                     continue
                 if not _is_iso_calendar_date(_normalized_case_period(case)):
                     continue
-                selected_formula = _rule_formula_text_for_case(rule, case)
-                if selected_formula is None or not any(
-                    match.group("input") == input_name
-                    for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(
-                        selected_formula
-                    )
-                ):
+                context = clamp_context(
+                    case,
+                    owner=owner,
+                    rule=rule,
+                    input_name=input_name,
+                )
+                if context is None:
+                    continue
+                (
+                    context_key,
+                    principal_outputs,
+                    unambiguous_branches,
+                    resolved,
+                ) = context
+                if not resolved:
                     continue
                 outputs = _test_case_output_names(case)
-                if owner in outputs and outputs & principal_outputs:
-                    witnessed = True
-                    break
-            if witnessed:
+                if owner not in outputs:
+                    continue
+                case_key = id(case)
+                if case_key not in asserted_dependencies_by_case:
+                    asserted_dependencies_by_case[case_key] = (
+                        _case_asserted_dependency_environment(
+                            principal_rules,
+                            case,
+                            formula_environment=formula_environment,
+                        )
+                    )
+                dependency_environment = asserted_dependencies_by_case[case_key]
+                if owner not in dependency_environment:
+                    continue
+                for principal_output in sorted(outputs & principal_outputs):
+                    if principal_output == owner:
+                        witnessed_contexts.add(context_key)
+                        break
+                    asserted_principal_value = dependency_environment.get(
+                        principal_output,
+                        _UNRESOLVED_CONDITION_VALUE,
+                    )
+                    if asserted_principal_value is _UNRESOLVED_CONDITION_VALUE:
+                        continue
+                    execution = _case_formula_execution(
+                        principal_rules[principal_output],
+                        case,
+                        formula_environment=formula_environment,
+                        dependency_environment=dependency_environment,
+                    )
+                    if execution is None:
+                        continue
+                    executed_principal_value = _formula_execution_runtime_value(
+                        execution
+                    )
+                    if (
+                        executed_principal_value is _UNRESOLVED_CONDITION_VALUE
+                        or not _formula_runtime_values_equal(
+                            executed_principal_value,
+                            asserted_principal_value,
+                        )
+                    ):
+                        continue
+                    if case_key not in execution_environments_by_case:
+                        execution_environments_by_case[case_key] = (
+                            _case_formula_identifier_environment(
+                                case,
+                                formula_environment=formula_environment,
+                                dependency_environment=dependency_environment,
+                            )
+                        )
+                    execution_environment = execution_environments_by_case[case_key]
+                    if execution_environment is None:
+                        continue
+                    if not any(
+                        _formula_execution_matches_source_branch(
+                            execution,
+                            branch,
+                            interval=source_formula_intervals[branch],
+                            formula_environment=formula_environment,
+                            execution_environment=execution_environment,
+                            extract_numeric_occurrences=extract_numeric_occurrences,
+                            numeric_value_is_grounded=numeric_value_is_grounded,
+                        )
+                        for branch in unambiguous_branches[principal_output]
+                    ):
+                        continue
+                    reached_rules = _asserted_reached_rule_executions(
+                        principal_rules[principal_output],
+                        execution,
+                        case=case,
+                        principal_rules=principal_rules,
+                        formula_environment=formula_environment,
+                        dependency_environment=dependency_environment,
+                    )
+                    if any(
+                        reached_rule is principal_rules[owner]
+                        for reached_rule, _reached_execution in reached_rules[1:]
+                    ):
+                        witnessed_contexts.add(context_key)
+                        break
+            if required_contexts <= witnessed_contexts:
                 continue
-            issues.append(
-                "[complete-source-unit:tests] Direct nonnegative clamp "
-                f"`max(0, {input_name})` in `{owner}` requires an executed "
-                f"companion case with `{input_name}` below zero that asserts "
-                f"the clamped rule `{owner}` and a principal output depending "
-                "on it. A zero-valued case does not exercise the negative clamp."
-            )
-    return issues
+            missing_clamps.add((owner, input_name))
+    if not missing_clamps:
+        return []
+    ordered_clamps = sorted(missing_clamps)
+    shown_clamps = ordered_clamps[:_NEGATIVE_LOCAL_INPUT_CLAMP_DIAGNOSTIC_LIMIT]
+    rendered_clamps = ", ".join(
+        f"`max(0, {input_name})` in `{owner}`" for owner, input_name in shown_clamps
+    )
+    omitted = len(ordered_clamps) - len(shown_clamps)
+    omission = f" ({omitted} additional clamps omitted)" if omitted else ""
+    return [
+        "[complete-source-unit:tests] Direct nonnegative clamp companion "
+        f"evidence is missing for {rendered_clamps}{omission}. Each requires "
+        "an executed companion case in every distinct selected temporal "
+        "owner/downstream claimant context, with the input below zero, that "
+        "asserts the clamped rule and, when downstream consumers exist, an "
+        "unambiguous authoritative principal output with selected-version "
+        "formula proof whose matching assertion and selected formula path "
+        "reach it through a resolved dependency chain. A zero-valued case "
+        "does not exercise the negative clamp."
+    ]
 
 
 def _formula_rule_depends_on(
@@ -11926,6 +14243,7 @@ def _formula_rule_depends_on(
 def _companion_test_issues(
     principal_rules: dict[str, dict[str, Any]],
     *,
+    parameter_rules: Mapping[str, dict[str, Any]],
     principal_rule_paths: dict[str, set[tuple[str, ...]]],
     principal_formula_clause_rules: dict[SourceStructureBranch, set[str]],
     formula_branches: Sequence[SourceStructureBranch],
@@ -11978,8 +14296,15 @@ def _companion_test_issues(
     issues.extend(
         _negative_local_input_clamp_test_issues(
             principal_rules,
+            parameter_rules=parameter_rules,
+            principal_formula_clause_rules=principal_formula_clause_rules,
+            formula_branches=formula_branches,
             cases=cases,
             declared_input_names=declared_input_names,
+            formula_environment=formula_environment,
+            corpus_citation_path=corpus_citation_path,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
         )
     )
     for name, asserted_cases in asserted_by_rule.items():
@@ -12936,9 +15261,9 @@ def _selected_principal_formula_proves_branch(
     branch_text = _normalized_formula_clause_text(branch.text)
     normalized_citation_path = corpus_citation_path.strip("/").lower()
     matching_atoms = {
-        (int(match.group(1)), citation_path.strip("/").lower())
+        (version_index, citation_path.strip("/").lower())
         for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
-        if (match := re.fullmatch(r"versions\[(\d+)\]\.formula", path)) is not None
+        if (version_index := _formula_proof_version_index(path)) is not None
         and (excerpt_text := _normalized_formula_clause_text(excerpt))
         and (excerpt_text in branch_text or branch_text in excerpt_text)
     }
@@ -12951,6 +15276,31 @@ def _selected_principal_formula_proves_branch(
     }
     selected_index = _selected_rule_formula_version_index(rule, case)
     return selected_index is not None and selected_index in matching_indexes
+
+
+def _selected_principal_formula_has_exact_source_proof(
+    rule: dict[str, Any],
+    *,
+    case: dict[str, Any],
+    branch: SourceStructureBranch,
+    corpus_citation_path: str,
+) -> bool:
+    """Require normalized same-source formula proof on the selected version."""
+
+    selected_index = _selected_rule_formula_version_index(rule, case)
+    if selected_index is None:
+        return False
+    branch_text = _normalized_formula_clause_text(branch.text)
+    normalized_citation_path = corpus_citation_path.strip("/").casefold()
+    return any(
+        version_index == selected_index
+        and citation_path.strip("/").casefold() == normalized_citation_path
+        and (excerpt_text := _normalized_formula_clause_text(excerpt))
+        and (excerpt_text in branch_text or branch_text in excerpt_text)
+        and source_states_explicit_computation(excerpt)
+        for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
+        if (version_index := _formula_proof_version_index(path)) is not None
+    )
 
 
 def _formula_leaf_temporal_bindings(
@@ -22180,7 +24530,12 @@ def _formula_execution_reaches_selector(
 def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
     """Return formula identifiers used as boolean control selectors."""
 
-    formula_text = _rule_formula_text(rule)
+    return _formula_exception_selector_names(_rule_formula_text(rule))
+
+
+def _formula_exception_selector_names(formula_text: str) -> set[str]:
+    """Return boolean-control identifiers from one formula text."""
+
     selector_names: set[str] = set()
 
     def record(name: str) -> None:
@@ -22230,6 +24585,221 @@ def _rule_exception_selector_names(rule: dict[str, Any]) -> set[str]:
 
     inspect(formula_text)
     return selector_names
+
+
+def _formula_control_selector_name_groups(
+    formula_text: str,
+    *,
+    include_result_leaves: bool = False,
+) -> tuple[frozenset[str], ...]:
+    """Return every active control path, omitting constant-inactive leaves."""
+
+    def bounded_groups(
+        values: Iterable[frozenset[str]],
+    ) -> tuple[frozenset[str], ...]:
+        unique = sorted(
+            set(values), key=lambda value: (len(value), tuple(sorted(value)))
+        )
+        minimal = [
+            value
+            for value in unique
+            if not any(candidate < value for candidate in unique)
+        ]
+        if len(minimal) <= _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT:
+            return tuple(minimal)
+        return tuple(
+            dict.fromkeys(
+                (
+                    *minimal[: _SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT - 1],
+                    frozenset(),
+                )
+            )
+        )
+
+    def node_names(expression: ast.AST) -> frozenset[str]:
+        function_names = {
+            node.func.id
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        return frozenset(
+            node.id
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Name)
+            and node.id.lower() not in {"true", "false", "holds", "not_holds"}
+            and node.id not in function_names
+        )
+
+    def combine(
+        left: tuple[frozenset[str], ...],
+        right: tuple[frozenset[str], ...],
+    ) -> tuple[frozenset[str], ...]:
+        if not left or not right:
+            return ()
+        return bounded_groups(a | b for a in left for b in right)
+
+    def outcome_groups(
+        expression: ast.expr,
+        *,
+        truth: bool,
+        depth: int = 0,
+    ) -> tuple[frozenset[str], ...]:
+        if depth > _SOURCE_EXPLICIT_CONDITION_AST_DEPTH_LIMIT:
+            return (frozenset(),)
+        if isinstance(expression, ast.Constant):
+            return (frozenset(),) if bool(expression.value) is truth else ()
+        if isinstance(expression, ast.Name):
+            if expression.id.lower() in {"true", "false"}:
+                value = expression.id.lower() == "true"
+                return (frozenset(),) if value is truth else ()
+            return (frozenset({expression.id}),)
+        if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Not):
+            return outcome_groups(
+                expression.operand,
+                truth=not truth,
+                depth=depth + 1,
+            )
+        if isinstance(expression, ast.BoolOp):
+            values = tuple(expression.values)
+            if isinstance(expression.op, ast.And):
+                if truth:
+                    groups: tuple[frozenset[str], ...] = (frozenset(),)
+                    for value in values:
+                        groups = combine(
+                            groups,
+                            outcome_groups(value, truth=True, depth=depth + 1),
+                        )
+                    return groups
+                alternatives: list[frozenset[str]] = []
+                prefix: tuple[frozenset[str], ...] = (frozenset(),)
+                for value in values:
+                    alternatives.extend(
+                        combine(
+                            prefix,
+                            outcome_groups(value, truth=False, depth=depth + 1),
+                        )
+                    )
+                    prefix = combine(
+                        prefix,
+                        outcome_groups(value, truth=True, depth=depth + 1),
+                    )
+                    if not prefix:
+                        break
+                return bounded_groups(alternatives)
+            if isinstance(expression.op, ast.Or):
+                if not truth:
+                    groups = (frozenset(),)
+                    for value in values:
+                        groups = combine(
+                            groups,
+                            outcome_groups(value, truth=False, depth=depth + 1),
+                        )
+                    return groups
+                alternatives = []
+                prefix = (frozenset(),)
+                for value in values:
+                    alternatives.extend(
+                        combine(
+                            prefix,
+                            outcome_groups(value, truth=True, depth=depth + 1),
+                        )
+                    )
+                    prefix = combine(
+                        prefix,
+                        outcome_groups(value, truth=False, depth=depth + 1),
+                    )
+                    if not prefix:
+                        break
+                return bounded_groups(alternatives)
+        if (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Name)
+            and len(expression.args) == 1
+            and not expression.keywords
+            and expression.func.id in {"holds", "not_holds"}
+        ):
+            return outcome_groups(
+                expression.args[0],
+                truth=truth if expression.func.id == "holds" else not truth,
+                depth=depth + 1,
+            )
+        return (node_names(expression),)
+
+    def condition_groups(
+        condition: str,
+        *,
+        truth: bool,
+    ) -> tuple[frozenset[str], ...]:
+        expression = _parse_formula_expression(condition)
+        if expression is None:
+            names = frozenset(_exception_condition_names(condition))
+            return (names,)
+        return outcome_groups(expression, truth=truth)
+
+    def inspect(
+        text: str,
+        *,
+        include_leaves: bool,
+        depth: int = 0,
+    ) -> tuple[frozenset[str], ...]:
+        if depth > 32:
+            return (frozenset(),)
+        node = _first_formula_branch_node(text)
+        if node is None:
+            value = _evaluate_formula_selector(text, {})
+            number = _rulespec_runtime_decimal(value)
+            if value is False or number is not None and number == 0:
+                return ()
+            if not include_leaves:
+                return (frozenset(),)
+            expression = _parse_formula_expression(text)
+            return (
+                outcome_groups(expression, truth=True)
+                if expression is not None
+                else (frozenset(),)
+            )
+
+        choice_groups: list[frozenset[str]] = []
+        for choice_index, choice in enumerate(node.choices):
+            if node.kind == "if":
+                selector_groups: tuple[frozenset[str], ...] = (frozenset(),)
+                for selector_index, selector in enumerate(node.selectors):
+                    selector_groups = combine(
+                        selector_groups,
+                        condition_groups(
+                            selector,
+                            truth=(
+                                choice_index < len(node.selectors)
+                                and selector_index == choice_index
+                            ),
+                        ),
+                    )
+                    if not selector_groups or selector_index >= choice_index:
+                        break
+            else:
+                selector_groups = (
+                    frozenset().union(
+                        *(
+                            _exception_condition_names(selector)
+                            for selector in node.selectors
+                        )
+                    ),
+                )
+            selected_text = (
+                text[: node.start] + textwrap.dedent(choice).strip() + text[node.end :]
+            )
+            nested_groups = inspect(
+                selected_text,
+                include_leaves=include_leaves,
+                depth=depth + 1,
+            )
+            choice_groups.extend(combine(selector_groups, nested_groups))
+        return bounded_groups(choice_groups)
+
+    return inspect(
+        formula_text,
+        include_leaves=include_result_leaves,
+    )
 
 
 def _exception_condition_names(condition: str) -> set[str]:

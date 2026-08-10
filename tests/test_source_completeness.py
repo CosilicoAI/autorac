@@ -106,6 +106,2290 @@ def _pipeline_issues(
     )
 
 
+KY_SPOUSE_CREDIT_SOURCE = """\
+(3) (a) The following tax credits apply:
+5. An additional forty dollars ($40) credit for the taxpayer's spouse if a
+separate return is made by the taxpayer and if the taxpayer's spouse has
+attained the age of sixty-five before the close of the taxable year, and has
+no Kentucky gross income and is not the dependent of another taxpayer;
+7. An additional forty dollars ($40) credit for the taxpayer's spouse if a
+separate return is made by the taxpayer and if the taxpayer's spouse is blind,
+and has no Kentucky gross income and is not the dependent of another taxpayer.
+"""
+KY_CITATION_PATH = "us-ky/statute/krs/141.020/document-1"
+
+
+def _ky_formula_proof(
+    excerpt: str,
+    *,
+    kind: str = "formula",
+) -> dict[str, object]:
+    return {
+        "proof": {
+            "atoms": [
+                {
+                    "path": "versions[0].formula",
+                    "kind": kind,
+                    "source": {
+                        "corpus_citation_path": KY_CITATION_PATH,
+                        "excerpt": excerpt,
+                    },
+                }
+            ]
+        }
+    }
+
+
+def _ky_derived_rule(
+    name: str,
+    *,
+    source: str,
+    formula: str,
+    excerpt: str,
+    dtype: str = "Money",
+) -> dict[str, object]:
+    rule: dict[str, object] = {
+        "name": name,
+        "kind": "derived",
+        "entity": "TaxUnit",
+        "dtype": dtype,
+        "period": "Year",
+        "source": source,
+        "metadata": _ky_formula_proof(excerpt),
+        "versions": [{"effective_from": "2026-01-01", "formula": formula}],
+    }
+    if dtype == "Money":
+        rule["unit"] = "USD"
+    return rule
+
+
+def _ky_boolean_input(name: str, description: str) -> dict[str, str]:
+    return {
+        "name": name,
+        "entity": "TaxUnit",
+        "dtype": "Boolean",
+        "period": "Year",
+        "description": description,
+    }
+
+
+def _ky_spouse_credit_payload(*, decomposed: bool) -> dict[str, object]:
+    amount = {
+        "name": "spouse_credit_amount",
+        "kind": "parameter",
+        "dtype": "Money",
+        "period": "Year",
+        "unit": "USD",
+        "source": "KRS 141.020(3)(a)5.",
+        "metadata": _ky_formula_proof(
+            "An additional forty dollars ($40) credit for the taxpayer's spouse",
+            kind="amount",
+        ),
+        "versions": [{"effective_from": "2026-01-01", "formula": "40"}],
+    }
+    age_excerpt = (
+        "An additional forty dollars ($40) credit for the taxpayer's spouse "
+        "if a separate return is made by the taxpayer"
+    )
+    if decomposed:
+        condition = "spouse_age_credit_applies"
+        rules = [
+            amount,
+            _ky_derived_rule(
+                condition,
+                source="KRS 141.020(3)(a)5.",
+                dtype="Judgment",
+                formula=(
+                    "taxpayer_files_separate_return "
+                    "and spouse_has_attained_age_sixty_five "
+                    "and spouse_has_no_kentucky_gross_income "
+                    "and spouse_is_not_another_taxpayers_dependent"
+                ),
+                excerpt=KY_SPOUSE_CREDIT_SOURCE.split("7.", 1)[0].split("5.", 1)[1],
+            ),
+        ]
+        inputs = [
+            _ky_boolean_input(name, description)
+            for name, description in (
+                ("taxpayer_files_separate_return", "The taxpayer files separately."),
+                ("spouse_has_attained_age_sixty_five", "The spouse is age 65."),
+                ("spouse_has_no_kentucky_gross_income", "The spouse has no income."),
+                (
+                    "spouse_is_not_another_taxpayers_dependent",
+                    "The spouse is not another taxpayer's dependent.",
+                ),
+            )
+        ]
+    else:
+        condition = "spouse_age_credit_conditions_hold"
+        rules = [amount]
+        inputs = [
+            _ky_boolean_input(
+                "spouse_age_credit_conditions_hold",
+                "All conditions in KRS 141.020(3)(a)5 hold.",
+            ),
+            _ky_boolean_input(
+                "spouse_blindness_credit_conditions_hold",
+                "All conditions in KRS 141.020(3)(a)7 hold.",
+            ),
+        ]
+    rules.append(
+        _ky_derived_rule(
+            "spouse_age_credit",
+            source="KRS 141.020(3)(a)5.",
+            formula=f"if {condition}: spouse_credit_amount else: 0",
+            excerpt=age_excerpt,
+        )
+    )
+    if not decomposed:
+        rules.append(
+            _ky_derived_rule(
+                "spouse_blindness_credit",
+                source="KRS 141.020(3)(a)7.",
+                formula=(
+                    "if spouse_blindness_credit_conditions_hold: "
+                    "spouse_credit_amount else: 0"
+                ),
+                excerpt=(age_excerpt + " and if the taxpayer's spouse is blind"),
+            )
+        )
+    return {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": rules,
+        "inputs": inputs,
+    }
+
+
+def _ky_fact_gate_analysis(
+    fact_clause: str,
+    *,
+    terminal_name: str,
+    terminal_description: str,
+    imported: bool = False,
+):
+    source = (
+        "A forty dollar ($40) credit applies if the taxpayer files a separate "
+        f"return and {fact_clause}."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "income_gate_credit",
+                source="KRS 141.020",
+                formula=(
+                    f"if taxpayer_files_separate_return and {terminal_name}: 40 else: 0"
+                ),
+                excerpt=source.rstrip("."),
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "taxpayer_files_separate_return",
+                "The taxpayer files a separate return.",
+            ),
+        ]
+        + (
+            [] if imported else [_ky_boolean_input(terminal_name, terminal_description)]
+        ),
+    }
+    if imported:
+        payload["imports"] = [f"us-ky:statutes/facts#{terminal_name}"]
+    return _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def _ky_income_gate_analysis(
+    income_clause: str,
+    *,
+    terminal_name: str,
+    terminal_description: str,
+):
+    return _ky_fact_gate_analysis(
+        f"the spouse {income_clause}",
+        terminal_name=terminal_name,
+        terminal_description=terminal_description,
+    )
+
+
+def test_rejects_aggregate_boolean_for_same_source_spouse_credit_gates():
+    content = yaml.safe_dump(
+        _ky_spouse_credit_payload(decomposed=False),
+        sort_keys=False,
+    )
+    result = _analyze(
+        content,
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_age_credit_conditions_hold",
+    )
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_blindness_credit_conditions_hold",
+    )
+    assert any(
+        "source-explicit-conditions" in issue
+        for issue in _pipeline_issues(
+            content,
+            KY_SPOUSE_CREDIT_SOURCE,
+            corpus_citation_path=KY_CITATION_PATH,
+            test_cases=[],
+        )
+    )
+
+
+def test_rejects_aggregate_boolean_hidden_behind_same_source_judgment():
+    payload = _ky_spouse_credit_payload(decomposed=False)
+    spouse_age_credit = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    spouse_age_credit["versions"][0]["formula"] = (
+        "if spouse_age_credit_applies: spouse_credit_amount else: 0"
+    )
+    payload["rules"].insert(
+        -2,
+        {
+            "name": "spouse_age_credit_applies",
+            "kind": "derived",
+            "entity": "TaxUnit",
+            "dtype": "Judgment",
+            "period": "Year",
+            "source": "KRS 141.020(3)(a)5.",
+            "metadata": _ky_formula_proof(
+                "An additional forty dollars ($40) credit for the taxpayer's "
+                "spouse if a separate return is made by the taxpayer"
+            ),
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "formula": "spouse_age_credit_conditions_hold",
+                }
+            ],
+        },
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_age_credit_applies",
+        "spouse_age_credit_conditions_hold",
+    )
+
+
+def test_accepts_decomposed_facts_for_same_source_spouse_credit_gates():
+    result = _analyze(
+        yaml.safe_dump(_ky_spouse_credit_payload(decomposed=True), sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "proof_path",
+    ("versions.formula", " versions [ 0 ] . formula "),
+)
+def test_formula_proof_path_normalization_cannot_bypass_source_gates(proof_path):
+    payload = _ky_spouse_credit_payload(decomposed=False)
+    spouse_age_credit = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    spouse_age_credit["metadata"]["proof"]["atoms"][0]["path"] = proof_path
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_age_credit_conditions_hold",
+    )
+
+
+def test_negative_source_gates_reject_positive_opposites():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = (
+        "taxpayer_files_separate_return "
+        "and spouse_has_attained_age_sixty_five "
+        "and spouse_has_kentucky_gross_income "
+        "and spouse_is_another_taxpayers_dependent"
+    )
+    payload["inputs"] = [
+        _ky_boolean_input(name, description)
+        for name, description in (
+            ("taxpayer_files_separate_return", "The taxpayer files separately."),
+            ("spouse_has_attained_age_sixty_five", "The spouse is age 65."),
+            ("spouse_has_kentucky_gross_income", "The spouse has income."),
+            (
+                "spouse_is_another_taxpayers_dependent",
+                "The spouse is another taxpayer's dependent.",
+            ),
+        )
+    ]
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_positive_executable_name_cannot_borrow_negative_description_polarity():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = (
+        "taxpayer_files_separate_return "
+        "and spouse_has_attained_age_sixty_five "
+        "and spouse_has_kentucky_gross_income "
+        "and spouse_is_not_another_taxpayers_dependent"
+    )
+    income_input = next(
+        item
+        for item in payload["inputs"]
+        if item["name"] == "spouse_has_no_kentucky_gross_income"
+    )
+    income_input["name"] = "spouse_has_kentucky_gross_income"
+    income_input["description"] = "The spouse has no Kentucky gross income."
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    ("income_clause", "positive_name", "positive_description"),
+    (
+        (
+            "does not receive Kentucky gross income",
+            "spouse_receives_kentucky_gross_income",
+            "The spouse receives Kentucky gross income.",
+        ),
+        (
+            "does not earn Kentucky gross income",
+            "spouse_earns_kentucky_gross_income",
+            "The spouse earns Kentucky gross income.",
+        ),
+        (
+            "is without Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "doesn't receive Kentucky gross income",
+            "spouse_receives_kentucky_gross_income",
+            "The spouse receives Kentucky gross income.",
+        ),
+        (
+            "lacks Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "lack Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "has zero Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "has an absence of Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "is not in receipt of Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "never receives Kentucky gross income",
+            "spouse_receives_kentucky_gross_income",
+            "The spouse receives Kentucky gross income.",
+        ),
+        (
+            "fails to receive Kentucky gross income",
+            "spouse_receives_kentucky_gross_income",
+            "The spouse receives Kentucky gross income.",
+        ),
+        (
+            "has no earnings",
+            "spouse_has_earnings",
+            "The spouse has earnings.",
+        ),
+        (
+            "has 0 Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "has nil Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "is devoid of Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+    ),
+)
+def test_negative_income_source_forms_reject_positive_opposites(
+    income_clause: str,
+    positive_name: str,
+    positive_description: str,
+):
+    result = _ky_income_gate_analysis(
+        income_clause,
+        terminal_name=positive_name,
+        terminal_description=positive_description,
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", positive_name)
+
+
+@pytest.mark.parametrize(
+    ("income_clause", "negative_name", "negative_description"),
+    (
+        (
+            "does not receive Kentucky gross income",
+            "spouse_does_not_receive_kentucky_gross_income",
+            "The spouse does not receive Kentucky gross income.",
+        ),
+        (
+            "does not earn Kentucky gross income",
+            "spouse_does_not_earn_kentucky_gross_income",
+            "The spouse does not earn Kentucky gross income.",
+        ),
+        (
+            "is without Kentucky gross income",
+            "spouse_is_without_kentucky_gross_income",
+            "The spouse is without Kentucky gross income.",
+        ),
+        (
+            "doesn't receive Kentucky gross income",
+            "spouse_doesn_t_receive_kentucky_gross_income",
+            "The spouse doesn't receive Kentucky gross income.",
+        ),
+        (
+            "lacks Kentucky gross income",
+            "spouse_lacks_kentucky_gross_income",
+            "The spouse lacks Kentucky gross income.",
+        ),
+        (
+            "lack Kentucky gross income",
+            "spouse_lack_kentucky_gross_income",
+            "The spouse lacks Kentucky gross income.",
+        ),
+        (
+            "has zero Kentucky gross income",
+            "spouse_has_zero_kentucky_gross_income",
+            "The spouse has zero Kentucky gross income.",
+        ),
+        (
+            "has an absence of Kentucky gross income",
+            "spouse_has_an_absence_of_kentucky_gross_income",
+            "The spouse has an absence of Kentucky gross income.",
+        ),
+        (
+            "is not in receipt of Kentucky gross income",
+            "spouse_is_not_in_receipt_of_kentucky_gross_income",
+            "The spouse is not in receipt of Kentucky gross income.",
+        ),
+        (
+            "never receives Kentucky gross income",
+            "spouse_never_receives_kentucky_gross_income",
+            "The spouse never receives Kentucky gross income.",
+        ),
+        (
+            "fails to receive Kentucky gross income",
+            "spouse_fails_to_receive_kentucky_gross_income",
+            "The spouse fails to receive Kentucky gross income.",
+        ),
+        (
+            "has no earnings",
+            "spouse_has_no_earnings",
+            "The spouse has no earnings.",
+        ),
+        (
+            "has 0 Kentucky gross income",
+            "spouse_has_0_kentucky_gross_income",
+            "The spouse has 0 Kentucky gross income.",
+        ),
+        (
+            "has nil Kentucky gross income",
+            "spouse_has_nil_kentucky_gross_income",
+            "The spouse has nil Kentucky gross income.",
+        ),
+        (
+            "is devoid of Kentucky gross income",
+            "spouse_is_devoid_of_kentucky_gross_income",
+            "The spouse is devoid of Kentucky gross income.",
+        ),
+    ),
+)
+def test_negative_income_source_forms_accept_matching_terminals(
+    income_clause: str,
+    negative_name: str,
+    negative_description: str,
+):
+    result = _ky_income_gate_analysis(
+        income_clause,
+        terminal_name=negative_name,
+        terminal_description=negative_description,
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_not_only_does_not_negate_positive_income_description():
+    result = _ky_income_gate_analysis(
+        "has Kentucky gross income",
+        terminal_name="spouse_income_fact",
+        terminal_description="The spouse not only has Kentucky gross income.",
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    ("dependent_clause", "negative_name", "negative_description"),
+    (
+        (
+            "cannot be claimed as another taxpayer's dependent",
+            "spouse_cannot_be_claimed_as_another_taxpayers_dependent",
+            "The spouse cannot be claimed as another taxpayer's dependent.",
+        ),
+        (
+            "can't be claimed as another taxpayer's dependent",
+            "spouse_can_t_be_claimed_as_another_taxpayers_dependent",
+            "The spouse can't be claimed as another taxpayer's dependent.",
+        ),
+        (
+            "is ineligible to be claimed as another taxpayer's dependent",
+            "spouse_is_ineligible_to_be_claimed_as_another_taxpayers_dependent",
+            ("The spouse is ineligible to be claimed as another taxpayer's dependent."),
+        ),
+        (
+            "is unable to be claimed as another taxpayer's dependent",
+            "spouse_is_unable_to_be_claimed_as_another_taxpayers_dependent",
+            ("The spouse is unable to be claimed as another taxpayer's dependent."),
+        ),
+    ),
+)
+def test_negative_dependent_source_forms_accept_matching_terminals(
+    dependent_clause: str,
+    negative_name: str,
+    negative_description: str,
+):
+    result = _ky_fact_gate_analysis(
+        f"the spouse {dependent_clause}",
+        terminal_name=negative_name,
+        terminal_description=negative_description,
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "dependent_clause",
+    (
+        "cannot be claimed as another taxpayer's dependent",
+        "can't be claimed as another taxpayer's dependent",
+        "is ineligible to be claimed as another taxpayer's dependent",
+        "is unable to be claimed as another taxpayer's dependent",
+    ),
+)
+def test_negative_dependent_source_forms_reject_positive_opposites(
+    dependent_clause: str,
+):
+    positive_name = "spouse_can_be_claimed_as_another_taxpayers_dependent"
+    result = _ky_fact_gate_analysis(
+        f"the spouse {dependent_clause}",
+        terminal_name=positive_name,
+        terminal_description=(
+            "The spouse can be claimed as another taxpayer's dependent."
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", positive_name)
+
+
+@pytest.mark.parametrize(
+    ("fact_clause", "positive_name", "positive_description"),
+    (
+        (
+            "the spouse is not without Kentucky gross income",
+            "spouse_has_kentucky_gross_income",
+            "The spouse has Kentucky gross income.",
+        ),
+        (
+            "it is not true that the spouse does not receive Kentucky gross income",
+            "spouse_receives_kentucky_gross_income",
+            "The spouse receives Kentucky gross income.",
+        ),
+    ),
+)
+def test_double_negative_income_sources_accept_positive_terminals(
+    fact_clause: str,
+    positive_name: str,
+    positive_description: str,
+):
+    result = _ky_fact_gate_analysis(
+        fact_clause,
+        terminal_name=positive_name,
+        terminal_description=positive_description,
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The spouse is not without Kentucky gross income.",
+        ("It is not true that the spouse does not receive Kentucky gross income."),
+    ),
+)
+def test_double_negative_income_parity_is_explicitly_positive(text: str):
+    assert completeness_module._source_gate_explicit_polarities(text) == {
+        "income": False
+    }
+
+
+@pytest.mark.parametrize(
+    "double_negative_description",
+    (
+        "The spouse is not without Kentucky gross income.",
+        ("It is not true that the spouse does not receive Kentucky gross income."),
+    ),
+)
+def test_double_negative_descriptions_do_not_conflict_with_positive_names(
+    double_negative_description: str,
+):
+    result = _ky_income_gate_analysis(
+        "has Kentucky gross income",
+        terminal_name="spouse_has_kentucky_gross_income",
+        terminal_description=double_negative_description,
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        (
+            "It is not true that the spouse is blind. "
+            "The spouse does not receive income."
+        ),
+        (
+            "It is not true that the spouse is blind; "
+            "the spouse does not receive income."
+        ),
+        (
+            "It is not true that the spouse is blind whereas "
+            "the spouse does not receive income."
+        ),
+        (
+            "It is not true that the spouse is blind and "
+            "the spouse does not receive income."
+        ),
+        (
+            "It is not true that the spouse is blind, yet "
+            "the spouse does not receive income."
+        ),
+    ),
+)
+def test_sentential_negation_does_not_cross_clause_boundaries(text: str):
+    assert completeness_module._source_gate_predicate_polarities(text) == {
+        "income": True
+    }
+
+
+def test_independent_yet_clause_rejects_opposite_income_terminal():
+    result = _ky_fact_gate_analysis(
+        ("it is not true that the spouse is blind, yet the spouse has no income"),
+        terminal_name="spouse_has_income",
+        terminal_description="The spouse has income.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_has_income")
+
+
+def test_independent_yet_separates_conjunctive_fact_gates():
+    gates = completeness_module._source_conjunctive_fact_gates(
+        "A credit applies if the spouse is blind, yet the spouse has no income."
+    )
+
+    assert gates == (
+        (frozenset({"spouse"}), frozenset({"blind"})),
+        (frozenset({"spouse"}), frozenset({"no_income"})),
+    )
+
+
+@pytest.mark.parametrize(
+    "income_clause",
+    (
+        "has not yet received income",
+        "does not yet receive income",
+        "has yet to receive income",
+        "has yet to actually receive income",
+        "has not yet legally actually formally finally received income",
+    ),
+)
+def test_temporal_yet_income_cannot_corroborate_positive_terminal(income_clause):
+    text = f"The spouse {income_clause}."
+
+    assert completeness_module._source_gate_polarity_clauses(text) == (
+        text.casefold().rstrip("."),
+    )
+    assert completeness_module._source_gate_predicate_polarities(text) == {
+        "income": None
+    }
+
+    result = _ky_income_gate_analysis(
+        income_clause,
+        terminal_name="spouse_has_income",
+        terminal_description="The spouse has income.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_has_income")
+
+
+@pytest.mark.parametrize(
+    "dependent_clause",
+    (
+        "is not yet claimed as another taxpayer's dependent",
+        "has yet to be claimed as another taxpayer's dependent",
+        "is not yet eligible to be claimed as another taxpayer's dependent",
+        "has yet to lawfully be claimed as another taxpayer's dependent",
+        (
+            "is not yet legally actually formally finally claimed as another "
+            "taxpayer's dependent"
+        ),
+    ),
+)
+def test_temporal_yet_dependent_cannot_corroborate_positive_terminal(
+    dependent_clause,
+):
+    text = f"The spouse {dependent_clause}."
+
+    assert completeness_module._source_gate_polarity_clauses(text) == (
+        text.casefold().rstrip("."),
+    )
+    assert completeness_module._source_gate_predicate_polarities(text) == {
+        "dependent": None
+    }
+
+    terminal_name = "spouse_is_another_taxpayers_dependent"
+    result = _ky_fact_gate_analysis(
+        f"the spouse {dependent_clause}",
+        terminal_name=terminal_name,
+        terminal_description="The spouse is another taxpayer's dependent.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", terminal_name)
+
+
+@pytest.mark.parametrize(
+    "independent_subject",
+    (
+        "the surviving spouse",
+        "the elderly surviving resident spouse",
+        "the elderly long-term surviving resident spouse",
+        "she",
+        "they",
+    ),
+)
+def test_independent_yet_with_bounded_subject_rejects_outer_negation_bypass(
+    independent_subject,
+):
+    fact_clause = (
+        "it is not true that the applicant is blind, yet "
+        f"{independent_subject} has no income"
+    )
+
+    assert completeness_module._source_gate_predicate_polarities(fact_clause) == {
+        "income": True
+    }
+    assert (
+        completeness_module._source_conjunctive_fact_gate_count(
+            f"A credit applies if the applicant is blind, yet "
+            f"{independent_subject} has no income."
+        )
+        == 2
+    )
+
+    result = _ky_fact_gate_analysis(
+        fact_clause,
+        terminal_name="spouse_has_income",
+        terminal_description="The spouse has income.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_has_income")
+
+
+def test_ambiguous_yet_subject_scan_exhaustion_fails_closed():
+    fact_clause = (
+        "it is not true that the applicant is blind, yet the first second third "
+        "fourth fifth sixth seventh eighth spouse has no income"
+    )
+
+    assert completeness_module._source_gate_predicate_polarities(fact_clause) == {
+        "income": None
+    }
+    assert (
+        completeness_module._source_conjunctive_fact_gate_count(
+            f"A credit applies if {fact_clause}."
+        )
+        == 2
+    )
+
+    result = _ky_fact_gate_analysis(
+        fact_clause,
+        terminal_name="spouse_has_income",
+        terminal_description="The spouse has income.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_has_income")
+
+
+def test_conflicting_income_readings_are_unknown():
+    assert completeness_module._source_gate_predicate_polarities(
+        "The spouse has income and the spouse has no income."
+    ) == {"income": None}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("The spouse obtains income.", {"income": None}),
+        ("The spouse supports a dependent.", {"dependent": None}),
+    ),
+)
+def test_unsupported_predicate_constructions_are_unknown(
+    text: str,
+    expected: dict[str, None],
+):
+    assert completeness_module._source_gate_predicate_polarities(text) == expected
+
+
+def test_out_of_window_income_negation_is_unknown_and_cannot_corroborate():
+    padding = " ".join(f"qualification{index}" for index in range(20))
+    fact_clause = f"the spouse has no {padding} income"
+    assert completeness_module._source_gate_predicate_polarities(fact_clause) == {
+        "income": None
+    }
+
+    result = _ky_fact_gate_analysis(
+        fact_clause,
+        terminal_name="spouse_has_no_income",
+        terminal_description="The spouse has no income.",
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    ("wrong_name", "wrong_description"),
+    (
+        (
+            "spouse_has_no_proof_of_income",
+            "The spouse has no proof of income.",
+        ),
+        (
+            "spouse_has_no_documentation_of_income",
+            "The spouse has no documentation of income.",
+        ),
+        (
+            "spouse_has_no_income_report",
+            "The spouse has no income report.",
+        ),
+        (
+            "spouse_has_zero_income_tax",
+            "The spouse has zero income tax.",
+        ),
+        (
+            "spouse_does_not_report_income",
+            "The spouse does not report income.",
+        ),
+        (
+            "spouse_income_is_not_taxed",
+            "The spouse's income is not taxed.",
+        ),
+    ),
+)
+def test_income_mention_in_wrong_predicate_cannot_corroborate_gate(
+    wrong_name: str,
+    wrong_description: str,
+):
+    result = _ky_income_gate_analysis(
+        "has no Kentucky gross income",
+        terminal_name=wrong_name,
+        terminal_description=wrong_description,
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", wrong_name)
+
+
+@pytest.mark.parametrize(
+    ("wrong_name", "wrong_description"),
+    (
+        (
+            "spouse_has_no_dependent_report",
+            "The spouse has no dependent report.",
+        ),
+        (
+            "spouse_does_not_live_with_a_dependent",
+            "The spouse does not live with a dependent.",
+        ),
+        (
+            "spouse_is_not_responsible_for_a_dependent",
+            "The spouse is not responsible for a dependent.",
+        ),
+    ),
+)
+def test_dependent_mention_in_wrong_predicate_cannot_corroborate_gate(
+    wrong_name: str,
+    wrong_description: str,
+):
+    result = _ky_fact_gate_analysis(
+        "the spouse is not another taxpayer's dependent",
+        terminal_name=wrong_name,
+        terminal_description=wrong_description,
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", wrong_name)
+
+
+@pytest.mark.parametrize(
+    ("fact_clause", "negative_name", "negative_description"),
+    (
+        (
+            "the spouse has Kentucky gross income",
+            "spouse_has_no_kentucky_gross_income",
+            "The spouse has no Kentucky gross income.",
+        ),
+        (
+            "the spouse is another taxpayer's dependent",
+            "spouse_is_not_another_taxpayers_dependent",
+            "The spouse is not another taxpayer's dependent.",
+        ),
+    ),
+)
+@pytest.mark.parametrize("imported", (False, True), ids=("input", "import"))
+def test_positive_source_gates_reject_negative_terminals_and_imports(
+    fact_clause: str,
+    negative_name: str,
+    negative_description: str,
+    imported: bool,
+):
+    result = _ky_fact_gate_analysis(
+        fact_clause,
+        terminal_name=negative_name,
+        terminal_description=negative_description,
+        imported=imported,
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", negative_name)
+
+
+def test_gate_named_administrative_review_padding_is_rejected():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    padded_names = (
+        "taxpayer_return_review_complete",
+        "spouse_age_review_complete",
+        "spouse_income_review_complete",
+        "spouse_dependency_review_complete",
+    )
+    applies["versions"][0]["formula"] = " and ".join(padded_names)
+    payload["inputs"] = [
+        _ky_boolean_input(name, "The administrative review is complete.")
+        for name in padded_names
+    ]
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_source_stated_administrative_gates_accept_matching_terminals():
+    source = (
+        "A determination applies if the return review is complete and the spouse "
+        "age review is complete."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "review_determination",
+                source="KRS 141.020",
+                dtype="Judgment",
+                formula=("return_review_complete and spouse_age_review_complete"),
+                excerpt=source.rstrip("."),
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "return_review_complete",
+                "The return review is complete.",
+            ),
+            _ky_boolean_input(
+                "spouse_age_review_complete",
+                "The spouse age review is complete.",
+            ),
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_accepts_nested_decomposed_same_source_fact_gates():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = """\
+if taxpayer_files_separate_return:
+  if spouse_has_attained_age_sixty_five and spouse_has_no_kentucky_gross_income and spouse_is_not_another_taxpayers_dependent:
+    true
+  else:
+    false
+else:
+  false
+"""
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_rejects_opaque_active_conditional_alternative():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = """\
+if use_decomposed_path:
+  taxpayer_files_separate_return and spouse_has_attained_age_sixty_five and spouse_has_no_kentucky_gross_income and spouse_is_not_another_taxpayers_dependent
+else:
+  opaque_spouse_status
+"""
+    payload["inputs"].extend(
+        [
+            _ky_boolean_input("use_decomposed_path", "Selects an implementation path."),
+            _ky_boolean_input("opaque_spouse_status", "Provided with the filing."),
+        ]
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "opaque_spouse_status",
+    )
+
+
+def test_accepts_constant_false_conditional_alternative():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = """\
+if use_decomposed_path:
+  taxpayer_files_separate_return and spouse_has_attained_age_sixty_five and spouse_has_no_kentucky_gross_income and spouse_is_not_another_taxpayers_dependent
+else:
+  false and opaque_spouse_status
+"""
+    payload["inputs"].extend(
+        [
+            _ky_boolean_input("use_decomposed_path", "Selects an implementation path."),
+            _ky_boolean_input("opaque_spouse_status", "Provided with the filing."),
+        ]
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_rejects_opaque_alias_temporal_partition():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"] = [
+        applies["versions"][0] | {"effective_to": "2026-12-31"},
+        {
+            "effective_from": "2027-01-01",
+            "formula": "opaque_spouse_status",
+        },
+    ]
+    payload["inputs"].append(
+        _ky_boolean_input("opaque_spouse_status", "Provided with the filing.")
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "opaque_spouse_status",
+    )
+
+
+def test_accepts_aggregate_boundary_for_source_atomic_external_status():
+    source = """\
+(1) A forty dollar ($40) credit applies if all eligibility conditions under
+Section 99 are certified by the department.
+"""
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: {KY_CITATION_PATH}
+rules:
+  - name: externally_certified_credit
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: Section 99 certification clause
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: {KY_CITATION_PATH}
+              excerpt: "A forty dollar ($40) credit applies if all eligibility conditions under Section 99 are certified by the department"
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 'if external_eligibility_conditions_hold: 40 else: 0'
+inputs:
+  - name: external_eligibility_conditions_hold
+    entity: TaxUnit
+    dtype: Boolean
+    period: Year
+    description: All eligibility conditions under Section 99 hold as certified by the department.
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_rejects_renamed_neutral_aggregate_same_source_gate():
+    payload = _ky_spouse_credit_payload(decomposed=False)
+    replacements = {
+        "spouse_age_credit_conditions_hold": "status_alpha",
+        "spouse_blindness_credit_conditions_hold": "status_beta",
+    }
+    for rule in payload["rules"]:
+        for version in rule.get("versions", []):
+            formula = version.get("formula")
+            if isinstance(formula, str):
+                for old, new in replacements.items():
+                    formula = formula.replace(old, new)
+                version["formula"] = formula
+    for item in payload["inputs"]:
+        item["name"] = replacements[item["name"]]
+        item["description"] = "Provided with the filing."
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "status_alpha")
+    assert _has_issue(result, "source-explicit-conditions", "status_beta")
+
+
+def test_rejects_partial_collapse_of_same_source_fact_gates():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = (
+        "taxpayer_files_separate_return and remaining_status"
+    )
+    payload["inputs"] = [
+        item
+        for item in payload["inputs"]
+        if item["name"] == "taxpayer_files_separate_return"
+    ]
+    payload["inputs"].append(
+        _ky_boolean_input("remaining_status", "Provided with the filing.")
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "taxpayer_files_separate_return",
+        "remaining_status",
+    )
+
+
+def test_rejects_proofless_alias_to_opaque_same_source_gate():
+    payload = _ky_spouse_credit_payload(decomposed=False)
+    spouse_age_credit = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    spouse_age_credit["versions"][0]["formula"] = (
+        "if filing_status_alias: spouse_credit_amount else: 0"
+    )
+    payload["rules"].insert(
+        -2,
+        {
+            "name": "filing_status_alias",
+            "kind": "derived",
+            "entity": "TaxUnit",
+            "dtype": "Judgment",
+            "period": "Year",
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "formula": "spouse_age_credit_conditions_hold",
+                }
+            ],
+        },
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "filing_status_alias",
+        "spouse_age_credit_conditions_hold",
+    )
+
+
+def test_unrelated_later_source_sentence_does_not_contaminate_atomic_gate():
+    source = """\
+(1) A forty dollar ($40) credit applies if certification_status holds.
+A separate return must be filed and the spouse must be blind and have no income.
+"""
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "certified_credit",
+                source="KRS 141.020(1)",
+                formula="if external_conditions_hold: 40 else: 0",
+                excerpt=(
+                    "A forty dollar ($40) credit applies if certification_status holds"
+                ),
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "external_conditions_hold",
+                "All eligibility conditions are satisfied.",
+            )
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_later_independent_condition_in_same_sentence_does_not_contaminate():
+    source = (
+        "A credit applies if certification status holds, and an applicant "
+        "qualifies if employed and owns a home."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "certified_credit",
+                source="KRS 141.020",
+                formula="if external_certification_status: 40 else: 0",
+                excerpt="A credit applies if certification status holds",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "external_certification_status",
+                "Certification status supplied by the department.",
+            )
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_elided_subject_later_condition_does_not_contaminate_atomic_proposition():
+    source = (
+        "A credit applies if certification status holds, and is refundable if "
+        "the applicant is employed and owns a home."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "certified_credit",
+                source="KRS 141.020",
+                formula="if external_certification_status: 40 else: 0",
+                excerpt="A credit applies if certification status holds",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "external_certification_status",
+                "Certification status supplied by the department.",
+            )
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_elided_has_later_condition_does_not_contaminate_atomic_proposition():
+    source = (
+        "A credit applies if certification status holds, and has a bonus if the "
+        "applicant is employed and owns a home."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "certified_credit",
+                source="KRS 141.020",
+                formula="if external_certification_status: 40 else: 0",
+                excerpt="A credit applies if certification status holds",
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input(
+                "external_certification_status",
+                "Certification status supplied by the department.",
+            )
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_repeated_excerpt_is_disambiguated_by_rule_source_path():
+    source = """\
+(1) A credit applies if the claimant is employed and owns a home.
+(2) A credit applies if the claimant is insured and has income.
+"""
+    citation_path = "us-ky/statute/krs/141.999/document-1"
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": citation_path}},
+        "rules": [
+            {
+                **_ky_derived_rule(
+                    "employment_home_credit",
+                    source="KRS 141.999(1)",
+                    formula=(
+                        "if claimant_is_employed and claimant_owns_home: 40 else: 0"
+                    ),
+                    excerpt="A credit applies",
+                ),
+                "metadata": {
+                    "proof": {
+                        "atoms": [
+                            {
+                                "path": "versions[0].formula",
+                                "kind": "formula",
+                                "source": {
+                                    "corpus_citation_path": citation_path,
+                                    "excerpt": "A credit applies",
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+        ],
+        "inputs": [
+            _ky_boolean_input("claimant_is_employed", "The claimant is employed."),
+            _ky_boolean_input("claimant_owns_home", "The claimant owns a home."),
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+    payload["rules"][0]["source"] = "KRS 141.999"
+    ambiguous = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=citation_path,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(ambiguous, "source-explicit-conditions")
+
+
+def test_generic_conjunctive_predicates_require_distinct_matching_facts():
+    source = (
+        "A credit applies if the claimant is employed and owns a home and has "
+        "health insurance."
+    )
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "generic_credit",
+                source="KRS 141.020",
+                formula="if generic_status: 40 else: 0",
+                excerpt=source.rstrip("."),
+            )
+        ],
+        "inputs": [_ky_boolean_input("generic_status", "Provided with the filing.")],
+    }
+
+    opaque = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert _has_issue(opaque, "source-explicit-conditions", "generic_status")
+
+    payload["rules"][0]["versions"][0]["formula"] = (
+        "if claimant_is_employed and claimant_owns_home "
+        "and claimant_has_health_insurance: 40 else: 0"
+    )
+    payload["inputs"] = [
+        _ky_boolean_input(name, name.replace("_", " "))
+        for name in (
+            "claimant_is_employed",
+            "claimant_owns_home",
+            "claimant_has_health_insurance",
+        )
+    ]
+    decomposed = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert not _has_issue(decomposed, "source-explicit-conditions")
+
+
+def test_repeated_same_category_predicates_require_entity_correspondence():
+    source = "A credit applies if the taxpayer has income and the spouse has no income."
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [
+            _ky_derived_rule(
+                "two_income_credit",
+                source="KRS 141.020",
+                formula="if taxpayer_has_income and spouse_has_no_income: 40 else: 0",
+                excerpt=source.rstrip("."),
+            )
+        ],
+        "inputs": [
+            _ky_boolean_input("taxpayer_has_income", "The taxpayer has income."),
+            _ky_boolean_input("spouse_has_no_income", "The spouse has no income."),
+        ],
+    }
+
+    aligned = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert not _has_issue(aligned, "source-explicit-conditions")
+
+    payload["rules"][0]["versions"][0]["formula"] = (
+        "if taxpayer_has_income and taxpayer_income_reviewed: 40 else: 0"
+    )
+    payload["inputs"][1] = _ky_boolean_input(
+        "taxpayer_income_reviewed",
+        "The taxpayer income record was reviewed.",
+    )
+    mismatched = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+    assert _has_issue(mismatched, "source-explicit-conditions")
+
+
+def test_unrelated_boolean_padding_does_not_satisfy_gate_cardinality():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    applies = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit_applies"
+    )
+    applies["versions"][0]["formula"] = (
+        "taxpayer_files_separate_return and administrative_review_complete "
+        "and document_scan_complete and supervisor_signoff_complete"
+    )
+    payload["inputs"] = [
+        item
+        for item in payload["inputs"]
+        if item["name"] == "taxpayer_files_separate_return"
+    ] + [
+        _ky_boolean_input(name, "Administrative workflow status.")
+        for name in (
+            "administrative_review_complete",
+            "document_scan_complete",
+            "supervisor_signoff_complete",
+        )
+    ]
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_gate_terminal_matching_is_bounded_for_dense_unsatisfied_graph():
+    gate_count = completeness_module._SOURCE_EXPLICIT_CONDITION_EXPANSION_LIMIT
+    gates = tuple(
+        (frozenset(), frozenset({"gross", "income"})) for _index in range(gate_count)
+    )
+    names = frozenset(f"income_fact_{index}" for index in range(gate_count - 1))
+    terminal_evidence = {
+        name: completeness_module._TerminalGateEvidence(
+            frozenset(),
+            frozenset({"gross", "income"}),
+            False,
+        )
+        for name in names
+    }
+
+    assert not completeness_module._terminal_names_corroborate_source_gates(
+        names,
+        gates,
+        terminal_evidence=terminal_evidence,
+    )
+
+
+def _same_source_gate_graph_payload(
+    formulas: dict[str, str],
+) -> tuple[dict[str, object], str, dict[str, object]]:
+    source = "A credit applies if the spouse is blind and the spouse has no income."
+    root = _ky_derived_rule(
+        "deep_gate_root",
+        source="KRS 141.020",
+        formula="gate_alias_0",
+        excerpt=source,
+        dtype="Judgment",
+    )
+    aliases = [
+        {
+            "name": name,
+            "kind": "derived",
+            "entity": "TaxUnit",
+            "dtype": "Judgment",
+            "period": "Year",
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "formula": formula,
+                }
+            ],
+        }
+        for name, formula in formulas.items()
+    ]
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": [root, *aliases],
+        "inputs": [
+            _ky_boolean_input("spouse_is_blind", "The spouse is blind."),
+            _ky_boolean_input(
+                "spouse_has_no_income",
+                "The spouse has no income.",
+            ),
+        ],
+    }
+    return payload, source, root
+
+
+def _same_source_gate_alias_chain_issues(
+    alias_count: int,
+    *,
+    cyclic: bool = False,
+):
+    formulas = {
+        f"gate_alias_{index}": (
+            "gate_alias_0"
+            if cyclic and index == alias_count - 1
+            else f"gate_alias_{index + 1}"
+            if index < alias_count - 1
+            else "spouse_is_blind and spouse_has_no_income"
+        )
+        for index in range(alias_count)
+    }
+    payload, source, root = _same_source_gate_graph_payload(formulas)
+    return completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=source,
+        branches=recognize_source_structure(source),
+        principal_rules={"deep_gate_root": root},
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+
+def test_source_gate_dependency_expansion_accepts_deep_chain_within_budget():
+    assert not _same_source_gate_alias_chain_issues(
+        completeness_module._SOURCE_EXPLICIT_CONDITION_DEPENDENCY_NODE_LIMIT // 2
+    )
+
+
+def test_source_gate_dependency_expansion_fails_closed_on_oversized_chain():
+    assert _same_source_gate_alias_chain_issues(1200)
+
+
+def test_source_gate_dependency_expansion_preserves_cycle_fail_closed():
+    assert _same_source_gate_alias_chain_issues(2, cyclic=True)
+
+
+def test_source_gate_dependency_cycle_cannot_borrow_sibling_terminals():
+    payload, source, root = _same_source_gate_graph_payload(
+        {
+            "gate_alias_0": "gate_alias_1 and spouse_is_blind",
+            "gate_alias_1": "gate_alias_0 and spouse_has_no_income",
+        }
+    )
+
+    issues = completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=source,
+        branches=recognize_source_structure(source),
+        principal_rules={"deep_gate_root": root},
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+    assert any("source-explicit-conditions" in issue for issue in issues)
+
+
+def test_source_gate_dependency_cycle_fails_closed_end_to_end():
+    payload, source, _root = _same_source_gate_graph_payload(
+        {
+            "gate_alias_0": "gate_alias_1 and spouse_is_blind",
+            "gate_alias_1": "gate_alias_0 and spouse_has_no_income",
+        }
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions")
+
+
+def test_source_gate_dependency_expansion_accepts_shared_acyclic_dag():
+    payload, source, root = _same_source_gate_graph_payload(
+        {
+            "gate_alias_0": "left_gate_alias and right_gate_alias",
+            "left_gate_alias": "shared_gate_alias and spouse_is_blind",
+            "right_gate_alias": "shared_gate_alias and spouse_has_no_income",
+            "shared_gate_alias": "spouse_is_blind",
+        }
+    )
+
+    issues = completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=source,
+        branches=recognize_source_structure(source),
+        principal_rules={"deep_gate_root": root},
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+    assert not issues
+
+
+def test_source_gate_dependency_expansion_ignores_future_cycle_edge():
+    payload, source, root = _same_source_gate_graph_payload(
+        {
+            "gate_alias_0": "gate_alias_1",
+            "gate_alias_1": "spouse_is_blind and spouse_has_no_income",
+        }
+    )
+    root["versions"][0]["effective_to"] = "2026-12-31"
+    alias_0, alias_1 = payload["rules"][1:]
+    alias_0["versions"][0]["effective_to"] = "2026-12-31"
+    alias_1["versions"] = [
+        {
+            "effective_from": "2026-01-01",
+            "effective_to": "2026-12-31",
+            "formula": "spouse_is_blind and spouse_has_no_income",
+        },
+        {
+            "effective_from": "2027-01-01",
+            "formula": "gate_alias_0",
+        },
+    ]
+
+    issues = completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=source,
+        branches=recognize_source_structure(source),
+        principal_rules={"deep_gate_root": root},
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+    assert not issues
+
+
+def test_source_gate_dependency_expansion_accepts_temporally_acyclic_slices():
+    payload, source, root = _same_source_gate_graph_payload(
+        {
+            "gate_alias_0": "gate_alias_1",
+            "gate_alias_1": "spouse_is_blind and spouse_has_no_income",
+        }
+    )
+    alias_0, alias_1 = payload["rules"][1:]
+    alias_0["versions"] = [
+        {
+            "effective_from": "2026-01-01",
+            "effective_to": "2026-12-31",
+            "formula": "gate_alias_1",
+        },
+        {
+            "effective_from": "2027-01-01",
+            "formula": "spouse_is_blind and spouse_has_no_income",
+        },
+    ]
+    alias_1["versions"] = [
+        {
+            "effective_from": "2026-01-01",
+            "effective_to": "2026-12-31",
+            "formula": "spouse_is_blind and spouse_has_no_income",
+        },
+        {
+            "effective_from": "2027-01-01",
+            "formula": "gate_alias_0",
+        },
+    ]
+
+    issues = completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=source,
+        branches=recognize_source_structure(source),
+        principal_rules={"deep_gate_root": root},
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+    assert not issues
+
+
+def test_formula_control_selector_outcomes_accept_nesting_within_budget():
+    groups = completeness_module._formula_control_selector_name_groups(
+        "not " * (completeness_module._SOURCE_EXPLICIT_CONDITION_AST_DEPTH_LIMIT // 2)
+        + "spouse_is_blind",
+        include_result_leaves=True,
+    )
+
+    assert groups == (frozenset({"spouse_is_blind"}),)
+
+
+def test_formula_control_selector_outcomes_fail_closed_on_oversized_nesting():
+    groups = completeness_module._formula_control_selector_name_groups(
+        "not " * 1000 + "spouse_is_blind",
+        include_result_leaves=True,
+    )
+
+    assert groups == (frozenset(),)
+
+
+def test_same_source_gate_proof_binds_matching_temporal_formula_version():
+    payload = _ky_spouse_credit_payload(decomposed=False)
+    age_rule = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    payload["rules"] = [
+        rule
+        for rule in payload["rules"]
+        if rule["name"] not in {"spouse_blindness_credit"}
+    ]
+    payload["inputs"] = [payload["inputs"][0]] + [
+        _ky_boolean_input(name, "One source-stated fact.")
+        for name in (
+            "taxpayer_files_separate_return",
+            "spouse_has_attained_age_sixty_five",
+            "spouse_has_no_kentucky_gross_income",
+            "spouse_is_not_another_taxpayers_dependent",
+        )
+    ]
+    decomposed_formula = (
+        "if taxpayer_files_separate_return "
+        "and spouse_has_attained_age_sixty_five "
+        "and spouse_has_no_kentucky_gross_income "
+        "and spouse_is_not_another_taxpayers_dependent: "
+        "spouse_credit_amount else: 0"
+    )
+    age_rule["versions"] = [
+        {
+            "effective_from": "2025-01-01",
+            "effective_to": "2025-12-31",
+            "formula": (
+                "if spouse_age_credit_conditions_hold: spouse_credit_amount else: 0"
+            ),
+        },
+        {"effective_from": "2026-01-01", "formula": decomposed_formula},
+    ]
+    age_rule["metadata"] = {
+        "proof": {
+            "atoms": [
+                {
+                    "path": "versions[1].formula",
+                    "kind": "formula",
+                    "source": {
+                        "corpus_citation_path": KY_CITATION_PATH,
+                        "excerpt": (
+                            "An additional forty dollars ($40) credit for the "
+                            "taxpayer's spouse if a separate return is made by the "
+                            "taxpayer"
+                        ),
+                    },
+                }
+            ]
+        }
+    }
+
+    aligned = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(aligned, "source-explicit-conditions")
+
+    age_rule["versions"][1]["formula"] = age_rule["versions"][0]["formula"]
+    matching_opaque = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        matching_opaque,
+        "source-explicit-conditions",
+        "versions[1]",
+        "spouse_age_credit_conditions_hold",
+    )
+
+
+def test_accepts_distinct_imports_for_same_source_fact_gates():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    age_rule = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    payload["rules"] = [
+        rule
+        for rule in payload["rules"]
+        if rule["name"] not in {"spouse_age_credit_applies"}
+    ]
+    imported_facts = (
+        "separate_return_fact",
+        "spouse_age_fact",
+        "spouse_income_fact",
+        "spouse_dependency_fact",
+    )
+    payload["imports"] = [f"us-ky:statutes/facts#{name}" for name in imported_facts]
+    payload["inputs"] = []
+    age_rule["versions"][0]["formula"] = (
+        f"if {' and '.join(imported_facts)}: spouse_credit_amount else: 0"
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+@pytest.mark.parametrize(
+    ("neutral_name", "positive_name"),
+    (
+        ("spouse_income_fact", "spouse_receives_income_fact"),
+        ("spouse_income_fact", "spouse_earns_income_fact"),
+        ("spouse_dependency_fact", "spouse_claimed_dependent_fact"),
+    ),
+)
+def test_explicit_positive_import_names_are_not_polarity_neutral(
+    neutral_name: str,
+    positive_name: str,
+):
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    age_rule = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    payload["rules"] = [
+        rule for rule in payload["rules"] if rule["name"] != "spouse_age_credit_applies"
+    ]
+    imported_facts = [
+        "separate_return_fact",
+        "spouse_age_fact",
+        "spouse_income_fact",
+        "spouse_dependency_fact",
+    ]
+    imported_facts[imported_facts.index(neutral_name)] = positive_name
+    payload["imports"] = [f"us-ky:statutes/facts#{name}" for name in imported_facts]
+    payload["inputs"] = []
+    age_rule["versions"][0]["formula"] = (
+        f"if {' and '.join(imported_facts)}: spouse_credit_amount else: 0"
+    )
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", positive_name)
+
+
+def test_same_source_gate_diagnostics_are_grouped_capped_and_cached(monkeypatch):
+    source_excerpt = (
+        "An additional forty dollars ($40) credit for the taxpayer's spouse "
+        "if a separate return is made by the taxpayer"
+    )
+    rules = [
+        _ky_derived_rule(
+            f"credit_{index:02d}",
+            source="KRS 141.020(3)(a)5.",
+            formula="if status_flag: 40 else: 0",
+            excerpt=source_excerpt,
+        )
+        for index in range(10)
+    ]
+    payload = {
+        "format": "rulespec/v1",
+        "module": {"source_verification": {"corpus_citation_path": KY_CITATION_PATH}},
+        "rules": rules,
+        "inputs": [_ky_boolean_input("status_flag", "Provided with the filing.")],
+    }
+    selector_calls = 0
+    gate_calls = 0
+    original = completeness_module._formula_control_selector_name_groups
+    original_gate_scan = completeness_module._source_conjunctive_fact_gates
+
+    def counted(formula, **kwargs):
+        nonlocal selector_calls
+        selector_calls += 1
+        return original(formula, **kwargs)
+
+    def counted_gate_scan(source_clause):
+        nonlocal gate_calls
+        gate_calls += 1
+        return original_gate_scan(source_clause)
+
+    monkeypatch.setattr(
+        completeness_module,
+        "_formula_control_selector_name_groups",
+        counted,
+    )
+    monkeypatch.setattr(
+        completeness_module,
+        "_source_conjunctive_fact_gates",
+        counted_gate_scan,
+    )
+    principal = {rule["name"]: rule for rule in rules}
+    issues = completeness_module._opaque_same_source_condition_input_issues(
+        payload,
+        source_text=KY_SPOUSE_CREDIT_SOURCE,
+        branches=recognize_source_structure(KY_SPOUSE_CREDIT_SOURCE),
+        principal_rules=principal,
+        corpus_citation_path=KY_CITATION_PATH,
+    )
+
+    assert len(issues) == 1
+    assert "credit_00" in issues[0]
+    assert "credit_07" in issues[0]
+    assert "credit_08" not in issues[0]
+    assert "2 additional formula versions omitted" in issues[0]
+    assert selector_calls == 1
+    assert gate_calls == 1
+
+
 def _formula_test(
     name: str,
     taxable_income: int,
@@ -1237,6 +3521,14 @@ rules:
     period: Year
     unit: USD
     source: us-al/statute/40-18-5
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-al/statute/40-18-5
+              excerpt: The tax is two percent of taxable income not in excess of $500.
     versions:
       - effective_from: '2026-01-01'
         effective_to: '2026-12-31'
@@ -1250,6 +3542,575 @@ inputs:
 """
     return _analyze(
         content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def _al_owner_only_direct_input_clamp_analysis(
+    test_cases,
+    *,
+    include_future_consumer=False,
+    owner_open_ended=False,
+):
+    source = "Taxable income is the greater of completed taxable income or zero."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, completed_taxable_income)
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    if include_future_consumer or owner_open_ended:
+        payload = yaml.safe_load(content)
+        if owner_open_ended:
+            payload["rules"][0]["versions"][0].pop("effective_to")
+    if include_future_consumer:
+        payload["rules"].append(
+            {
+                "name": "future_taxable_income_report",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "metadata": {
+                    "proof": {
+                        "atoms": [
+                            {
+                                "path": "versions[0].formula",
+                                "kind": "formula",
+                                "source": {
+                                    "corpus_citation_path": ("us-al/statute/40-18-5"),
+                                    "excerpt": (
+                                        "Taxable income is the greater of "
+                                        "completed taxable income or zero."
+                                    ),
+                                },
+                            }
+                        ]
+                    }
+                },
+                "versions": [
+                    {
+                        "effective_from": "2027-01-01",
+                        "effective_to": "2027-12-31",
+                        "formula": "taxable_income_boundary * 1",
+                    }
+                ],
+            }
+        )
+    if include_future_consumer or owner_open_ended:
+        content = yaml.safe_dump(payload, sort_keys=False)
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def _al_gated_direct_input_clamp_analysis(
+    test_cases,
+    *,
+    include_shadow_helper=False,
+    shadow_claims_source=False,
+    include_copied_shadow=False,
+    copied_shadow_copies_proof=False,
+    include_unresolved_cycle=False,
+    schedule_proof_path="versions[0].formula",
+    schedule_has_proof=True,
+    schedule_claims_source=True,
+):
+    source = (
+        "The tax applies to a resident and is two percent of taxable income "
+        "not in excess of $500."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: first_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, completed_taxable_income)
+  - name: resident_tax_applies
+    kind: derived
+    entity: TaxUnit
+    dtype: Judgment
+    period: Year
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: taxpayer_is_resident
+  - name: schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-al/statute/40-18-5
+              excerpt: The tax applies to a resident and is two percent of taxable income not in excess of $500.
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: |-
+          if resident_tax_applies:
+            first_rate * min(taxable_income_boundary, 500)
+          else: 0
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+  - name: taxpayer_is_resident
+    entity: TaxUnit
+    dtype: Boolean
+    period: Year
+"""
+    payload = yaml.safe_load(content)
+    schedule = next(
+        rule for rule in payload["rules"] if rule["name"] == "schedule_before_credits"
+    )
+    schedule["metadata"]["proof"]["atoms"][0]["path"] = schedule_proof_path
+    if not schedule_has_proof:
+        schedule.pop("metadata")
+    if not schedule_claims_source:
+        schedule.pop("source")
+    schedule_index = payload["rules"].index(schedule)
+    if include_shadow_helper:
+        shadow_rule = {
+            "name": "shadow_clamp_diagnostic",
+            "kind": "derived",
+            "entity": "TaxUnit",
+            "dtype": "Money",
+            "period": "Year",
+            "unit": "USD",
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "effective_to": "2026-12-31",
+                    "formula": "taxable_income_boundary",
+                }
+            ],
+        }
+        if shadow_claims_source:
+            shadow_rule["source"] = "us-al/statute/40-18-5"
+        payload["rules"].insert(schedule_index, shadow_rule)
+    if include_copied_shadow:
+        copied_shadow = {
+            "name": "shadow_schedule",
+            "kind": "derived",
+            "entity": "TaxUnit",
+            "dtype": "Money",
+            "period": "Year",
+            "unit": "USD",
+            "source": "us-al/statute/40-18-5",
+            "versions": [
+                {
+                    "effective_from": "2026-01-01",
+                    "effective_to": "2026-12-31",
+                    "formula": "first_rate * min(taxable_income_boundary, 500)",
+                }
+            ],
+        }
+        if copied_shadow_copies_proof:
+            copied_shadow["metadata"] = {
+                "proof": {
+                    "atoms": [
+                        {
+                            "path": schedule_proof_path,
+                            "kind": "formula",
+                            "source": {
+                                "corpus_citation_path": "us-al/statute/40-18-5",
+                                "excerpt": source,
+                            },
+                        }
+                    ]
+                }
+            }
+        payload["rules"].insert(
+            schedule_index,
+            copied_shadow,
+        )
+    if include_unresolved_cycle:
+        for offset, (name, formula) in enumerate(
+            (
+                ("clamp_cycle_a", "clamp_cycle_b"),
+                ("clamp_cycle_b", "clamp_cycle_a"),
+            )
+        ):
+            payload["rules"].insert(
+                schedule_index + offset,
+                {
+                    "name": name,
+                    "kind": "derived",
+                    "entity": "TaxUnit",
+                    "dtype": "Money",
+                    "period": "Year",
+                    "unit": "USD",
+                    "versions": [
+                        {
+                            "effective_from": "2026-01-01",
+                            "effective_to": "2026-12-31",
+                            "formula": formula,
+                        }
+                    ],
+                },
+            )
+        schedule["versions"][0]["formula"] = (
+            "if resident_tax_applies:\n"
+            "  taxable_income_boundary + clamp_cycle_a\n"
+            "else: 0"
+        )
+    content = yaml.safe_dump(payload, sort_keys=False)
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def _al_temporal_control_direct_input_clamp_analysis(test_cases):
+    source = (
+        "The tax applies to a resident and is two percent of taxable income "
+        "not in excess of $500."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: first_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.02
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        formula: max(0, completed_taxable_income)
+  - name: resident_tax_applies
+    kind: derived
+    entity: TaxUnit
+    dtype: Judgment
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: taxpayer_is_resident
+      - effective_from: '2027-01-01'
+        formula: taxpayer_is_full_year_resident
+  - name: schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-al/statute/40-18-5
+              excerpt: The tax applies to a resident and is two percent of taxable income not in excess of $500.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: |-
+          if resident_tax_applies:
+            first_rate * min(taxable_income_boundary, 500)
+          else: 0
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+  - name: taxpayer_is_resident
+    entity: TaxUnit
+    dtype: Boolean
+    period: Year
+  - name: taxpayer_is_full_year_resident
+    entity: TaxUnit
+    dtype: Boolean
+    period: Year
+"""
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def _al_temporal_parameter_control_direct_input_clamp_analysis(
+    test_cases,
+    *,
+    transitive_control=False,
+    parameter_alias=False,
+    later_enabled=False,
+    stable_numeric_rate_alias=False,
+    transitive_dtype="Judgment",
+):
+    source = "The tax is two percent of taxable income not in excess of $500."
+    payload = {
+        "format": "rulespec/v1",
+        "module": {
+            "source_verification": {"corpus_citation_path": "us-al/statute/40-18-5"}
+        },
+        "rules": [
+            {
+                "name": "first_rate",
+                "kind": "parameter",
+                "dtype": "Rate",
+                "period": "Year",
+                "versions": [{"effective_from": "2026-01-01", "formula": 0.02}],
+            },
+            {
+                "name": "bracket_ceiling",
+                "kind": "parameter",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "versions": [{"effective_from": "2026-01-01", "formula": 500}],
+            },
+            {
+                "name": "schedule_enabled",
+                "kind": "parameter",
+                "dtype": "Boolean",
+                "period": "Year",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "effective_to": "2026-12-31",
+                        "formula": True,
+                    },
+                    {
+                        "effective_from": "2027-01-01",
+                        "formula": later_enabled,
+                    },
+                ],
+            },
+            {
+                "name": "taxable_income_boundary",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "formula": "max(0, completed_taxable_income)",
+                    }
+                ],
+            },
+            {
+                "name": "schedule_before_credits",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "metadata": {
+                    "proof": {
+                        "atoms": [
+                            {
+                                "path": "versions[0].formula",
+                                "kind": "formula",
+                                "source": {
+                                    "corpus_citation_path": ("us-al/statute/40-18-5"),
+                                    "excerpt": source,
+                                },
+                            }
+                        ]
+                    }
+                },
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "formula": (
+                            "if resident_tax_applies:\n"
+                            "  first_rate * min(taxable_income_boundary, "
+                            "bracket_ceiling)\n"
+                            "else: 0"
+                            if transitive_control
+                            else "if schedule_enabled_alias:\n"
+                            "  first_rate * min(taxable_income_boundary, "
+                            "bracket_ceiling)\n"
+                            "else: 0"
+                            if parameter_alias
+                            else "if schedule_enabled:\n"
+                            "  first_rate * min(taxable_income_boundary, "
+                            "bracket_ceiling)\n"
+                            "else: 0"
+                        ),
+                    }
+                ],
+            },
+        ],
+        "inputs": [
+            {
+                "name": "completed_taxable_income",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+            }
+        ],
+    }
+    if parameter_alias:
+        payload["rules"].insert(
+            -1,
+            {
+                "name": "schedule_enabled_alias",
+                "kind": "parameter",
+                "dtype": "Boolean",
+                "period": "Year",
+                "versions": [{"formula": "schedule_enabled"}],
+            },
+        )
+    if stable_numeric_rate_alias:
+        first_rate = next(
+            rule for rule in payload["rules"] if rule["name"] == "first_rate"
+        )
+        first_rate["versions"] = [
+            {
+                "effective_from": "2026-01-01",
+                "effective_to": "2026-12-31",
+                "formula": 0.02,
+            },
+            {"effective_from": "2027-01-01", "formula": 0.02},
+        ]
+        schedule_enabled = next(
+            rule for rule in payload["rules"] if rule["name"] == "schedule_enabled"
+        )
+        schedule_enabled["versions"] = [
+            {"effective_from": "2026-01-01", "formula": True}
+        ]
+        schedule_index = next(
+            index
+            for index, rule in enumerate(payload["rules"])
+            if rule["name"] == "schedule_before_credits"
+        )
+        payload["rules"].insert(
+            schedule_index,
+            {
+                "name": "rate_alias",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Rate",
+                "period": "Year",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "formula": "first_rate",
+                    }
+                ],
+            },
+        )
+        schedule = next(
+            rule
+            for rule in payload["rules"]
+            if rule["name"] == "schedule_before_credits"
+        )
+        schedule["versions"][0]["formula"] = schedule["versions"][0]["formula"].replace(
+            "first_rate", "rate_alias"
+        )
+    if transitive_control:
+        payload["rules"].insert(
+            -1,
+            {
+                "name": "resident_tax_applies",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": transitive_dtype,
+                "period": "Year",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "formula": "schedule_enabled",
+                    }
+                ],
+            },
+        )
+    return _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
         source,
         corpus_citation_path="us-al/statute/40-18-5",
         test_cases=test_cases,
@@ -1294,6 +4155,833 @@ def test_direct_local_input_clamp_accepts_negative_shared_dependency_evidence():
     )
 
     assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_allows_owner_proof_beside_downstream_proof():
+    source = (
+        "Taxable income is the greater of completed taxable income or zero, "
+        "and the tax is two percent of taxable income not in excess of $500."
+    )
+    proof = {
+        "proof": {
+            "atoms": [
+                {
+                    "path": "versions[0].formula",
+                    "kind": "formula",
+                    "source": {
+                        "corpus_citation_path": "us-al/statute/40-18-5",
+                        "excerpt": source,
+                    },
+                }
+            ]
+        }
+    }
+    payload = {
+        "format": "rulespec/v1",
+        "module": {
+            "source_verification": {"corpus_citation_path": "us-al/statute/40-18-5"}
+        },
+        "rules": [
+            {
+                "name": "taxable_income_boundary",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "metadata": proof,
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "effective_to": "2026-12-31",
+                        "formula": "max(0, completed_taxable_income)",
+                    }
+                ],
+            },
+            {
+                "name": "schedule_before_credits",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "metadata": proof,
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "effective_to": "2026-12-31",
+                        "formula": "0.02 * min(taxable_income_boundary, 500)",
+                    }
+                ],
+            },
+        ],
+        "inputs": [
+            {
+                "name": "completed_taxable_income",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+            }
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=[
+            {
+                "name": "negative_income_reaches_tax_schedule",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_accepts_owner_only_principal_evidence():
+    result = _al_owner_only_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_is_clamped_at_mapped_boundary",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 0},
+            }
+        ]
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_ignores_disjoint_future_consumer():
+    result = _al_owner_only_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_before_future_consumer",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 0},
+            }
+        ],
+        include_future_consumer=True,
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_requires_each_temporal_claimant_context():
+    insufficient = _al_owner_only_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_before_future_consumer",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 0},
+            },
+            {
+                "name": "positive_income_reaches_future_consumer",
+                "period": "2027",
+                "input": {"completed_taxable_income": 1},
+                "output": {
+                    "taxable_income_boundary": 1,
+                    "future_taxable_income_report": 1,
+                },
+            },
+        ],
+        include_future_consumer=True,
+        owner_open_ended=True,
+    )
+
+    assert _has_issue(insufficient, "direct nonnegative clamp", "below zero")
+
+    complete = _al_owner_only_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_before_future_consumer",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 0},
+            },
+            {
+                "name": "negative_income_reaches_future_consumer",
+                "period": "2027",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "future_taxable_income_report": 0,
+                },
+            },
+        ],
+        include_future_consumer=True,
+        owner_open_ended=True,
+    )
+
+    assert not _has_issue(complete, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_tracks_temporal_claimant_control_dependencies():
+    prior_negative_and_later_inactive = [
+        {
+            "name": "negative_income_reaches_2026_resident_schedule",
+            "period": "2026",
+            "input": {
+                "completed_taxable_income": -1,
+                "taxpayer_is_resident": True,
+                "taxpayer_is_full_year_resident": False,
+            },
+            "output": {
+                "taxable_income_boundary": 0,
+                "resident_tax_applies": "holds",
+                "schedule_before_credits": 0,
+            },
+        },
+        {
+            "name": "positive_income_does_not_reach_2027_schedule",
+            "period": "2027",
+            "input": {
+                "completed_taxable_income": 1,
+                "taxpayer_is_resident": False,
+                "taxpayer_is_full_year_resident": False,
+            },
+            "output": {
+                "taxable_income_boundary": 1,
+                "resident_tax_applies": "not_holds",
+                "schedule_before_credits": 0,
+            },
+        },
+    ]
+
+    insufficient = _al_temporal_control_direct_input_clamp_analysis(
+        prior_negative_and_later_inactive
+    )
+
+    assert _has_issue(insufficient, "direct nonnegative clamp", "below zero")
+
+    complete = _al_temporal_control_direct_input_clamp_analysis(
+        [
+            *prior_negative_and_later_inactive,
+            {
+                "name": "negative_income_reaches_2027_resident_schedule",
+                "period": "2027",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                    "taxpayer_is_full_year_resident": True,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "holds",
+                    "schedule_before_credits": 0,
+                },
+            },
+        ]
+    )
+
+    assert not _has_issue(complete, "direct nonnegative clamp", "below zero")
+
+
+@pytest.mark.parametrize(
+    ("transitive_control", "parameter_alias", "transitive_dtype"),
+    [
+        (False, False, "Judgment"),
+        (False, True, "Judgment"),
+        (True, False, "Judgment"),
+        (True, False, "bool"),
+    ],
+    ids=[
+        "direct-parameter",
+        "parameter-alias",
+        "stable-derived-selector",
+        "transitive-lowercase-bool",
+    ],
+)
+def test_direct_local_input_clamp_tracks_temporal_parameter_controls(
+    transitive_control,
+    parameter_alias,
+    transitive_dtype,
+):
+    def outputs(*, income, enabled):
+        result = {
+            "taxable_income_boundary": max(0, income),
+            "schedule_before_credits": (
+                0.02 * min(max(0, income), 500) if enabled else 0
+            ),
+        }
+        if transitive_control:
+            result["resident_tax_applies"] = enabled
+            if transitive_dtype != "bool":
+                result["resident_tax_applies"] = "holds" if enabled else "not_holds"
+        return result
+
+    prior_negative_boundary_and_later_inactive = [
+        {
+            "name": "negative_income_reaches_2026_schedule",
+            "period": "2026",
+            "input": {"completed_taxable_income": -1},
+            "output": outputs(income=-1, enabled=True),
+        },
+        {
+            "name": "ceiling_income_reaches_2026_schedule",
+            "period": "2026",
+            "input": {"completed_taxable_income": 500},
+            "output": outputs(income=500, enabled=True),
+        },
+        {
+            "name": "positive_income_is_masked_in_2027",
+            "period": "2027",
+            "input": {"completed_taxable_income": 1},
+            "output": outputs(income=1, enabled=False),
+        },
+    ]
+
+    insufficient = _al_temporal_parameter_control_direct_input_clamp_analysis(
+        prior_negative_boundary_and_later_inactive,
+        transitive_control=transitive_control,
+        parameter_alias=parameter_alias,
+        transitive_dtype=transitive_dtype,
+    )
+
+    assert _has_issue(insufficient, "direct nonnegative clamp", "below zero")
+
+    complete = _al_temporal_parameter_control_direct_input_clamp_analysis(
+        [
+            *prior_negative_boundary_and_later_inactive[:2],
+            {
+                "name": "negative_income_reaches_2027_schedule",
+                "period": "2027",
+                "input": {"completed_taxable_income": -1},
+                "output": outputs(income=-1, enabled=True),
+            },
+        ],
+        transitive_control=transitive_control,
+        parameter_alias=parameter_alias,
+        later_enabled=True,
+        transitive_dtype=transitive_dtype,
+    )
+
+    assert not _has_issue(complete, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_ignores_stable_temporal_numeric_alias_versions():
+    result = _al_temporal_parameter_control_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_reaches_2026_schedule",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "rate_alias": 0.02,
+                    "schedule_before_credits": 0,
+                },
+            },
+            {
+                "name": "ceiling_income_reaches_2026_schedule",
+                "period": "2026",
+                "input": {"completed_taxable_income": 500},
+                "output": {
+                    "taxable_income_boundary": 500,
+                    "rate_alias": 0.02,
+                    "schedule_before_credits": 10,
+                },
+            },
+            {
+                "name": "positive_income_reaches_2027_schedule",
+                "period": "2027",
+                "input": {"completed_taxable_income": 1},
+                "output": {
+                    "taxable_income_boundary": 1,
+                    "rate_alias": 0.02,
+                    "schedule_before_credits": 0.02,
+                },
+            },
+        ],
+        later_enabled=True,
+        stable_numeric_rate_alias=True,
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_uses_case_selected_alias_classification():
+    source = "Taxable income is the greater of completed taxable income or zero."
+    formula_atom = {
+        "kind": "formula",
+        "source": {
+            "corpus_citation_path": "us-al/statute/40-18-5",
+            "excerpt": source,
+        },
+    }
+    payload = {
+        "format": "rulespec/v1",
+        "module": {
+            "source_verification": {"corpus_citation_path": "us-al/statute/40-18-5"}
+        },
+        "rules": [
+            {
+                "name": "taxable_income_boundary",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "formula": "max(0, completed_taxable_income)",
+                    }
+                ],
+            },
+            {
+                "name": "mixed_taxable_income_report",
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "metadata": {
+                    "proof": {
+                        "atoms": [
+                            {"path": "versions[0].formula", **formula_atom},
+                            {"path": "versions[1].formula", **formula_atom},
+                        ]
+                    }
+                },
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "effective_to": "2026-12-31",
+                        "formula": "taxable_income_boundary",
+                    },
+                    {
+                        "effective_from": "2027-01-01",
+                        "formula": "taxable_income_boundary * 1",
+                    },
+                ],
+            },
+        ],
+        "inputs": [
+            {
+                "name": "completed_taxable_income",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+            }
+        ],
+    }
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=[
+            {
+                "name": "alias_period_uses_owner_fallback",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 0},
+            },
+            {
+                "name": "computational_period_reaches_report",
+                "period": "2027",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "mixed_taxable_income_report": 0,
+                },
+            },
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_rejects_mismatched_owner_only_assertion():
+    result = _al_owner_only_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_has_wrong_boundary_assertion",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": 999},
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_rejects_false_selector_masked_principal():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_is_masked_by_nonapplicability",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "selected formula path")
+
+
+@pytest.mark.parametrize(
+    "proof_path",
+    ("versions.formula", "versions [ 0 ] . formula"),
+)
+def test_direct_local_input_clamp_normalizes_false_selector_proof_path(proof_path):
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "normalized_proof_path_does_not_mask_false_selector",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        schedule_proof_path=proof_path,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "selected formula path")
+
+
+def test_direct_local_input_clamp_accepts_true_selector_reached_principal():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_reaches_applicable_schedule",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": True,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "holds",
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_rejects_shadow_helper_laundering():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "shadow_helper_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_clamp_diagnostic": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_shadow_helper=True,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "authoritative principal")
+
+
+def test_direct_local_input_clamp_rejects_same_source_shadow_laundering():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "same_source_shadow_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_clamp_diagnostic": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_shadow_helper=True,
+        shadow_claims_source=True,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "authoritative principal")
+
+
+def test_direct_local_input_clamp_rejects_copied_source_computation_laundering():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "copied_shadow_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_schedule": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_copied_shadow=True,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "authoritative principal")
+
+
+def test_direct_local_input_clamp_rejects_exact_proof_copied_laundering():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "proof_copied_shadow_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_schedule": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_copied_shadow=True,
+        copied_shadow_copies_proof=True,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "unambiguous")
+
+
+def test_direct_local_input_clamp_rejects_exact_proof_moved_to_shadow():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "proof_moved_shadow_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_schedule": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_copied_shadow=True,
+        copied_shadow_copies_proof=True,
+        schedule_has_proof=False,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "unambiguous")
+
+
+def test_direct_local_input_clamp_rejects_source_and_proof_moved_to_shadow():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "source_and_proof_moved_shadow_reaches_inactive_clamp",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": False,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "not_holds",
+                    "shadow_schedule": 0,
+                    "schedule_before_credits": 0,
+                },
+            },
+            {
+                "name": "applicable_schedule_reaches_source_boundary",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": 500,
+                    "taxpayer_is_resident": True,
+                },
+                "output": {
+                    "taxable_income_boundary": 500,
+                    "resident_tax_applies": "holds",
+                    "shadow_schedule": 10,
+                    "schedule_before_credits": 10,
+                },
+            },
+        ],
+        include_copied_shadow=True,
+        copied_shadow_copies_proof=True,
+        schedule_has_proof=False,
+        schedule_claims_source=False,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "unambiguous")
+    assert not _has_issue(result, "do not demonstrate formula branch")
+    assert not _has_issue(result, "do not exercise every source-stated boundary")
+
+
+def test_direct_local_input_clamp_groups_and_caps_diagnostics():
+    clamp_count = completeness_module._NEGATIVE_LOCAL_INPUT_CLAMP_DIAGNOSTIC_LIMIT + 2
+    payload = {
+        "format": "rulespec/v1",
+        "module": {
+            "source_verification": {"corpus_citation_path": "us-al/statute/40-18-5"}
+        },
+        "rules": [],
+        "inputs": [],
+    }
+    case_inputs = {}
+    for index in range(clamp_count):
+        input_name = f"raw_amount_{index:02d}"
+        owner = f"clamped_amount_{index:02d}"
+        payload["inputs"].append(
+            {
+                "name": input_name,
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+            }
+        )
+        payload["rules"].append(
+            {
+                "name": owner,
+                "kind": "derived",
+                "entity": "TaxUnit",
+                "dtype": "Money",
+                "period": "Year",
+                "unit": "USD",
+                "source": "us-al/statute/40-18-5",
+                "versions": [
+                    {
+                        "effective_from": "2026-01-01",
+                        "effective_to": "2026-12-31",
+                        "formula": f"max(0, {input_name})",
+                    }
+                ],
+            }
+        )
+        case_inputs[input_name] = -1
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        "Each amount is the greater of the completed amount or zero.",
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=[
+            {
+                "name": "all_negative_without_outputs",
+                "period": "2026",
+                "input": case_inputs,
+                "output": {},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    clamp_issues = [
+        issue for issue in result.issues if "direct nonnegative clamp" in issue.lower()
+    ]
+    assert len(clamp_issues) == 1
+    assert "clamped_amount_00" in clamp_issues[0]
+    assert "clamped_amount_07" in clamp_issues[0]
+    assert "clamped_amount_08" not in clamp_issues[0]
+    assert "2 additional clamps omitted" in clamp_issues[0]
+
+
+def test_direct_local_input_clamp_rejects_unresolved_cyclic_downstream():
+    result = _al_gated_direct_input_clamp_analysis(
+        [
+            {
+                "name": "cycle_masks_unresolved_schedule",
+                "period": "2026",
+                "input": {
+                    "completed_taxable_income": -1,
+                    "taxpayer_is_resident": True,
+                },
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "resident_tax_applies": "holds",
+                    "clamp_cycle_a": 0,
+                    "clamp_cycle_b": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ],
+        include_unresolved_cycle=True,
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "selected formula path")
+
+
+def test_direct_local_input_clamp_rejects_mismatched_downstream_assertion():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_has_wrong_schedule_assertion",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 999,
+                },
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "matching assertion")
 
 
 def test_direct_local_input_clamp_requires_clamped_dependency_assertion():
