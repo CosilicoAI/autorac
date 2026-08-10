@@ -140,6 +140,7 @@ class _NumericInterval:
     lower_inclusive: bool
     upper: NumericOccurrenceLike | None
     upper_inclusive: bool
+    upper_directly_conjoined: bool = False
 
 
 @dataclass(frozen=True)
@@ -4705,7 +4706,7 @@ def _source_bound_constant_numeric_occurrences(
         if not isinstance(rule, dict):
             continue
         name = str(rule.get("name") or "").strip()
-        if not name:
+        if not name or rule.get("kind") != "parameter":
             continue
         occurrences = tuple(
             occurrence
@@ -13143,18 +13144,67 @@ def _english_cardinal_value(text: str) -> float | None:
         "eighty": 80,
         "ninety": 90,
     }
-    tokens = [token for token in re.split(r"[-\s]+", text.lower()) if token != "and"]
-    if not tokens or any(token not in units and token != "hundred" for token in tokens):
+    scales = {
+        "thousand": 1_000,
+        "million": 1_000_000,
+        "billion": 1_000_000_000,
+        "trillion": 1_000_000_000_000,
+    }
+    tokens = [token for token in re.split(r"[-\s]+", text.lower()) if token]
+    if not tokens or tokens[0] == "and" or tokens[-1] == "and":
         return None
-    total = 0
-    current = 0
+    tokens = [token for token in tokens if token != "and"]
+    if not tokens or any(
+        token not in units and token != "hundred" and token not in scales
+        for token in tokens
+    ):
+        return None
+
+    def parse_under_thousand(group: list[str]) -> float | None:
+        if not group:
+            return None
+        total = 0.0
+        if len(group) >= 2 and group[1] == "hundred":
+            hundreds = units.get(group[0])
+            if hundreds is None or not 1 <= hundreds <= 9:
+                return None
+            total = hundreds * 100
+            group = group[2:]
+            if not group:
+                return total
+        if len(group) == 1:
+            remainder = units.get(group[0])
+            return total + remainder if remainder is not None else None
+        if len(group) == 2:
+            tens = units.get(group[0])
+            unit = units.get(group[1])
+            if tens in {20, 30, 40, 50, 60, 70, 80, 90} and unit is not None:
+                if 1 <= unit <= 9:
+                    return total + tens + unit
+        return None
+
+    total = 0.0
+    group: list[str] = []
+    previous_scale = math.inf
     for token in tokens:
-        if token == "hundred":
-            current = max(current, 1) * 100
-        else:
-            current += units[token]
-    total += current
-    return float(total)
+        scale = scales.get(token)
+        if scale is None:
+            group.append(token)
+            continue
+        if scale >= previous_scale:
+            return None
+        parsed_group = parse_under_thousand(group)
+        if parsed_group is None or parsed_group <= 0:
+            return None
+        total += parsed_group * scale
+        previous_scale = scale
+        group = []
+    if group:
+        parsed_group = parse_under_thousand(group)
+        if parsed_group is None or (parsed_group == 0 and total > 0):
+            return None
+        total += parsed_group
+    return total
 
 
 def _temporal_value_has_source_branch_proof(
@@ -17803,6 +17853,7 @@ def _formula_execution_binds_boundary(
             boundary=boundary,
             formula_environment=formula_environment,
             source_bound_boundary_names=source_bound_boundary_names,
+            source_bound_constant_occurrences=source_bound_constant_occurrences,
             source_interval=source_interval,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
@@ -17823,6 +17874,9 @@ def _formula_text_has_boundary_comparison(
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
     source_bound_boundary_names: set[str] | None = None,
+    source_bound_constant_occurrences: (
+        dict[str, tuple[NumericOccurrenceLike, ...]] | None
+    ) = None,
 ) -> bool:
     expression = _parse_formula_expression(text)
     if expression is not None:
@@ -17877,6 +17931,7 @@ def _formula_text_has_boundary_comparison(
             boundary=boundary,
             formula_environment=formula_environment,
             source_bound_boundary_names=source_bound_boundary_names or set(),
+            source_bound_constant_occurrences=(source_bound_constant_occurrences or {}),
             source_interval=source_interval,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
@@ -17893,6 +17948,7 @@ def _formula_expression_has_boundary_clamp(
     boundary: NumericOccurrenceLike,
     formula_environment: dict[str, Any],
     source_bound_boundary_names: set[str],
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
     source_interval: _NumericInterval,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
@@ -17911,6 +17967,8 @@ def _formula_expression_has_boundary_clamp(
             expression=expression,
             input_names=input_names,
             source_bound_boundary_names=source_bound_boundary_names,
+            source_bound_constant_occurrences=source_bound_constant_occurrences,
+            source_interval=source_interval,
             boundary=boundary,
             formula_environment=formula_environment,
             extract_numeric_occurrences=extract_numeric_occurrences,
@@ -17965,12 +18023,14 @@ def _formula_lower_boundary_clamp_matches(
     expression: ast.expr,
     input_names: set[str],
     source_bound_boundary_names: set[str],
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
+    source_interval: _NumericInterval,
     boundary: NumericOccurrenceLike,
     formula_environment: dict[str, Any],
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
-    """Accept only ``max(0, subject - floor)`` at the exact source floor."""
+    """Accept an exact, source-bound lower clamp that causally contributes."""
 
     if not (
         isinstance(node, ast.Call)
@@ -17995,10 +18055,36 @@ def _formula_lower_boundary_clamp_matches(
         and zero.value == 0
         and isinstance(positive_subject, ast.BinOp)
         and isinstance(positive_subject.op, ast.Sub)
-        and isinstance(positive_subject.left, ast.Name)
-        and positive_subject.left.id in input_names
         and not _formula_node_references_names(positive_subject.right, input_names)
     ):
+        return False
+    subject = positive_subject.left
+    source_bound_cap: ast.Name | None = None
+    if isinstance(subject, ast.Name) and subject.id in input_names:
+        pass
+    elif (
+        isinstance(subject, ast.Call)
+        and isinstance(subject.func, ast.Name)
+        and subject.func.id == "min"
+        and len(subject.args) == 2
+        and not subject.keywords
+    ):
+        for candidate_input, candidate_cap in (
+            (subject.args[0], subject.args[1]),
+            (subject.args[1], subject.args[0]),
+        ):
+            if (
+                isinstance(candidate_input, ast.Name)
+                and candidate_input.id in input_names
+                and isinstance(candidate_cap, ast.Name)
+                and candidate_cap.id in source_bound_constant_occurrences
+                and not _formula_node_references_names(candidate_cap, input_names)
+            ):
+                source_bound_cap = candidate_cap
+                break
+        if source_bound_cap is None:
+            return False
+    else:
         return False
     floor = positive_subject.right
     named_floor = (
@@ -18019,6 +18105,31 @@ def _formula_lower_boundary_clamp_matches(
         extract_numeric_occurrences=extract_numeric_occurrences,
         numeric_value_is_grounded=numeric_value_is_grounded,
     )
+    if source_bound_cap is not None:
+        cap_value = _rulespec_runtime_decimal(
+            _evaluate_condition_expression(source_bound_cap, formula_environment)
+        )
+        floor_decimal = _rulespec_runtime_decimal(floor_value)
+        cap_occurrences = source_bound_constant_occurrences.get(
+            source_bound_cap.id,
+            (),
+        )
+        if (
+            cap_value is None
+            or floor_decimal is None
+            or cap_value <= floor_decimal
+            or source_interval.upper is None
+            or not source_interval.upper_directly_conjoined
+            or not numeric_value_is_grounded(
+                float(cap_value),
+                cap_occurrences,
+            )
+            or not numeric_value_is_grounded(
+                float(cap_value),
+                (source_interval.upper,),
+            )
+        ):
+            return False
     return bool(
         floor_value is not None
         and numeric_value_is_grounded(float(floor_value), (boundary,))
@@ -18311,6 +18422,7 @@ def _shift_numeric_interval(
         lower_inclusive=interval.lower_inclusive,
         upper=_shift_numeric_occurrence(interval.upper, offset),
         upper_inclusive=interval.upper_inclusive,
+        upper_directly_conjoined=interval.upper_directly_conjoined,
     )
 
 
@@ -18651,10 +18763,49 @@ def _formula_conjoined_bound(
         flags=re.IGNORECASE,
     )
     if gap_match is None:
-        return None
+        return (
+            (occurrences[1], True, "upper")
+            if _formula_has_direct_connectorless_upper_bound(text, occurrences)
+            else None
+        )
     return _formula_bound_from_comparison(
         gap_match.group("body"),
         occurrences[1],
+    )
+
+
+def _formula_has_direct_connectorless_upper_bound(
+    text: str,
+    occurrences: tuple[NumericOccurrenceLike, ...],
+) -> bool:
+    """Recognize only the source-continuation form used by a bounded band."""
+
+    if len(occurrences) < 2:
+        return False
+    gap = " ".join(
+        text[occurrences[0].end : occurrences[1].start].replace(",", " , ").split()
+    )
+    if (
+        re.fullmatch(
+            r"(?:(?:dollars?|usd|euros?|eur) )?"
+            r"(?:\) )?up\s+to(?:\s+and\s+including)?"
+            rf"(?: {_ENGLISH_CARDINAL_PHRASE} dollars? \()?"
+            r"\s*(?:\$|€|£|usd|eur|gbp)?",
+            gap,
+            flags=re.IGNORECASE,
+        )
+        is None
+    ):
+        return False
+    trailing = text[occurrences[1].end :]
+    return (
+        re.match(
+            r"\s+(?:of|for)\s+(?:(?:a|an|the|this|that)\s+)?"
+            r"(?:[a-z-]+\s+){0,5}(?:amount|credit|deduction|income|limit|total|value)\b",
+            trailing,
+            flags=re.IGNORECASE,
+        )
+        is None
     )
 
 
@@ -19002,6 +19153,14 @@ def _formula_first_bound(
         text.rfind("\n", 0, occurrence.start),
     )
     prefix = _strip_source_clause_marker(text[clause_start + 1 : occurrence.start])
+    prefix = re.sub(
+        rf"\b{_ENGLISH_CARDINAL_PHRASE}\s+"
+        r"(?:dollars?|usd|euros?|eur|pounds?|gbp)\s*"
+        r"\(\s*(?:\$|€|£|usd|eur|gbp)?\s*$",
+        "",
+        prefix,
+        flags=re.IGNORECASE,
+    )
     starts = [match.start() for match in re.finditer(r"(?<![\w-])(?=\S)", prefix)]
     for start in starts[-18:]:
         bound = _formula_bound_from_comparison(prefix[start:], occurrence)
@@ -19034,6 +19193,8 @@ def _formula_interval_with_conjoined_bound(
     first_inclusive: bool,
     first_kind: str,
     bound: tuple[NumericOccurrenceLike, bool, str] | None,
+    *,
+    upper_directly_conjoined: bool = False,
 ) -> _NumericInterval | None:
     """Compose either first threshold with an optional second constraint."""
 
@@ -19076,7 +19237,61 @@ def _formula_interval_with_conjoined_bound(
             and not (lower_inclusive and upper_inclusive)
         ):
             return None
-    return _NumericInterval(lower, lower_inclusive, upper, upper_inclusive)
+    return _NumericInterval(
+        lower,
+        lower_inclusive,
+        upper,
+        upper_inclusive,
+        upper_directly_conjoined=(
+            upper_directly_conjoined
+            and bound is not None
+            and bound[2] == "upper"
+            and upper is bound[0]
+        ),
+    )
+
+
+def _formula_has_unequal_english_parenthetical_amount(text: str) -> bool:
+    """Reject contradictory spelled and parenthetical English money amounts."""
+
+    pattern = re.compile(
+        rf"\b(?P<words>{_ENGLISH_CARDINAL_PHRASE})\s+"
+        r"(?P<unit>dollars?|usd|euros?|eur|pounds?|gbp)\s*"
+        r"\(\s*(?P<marker>\$|€|£|usd|eur|gbp)?\s*"
+        r"(?P<number>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
+        r"\s*\)",
+        flags=re.IGNORECASE,
+    )
+    currency_family = {
+        "$": "usd",
+        "dollar": "usd",
+        "dollars": "usd",
+        "usd": "usd",
+        "€": "eur",
+        "euro": "eur",
+        "euros": "eur",
+        "eur": "eur",
+        "£": "gbp",
+        "pound": "gbp",
+        "pounds": "gbp",
+        "gbp": "gbp",
+    }
+    for match in pattern.finditer(text):
+        marker = match.group("marker")
+        if (
+            marker is not None
+            and currency_family[match.group("unit").casefold()]
+            != currency_family[marker.casefold()]
+        ):
+            return True
+        word_value = _english_cardinal_value(match.group("words"))
+        if word_value is None:
+            return True
+        with contextlib.suppress(InvalidOperation):
+            numeric_value = Decimal(match.group("number").replace(",", ""))
+            if Decimal(str(word_value)) != numeric_value:
+                return True
+    return False
 
 
 def _formula_interval_from_text(
@@ -19084,6 +19299,8 @@ def _formula_interval_from_text(
     *,
     extract_numeric_occurrences: NumericOccurrenceExtractor,
 ) -> _NumericInterval | None:
+    if _formula_has_unequal_english_parenthetical_amount(text):
+        return None
     lowered = text.lower()
     clause = _strip_source_clause_marker(text).lower()
     if re.match(
@@ -19217,7 +19434,14 @@ def _formula_interval_from_text(
         if not candidate_occurrences:
             continue
         first_gap = text[candidate.end() : candidate_occurrences[0].start]
-        if re.fullmatch(
+        spelled_parenthetical_gap = re.fullmatch(
+            rf"\s*{_ENGLISH_CARDINAL_PHRASE}\s+"
+            r"(?:dollars?|usd|euros?|eur|pounds?|gbp)\s*"
+            r"\(\s*(?:\$|€|£|usd|eur|gbp)?\s*",
+            first_gap,
+            flags=re.IGNORECASE,
+        )
+        if spelled_parenthetical_gap is not None or re.fullmatch(
             r"\s*(?:\$|€|£|usd|eur|gbp)?\s*(?:(?:zu|bis)\s+)?"
             r"(?:(?:einschließlich|maximal|inklusive|including|maximum)\s+)?"
             r"(?:(?:einem?|einer|dem|der|das)\s+)?"
@@ -19259,6 +19483,10 @@ def _formula_interval_from_text(
         if float(occurrences[0].value) > float(occurrences[1].value):
             return None
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
+    upper_directly_conjoined = _formula_has_direct_connectorless_upper_bound(
+        comparison_text,
+        occurrences,
+    )
     first_bound = _formula_first_bound(comparison_text, occurrences[0])
     if first_bound is not None:
         first, first_inclusive, first_kind = first_bound
@@ -19267,6 +19495,7 @@ def _formula_interval_from_text(
             first_inclusive,
             first_kind,
             _formula_conjoined_bound(comparison_text, occurrences),
+            upper_directly_conjoined=upper_directly_conjoined,
         )
     clause_start = max(
         lowered.rfind(".", 0, keyword.start()),
@@ -19303,6 +19532,7 @@ def _formula_interval_from_text(
             False,
             "upper",
             _formula_conjoined_bound(comparison_text, occurrences),
+            upper_directly_conjoined=upper_directly_conjoined,
         )
     if re.match(
         r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
@@ -19317,6 +19547,7 @@ def _formula_interval_from_text(
             True,
             "upper",
             _formula_conjoined_bound(comparison_text, occurrences),
+            upper_directly_conjoined=upper_directly_conjoined,
         )
     if re.match(
         r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|"
@@ -19329,6 +19560,7 @@ def _formula_interval_from_text(
             False,
             "lower",
             _formula_conjoined_bound(comparison_text, occurrences),
+            upper_directly_conjoined=upper_directly_conjoined,
         )
     if re.match(
         r"(?:von|ab|from|at\s+least|no\s+less\s+than|"
@@ -19342,6 +19574,7 @@ def _formula_interval_from_text(
             True,
             "lower",
             _formula_conjoined_bound(comparison_text, occurrences),
+            upper_directly_conjoined=upper_directly_conjoined,
         )
     return None
 

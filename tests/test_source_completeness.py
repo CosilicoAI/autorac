@@ -1432,6 +1432,237 @@ def test_progressive_max_clamp_binds_exact_source_lower_boundary(
     )
 
 
+@pytest.mark.parametrize(
+    "capped_subject",
+    (
+        "min(taxable_income, bracket_ceiling)",
+        "min(bracket_ceiling, taxable_income)",
+    ),
+)
+def test_progressive_max_clamp_binds_source_bound_capped_subject(
+    capped_subject: str,
+):
+    source = (
+        "On taxable income in excess of Five Thousand Dollars ($5,000.00) up "
+        "to and including Ten Thousand Dollars ($10,000.00), the rate shall be "
+        "four percent (4%)."
+    )
+    boundary, ceiling, *_ = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None
+    assert interval.lower.value == 5000
+    assert interval.upper is not None
+    assert interval.upper.value == 10000
+    assert not interval.lower_inclusive
+    assert interval.upper_inclusive
+    assert interval.upper_directly_conjoined
+    assert completeness_module._formula_text_has_boundary_comparison(
+        f"rate * max(0, {capped_subject} - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "bracket_ceiling": 10000,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_bound_constant_occurrences={
+            "bracket_floor": (boundary,),
+            "bracket_ceiling": (ceiling,),
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Taxable income is in excess of $5,000, the credit amount is up to $10,000.",
+        "For taxable income in excess of $5,000, up to $10,000 of the credit "
+        "may be claimed.",
+        "Taxable income is in excess of $5,000 and the credit amount is up to $10,000.",
+    ),
+)
+def test_capped_lower_clamp_does_not_borrow_upper_from_other_subject(source: str):
+    boundary, ceiling = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None
+    assert interval.lower.value == 5000
+    assert not interval.upper_directly_conjoined
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "rate * max(0, min(taxable_income, bracket_ceiling) - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "bracket_ceiling": 10000,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_bound_constant_occurrences={
+            "bracket_floor": (boundary,),
+            "bracket_ceiling": (ceiling,),
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+@pytest.mark.parametrize(
+    ("capped_subject", "source_bound_names", "ceiling"),
+    (
+        ("min(taxable_income, unproven_ceiling)", {"bracket_floor"}, 10000),
+        (
+            "min(2 * taxable_income, bracket_ceiling)",
+            {"bracket_floor", "bracket_ceiling"},
+            10000,
+        ),
+        (
+            "min(taxable_income, bracket_ceiling + 0)",
+            {"bracket_floor", "bracket_ceiling"},
+            10000,
+        ),
+        (
+            "min(taxable_income, bracket_ceiling)",
+            {"bracket_floor", "bracket_ceiling"},
+            5000,
+        ),
+        (
+            "min(taxable_income, bracket_ceiling)",
+            {"bracket_floor", "bracket_ceiling"},
+            4999,
+        ),
+    ),
+)
+def test_progressive_max_clamp_rejects_unproven_or_invalid_capped_subject(
+    capped_subject: str,
+    source_bound_names: set[str],
+    ceiling: int,
+):
+    source = "Five percent of taxable income in excess of $5000."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        f"rate * max(0, {capped_subject} - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "bracket_ceiling": ceiling,
+            "unproven_ceiling": ceiling,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_bound_constant_occurrences={
+            name: (boundary,) for name in source_bound_names
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_progressive_max_clamp_rejects_proved_cap_without_source_upper_bound():
+    source = "Five percent of taxable income in excess of $5000."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    cap_proof = EN_NUMERIC_OCCURRENCE_EXTRACTOR("Taxable income up to $10000.")[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.upper is None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "rate * max(0, min(taxable_income, bracket_ceiling) - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "bracket_ceiling": 10000,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_bound_constant_occurrences={
+            "bracket_floor": (boundary,),
+            "bracket_ceiling": (cap_proof,),
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "proved_ceiling"),
+    (
+        (9000, 9000),
+        (10000, 9000),
+    ),
+)
+def test_progressive_max_clamp_rejects_wrong_or_misproved_capped_subject(
+    ceiling: int,
+    proved_ceiling: int,
+):
+    source = "Taxable income in excess of $5000 but not in excess of $10000."
+    boundary, _source_ceiling = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)
+    cap_proof = EN_NUMERIC_OCCURRENCE_EXTRACTOR(
+        f"Taxable income up to ${proved_ceiling}."
+    )[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "rate * max(0, min(taxable_income, bracket_ceiling) - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "bracket_ceiling": ceiling,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_bound_constant_occurrences={
+            "bracket_floor": (boundary,),
+            "bracket_ceiling": (cap_proof,),
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
 def test_progressive_max_clamp_binds_full_formula_witness():
     source = "Five percent of taxable income in excess of 5000 dollars."
     content = """\
@@ -1506,6 +1737,115 @@ rules:
     )
 
     assert not _has_issue(result, "formula", "5000")
+
+
+@pytest.mark.parametrize(
+    ("source", "ceiling_kind", "expected_to_bind"),
+    (
+        (
+            "On taxable income in excess of Five Thousand Dollars ($5,000.00) "
+            "up to and including Ten Thousand Dollars ($10,000.00), the rate "
+            "shall be four percent (4%).",
+            "parameter",
+            True,
+        ),
+        (
+            "Four percent of taxable income in excess of $5,000.00 up to and "
+            "including $10,000.00.",
+            "derived",
+            False,
+        ),
+    ),
+)
+def test_progressive_max_clamp_binds_only_parameter_capped_subject_full_formula_witness(
+    source: str,
+    ceiling_kind: str,
+    expected_to_bind: bool,
+):
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_floor
+    kind: parameter
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: __SOURCE__
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5000
+  - name: bracket_ceiling
+    kind: parameter
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: __SOURCE__
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 10000
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.04
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: __SOURCE__
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate * max(0, min(taxable_income, bracket_ceiling) - bracket_floor)
+"""
+    content = content.replace("__SOURCE__", source).replace(
+        "  - name: bracket_ceiling\n    kind: parameter",
+        f"  - name: bracket_ceiling\n    kind: {ceiling_kind}",
+    )
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": name,
+                "period": "2026-01-01",
+                "input": {"taxable_income": income},
+                "output": {"tax": expected},
+            }
+            for name, income, expected in (
+                ("income below floor", 4999, 0),
+                ("income at floor", 5000, 0),
+                ("income above floor", 5001, 0.04),
+                ("income above ceiling", 11000, 200),
+            )
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "boundary input", "5000") is not expected_to_bind
 
 
 @pytest.mark.parametrize(
@@ -3920,11 +4260,39 @@ def test_alabama_middle_bracket_execution_accepts_taxable_income_boundary():
     )
 
 
-def test_formula_interval_does_not_merge_unequal_parenthetical_amount():
-    interval = completeness_module._formula_interval_from_text(
+@pytest.mark.parametrize(
+    "extractor",
+    (
+        EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    ),
+)
+@pytest.mark.parametrize(
+    "source",
+    (
         "Taxable income in excess of five hundred dollars ($600) and not in "
         "excess of three thousand dollars ($3,000).",
-        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+        "Taxable income in excess of five thousand dollars ($5,000) up to and "
+        "including nine thousand dollars ($10,000).",
+        "Taxable income in excess of five thousand euros (€6,000).",
+        "Taxable income in excess of five thousand pounds (£5,000) up to and "
+        "including nine thousand pounds (£10,000).",
+        "Taxable income in excess of one million million dollars ($5,000) up "
+        "to and including ten thousand dollars ($10,000).",
+        "Taxable income in excess of five thousand dollars (€5,000) up to and "
+        "including ten thousand dollars (£10,000).",
+        "Taxable income in excess of zero thousand dollars ($1,000) up to and "
+        "including ten thousand dollars ($10,000).",
+        "Taxable income in excess of one hundred hundred dollars ($10,000).",
+    ),
+)
+def test_formula_interval_does_not_merge_unequal_parenthetical_amount(
+    source: str,
+    extractor,
+):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=extractor,
     )
 
     assert interval is None
