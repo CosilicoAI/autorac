@@ -67,6 +67,7 @@ from axiom_encode.harness.evals import (
     _eval_suite_rulespec_roots,
     _evaluate_generated_artifact_with_repairs,
     _expected_eval_source_attestation,
+    _format_existing_target_contract_guidance,
     _format_subparagraph_coverage_checklist,
     _hydrate_eval_root,
     _imported_named_scalar_occurrences,
@@ -4426,6 +4427,47 @@ rules:
 
     assert surfaces["snap_unit"]["kind"] == "derived_relation"
     assert surfaces["snap_unit"]["entity"] == "SnapUnit"
+
+
+def test_existing_target_prompt_marks_exact_oracle_surface_as_required(tmp_path):
+    target = tmp_path / "2026_section_40_18_5_schedule_before_credits.yaml"
+    target.write_text(
+        """format: rulespec/v1
+rules:
+  - name: al_pit_2026_section_40_18_5_schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, al_pit_completed_taxable_income)
+inputs:
+  - name: al_pit_completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    )
+    context = EvalContextFile(
+        source_path=str(target),
+        workspace_path="context/existing_target.yaml",
+        import_path=(
+            "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits"
+        ),
+        kind="existing_target",
+    )
+
+    guidance = _format_existing_target_contract_guidance([context])
+
+    assert "Exact-oracle replacement contract:" in guidance
+    assert "#al_pit_2026_section_40_18_5_schedule_before_credits`" in guidance
+    assert "#input.al_pit_completed_taxable_income`" in guidance
+    assert "invalid" in guidance
+    assert "legacy input" in guidance
 
 
 def test_build_eval_prompt_lists_existing_target_surfaces(tmp_path):
@@ -19294,8 +19336,11 @@ rules:
         )
 
         assert "copied current target files as context" in prompt
-        assert "not as backward compatibility contracts" in prompt
-        assert "Source-faithful RuleSpec with canonical legal pointers" in prompt
+        assert "not as general backward compatibility contracts" in prompt
+        assert (
+            "Keep an old output only when it remains the cleanest source-faithful "
+            "RuleSpec surface" in prompt
+        )
         assert "Never preserve, rename, or recreate a legacy local input" in prompt
         assert "source-stated formula executable" in prompt
         assert "defer only that branch" in prompt

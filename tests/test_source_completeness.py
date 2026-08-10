@@ -1203,6 +1203,165 @@ def test_legal_section_citation_does_not_hide_real_arithmetic_topology():
     assert with_citation == without_citation
 
 
+def _al_direct_input_clamp_analysis(test_cases):
+    source = "The tax is two percent of taxable income not in excess of $500."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: first_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, completed_taxable_income)
+  - name: schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: first_rate * min(taxable_income_boundary, 500)
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def test_direct_local_input_clamp_rejects_zero_only_companion_evidence():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "zero_income",
+                "period": "2026",
+                "input": {"completed_taxable_income": 0},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_accepts_negative_shared_dependency_evidence():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_is_clamped",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_requires_clamped_dependency_assertion():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_only_asserts_principal",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"schedule_before_credits": 0},
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "taxable_income_boundary")
+
+
+def test_direct_local_input_clamp_rejects_negative_case_from_nonclamp_version():
+    source = "The tax is two percent of taxable income not in excess of $500."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: completed_taxable_income
+      - effective_from: '2027-01-01'
+        effective_to: '2027-12-31'
+        formula: max(0, completed_taxable_income)
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=[
+            {
+                "name": "negative_income_before_clamp_version",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"taxable_income_boundary": -1},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
 def test_progressive_min_clamp_binds_exact_source_boundary():
     source = "Taxable income not in excess of $500 is taxed at two percent."
     boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
@@ -2136,6 +2295,82 @@ def test_numeric_root_parenthesized_outline_preserves_spaced_nested_markers():
     assert by_path[("4", "a")].end == by_path[("4", "b")].start
 
 
+def test_flattened_kentucky_numeric_outline_recovers_formula_owners():
+    source = (
+        "141.020 Levy of income tax -- Election under KRS 141.023. "
+        "(1) An annual tax applies. The tax shall be determined by applying "
+        "the rates in subsection (2) of this section. "
+        "(2) (a) As used in this subsection: 1. Balance means reserves; "
+        "2. Any lump-sum amount in excess of recurring contributions means "
+        "a payment; 3. General fund condition means receipts minus "
+        "appropriations; 4. IIT equivalent means the amount calculated by "
+        "dividing total receipts by: a. The sum of: i. The first rate; and "
+        "ii. The second rate; and b. Dividing the sum obtained under "
+        "subdivision a. of this subparagraph by two (2); and 5. The tax rate "
+        "reduction equals the current rate minus one-half percent. "
+        "(b) The tax rate applies. "
+        "(3) (a) Credits are deducted. (b) A resident credit applies. "
+        "(c) A nonresident credit applies. "
+        "(4) Nonresident income is taxed. "
+        "(5) An individual may elect under this section. "
+        "(6) A part-year resident is taxed."
+    )
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("1",),
+        ("2",),
+        ("2", "a"),
+        ("2", "b"),
+        ("3",),
+        ("3", "a"),
+        ("3", "b"),
+        ("3", "c"),
+        ("4",),
+        ("5",),
+        ("6",),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    iit_equivalent = next(
+        branch for branch in formula_branches if "IIT equivalent" in branch.text
+    )
+    assert iit_equivalent.path == ("2", "a")
+    assert "ii. The second rate" in iit_equivalent.text
+    assert "b. Dividing the sum" in iit_equivalent.text
+    assert any(
+        branch.path == ("2", "a") and "receipts minus appropriations" in branch.text
+        for branch in formula_branches
+    )
+    assert any(
+        branch.path == ("2", "a") and "current rate minus" in branch.text
+        for branch in formula_branches
+    )
+    assert not any("lump-sum amount" in branch.text for branch in formula_branches)
+
+
+@pytest.mark.parametrize("section", ["141.020", "7A.210", "26A.015"])
+def test_flattened_kentucky_numeric_outline_accepts_krs_heading_without_dash(
+    section: str,
+):
+    source = (
+        f"{section} Tax under KRS {section}. (1) First actual root. "
+        "Second provision. (2) Second actual root. "
+        "Third provision. (3) Third actual root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
 def test_parenthesized_cfr_outline_keeps_suffixed_numeric_siblings():
     source = """\
 (a) Status requirements.
@@ -2230,6 +2465,184 @@ def test_parenthesized_cfr_outline_does_not_promote_inline_cross_references():
         ("a",),
         ("a", "1"),
         ("b",),
+    ]
+
+
+def test_flattened_numeric_outline_does_not_promote_only_cross_references():
+    source = (
+        "Rule. See paragraph: (1) controls the first case. "
+        "Compare paragraph: (2) for the second case. "
+        "Refer to paragraph: (3) for the final case."
+    )
+
+    assert recognize_source_structure(source) == ()
+
+
+def test_flattened_numeric_outline_does_not_mix_root_with_cross_references():
+    source = (
+        "Heading. (1) The first subsection is operative. "
+        "See paragraph: (2) for an imported condition. "
+        "Refer to paragraph: (3) for an imported exception."
+    )
+
+    assert recognize_source_structure(source) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection. (2) (a) An imported condition. "
+            "Refer to subsection. (3) (a) An imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection. (2) An Imported Condition. "
+            "Refer to subsection. (3) An Imported Exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See paragraph no. (2) Imported condition. "
+            "Refer to paragraph no. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection under this section. (2) Imported condition. "
+            "Refer to subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "Subject to subsection under this section. (2) Imported condition. "
+            "Pursuant to subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "In accordance with subsection under this section. (2) Imported condition. "
+            "See, e.g., Miss. Code subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "As provided in subsection under this section. (2) Imported condition. "
+            "Except as specified under subsection under this section. "
+            "(3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See 7 C.F.R. 273.2. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See 26 U.S.C. 1. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See Ky. Rev. Stat. 141.020. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+    ],
+)
+def test_flattened_numeric_outline_does_not_promote_decorated_references(source: str):
+    assert recognize_source_structure(source) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "See subsection. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Refer to subsection. (1) (a) Imported reference. "
+            "Heading ends. (2) (a) Actual second provision. "
+            "Next provision. (3) (a) Actual third provision."
+        ),
+        (
+            "As specified in paragraph. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Paragraph no. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Preamble; see paragraph. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+    ],
+)
+def test_flattened_numeric_outline_rejects_explicit_first_reference(source: str):
+    assert recognize_source_structure(source) == ()
+
+
+def test_flattened_numeric_outline_skips_higher_numbered_reference_noise():
+    source = (
+        "Heading. (1) First root. See paragraph: (9) for an exception. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+def test_flattened_numeric_outline_skips_noise_before_first_real_root():
+    source = (
+        "Paragraph: (9) imported noise. Heading. (1) First root. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+def test_flattened_numeric_outline_skips_first_reference_before_real_roots():
+    source = (
+        "See paragraph: (1) for an imported rule. Heading. (1) First root. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("command", "transition"),
+    [
+        ("See", "Transitional sentence applies."),
+        ("Refer to", "Transitional sentence applies."),
+        ("See", "2026 rules apply."),
+    ],
+)
+def test_flattened_numeric_outline_does_not_bleed_completed_reference_sentence(
+    command: str,
+    transition: str,
+):
+    source = (
+        f"Heading. (1) First root. {command} subsection (9). "
+        f"{transition} (2) Second root. "
+        "Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
     ]
 
 
@@ -2829,6 +3242,73 @@ def test_formula_interval_recognizes_alabama_in_excess_brackets(
     assert not interval.lower_inclusive
     assert interval.upper is not None and interval.upper.value == upper
     assert interval.upper_inclusive
+
+
+def test_bare_in_excess_definition_does_not_create_formula_obligation():
+    definition = (
+        "Any lump-sum amount in excess of recurring contributions means a "
+        "payment made after the fiscal year."
+    )
+    alabama_interval = (
+        "Four percent of taxable income in excess of five hundred dollars "
+        "($500) and not in excess of three thousand dollars ($3,000)."
+    )
+
+    assert not source_states_explicit_computation(definition)
+    assert source_states_explicit_computation(alabama_interval)
+    interval = completeness_module._formula_interval_from_text(
+        alabama_interval,
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 500
+    assert not interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 3000
+    assert interval.upper_inclusive
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The annual rate of inflation in excess of the forecast is published.",
+        (
+            "The rate of recurring contributions in excess of the actuarial "
+            "target is a reporting metric."
+        ),
+        (
+            "A contribution rate of ten percent in excess of the recurring "
+            "contribution rate is reviewed annually."
+        ),
+    ),
+)
+def test_nontax_rate_in_excess_language_does_not_create_formula_obligation(
+    source: str,
+):
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Taxable income not in excess of $500 is taxed at two percent.",
+        "Taxable income not in excess of $500 is taxed at 2%.",
+        (
+            "Tax is imposed at a rate of four percent on taxable income in "
+            "excess of five hundred dollars."
+        ),
+    ),
+)
+def test_tax_rate_in_excess_language_remains_computational(source: str):
+    assert source_states_explicit_computation(source)
+
+
+def test_editorial_slash_date_does_not_create_computation_obligation():
+    assert not source_states_explicit_computation(
+        "Legislative Research Commission Note (6/27/2025)."
+    )
+    assert source_states_explicit_computation(
+        "The amount is computed by dividing income by the divisor."
+    )
 
 
 def test_formula_subject_matches_established_boundary_helper_suffix():
@@ -7607,6 +8087,50 @@ def test_same_act_section_dependency_normalizes_act_determiner():
     )
 
 
+def test_same_act_section_dependency_accepts_truthful_missing_text_possessive():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) applies except as otherwise "
+        "provided in Section 2 of this act, whose text is unavailable."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_accepts_authenticated_bill_alias():
+    reason = (
+        "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the 2030 rate subject to "
+        "Section 2 of 2025 House Bill 1, and the text of that exact same-act "
+        "Section 2 dependency is not supplied in the available context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+        authenticated_same_act_aliases=("2025 House Bill 1",),
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
 @pytest.mark.parametrize(
     "reason",
     (
@@ -7668,6 +8192,10 @@ def test_same_act_section_dependency_scopes_adversative_to_bridge(reason: str):
         (
             "is deferred because there is no executable rule for Section 2 of this "
             "act, but an executable rule exists"
+        ),
+        (
+            "is deferred because Section 2 of this act, whose text is unavailable, "
+            "but it is actually supplied"
         ),
     ),
 )
@@ -15820,6 +16348,36 @@ def test_long_formula_output_locator_does_not_present_ellipsis_as_source_text(
     assert " ... " in feedback
     assert "only a bounded locator and is not source text" in feedback
     assert "copy one contiguous verbatim" in feedback
+
+
+def test_formula_output_feedback_aggregates_missing_clauses_for_same_owner():
+    source = (
+        "(1) Income equals wages plus dividends. "
+        "Tax equals income times 5 percent.\n"
+        "(2) Final rule."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/141.020
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-ky/statute/141.020",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    issues = [issue for issue in result.issues if "formula-output" in issue]
+
+    assert len(issues) == 2
+    for issue in issues:
+        assert "Same structural owner has 2 missing formula clauses" in issue
+        assert "`(1) formula clause 1` at characters 0:39" in issue
+        assert "`(1) formula clause 2` at characters 40:74" in issue
 
 
 COMPANION_COVERAGE_SOURCE = """\

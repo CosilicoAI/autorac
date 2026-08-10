@@ -163,6 +163,39 @@ class _CachedExplicitDirectory:
 
 
 @dataclass(frozen=True)
+class ExistingTargetSurfaceContract:
+    """One valid exact-oracle-mapped surface that replacement must retain."""
+
+    name: str
+    kind: str
+    entity: str
+    dtype: str
+    period: str
+    unit: str
+    indexed_by: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExistingTargetInputContract:
+    """One valid explicit input required by a retained oracle surface."""
+
+    name: str
+    entity: str
+    dtype: str
+    period: str
+    unit: str
+
+
+@dataclass(frozen=True)
+class ExistingTargetOracleContract:
+    """Narrow replacement contract derived from exact oracle registry rows."""
+
+    target: str
+    surfaces: tuple[ExistingTargetSurfaceContract, ...]
+    inputs: tuple[ExistingTargetInputContract, ...]
+
+
+@dataclass(frozen=True)
 class _CachedActiveCheckout:
     active: Path
     checkout: Path
@@ -2072,6 +2105,51 @@ def _requested_source_from_metadata(metadata: dict[str, object] | None) -> str |
         return None
     requested_source = requested_source.strip()
     return requested_source or None
+
+
+def _authenticated_same_act_aliases_from_metadata(
+    metadata: dict[str, object] | None,
+) -> tuple[str, ...]:
+    """Derive session-law aliases only from resolver-authenticated metadata."""
+
+    if not isinstance(metadata, dict):
+        return ()
+    aliases: list[str] = []
+    attestation = metadata.get("source_attestation")
+    row = attestation.get("row") if isinstance(attestation, dict) else None
+    row_metadata = row.get("metadata") if isinstance(row, dict) else None
+    law_vintage = (
+        row_metadata.get("law_vintage") if isinstance(row_metadata, dict) else None
+    )
+    if isinstance(law_vintage, dict):
+        bill = law_vintage.get("bill")
+        legislature = law_vintage.get("legislature")
+        if isinstance(bill, str) and bill.strip():
+            normalized_bill = " ".join(bill.split())
+            if isinstance(legislature, str):
+                year_match = re.search(r"\b(20\d{2})\b", legislature)
+                if year_match is not None:
+                    aliases.append(f"{year_match.group(1)} {normalized_bill}")
+
+    source_path = row.get("source_path") if isinstance(row, dict) else None
+    if isinstance(source_path, str):
+        bill_match = re.search(
+            r"(?:^|/)(?P<year>20\d{2})-(?P<chamber>hb|sb)-0*(?P<number>\d+)"
+            r"(?:[-./]|$)",
+            source_path,
+            flags=re.IGNORECASE,
+        )
+        if bill_match is not None:
+            chamber = (
+                "House Bill"
+                if bill_match.group("chamber").casefold() == "hb"
+                else "Senate Bill"
+            )
+            aliases.append(
+                f"{bill_match.group('year')} {chamber} "
+                f"{int(bill_match.group('number'))}"
+            )
+    return tuple(dict.fromkeys(aliases))
 
 
 def _rulespec_file_normalized_target(rulespec_file: Path) -> tuple[str, ...] | None:
@@ -12108,6 +12186,341 @@ def find_versioned_derived_formula_issues(content: str) -> list[str]:
     validation surface without special-casing the capability transition.
     """
     return []
+
+
+def find_local_dependency_temporal_coverage_issues(content: str) -> list[str]:
+    """Flag formula versions not covered by their direct local dependencies.
+
+    This intentionally considers only direct, same-file rule references. It does
+    not infer coverage through imports or through arbitrary formula expressions.
+    """
+
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict) or payload.get("format") != "rulespec/v1":
+        return []
+    raw_rules = payload.get("rules")
+    if not isinstance(raw_rules, list):
+        return []
+    rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in raw_rules
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
+
+    coverage_by_rule: dict[str, tuple[tuple[date, date | None], ...]] = {}
+    for name, rule in rules.items():
+        intervals = [
+            (effective_from, effective_to)
+            for _index, _version, effective_from, effective_to in (
+                _rule_effective_intervals(rule)
+            )
+        ]
+        if intervals:
+            coverage_by_rule[name] = tuple(sorted(intervals))
+
+    issues: list[str] = []
+    for name, rule in rules.items():
+        if str(rule.get("kind") or "").strip().lower() not in {
+            "derived",
+            "derived_relation",
+        }:
+            continue
+        for index, version, effective_from, effective_to in _rule_effective_intervals(
+            rule
+        ):
+            formula = version.get("formula")
+            if not isinstance(formula, str):
+                continue
+            for dependency in sorted(
+                _formula_local_identifiers(formula) & coverage_by_rule.keys()
+            ):
+                if _interval_is_covered(
+                    effective_from,
+                    effective_to,
+                    coverage_by_rule[dependency],
+                ):
+                    continue
+                consumer_end = (
+                    effective_to.isoformat()
+                    if effective_to is not None
+                    else "unbounded"
+                )
+                issues.append(
+                    "[temporal-dependency-coverage] Derived rule "
+                    f"`{name}` version {index + 1} covers "
+                    f"{effective_from.isoformat()} through {consumer_end} but "
+                    f"directly references local rule `{dependency}`, whose "
+                    "version intervals "
+                    f"({_format_effective_intervals(coverage_by_rule[dependency])}) "
+                    "do not cover that entire period. Align "
+                    "the derived interval, extend the dependency with "
+                    "authoritative coverage, or add a later derived version."
+                )
+    return issues
+
+
+def _rule_effective_intervals(
+    rule: Mapping[str, object],
+) -> tuple[tuple[int, dict[str, Any], date, date | None], ...]:
+    """Return explicit or next-version-bounded inclusive rule intervals."""
+
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return ()
+    dated: list[tuple[int, dict[str, Any], date]] = []
+    for index, version in enumerate(versions):
+        if not isinstance(version, dict):
+            continue
+        try:
+            effective_from = date.fromisoformat(str(version["effective_from"]).strip())
+        except (KeyError, TypeError, ValueError):
+            continue
+        dated.append((index, version, effective_from))
+    dated.sort(key=lambda item: (item[2], item[0]))
+
+    intervals: list[tuple[int, dict[str, Any], date, date | None]] = []
+    for position, (index, version, effective_from) in enumerate(dated):
+        raw_effective_to = version.get("effective_to")
+        if raw_effective_to not in (None, ""):
+            try:
+                effective_to = date.fromisoformat(str(raw_effective_to).strip())
+            except (TypeError, ValueError):
+                continue
+        elif position + 1 < len(dated):
+            next_effective_from = dated[position + 1][2]
+            if next_effective_from <= effective_from:
+                continue
+            effective_to = date.fromordinal(next_effective_from.toordinal() - 1)
+        else:
+            effective_to = None
+        if effective_to is not None and effective_to < effective_from:
+            continue
+        intervals.append((index, version, effective_from, effective_to))
+    return tuple(intervals)
+
+
+def _format_effective_intervals(
+    intervals: Sequence[tuple[date, date | None]],
+) -> str:
+    return ", ".join(
+        f"{effective_from.isoformat()} through "
+        f"{effective_to.isoformat() if effective_to is not None else 'unbounded'}"
+        for effective_from, effective_to in intervals
+    )
+
+
+def _interval_is_covered(
+    required_from: date,
+    required_to: date | None,
+    available: Sequence[tuple[date, date | None]],
+) -> bool:
+    """Return whether inclusive version intervals cover one required interval."""
+
+    cursor = required_from
+    for available_from, available_to in available:
+        if available_to is not None and available_to < cursor:
+            continue
+        if available_from > cursor:
+            return False
+        if available_to is None:
+            return True
+        if required_to is not None and available_to >= required_to:
+            return True
+        if available_to == date.max:
+            return required_to is not None and available_to >= required_to
+        cursor = date.fromordinal(available_to.toordinal() + 1)
+    return False
+
+
+def _contract_sequence(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if value is None:
+        return ()
+    text = str(value).strip()
+    return (text,) if text else ()
+
+
+def _existing_target_surface_contract(
+    rule: Mapping[str, object],
+) -> ExistingTargetSurfaceContract | None:
+    name = str(rule.get("name") or "").strip()
+    kind = str(rule.get("kind") or "").strip().lower()
+    dtype = str(rule.get("dtype") or "").strip()
+    versions = rule.get("versions")
+    if (
+        not name
+        or kind not in {"parameter", "derived", "derived_relation", "data_relation"}
+        or not dtype
+        or not isinstance(versions, list)
+        or not versions
+    ):
+        return None
+    return ExistingTargetSurfaceContract(
+        name=name,
+        kind=kind,
+        entity=str(rule.get("entity") or "").strip(),
+        dtype=dtype,
+        period=str(rule.get("period") or "").strip(),
+        unit=str(rule.get("unit") or "").strip(),
+        indexed_by=_contract_sequence(rule.get("indexed_by")),
+    )
+
+
+def _existing_target_input_contract(
+    item: Mapping[str, object],
+) -> ExistingTargetInputContract | None:
+    name = str(item.get("name") or "").strip()
+    dtype = str(item.get("dtype") or "").strip()
+    if not name or not dtype:
+        return None
+    return ExistingTargetInputContract(
+        name=name,
+        entity=str(item.get("entity") or "").strip(),
+        dtype=dtype,
+        period=str(item.get("period") or "").strip(),
+        unit=str(item.get("unit") or "").strip(),
+    )
+
+
+def build_existing_target_oracle_contract(
+    content: str,
+    *,
+    target: str,
+    policyengine_registry: object,
+    invalid_input_names: Iterable[str] = (),
+) -> ExistingTargetOracleContract | None:
+    """Build the replacement contract for valid exact registry-owned exports."""
+
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("format") != "rulespec/v1":
+        return None
+    raw_rules = payload.get("rules")
+    if not isinstance(raw_rules, list):
+        return None
+    rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in raw_rules
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
+    exact_mappings = getattr(policyengine_registry, "mappings_by_legal_id", {})
+    if not isinstance(exact_mappings, dict):
+        return None
+    surface_names = sorted(
+        name for name in rules if f"{target}#{name}" in exact_mappings
+    )
+    surfaces = tuple(
+        surface
+        for name in surface_names
+        if (surface := _existing_target_surface_contract(rules[name])) is not None
+    )
+    if not surfaces:
+        return None
+
+    explicit_inputs: dict[str, ExistingTargetInputContract] = {}
+    raw_inputs = payload.get("inputs")
+    if isinstance(raw_inputs, list):
+        for item in raw_inputs:
+            if not isinstance(item, dict):
+                continue
+            contract = _existing_target_input_contract(item)
+            if contract is not None:
+                explicit_inputs[contract.name] = contract
+
+    reachable_rules = {surface.name for surface in surfaces}
+    reachable_identifiers: set[str] = set()
+    pending = list(reachable_rules)
+    while pending:
+        rule_name = pending.pop()
+        rule = rules.get(rule_name)
+        if not isinstance(rule, dict):
+            continue
+        reachable_identifiers.update(_contract_sequence(rule.get("indexed_by")))
+        versions = rule.get("versions")
+        if not isinstance(versions, list):
+            continue
+        for version in versions:
+            formula = version.get("formula") if isinstance(version, dict) else None
+            if not isinstance(formula, str):
+                continue
+            identifiers = _formula_local_identifiers(formula)
+            reachable_identifiers.update(identifiers)
+            for dependency in identifiers & rules.keys() - reachable_rules:
+                reachable_rules.add(dependency)
+                pending.append(dependency)
+
+    invalid = set(invalid_input_names)
+    inputs = tuple(
+        explicit_inputs[name]
+        for name in sorted(reachable_identifiers & explicit_inputs.keys() - invalid)
+    )
+    return ExistingTargetOracleContract(target, surfaces, inputs)
+
+
+def find_existing_target_oracle_contract_issues(
+    content: str,
+    contract: ExistingTargetOracleContract | None,
+) -> list[str]:
+    """Require a replacement to retain registry-owned names and input schemas."""
+
+    if contract is None:
+        return []
+    try:
+        payload = yaml.safe_load(content)
+    except (yaml.YAMLError, TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict) or payload.get("format") != "rulespec/v1":
+        return []
+    raw_rules = payload.get("rules")
+    raw_inputs = payload.get("inputs")
+    rules = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in (raw_rules if isinstance(raw_rules, list) else [])
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
+    inputs = {
+        str(item.get("name") or "").strip(): item
+        for item in (raw_inputs if isinstance(raw_inputs, list) else [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    issues: list[str] = []
+    for expected in contract.surfaces:
+        actual_rule = rules.get(expected.name)
+        actual = (
+            _existing_target_surface_contract(actual_rule)
+            if isinstance(actual_rule, dict)
+            else None
+        )
+        if actual == expected:
+            continue
+        issues.append(
+            "[existing-target-oracle-contract] Replacement must retain valid "
+            f"exact-oracle-mapped surface `{contract.target}#{expected.name}` "
+            "with its existing kind/entity/dtype/period/unit/index contract. "
+            "Repair its implementation under that stable public surface."
+        )
+    for expected in contract.inputs:
+        actual_item = inputs.get(expected.name)
+        actual = (
+            _existing_target_input_contract(actual_item)
+            if isinstance(actual_item, dict)
+            else None
+        )
+        if actual == expected:
+            continue
+        issues.append(
+            "[existing-target-oracle-contract] Replacement must retain valid "
+            f"explicit input `{contract.target}#input.{expected.name}` with its "
+            "existing entity/dtype/period/unit contract because an exact-oracle-"
+            "mapped surface depends on it. Invalid legacy inputs are not covered."
+        )
+    return issues
 
 
 def find_upstream_placement_issues(
@@ -26095,6 +26508,7 @@ class ValidatorPipeline:
         amendment_source_texts: Mapping[str, str] | None = None,
         rulespec_dependency_roots: Iterable[Path] = (),
         validation_staging_root: Path | None = None,
+        existing_target_oracle_contract: ExistingTargetOracleContract | None = None,
     ):
         self.policy_repo_path = Path(policy_repo_path)
         self.axiom_rules_path = Path(axiom_rules_path)
@@ -26103,6 +26517,14 @@ class ValidatorPipeline:
             if validation_staging_root is not None
             else None
         )
+        if existing_target_oracle_contract is not None and not isinstance(
+            existing_target_oracle_contract, ExistingTargetOracleContract
+        ):
+            raise TypeError(
+                "existing_target_oracle_contract must be an "
+                "ExistingTargetOracleContract"
+            )
+        self.existing_target_oracle_contract = existing_target_oracle_contract
         self._validation_temporary_roots: list[Path] = []
         self.enable_oracles = enable_oracles
         self.oracle_validators = (
@@ -26465,6 +26887,9 @@ class ValidatorPipeline:
             numeric_value_is_grounded=numeric_value_is_grounded,
             artifact_numeric_values=artifact_numeric_values,
             artifact_numeric_bindings=artifact_numeric_bindings,
+            authenticated_same_act_aliases=(
+                _authenticated_same_act_aliases_from_metadata(self.source_metadata)
+            ),
         )
         return list(completeness.issues)
 
@@ -28072,6 +28497,13 @@ class ValidatorPipeline:
         issues.extend(proof_issues)
         issues.extend(find_structured_scale_parameter_issues(content))
         issues.extend(find_versioned_derived_formula_issues(content))
+        issues.extend(find_local_dependency_temporal_coverage_issues(content))
+        issues.extend(
+            find_existing_target_oracle_contract_issues(
+                content,
+                self.existing_target_oracle_contract,
+            )
+        )
         issues.extend(
             find_upstream_placement_issues(
                 content,

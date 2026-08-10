@@ -27,7 +27,7 @@ from decimal import (
     InvalidOperation,
     localcontext,
 )
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 import yaml
 
@@ -288,6 +288,16 @@ _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD = re.compile(
     r"\s+(?:the\s+)?following\b",
     flags=re.IGNORECASE,
 )
+_INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND = re.compile(
+    r"(?:^|[.!?;:—]\s+)(?:"
+    r"(?:see(?:\s*,\s*e\.g\.,?)?|refer(?:\s+back)?(?:\s+to)?|"
+    r"compare(?:\s+(?:to|with))?|subject\s+to|pursuant\s+to|"
+    r"according\s+to|in\s+accordance\s+with|for\s+purposes\s+of|under)\b|"
+    r"(?:except\s+)?as\s+(?:provided|specified|described|stated)\s+"
+    r"(?:in|under)\b)"
+    r".{0,160}[:;.!?—]\s*$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)"
     r"(?!(?i:st|nd|rd|th)\b)"
@@ -398,7 +408,7 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"twice|"
     r"amount\s+of\s+(?:the\s+)?excess|"
     r"\d+(?:[.,]\d+)?\s+times\b|"
-    r"percentage\s+of|in\s+excess\s+of|"
+    r"percentage\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
     flags=re.IGNORECASE,
@@ -422,6 +432,25 @@ _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
 _ENGLISH_CARDINAL_PHRASE = (
     rf"{_ENGLISH_NUMBER_WORD}"
     rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*"
+)
+_EXCESS_BOUND_TAX_RATE_VALUE = (
+    rf"(?:\d+(?:[.,]\d+)?\s*(?:%|percent|per\s+cent)|"
+    rf"{_ENGLISH_CARDINAL_PHRASE}\s+(?:percent|per\s+cent))"
+)
+_EXCESS_BOUND_TAX_RATE_PREDICATE = (
+    rf"(?:"
+    rf"(?:is|are|shall|must|will)\s+(?:be\s+)?taxed\s+at\s+"
+    rf"(?:the\s+rate\s+of\s+)?{_EXCESS_BOUND_TAX_RATE_VALUE}|"
+    rf"tax\s+(?:is|shall\s+be|must\s+be|will\s+be)\s+imposed\s+at\s+"
+    rf"(?:a\s+)?rate\s+of\s+{_EXCESS_BOUND_TAX_RATE_VALUE}"
+    rf")"
+)
+_EXCESS_BOUND_TAX_RATE_LANGUAGE = re.compile(
+    rf"\b(?:not\s+)?in\s+excess\s+of\b[^.;]{{0,180}}"
+    rf"\b{_EXCESS_BOUND_TAX_RATE_PREDICATE}(?=\W|$)|"
+    rf"\b{_EXCESS_BOUND_TAX_RATE_PREDICATE}(?=\W|$)[^.;]{{0,180}}"
+    rf"\b(?:not\s+)?in\s+excess\s+of\b",
+    flags=re.IGNORECASE,
 )
 _ENGLISH_ORDINAL_WORD = (
     r"(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
@@ -2529,10 +2558,21 @@ def _qualified_parenthesized_legal_outline_markers(
     """
 
     line_matches = tuple(_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text))
+    all_inline_matches = tuple(
+        _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text)
+    )
+    flattened_root_starts = _flattened_inline_numeric_root_starts(
+        source_text,
+        line_matches,
+        all_inline_matches,
+    )
     inline_matches = tuple(
         match
-        for match in _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text)
-        if not _inline_outline_marker_has_reference_context(source_text, match)
+        for match in all_inline_matches
+        if (
+            match.start("marker") in flattened_root_starts
+            or not _inline_outline_marker_has_reference_context(source_text, match)
+        )
     )
     inline_marker_starts = {match.start("marker") for match in inline_matches}
     matches = tuple(
@@ -2570,7 +2610,12 @@ def _qualified_parenthesized_legal_outline_markers(
                 attached_parent_level=attached_parent_level,
                 outline_levels=outline_levels,
             )
-            if marker_start in inline_marker_starts and label_index == 0 and level == 0:
+            if (
+                marker_start in inline_marker_starts
+                and marker_start not in flattened_root_starts
+                and label_index == 0
+                and level == 0
+            ):
                 break
             active = [entry for entry in active if entry[0] < level]
             normalized = raw_label.lower()
@@ -2605,6 +2650,181 @@ def _qualified_parenthesized_legal_outline_markers(
         for first, second in itertools.pairwise(root_labels)
     )
     return tuple(markers) if has_sequential_roots else ()
+
+
+def _flattened_inline_numeric_root_starts(
+    source_text: str,
+    line_matches: Sequence[re.Match[str]],
+    inline_matches: Sequence[re.Match[str]],
+) -> frozenset[int]:
+    """Recover a proven numeric root sequence from flattened statutory prose.
+
+    Official PDF extraction can place ``(1)`` through ``(N)`` after sentence
+    punctuation on one physical line.  Those markers are ambiguous in
+    isolation, so restore them only when the first outline candidate is an
+    inline ``(1)`` and independently qualified inline candidates prove
+    contiguous ``(2)`` and ``(3)`` successors.  Every recovered root must be
+    free of direct cross-reference context.  A trailing ``of/under this
+    section.`` from the preceding statutory sentence is treated as stale only
+    when that sentence has no explicit see/refer/compare command.  Attached
+    children and capitalization never override an explicit reference.  The
+    initial ``(1)`` remains provisional until those successors are found.
+    """
+
+    ordered_matches = tuple(
+        heapq.merge(
+            line_matches,
+            inline_matches,
+            key=lambda match: match.start("marker"),
+        )
+    )
+    if not ordered_matches or ordered_matches[0] not in inline_matches:
+        return frozenset()
+    has_inline_first_root = any(
+        tuple(re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker")))[:1] == ("1",)
+        for match in inline_matches
+    )
+    if not has_inline_first_root:
+        return frozenset()
+
+    expected = 1
+    selected_starts: list[int] = []
+    for match in inline_matches:
+        labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker")))
+        if not labels or re.fullmatch(r"\d+", labels[0]) is None:
+            continue
+        value = int(labels[0])
+        if value == expected:
+            candidate_is_proven = (
+                _flattened_inline_numeric_first_root_is_proven(source_text, match)
+                if expected == 1
+                else _flattened_inline_numeric_root_is_proven(source_text, match)
+            )
+            if candidate_is_proven:
+                selected_starts.append(match.start("marker"))
+                expected += 1
+            continue
+        if value > expected and _flattened_inline_numeric_root_is_proven(
+            source_text,
+            match,
+        ):
+            break
+    return frozenset(selected_starts) if expected >= 4 else frozenset()
+
+
+def _flattened_inline_numeric_root_has_explicit_reference_command(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    return _INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND.search(prefix) is not None
+
+
+def _flattened_inline_numeric_first_root_is_proven(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Keep the first root provisional without admitting a reference marker."""
+
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    if _INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND.search(prefix):
+        return False
+    has_reference_context = bool(
+        _INLINE_OUTLINE_REFERENCE_CONTEXT.search(prefix)
+        or _INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT.search(prefix)
+    )
+    if not has_reference_context:
+        return True
+    return (
+        re.search(
+            r"\bKRS\s+\d+[A-Za-z]?(?:\.\d+[A-Za-z]?)*[.!?]\s*$",
+            prefix,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _flattened_inline_numeric_root_context_prefix(
+    source_text: str,
+    match: re.Match[str],
+) -> str:
+    """Return local context without bleeding through a prior inline marker."""
+
+    marker_start = match.start("marker")
+    context_start = max(0, marker_start - 256)
+    for previous in _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(
+        source_text,
+        context_start,
+        marker_start,
+    ):
+        context_start = max(context_start, previous.end("marker"))
+    return source_text[context_start:marker_start]
+
+
+def _flattened_inline_numeric_root_immediate_clause(
+    source_text: str,
+    match: re.Match[str],
+) -> str:
+    """Return the final clause while preserving periods in legal abbreviations."""
+
+    prefix = _flattened_inline_numeric_root_context_prefix(source_text, match)
+    masked = list(prefix)
+    abbreviation_patterns = (
+        re.compile(r"\b(?:e\.g|i\.e|U\.S)\.", re.IGNORECASE),
+        re.compile(r"\b(?:[A-Z]\.){2,}"),
+        re.compile(r"\b[A-Z][A-Za-z]{0,7}\.(?=\s+(?:Code|Rev|Stat|Comp|Gen)\b)"),
+        re.compile(r"\b(?:Code|Rev|Stat|Comp|Gen)\.(?=\s+\d)"),
+    )
+    for pattern in abbreviation_patterns:
+        for abbreviation in pattern.finditer(prefix):
+            for index in range(abbreviation.start(), abbreviation.end()):
+                if masked[index] == ".":
+                    masked[index] = "\u2024"
+    masked_text = "".join(masked)
+    content_end = len(masked_text.rstrip())
+    boundary_end = content_end
+    if content_end and masked_text[content_end - 1] in ".!?":
+        boundary_end -= 1
+    clause_start = 0
+    for boundary in re.finditer(
+        r"[.!?]\s+(?=[A-Z\dÄÖÜ\"“])",
+        masked_text[:boundary_end],
+    ):
+        clause_start = boundary.end()
+    return prefix[clause_start:content_end]
+
+
+def _flattened_inline_numeric_root_is_proven(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Require local structural evidence before restoring one inline root."""
+
+    if _flattened_inline_numeric_root_has_explicit_reference_command(
+        source_text,
+        match,
+    ):
+        return False
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    if _INLINE_OUTLINE_STRUCTURAL_CHAPEAU_CONTEXT.search(prefix) and not (
+        _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD.search(prefix)
+    ):
+        return True
+    has_reference_context = bool(
+        _INLINE_OUTLINE_REFERENCE_CONTEXT.search(prefix)
+        or _INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT.search(prefix)
+    )
+    if not has_reference_context:
+        return True
+    stale_section_tail = re.search(
+        r"\b(?:of|under)\s+this\s+section[.!?]\s*$",
+        prefix,
+        re.IGNORECASE,
+    )
+    if stale_section_tail is not None:
+        return True
+    return False
 
 
 def _inline_outline_marker_has_reference_context(
@@ -3872,6 +4092,7 @@ def source_states_explicit_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _EXCESS_BOUND_TAX_RATE_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
         or _english_fraction_of_is_computational(computation_text)
@@ -3892,6 +4113,7 @@ def _source_states_nonrounding_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _EXCESS_BOUND_TAX_RATE_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
         or _english_fraction_of_is_computational(computation_text)
@@ -4028,9 +4250,15 @@ def _without_stated_conversion_results(source_text: str) -> str:
 def _has_substantive_arithmetic_expression(source_text: str) -> bool:
     """Ignore slash-separated year spans while recognizing actual arithmetic."""
 
-    if _WORDED_ARITHMETIC_EXPRESSION.search(source_text):
+    arithmetic_text = list(source_text)
+    for date_match in _STATED_CONVERSION_DATE.finditer(source_text):
+        arithmetic_text[date_match.start() : date_match.end()] = " " * (
+            date_match.end() - date_match.start()
+        )
+    masked_source_text = "".join(arithmetic_text)
+    if _WORDED_ARITHMETIC_EXPRESSION.search(masked_source_text):
         return True
-    for match in _ARITHMETIC_EXPRESSION.finditer(source_text):
+    for match in _ARITHMETIC_EXPRESSION.finditer(masked_source_text):
         expression = re.sub(r"\s+", "", match.group(0))
         if re.fullmatch(r"(?:19|20)\d{2}/(?:19|20)\d{2}", expression):
             continue
@@ -4050,6 +4278,7 @@ def analyze_complete_source_unit(
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None = None,
     artifact_numeric_bindings: Sequence[tuple[str, float]] | None = None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> CompleteSourceUnitAnalysis:
     """Analyze one artifact against its authoritative, resolver-owned body."""
 
@@ -4079,6 +4308,7 @@ def analyze_complete_source_unit(
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 artifact_numeric_values=artifact_numeric_values,
                 artifact_numeric_bindings=artifact_numeric_bindings,
+                authenticated_same_act_aliases=authenticated_same_act_aliases,
             )
 
     return CompleteSourceUnitAnalysis((), (), 0, 0, 0)
@@ -4097,6 +4327,7 @@ def _analyze_rulespec_payload(
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None,
     artifact_numeric_bindings: Sequence[tuple[str, float]] | None,
+    authenticated_same_act_aliases: Sequence[str],
 ) -> CompleteSourceUnitAnalysis:
     branches = recognize_source_structure(source_text)
     (
@@ -4120,6 +4351,7 @@ def _analyze_rulespec_payload(
         corpus_citation_path=corpus_citation_path,
         source_text=source_text,
         branches=branches,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     )
     issues: list[str] = []
     issues.extend(imprecise_deferrals)
@@ -4177,6 +4409,19 @@ def _analyze_rulespec_payload(
     source_has_computation = source_states_explicit_computation(source_text)
     if source_has_computation:
         if formula_branches:
+            missing_formula_branches = tuple(
+                branch
+                for branch in formula_branches
+                if not principal_formula_clause_rules[branch]
+            )
+            missing_formula_branches_by_path: dict[
+                tuple[str, ...], list[SourceStructureBranch]
+            ] = {}
+            for missing_branch in missing_formula_branches:
+                missing_formula_branches_by_path.setdefault(
+                    missing_branch.path,
+                    [],
+                ).append(missing_branch)
             for branch in formula_branches:
                 if principal_formula_clause_rules[branch]:
                     continue
@@ -4196,6 +4441,9 @@ def _analyze_rulespec_payload(
                                 principal_rule_paths,
                             )
                         ),
+                        same_owner_missing=missing_formula_branches_by_path[
+                            branch.path
+                        ],
                     )
                 )
         elif not all_formula_branches and not _path_covered(
@@ -4275,6 +4523,11 @@ def _analyze_rulespec_payload(
                 extract_numeric_occurrences=extract_numeric_grounding_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 formula_environment=formula_environment,
+                declared_input_names={
+                    str(item.get("name") or "").strip()
+                    for item in payload.get("inputs", [])
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                },
             )
         )
 
@@ -4695,6 +4948,7 @@ def _deferred_coverage(
     corpus_citation_path: str,
     source_text: str,
     branches: Sequence[SourceStructureBranch],
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> tuple[set[tuple[str, ...]], list[str]]:
     module = payload.get("module")
     records = module.get("deferred_outputs") if isinstance(module, dict) else None
@@ -4819,6 +5073,7 @@ def _deferred_coverage(
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
                     path=candidate_path,
+                    authenticated_same_act_aliases=authenticated_same_act_aliases,
                 )
                 or _reason_names_source_bound_runtime_gap(
                     reason,
@@ -4886,6 +5141,7 @@ def _deferred_coverage(
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
                     path=candidate,
+                    authenticated_same_act_aliases=authenticated_same_act_aliases,
                 )
                 for candidate, candidate_scope_text in most_specific_source_scopes.items()
             )
@@ -7100,6 +7356,7 @@ def _reason_dependency_is_source_bound(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...] | None = None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
     """Require one external dependency citation to bind to the deferred source."""
 
@@ -7108,6 +7365,7 @@ def _reason_dependency_is_source_bound(
         source_scope_text,
         corpus_citation_path=corpus_citation_path,
         path=path,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     ):
         return True
 
@@ -7230,6 +7488,7 @@ def _reason_names_missing_same_act_dependency(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...] | None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
     """Recognize an exact missing session-law section named by one source branch."""
 
@@ -7258,8 +7517,11 @@ def _reason_names_missing_same_act_dependency(
         )
     if not exact_current_branch:
         return False
-    reason_matches = tuple(_SAME_ACT_SECTION_DEPENDENCY.finditer(reason))
-    reason_sections = {match.group("section").lower() for match in reason_matches}
+    reason_matches = _same_act_section_dependencies(
+        reason,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
+    )
+    reason_sections = {section.lower() for section, _start, _end in reason_matches}
     source_sections = {
         match.group("section").lower()
         for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(source_scope_text)
@@ -7273,21 +7535,21 @@ def _reason_names_missing_same_act_dependency(
     if not matching_sections:
         return False
     clauses = tuple(re.finditer(r"[^.;\n]+", reason))
-    for dependency_match in reason_matches:
-        identity = dependency_match.group("section").lower()
+    for dependency_section, dependency_start, _dependency_end in reason_matches:
+        identity = dependency_section.lower()
         if identity not in matching_sections:
             continue
         clause_index = next(
             (
                 index
                 for index, clause in enumerate(clauses)
-                if clause.start() <= dependency_match.start() < clause.end()
+                if clause.start() <= dependency_start < clause.end()
             ),
             None,
         )
         if clause_index is None:
             continue
-        section = re.escape(dependency_match.group("section"))
+        section = re.escape(dependency_section)
         for clause in clauses[clause_index : clause_index + 2]:
             clause_text = clause.group(0)
             if not re.search(rf"\bsection\s+{section}\b", clause_text, re.IGNORECASE):
@@ -7295,17 +7557,58 @@ def _reason_names_missing_same_act_dependency(
             if _same_act_clause_names_missing_dependency(
                 clause_text,
                 section=section,
+                authenticated_same_act_aliases=authenticated_same_act_aliases,
             ):
                 return True
     return False
 
 
+def _same_act_section_dependencies(
+    text: str,
+    *,
+    authenticated_same_act_aliases: Sequence[str],
+) -> tuple[tuple[str, int, int], ...]:
+    """Return canonical and provenance-authenticated same-act section references."""
+
+    matches = [
+        (match.group("section"), match.start(), match.end())
+        for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(text)
+    ]
+    for alias in dict.fromkeys(authenticated_same_act_aliases):
+        normalized_alias = " ".join(str(alias).split())
+        if not normalized_alias:
+            continue
+        pattern = re.compile(
+            r"\bsection\s+(?P<section>\d+[a-z]?)\s+of\s+"
+            + re.escape(normalized_alias)
+            + r"\b",
+            flags=re.IGNORECASE,
+        )
+        matches.extend(
+            (match.group("section"), match.start(), match.end())
+            for match in pattern.finditer(text)
+        )
+    return tuple(dict.fromkeys(matches))
+
+
 def _same_act_clause_names_missing_dependency(
-    clause_text: str, *, section: str
+    clause_text: str,
+    *,
+    section: str,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
-    reference = rf"\bsection\s+{section}(?:\s+of\s+(?:this|the)\s+act)?\b"
+    alias_alternatives = "|".join(
+        re.escape(" ".join(str(alias).split()))
+        for alias in dict.fromkeys(authenticated_same_act_aliases)
+        if " ".join(str(alias).split())
+    )
+    act_identity = r"(?:this|the)\s+act"
+    if alias_alternatives:
+        act_identity = rf"(?:{act_identity}|{alias_alternatives})"
+    reference = rf"\bsection\s+{section}(?:\s+of\s+{act_identity})?\b"
     direct_state = (
-        r"\s*(?:,\s*)?(?:(?:which|that)\s+)?(?:is|remains)\s+"
+        r"\s*(?:,\s*)?(?:(?:which|that)\s+|whose\s+(?:text|body)\s+)?"
+        r"(?:is|remains)\s+"
         r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b"
     )
     direct_match = re.search(reference + direct_state, clause_text, flags=re.IGNORECASE)
@@ -7326,6 +7629,21 @@ def _same_act_clause_names_missing_dependency(
     if no_executable_match and not _same_act_dependency_state_is_reversed(
         clause_text,
         no_executable_match,
+        section=section,
+    ):
+        return True
+    same_act_text_state = re.search(
+        reference + r"[^.;\n]{0,180}\b(?:text|body)\s+of\s+(?:that|the)\s+"
+        r"(?:exact\s+)?same[- ]act\s+section\s+"
+        + section
+        + r"\s+dependency\s+(?:is|remains)\s+"
+        r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b",
+        clause_text,
+        flags=re.IGNORECASE,
+    )
+    if same_act_text_state and not _same_act_dependency_state_is_reversed(
+        clause_text,
+        same_act_text_state,
         section=section,
     ):
         return True
@@ -11372,6 +11690,131 @@ def _numeric_binding_sequences_match(
     )
 
 
+_DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP = re.compile(
+    r"\bmax\s*\(\s*(?:0+(?:\.0+)?)\s*,\s*"
+    r"(?P<input>[A-Za-z_][A-Za-z0-9_]*)\s*\)"
+)
+
+
+def _rule_formula_identifiers(rule: Mapping[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return identifiers
+    for version in versions:
+        formula = version.get("formula") if isinstance(version, dict) else None
+        if isinstance(formula, str):
+            identifiers.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula))
+    return identifiers
+
+
+def _direct_local_input_clamps(
+    rule: Mapping[str, Any],
+    declared_input_names: set[str],
+) -> set[str]:
+    clamped: set[str] = set()
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return clamped
+    for version in versions:
+        formula = version.get("formula") if isinstance(version, dict) else None
+        if not isinstance(formula, str):
+            continue
+        clamped.update(
+            match.group("input")
+            for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(formula)
+            if match.group("input") in declared_input_names
+        )
+    return clamped
+
+
+def _negative_local_input_clamp_test_issues(
+    principal_rules: dict[str, dict[str, Any]],
+    *,
+    cases: Sequence[dict[str, Any]],
+    declared_input_names: set[str],
+) -> list[str]:
+    """Require negative evidence for direct max(0, local_input) clamps."""
+
+    dependencies = {
+        name: _rule_formula_identifiers(rule) & principal_rules.keys()
+        for name, rule in principal_rules.items()
+    }
+    issues: list[str] = []
+    for owner, rule in principal_rules.items():
+        for input_name in sorted(
+            _direct_local_input_clamps(rule, declared_input_names)
+        ):
+            downstream = {
+                candidate
+                for candidate in principal_rules
+                if candidate != owner
+                and _formula_rule_depends_on(
+                    candidate,
+                    owner,
+                    dependencies=dependencies,
+                )
+            }
+            principal_outputs = downstream or {owner}
+            witnessed = False
+            for case in cases:
+                inputs = case.get("input")
+                if not isinstance(inputs, dict):
+                    continue
+                has_negative = any(
+                    input_name in _input_key_names(key)
+                    and any(
+                        value < 0 for value in _numeric_test_input_values(raw_value)
+                    )
+                    for key, raw_value in inputs.items()
+                )
+                if not has_negative:
+                    continue
+                if not _is_iso_calendar_date(_normalized_case_period(case)):
+                    continue
+                selected_formula = _rule_formula_text_for_case(rule, case)
+                if selected_formula is None or not any(
+                    match.group("input") == input_name
+                    for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(
+                        selected_formula
+                    )
+                ):
+                    continue
+                outputs = _test_case_output_names(case)
+                if owner in outputs and outputs & principal_outputs:
+                    witnessed = True
+                    break
+            if witnessed:
+                continue
+            issues.append(
+                "[complete-source-unit:tests] Direct nonnegative clamp "
+                f"`max(0, {input_name})` in `{owner}` requires an executed "
+                f"companion case with `{input_name}` below zero that asserts "
+                f"the clamped rule `{owner}` and a principal output depending "
+                "on it. A zero-valued case does not exercise the negative clamp."
+            )
+    return issues
+
+
+def _formula_rule_depends_on(
+    candidate: str,
+    dependency: str,
+    *,
+    dependencies: Mapping[str, set[str]],
+) -> bool:
+    pending = list(dependencies.get(candidate, set()))
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == dependency:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(dependencies.get(current, set()) - seen)
+    return False
+
+
 def _companion_test_issues(
     principal_rules: dict[str, dict[str, Any]],
     *,
@@ -11386,6 +11829,7 @@ def _companion_test_issues(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
+    declared_input_names: set[str],
 ) -> list[str]:
     issues: list[str] = []
     cases = [case for case in (test_cases or ()) if isinstance(case, dict)]
@@ -11422,6 +11866,13 @@ def _companion_test_issues(
         name: [case for case in cases if name in _test_case_output_names(case)]
         for name in principal_rules
     }
+    issues.extend(
+        _negative_local_input_clamp_test_issues(
+            principal_rules,
+            cases=cases,
+            declared_input_names=declared_input_names,
+        )
+    )
     for name, asserted_cases in asserted_by_rule.items():
         if not asserted_cases:
             issues.append(
@@ -12078,10 +12529,14 @@ def _source_clause_spans(
         r";|[.!?](?=(?:[ \t]+[A-ZÄÖÜ(]|\s*$))",
         flags=re.MULTILINE,
     )
+    inline_operand_list_spans = _formula_inline_operand_list_spans(source_text)
     boundary_matches = (
         match
         for match in boundary.finditer(source_text)
         if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+        and not any(
+            start < match.end() < end for start, end in inline_operand_list_spans
+        )
         and not (
             match.group() == ";"
             and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(
@@ -12108,6 +12563,41 @@ def _source_clause_spans(
                 start + right_trimmed,
                 raw[left_trimmed:right_trimmed],
             )
+
+
+def _formula_inline_operand_list_spans(source_text: str) -> tuple[tuple[int, int], ...]:
+    """Keep flattened colon-introduced formula operands in one source clause."""
+
+    introduction = re.compile(
+        r"\b(?:calculated|computed|determined)\s+(?:by|through)\s+"
+        r"(?:adding|subtracting|dividing|multiplying|reducing|deducting|"
+        r"increasing|decreasing)\b[^.;:\n]{0,360}:\s*a\.",
+        flags=re.IGNORECASE,
+    )
+    next_numeric_sibling = re.compile(
+        r";(?=\s*(?:and\s+)?\d+\.\s+[A-Z\"])",
+        flags=re.IGNORECASE,
+    )
+    later_letter_operand = re.compile(r";\s*(?:and\s+)?b\.", re.IGNORECASE)
+    spans: list[tuple[int, int]] = []
+    for match in introduction.finditer(source_text):
+        sibling = next_numeric_sibling.search(
+            source_text,
+            match.end(),
+            min(len(source_text), match.end() + 2400),
+        )
+        if (
+            sibling is None
+            or later_letter_operand.search(
+                source_text,
+                match.end(),
+                sibling.start(),
+            )
+            is None
+        ):
+            continue
+        spans.append((match.start(), sibling.end()))
+    return tuple(spans)
 
 
 def _source_clause_boundary_splits_state_code_citation(
@@ -22247,6 +22737,7 @@ def _formula_output_binding_feedback(
     *,
     corpus_citation_path: str,
     has_path_covering_principal: bool,
+    same_owner_missing: Sequence[SourceStructureBranch] = (),
 ) -> str:
     """Give a repair model the exact proof binding missing from a formula."""
 
@@ -22270,6 +22761,7 @@ def _formula_output_binding_feedback(
         if source_excerpt_was_truncated
         else ""
     )
+    same_owner_detail = _same_owner_formula_clause_feedback(same_owner_missing)
     return (
         " The formula-clause number is an internal punctuation-span ordinal, "
         "not a statutory paragraph number. "
@@ -22282,6 +22774,31 @@ def _formula_output_binding_feedback(
         "rule, a citation-only proof atom, a non-formula proof path, or a shorter "
         "excerpt that does not itself state the computation cannot bind a "
         f"principal output to this clause.{bounded_preview_warning}"
+        f"{same_owner_detail}"
+    )
+
+
+def _same_owner_formula_clause_feedback(
+    branches: Sequence[SourceStructureBranch],
+    *,
+    limit: int = 32,
+) -> str:
+    """Give retries the complete bounded missing set for one structural owner."""
+
+    ordered = sorted({(branch.start, branch.end, branch.label) for branch in branches})
+    if len(ordered) <= 1:
+        return ""
+    rendered = [
+        f"`{label}` at characters {start}:{end}"
+        for start, end, label in ordered[:limit]
+    ]
+    if len(ordered) > limit:
+        rendered.append(f"... ({len(ordered) - limit} additional clauses omitted)")
+    return (
+        f" Same structural owner has {len(ordered)} missing formula clauses; "
+        "repair or precisely defer the complete set in this attempt: "
+        + "; ".join(rendered)
+        + "."
     )
 
 
