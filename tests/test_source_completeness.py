@@ -14983,6 +14983,15 @@ def test_legacy_standalone_decimal_fraction_percentage_grounds_scaled_rate():
     assert numeric_value_is_grounded(0.007, grounding)
 
 
+def test_legacy_invalid_whole_decimal_fraction_percentage_fails_closed():
+    grounding = extract_typed_numeric_occurrences_from_text(
+        "The rate is twenty ten and seven-tenths percent.",
+        profile="legacy",
+    )
+
+    assert not numeric_value_is_grounded(0.007, grounding)
+
+
 def test_legacy_decimal_fraction_words_without_percent_do_not_ground_rate():
     grounding = extract_typed_numeric_occurrences_from_text(
         "The amount is seven-tenths of the base.",
@@ -15018,9 +15027,7 @@ def test_legacy_structural_four_does_not_hide_four_percent_rate():
         profile="legacy",
     )
 
-    assert [occurrence.value for occurrence in inventory] == pytest.approx(
-        [0.04, 0.04]
-    )
+    assert [occurrence.value for occurrence in inventory] == pytest.approx([0.04, 0.04])
     assert all(occurrence.has_rate_context for occurrence in inventory)
 
 

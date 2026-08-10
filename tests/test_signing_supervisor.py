@@ -2032,10 +2032,18 @@ def test_targeted_signed_reencode_reconciles_retired_inventory_before_commits() 
     command = step["run"]
     invocation = "reconcile-retired-manifest-inventory"
 
-    assert command.count(invocation) == 2
+    assert command.count(invocation) == 3
     assert '[ "$source_bundle_enabled" = "false" ]' in command
     assert '[ -n "$REPLACE_RULESPEC_PATH" ]' in command
     assert '[ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]' in command
+
+    refresh_apply = command.index('"$refresh_citation" "$refresh_finding"')
+    refresh_reconciliation = command.index(invocation, refresh_apply)
+    refresh_checkpoint = command.index(
+        "Refresh signed canonical module for ${refresh_citation}",
+        refresh_reconciliation,
+    )
+    assert refresh_apply < refresh_reconciliation < refresh_checkpoint
 
     preflight_apply = command.index("target-preflight")
     preflight_reconciliation = command.index(invocation, preflight_apply)
@@ -3906,6 +3914,18 @@ def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
         + '}\n\nif [ "$canonical_refresh_enabled"'
         + after_checkpoint
     )
+    canonical_reconciliation = (
+        '    "$workflow_python" "$backfill_helper" \\\n'
+        "      reconcile-retired-manifest-inventory \\\n"
+        '      "$RULESPEC_CHECKOUT" "$refresh_rulespec_path"'
+    )
+    command_before_reconciliation_stub = command
+    command = command.replace(
+        canonical_reconciliation,
+        '    printf \'%s\\n\' "$refresh_rulespec_path" >> "$RECONCILIATIONS_PATH"',
+        1,
+    )
+    assert command != command_before_reconciliation_stub
 
     repo, primary_citation, primary_path, additions = _prepare_canonical_refresh_inputs(
         tmp_path
@@ -3990,6 +4010,7 @@ def test_targeted_signed_reencode_runs_canonical_refresh_bundle_in_order(
 
     calls_path = tmp_path / "calls.jsonl"
     checkpoints_path = tmp_path / "checkpoints.txt"
+    reconciliations_path = tmp_path / "reconciliations.txt"
     signer_stub = tmp_path / "signer-stub"
     signer_stub.write_text(
         """#!/usr/bin/env python3
@@ -4029,6 +4050,7 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         "EXISTING_SIGNED_IMPORTS_JSON": "[]",
         "GITHUB_WORKSPACE": str(tmp_path),
         "REPLACE_RULESPEC_PATH": primary_path,
+        "RECONCILIATIONS_PATH": str(reconciliations_path),
         "REVIEW_FINDING": "Refresh the independent Louisiana modules.",
         "RULESPEC_CHECKOUT": str(repo),
         "RULESPEC_REF": "a" * 40,
@@ -4124,9 +4146,13 @@ if mutation_path and len(calls_path.read_text(encoding="utf-8").splitlines()) ==
         f"Refresh signed canonical module for {citation}"
         for citation in expected_citations
     ]
+    assert reconciliations_path.read_text(encoding="utf-8").splitlines() == (
+        expected_paths
+    )
 
     calls_path.unlink()
     checkpoints_path.unlink()
+    reconciliations_path.unlink()
     future_companion = repo / str(normalized[1]["companion_path"])
     blocked = subprocess.run(
         ["bash", "-c", command],
@@ -4266,18 +4292,22 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
     )
-    command = next(
-        step["run"]
-        for step in workflow["jobs"]["encode"]["steps"]
-        if step.get("name") == "Encode, review, validate, and apply"
-    ).replace(
-        "/opt/axiom-verification/axiom-encode-apply-signer run",
-        '"$SIGNER_STUB"',
-    ).replace(
-        '    "$workflow_python" "$backfill_helper" \\\n'
-        "      reconcile-retired-manifest-inventory \\\n"
-        '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
-        "    printf '%s\\n' 'retired manifest inventory unchanged'",
+    command = (
+        next(
+            step["run"]
+            for step in workflow["jobs"]["encode"]["steps"]
+            if step.get("name") == "Encode, review, validate, and apply"
+        )
+        .replace(
+            "/opt/axiom-verification/axiom-encode-apply-signer run",
+            '"$SIGNER_STUB"',
+        )
+        .replace(
+            '    "$workflow_python" "$backfill_helper" \\\n'
+            "      reconcile-retired-manifest-inventory \\\n"
+            '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
+            "    printf '%s\\n' 'retired manifest inventory unchanged'",
+        )
     )
     before_checkpoint, checkpoint_and_after = command.split(
         "checkpoint_signed_changes() {",
@@ -4626,18 +4656,22 @@ def test_targeted_signed_reencode_runs_replacement_target(
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
     )
-    command = next(
-        step["run"]
-        for step in workflow["jobs"]["encode"]["steps"]
-        if step.get("name") == "Encode, review, validate, and apply"
-    ).replace(
-        "/opt/axiom-verification/axiom-encode-apply-signer run",
-        '"$SIGNER_STUB"',
-    ).replace(
-        '    "$workflow_python" "$backfill_helper" \\\n'
-        "      reconcile-retired-manifest-inventory \\\n"
-        '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
-        "    printf '%s\\n' 'retired manifest inventory unchanged'",
+    command = (
+        next(
+            step["run"]
+            for step in workflow["jobs"]["encode"]["steps"]
+            if step.get("name") == "Encode, review, validate, and apply"
+        )
+        .replace(
+            "/opt/axiom-verification/axiom-encode-apply-signer run",
+            '"$SIGNER_STUB"',
+        )
+        .replace(
+            '    "$workflow_python" "$backfill_helper" \\\n'
+            "      reconcile-retired-manifest-inventory \\\n"
+            '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
+            "    printf '%s\\n' 'retired manifest inventory unchanged'",
+        )
     )
     calls_path = tmp_path / "calls.jsonl"
     signer_stub = tmp_path / "signer-stub"

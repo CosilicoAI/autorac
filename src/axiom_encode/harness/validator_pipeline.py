@@ -4380,12 +4380,15 @@ def _iter_normalized_special_numeric_matches(
         text,
         re.IGNORECASE,
     ):
-        whole = _parse_strict_cardinal_number_words(match.group("whole") or "") or 0
+        whole_text = match.group("whole")
+        whole = (
+            0 if whole_text is None else _parse_strict_cardinal_number_words(whole_text)
+        )
         numerator = _parse_strict_cardinal_number_words(match.group("numerator"))
         denominator = _DECIMAL_FRACTION_DENOMINATORS.get(
             match.group("denominator").lower().removesuffix("s")
         )
-        if numerator is None or denominator is None:
+        if whole is None or numerator is None or denominator is None:
             continue
         matches.append((match.span(), (whole + numerator / denominator) / 100))
 

@@ -1538,6 +1538,9 @@ jobs:
                 "$refresh_rulespec_path" "" false \
                 "$refresh_deferred_output_contracts" \
                 "$refresh_required_test_cases"
+              "$workflow_python" "$backfill_helper" \
+                reconcile-retired-manifest-inventory \
+                "$RULESPEC_CHECKOUT" "$refresh_rulespec_path"
               checkpoint_signed_changes \
                 "Refresh signed canonical module for ${refresh_citation}"
               cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \

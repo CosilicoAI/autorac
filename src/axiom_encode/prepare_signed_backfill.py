@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import json
 import math
@@ -12,7 +13,6 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -1613,7 +1613,9 @@ def _retired_manifest_inventory_without_entry(
         text = raw.decode("utf-8")
         module = ast.parse(text, filename=RETIRED_MANIFEST_INVENTORY.as_posix())
     except (UnicodeError, SyntaxError, ValueError) as exc:
-        raise ValueError("retired manifest inventory is not valid UTF-8 Python") from exc
+        raise ValueError(
+            "retired manifest inventory is not valid UTF-8 Python"
+        ) from exc
 
     assignments: list[ast.AnnAssign] = []
     for node in ast.walk(module):
@@ -1628,9 +1630,7 @@ def _retired_manifest_inventory_without_entry(
             and target.id == "KNOWN_RETIRED_SCHEMA_MANIFESTS"
             for target in node.targets
         ):
-            raise ValueError(
-                "retired manifest inventory assignment is not canonical"
-            )
+            raise ValueError("retired manifest inventory assignment is not canonical")
     if len(assignments) != 1 or assignments[0] not in module.body:
         raise ValueError(
             "retired manifest inventory lacks one canonical top-level assignment"
@@ -1641,12 +1641,12 @@ def _retired_manifest_inventory_without_entry(
         not isinstance(value, ast.Call)
         or not isinstance(value.func, ast.Name)
         or value.func.id != "frozenset"
-        or len(value.args) != 1
         or value.keywords
-        or not isinstance(value.args[0], ast.Set)
+        or len(value.args) > 1
+        or (len(value.args) == 1 and not isinstance(value.args[0], ast.Set))
     ):
         raise ValueError("retired manifest inventory set shape is not canonical")
-    elements = value.args[0].elts
+    elements = value.args[0].elts if value.args else []
     if not all(
         isinstance(element, ast.Constant) and isinstance(element.value, str)
         for element in elements
@@ -1680,7 +1680,16 @@ def _retired_manifest_inventory_without_entry(
     line = lines[entry.lineno - 1]
     if line not in {f"    '{manifest}',\n", f'    "{manifest}",\n'}:
         raise ValueError("retired manifest inventory match is not an exact entry")
-    del lines[entry.lineno - 1]
+    if len(elements) == 1:
+        start_line = value.lineno - 1
+        end_line = value.end_lineno - 1
+        lines[start_line : end_line + 1] = [
+            lines[start_line][: value.col_offset]
+            + "frozenset()"
+            + lines[end_line][value.end_col_offset :]
+        ]
+    else:
+        del lines[entry.lineno - 1]
     rewritten = "".join(lines).encode("utf-8")
     if manifest.encode("utf-8") in rewritten:
         raise ValueError("retired manifest inventory still contains the removed path")
@@ -1735,8 +1744,7 @@ def _require_normal_model_apply_target_binding(
     if (
         len(target_records) != 1
         or set(target_records[0]) != {"path", "sha256"}
-        or target_records[0].get("sha256")
-        != hashlib.sha256(target_raw).hexdigest()
+        or target_records[0].get("sha256") != hashlib.sha256(target_raw).hexdigest()
     ):
         raise ValueError(f"{label} does not bind exact target bytes")
 
@@ -1750,9 +1758,7 @@ def _normal_model_apply_manifest_for_target(
     manifest_path = _rulespec_manifest_path(target)
     changed = _changed_paths(repo)
     if manifest_path not in changed:
-        raise ValueError(
-            "targeted replacement lacks its exact changed apply manifest"
-        )
+        raise ValueError("targeted replacement lacks its exact changed apply manifest")
     try:
         payload = _load_unambiguous_json(
             _read_bounded_regular(
@@ -1814,26 +1820,12 @@ def reconcile_retired_manifest_inventory(
     if rewritten is None:
         return None
 
-    root = repo.resolve(strict=True)
-    destination = root.joinpath(*RETIRED_MANIFEST_INVENTORY.parts)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=destination.parent,
-            prefix=f".{destination.name}.",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            temporary.write(rewritten)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        temporary_path.chmod(0o644)
-        os.replace(temporary_path, destination)
-        temporary_path = None
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    _secure_replace_regular_file(
+        repo,
+        RETIRED_MANIFEST_INVENTORY,
+        expected=live_raw,
+        replacement=rewritten,
+    )
     observed = _read_bounded_regular(
         repo,
         RETIRED_MANIFEST_INVENTORY,
@@ -1843,6 +1835,120 @@ def reconcile_retired_manifest_inventory(
     if observed != rewritten:
         raise ValueError("retired manifest inventory changed during reconciliation")
     return manifest_path
+
+
+def _secure_replace_regular_file(
+    repo: Path,
+    relative: PurePosixPath,
+    *,
+    expected: bytes,
+    replacement: bytes,
+) -> None:
+    """Replace one existing 0644 file through symlink-free directory handles."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise RuntimeError("secure reconciliation requires no-follow directory opens")
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow | directory
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | nofollow
+    )
+    descriptors: list[int] = []
+
+    def read_current(parent_fd: int, name: str) -> bytes:
+        descriptor = os.open(name, file_flags, dir_fd=parent_fd)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o644
+                or metadata.st_nlink != 1
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_size > 16 * 1024 * 1024
+            ):
+                raise ValueError("reconciliation target is not one owned 0644 file")
+            chunks: list[bytes] = []
+            remaining = 16 * 1024 * 1024 + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > 16 * 1024 * 1024:
+                raise ValueError("reconciliation target exceeds its size limit")
+            return raw
+        finally:
+            os.close(descriptor)
+
+    temporary_name: str | None = None
+    temporary_fd: int | None = None
+    try:
+        current_fd = os.open(repo.resolve(strict=True), directory_flags)
+        descriptors.append(current_fd)
+        for component in relative.parts[:-1]:
+            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            descriptors.append(current_fd)
+        target_name = relative.name
+        if read_current(current_fd, target_name) != expected:
+            raise ValueError("reconciliation target changed before secure replacement")
+        create_flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | nofollow
+        )
+        for _attempt in range(100):
+            candidate = f".{target_name}.{os.urandom(16).hex()}.tmp"
+            try:
+                temporary_fd = os.open(
+                    candidate,
+                    create_flags,
+                    0o600,
+                    dir_fd=current_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_fd is None or temporary_name is None:
+            raise OSError("could not reserve a reconciliation temporary file")
+        remaining = memoryview(replacement)
+        while remaining:
+            written = os.write(temporary_fd, remaining)
+            if written <= 0:
+                raise OSError("short write during retired inventory reconciliation")
+            remaining = remaining[written:]
+        os.fchmod(temporary_fd, 0o644)
+        os.fsync(temporary_fd)
+        os.close(temporary_fd)
+        temporary_fd = None
+        if read_current(current_fd, target_name) != expected:
+            raise ValueError("reconciliation target changed during secure replacement")
+        os.replace(
+            temporary_name,
+            target_name,
+            src_dir_fd=current_fd,
+            dst_dir_fd=current_fd,
+        )
+        temporary_name = None
+        os.fsync(current_fd)
+        if read_current(current_fd, target_name) != replacement:
+            raise ValueError("secure reconciliation replacement bytes differ")
+    finally:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        if temporary_name is not None and descriptors:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=descriptors[-1])
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def authorize_legacy_index_manifest_shrink(

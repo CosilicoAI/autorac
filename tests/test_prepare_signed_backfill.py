@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,7 @@ from scripts.prepare_signed_backfill import (
     REVIEWED_RULESPEC_PR_BASE_BRANCHES,
     REVIEWED_RULESPEC_REFS,
     _normalize_required_test_cases,
+    _retired_manifest_inventory_without_entry,
     authorize_legacy_index_manifest_shrink,
     authorized_changed_paths,
     branch_name,
@@ -1169,10 +1171,7 @@ def _retired_inventory_replacement_repo(
     target = repo / "us/policies/income_tax/schedule.yaml"
     target.parent.mkdir(parents=True)
     target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
-    manifest = (
-        repo
-        / ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
-    )
+    manifest = repo / ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps({"schema_version": "axiom-encode/applied-rulespec/v1"}) + "\n",
@@ -1247,9 +1246,40 @@ def test_reconcile_retired_manifest_inventory_is_end_to_end_authorized(
 
     stage_authorized_changes(repo)
 
-    assert set(
-        _git(repo, "diff", "--cached", "--name-only").splitlines()
-    ) == {path.as_posix() for path in expected}
+    assert set(_git(repo, "diff", "--cached", "--name-only").splitlines()) == {
+        path.as_posix() for path in expected
+    }
+
+
+def test_reconcile_final_retired_manifest_entry_writes_reusable_empty_set(
+    tmp_path: Path,
+) -> None:
+    manifest_path = ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        inventory_text=(
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+            f"    '{manifest_path}',\n"
+            "})\n"
+        ),
+    )
+    manifest_relative = PurePosixPath(manifest.relative_to(repo).as_posix())
+
+    reconcile_retired_manifest_inventory(
+        repo,
+        target.relative_to(repo).as_posix(),
+    )
+
+    assert inventory.read_text(encoding="utf-8") == (
+        "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset()\n"
+    )
+    assert (
+        _retired_manifest_inventory_without_entry(
+            inventory.read_bytes(),
+            manifest_relative,
+        )
+        is None
+    )
 
 
 def test_reconcile_retired_manifest_inventory_cli_reports_exact_removal(
@@ -1272,8 +1302,7 @@ def test_reconcile_retired_manifest_inventory_cli_reports_exact_removal(
     prepare_signed_backfill_main()
 
     assert capsys.readouterr().out == (
-        "retired manifest inventory removed "
-        f"{manifest.relative_to(repo).as_posix()}\n"
+        f"retired manifest inventory removed {manifest.relative_to(repo).as_posix()}\n"
     )
 
 
@@ -1317,7 +1346,7 @@ def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
         (
             "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset()\n"
             "# .axiom/encoding-manifests/us/policies/income_tax/schedule.json\n",
-            "set shape is not canonical",
+            "present outside an exact entry",
         ),
         (
             "KNOWN_RETIRED_SCHEMA_MANIFESTS = {\n"
@@ -1364,6 +1393,49 @@ def test_reconcile_retired_manifest_inventory_rejects_preexisting_edit(
             repo,
             target.relative_to(repo).as_posix(),
         )
+
+
+def test_reconcile_retired_manifest_inventory_resists_parent_symlink_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_inventory = outside / inventory.name
+    outside_inventory.write_text("outside sentinel\n", encoding="utf-8")
+    original_parent = inventory.parent
+    moved_parent = repo / "tests-pinned"
+    original_replace = os.replace
+
+    def race_parent(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        original_parent.rename(moved_parent)
+        original_parent.symlink_to(outside, target_is_directory=True)
+        original_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(os, "replace", race_parent)
+
+    with pytest.raises(ValueError):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+    assert outside_inventory.read_text(encoding="utf-8") == "outside sentinel\n"
+    assert manifest.relative_to(repo).as_posix() not in (
+        moved_parent / inventory.name
+    ).read_text(encoding="utf-8")
 
 
 def test_stage_rejects_nonexact_retired_manifest_inventory_edit(
