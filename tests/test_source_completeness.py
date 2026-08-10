@@ -14945,6 +14945,152 @@ rules:
     assert _has_issue(result, "numeric-recall", "value 12")
 
 
+@pytest.mark.parametrize(
+    ("source", "expected_rate"),
+    (
+        ("four and seven-tenths percent (4.7%)", 0.047),
+        ("four and four-tenths percent (4.4%)", 0.044),
+    ),
+)
+def test_legacy_decimal_fraction_word_percentage_is_atomic(
+    source: str,
+    expected_rate: float,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(source, profile="legacy")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == pytest.approx(
+        [expected_rate, expected_rate]
+    )
+    assert all(occurrence.has_rate_context for occurrence in inventory)
+    assert not any(occurrence.raw in {"four", "seven"} for occurrence in inventory)
+    assert not numeric_value_is_grounded(0.007, grounding)
+
+
+def test_legacy_standalone_decimal_fraction_percentage_grounds_scaled_rate():
+    source = "The component is seven-tenths percent."
+    grounding = extract_typed_numeric_occurrences_from_text(source, profile="legacy")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == pytest.approx([0.007])
+    assert inventory[0].raw == "seven-tenths percent"
+    assert numeric_value_is_grounded(0.007, grounding)
+
+
+def test_legacy_decimal_fraction_words_without_percent_do_not_ground_rate():
+    grounding = extract_typed_numeric_occurrences_from_text(
+        "The amount is seven-tenths of the base.",
+        profile="legacy",
+    )
+
+    assert not numeric_value_is_grounded(0.007, grounding)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "4 dollars and four percent",
+        "4 dollars and 4%",
+    ),
+)
+def test_legacy_inventory_does_not_dedupe_scaled_value_across_source_spans(
+    source: str,
+):
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="legacy",
+    )
+
+    assert sorted(occurrence.value for occurrence in inventory) == pytest.approx(
+        [0.04, 4.0]
+    )
+
+
+def test_legacy_structural_four_does_not_hide_four_percent_rate():
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        "(4) The rate is four percent (4%).",
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == pytest.approx(
+        [0.04, 0.04]
+    )
+    assert all(occurrence.has_rate_context for occurrence in inventory)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_rate"),
+    (
+        ("three and one-half percent", 0.035),
+        ("four and three-quarters percent", 0.0475),
+    ),
+)
+def test_legacy_existing_mixed_fraction_percentage_behavior_is_preserved(
+    source: str,
+    expected_rate: float,
+):
+    grounding = extract_typed_numeric_occurrences_from_text(source, profile="legacy")
+    inventory = extract_typed_numeric_inventory_occurrences_from_text(
+        source,
+        profile="legacy",
+    )
+
+    assert [occurrence.value for occurrence in inventory] == pytest.approx(
+        [expected_rate]
+    )
+    assert numeric_value_is_grounded(expected_rate, grounding)
+
+
+def test_ms_decimal_rate_scalars_have_no_bare_cardinal_numeric_recall():
+    source = """\
+(1)(a)(ii) The rate shall be four percent (4%).
+(1)(b)(ii)(1) The rate shall be four and seven-tenths percent (4.7%).
+(1)(b)(ii)(2) The rate shall be four and four-tenths percent (4.4%).
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+rules:
+  - name: second_bracket_rate
+    kind: parameter
+    dtype: Rate
+    source: Miss. Code § 27-7-5(1)(a)(ii)
+    versions:
+      - effective_from: '1983-01-01'
+        formula: 0.04
+  - name: excess_income_rate_for_2024
+    kind: parameter
+    dtype: Rate
+    source: Miss. Code § 27-7-5(1)(b)(ii)(1)
+    versions:
+      - effective_from: '2024-01-01'
+        formula: 0.047
+  - name: excess_income_rate_for_2025
+    kind: parameter
+    dtype: Rate
+    source: Miss. Code § 27-7-5(1)(b)(ii)(2)
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 0.044
+"""
+
+    issues = _pipeline_issues(
+        content,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+    )
+
+    assert not any("numeric-recall" in issue for issue in issues), issues
+
+
 RELEASED_RBEG_2021_8_BODY = """\
 Die Regelbedarfsstufen nach der Anlage zu § 28 des Zwölften Buches Sozialgesetzbuch belaufen sich zum 1. Januar 2021
 1. in der Regelbedarfsstufe 1 auf 446 Euro für jede erwachsene Person, die in einer Wohnung nach § 42a Absatz 2 Satz 2 des Zwölften Buches Sozialgesetzbuch lebt und für die nicht Nummer 2 gilt,

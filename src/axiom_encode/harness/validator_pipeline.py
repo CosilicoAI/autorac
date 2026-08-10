@@ -4371,6 +4371,23 @@ def _iter_normalized_special_numeric_matches(
         matches.append((match.span(), (whole + numerator / denominator) / 100))
 
     for match in re.finditer(
+        rf"\b(?:(?P<whole>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})\s+and\s+)?"
+        rf"(?P<numerator>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})[-\s]+"
+        rf"{_DECIMAL_FRACTION_DENOMINATOR_PATTERN}\s+"
+        r"(?:percent|per\s*cent(?:um)?)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        whole = _parse_strict_cardinal_number_words(match.group("whole") or "") or 0
+        numerator = _parse_strict_cardinal_number_words(match.group("numerator"))
+        denominator = _DECIMAL_FRACTION_DENOMINATORS.get(
+            match.group("denominator").lower().removesuffix("s")
+        )
+        if numerator is None or denominator is None:
+            continue
+        matches.append((match.span(), (whole + numerator / denominator) / 100))
+
+    for match in re.finditer(
         rf"\b(?P<numerator>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})[-\s]+"
         rf"{_DECIMAL_FRACTION_DENOMINATOR_PATTERN}\s+of\s+"
         rf"(?P<percent>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})\s+"
@@ -8053,6 +8070,29 @@ def _scalar_recall_numeric_inventory(
     )
 
 
+def _is_same_evidence_scaled_inventory_duplicate(
+    occurrence: NumericOccurrence,
+    occurrences: Sequence[NumericOccurrence],
+) -> bool:
+    """Collapse scaled/unscaled readings only when one source span supplied both."""
+    if math.isclose(
+        occurrence.value,
+        0,
+        rel_tol=0,
+        abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+    ):
+        return True
+    if occurrence.value > 1:
+        return False
+    scaled_value = round(occurrence.value * 100, 9)
+    return any(
+        candidate is not occurrence
+        and candidate.span == occurrence.span
+        and _occurrence_value_matches(candidate.value, scaled_value)
+        for candidate in occurrences
+    )
+
+
 def _complete_typed_year_occurrences(
     collector: _LegacyNumericCollector,
     occurrences: Iterable[NumericOccurrence],
@@ -8831,13 +8871,13 @@ def _tokenize_numeric_occurrences_from_text(
     collector.inventory = list(
         _complete_typed_year_occurrences(collector, collector.inventory)
     )
-    occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
+    inventory_occurrences = tuple(collector.inventory)
     normalized_inventory = _scalar_recall_numeric_inventory(
         occurrence
-        for occurrence in collector.inventory
-        if not (
-            occurrence.value <= 1
-            and round(occurrence.value * 100, 9) in occurrence_counts
+        for occurrence in inventory_occurrences
+        if not _is_same_evidence_scaled_inventory_duplicate(
+            occurrence,
+            inventory_occurrences,
         )
     )
     return _NumericTokenization(
