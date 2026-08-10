@@ -41871,6 +41871,140 @@ rules:
         ]
         assert supplemental == {}
 
+    def test_standalone_contract_failure_cannot_be_rescued_by_apply_overlay(
+        self, tmp_path
+    ):
+        from axiom_encode.harness.evals import (
+            _build_existing_target_oracle_contract_for_file,
+        )
+        from axiom_encode.harness.validator_pipeline import (
+            find_existing_target_oracle_contract_issues,
+        )
+
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-al"
+        relative = Path(
+            "policies/income_tax/2026_section_40_18_5_schedule_before_credits.yaml"
+        )
+        target = policy_repo / relative
+        generated = output_root / "codex-test-model" / relative
+        target.parent.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        mapped_name = "al_pit_2026_section_40_18_5_schedule_before_credits"
+        target.write_text(
+            f"""format: rulespec/v1
+rules:
+  - name: {mapped_name}
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: al_pit_completed_taxable_income
+inputs:
+  - name: al_pit_completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+        )
+        generated.write_text(
+            f"""format: rulespec/v1
+rules:
+  - name: {mapped_name}
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    metadata:
+      private: true
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: al_pit_completed_taxable_income
+  - name: al_pit_2026_section_40_18_5_taxable_income_floor
+    kind: parameter
+    dtype: Money
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+inputs:
+  - name: al_pit_completed_taxable_income
+    entity: TaxUnit
+    dtype: Decimal
+    period: Year
+    unit: USD
+"""
+        )
+        contract_target = (
+            "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits"
+        )
+        standalone_contract = _build_existing_target_oracle_contract_for_file(
+            target,
+            target=contract_target,
+        )
+        assert standalone_contract is not None
+        standalone_issues = find_existing_target_oracle_contract_issues(
+            generated.read_text(),
+            standalone_contract,
+        )
+        assert len(standalone_issues) == 3
+
+        observed_contracts = []
+
+        class ContractPipeline:
+            def __init__(self, **kwargs):
+                self.contract = kwargs.get("existing_target_oracle_contract")
+                observed_contracts.append(self.contract)
+
+            def validate(self, path, *, skip_reviewers):
+                assert skip_reviewers is True
+                issues = find_existing_target_oracle_contract_issues(
+                    Path(path).read_text(),
+                    self.contract,
+                )
+                return SimpleNamespace(
+                    all_passed=not issues,
+                    results={
+                        "ci": SimpleNamespace(
+                            validator_name="ci",
+                            issues=issues,
+                            error=issues[0] if issues else None,
+                        )
+                    },
+                )
+
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="codex-test-model",
+            backend="codex",
+        )
+        with patch("axiom_encode.cli.ValidatorPipeline", ContractPipeline):
+            ok, overlay_issues, supplemental = (
+                _validate_generated_encoding_in_policy_overlay(
+                    result,
+                    output_root=output_root,
+                    policy_repo_path=policy_repo,
+                    axiom_rules_path=tmp_path / "axiom-rules-engine",
+                    local_corpus_release=_bind_test_corpus_release(
+                        policy_repo, tmp_path / "axiom-corpus"
+                    ),
+                )
+            )
+
+        assert ok is False
+        assert supplemental == {}
+        assert observed_contracts == [standalone_contract]
+        assert [issue.partition(": ci: ")[2] for issue in overlay_issues] == (
+            standalone_issues
+        )
+
     def test_apply_overlay_scopes_authenticated_canonical_replacement(self, tmp_path):
         output_root = tmp_path / "out"
         policy_repo = tmp_path / "rulespec-us" / "us"

@@ -7231,6 +7231,28 @@ def _add_attached_amendment_import_retry_guidance(
         compile_result.error = "\n".join(error_parts)
 
 
+def _build_existing_target_oracle_contract_for_file(
+    existing_target: Path,
+    *,
+    target: str,
+    context_files: list[EvalContextFile] | None = None,
+) -> ExistingTargetOracleContract | None:
+    """Build one shared standalone/apply contract from a regular target file."""
+
+    path = Path(existing_target)
+    if path.is_symlink() or not path.is_file():
+        return None
+    return build_existing_target_oracle_contract(
+        path.read_text(),
+        target=target,
+        policyengine_registry=load_policyengine_registry(),
+        invalid_input_names=_context_file_invalid_local_inputs(
+            str(path),
+            context_files=context_files,
+        ),
+    )
+
+
 def _evaluate_artifact_in_scope(
     rulespec_file: Path,
     policy_repo_root: Path,
@@ -7259,13 +7281,11 @@ def _evaluate_artifact_in_scope(
                 f"{Path(policy_repo_root).name}:"
                 f"{relative_target.with_suffix('').as_posix()}"
             )
-            existing_target_oracle_contract = build_existing_target_oracle_contract(
-                existing_target.read_text(),
-                target=target,
-                policyengine_registry=load_policyengine_registry(),
-                invalid_input_names=_context_file_invalid_local_inputs(
-                    str(existing_target)
-                ),
+            existing_target_oracle_contract = (
+                _build_existing_target_oracle_contract_for_file(
+                    existing_target,
+                    target=target,
+                )
             )
     with _rulespec_validation_target(
         rulespec_file,
@@ -10431,6 +10451,10 @@ RuleSpec requirements:
   parent file.
 - Do not create standalone small-number parameters just to restate prose such as "one-time" or "more than one consecutive month" when the number only qualifies a local factual condition. Encode the whole source-stated condition as a fact predicate or derived condition unless the scalar is an independent reusable amount, rate, threshold, cap, or limit.
 - Do not append citation or file suffixes like `_2014_a` to new local rule names; the file path is already the legal ID. Keep names concise and semantic unless a copied public interface must be preserved.
+- For a replacement target, only exact names listed by the Exact-oracle
+  replacement contract may retain the target path's year/legal-source identity.
+  New helper concepts must use concise semantic names instead of repeating that
+  identity as a prefix or suffix.
 - Rule names ending in the current path fragments, such as `_2_C`, `_b_1`,
   `_d_2_C`, or `_2014_a`, are invalid.
 - If an existing copied output name violates the no-citation/path-suffix rule,
@@ -11504,24 +11528,23 @@ def _format_existing_target_contract_guidance(
     """Return explicit public-surface contracts for copied target files."""
     contract_lines: list[str] = []
     required_lines: list[str] = []
+    replacement_name_identities: set[str] = set()
     for item in context_files:
         if item.kind != "existing_target":
             continue
         surfaces = _context_file_executable_surfaces(item.source_path)
-        oracle_contract = build_existing_target_oracle_contract(
-            Path(item.source_path).read_text(),
+        oracle_contract = _build_existing_target_oracle_contract_for_file(
+            Path(item.source_path),
             target=item.import_path,
-            policyengine_registry=load_policyengine_registry(),
-            invalid_input_names=_context_file_invalid_local_inputs(
-                item.source_path,
-                context_files=context_files,
-            ),
+            context_files=context_files,
         )
         required_names = (
             {surface.name for surface in oracle_contract.surfaces}
             if oracle_contract is not None
             else set()
         )
+        if oracle_contract is not None and oracle_contract.replacement_name_identity:
+            replacement_name_identities.add(oracle_contract.replacement_name_identity)
         for name, surface in surfaces.items():
             details = [
                 f"kind={surface.get('kind') or ''}",
@@ -11535,6 +11558,11 @@ def _format_existing_target_contract_guidance(
             indexed_by = surface.get("indexed_by") or ()
             if indexed_by:
                 details.append(f"indexed_by={','.join(indexed_by)}")
+            details.append(
+                "visibility=private"
+                if surface.get("private") is True
+                else "visibility=public"
+            )
             effective_dates = surface.get("effective_dates") or ()
             if effective_dates:
                 details.append(f"effective_from={','.join(effective_dates)}")
@@ -11554,15 +11582,30 @@ def _format_existing_target_contract_guidance(
         return ""
     required_section = ""
     if required_lines:
+        naming_guidance = (
+            "\nNew helper concepts must not repeat target-path year/legal-source "
+            "identity "
+            + ", ".join(
+                f"`{identity}`" for identity in sorted(replacement_name_identities)
+            )
+            + "; use concise semantic helper names. "
+            "The exact mapped legacy surface names listed above are the only "
+            "exception.\n"
+            if replacement_name_identities
+            else ""
+        )
         required_section = """
 Exact-oracle replacement contract:
 These valid existing names are owned by exact oracle registry entries. Preserve
-each executable name and its listed public shape, and preserve each listed valid
-explicit input contract. Repair formulas, proofs, tests, and temporal coverage
-behind those stable surfaces. This exception does not preserve any invalid
-legacy input:
+each executable name and its listed public/private shape, and preserve each
+listed valid explicit input contract. Repair formulas, proofs, tests, and
+temporal coverage behind those stable surfaces. This exception does not
+preserve any invalid legacy input:
 {lines}
-""".format(lines="\n".join(required_lines))
+{naming_guidance}""".format(
+            lines="\n".join(required_lines),
+            naming_guidance=naming_guidance,
+        )
     advisory_section = ""
     if contract_lines:
         advisory_section = """
@@ -13291,6 +13334,10 @@ def _context_file_executable_surfaces(source_path: str) -> dict[str, dict[str, o
             "unit": str(rule.get("unit") or "").strip(),
             "indexed_by": _context_surface_sequence(rule.get("indexed_by")),
             "effective_dates": tuple(effective_dates),
+            "private": (
+                isinstance(rule.get("metadata"), dict)
+                and rule["metadata"].get("private") is True
+            ),
         }
     return surfaces
 

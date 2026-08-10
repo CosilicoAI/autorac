@@ -176,6 +176,7 @@ from .harness.evals import (
     _bind_eval_result_payload,
     _build_eval_suite_execution_identity,
     _build_eval_suite_manifest_identity,
+    _build_existing_target_oracle_contract_for_file,
     _deterministic_tree_identity,
     _eval_artifact_validation_error,
     _eval_result_from_payload,
@@ -53126,6 +53127,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         relative_output,
     )
     existing_output = policy_content_root / relative_output
+    existing_target_oracle_contract = None
     if (
         replacement_overlay_scope
         and legacy_replacement is None
@@ -53141,6 +53143,16 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         )
     if existing_output.exists():
         existing_content = existing_output.read_text()
+        target = _relative_output_to_anchor(
+            relative_output,
+            policy_repo_path=policy_repo_path,
+        )
+        existing_target_oracle_contract = (
+            _build_existing_target_oracle_contract_for_file(
+                existing_output,
+                target=target,
+            )
+        )
         preservation_issues = _source_relation_preservation_issues(
             existing_content,
             generated_content,
@@ -53282,6 +53294,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             rulespec_dependency_roots=staged_dependency_roots,
             source_metadata=source_metadata,
             require_complete_source_unit=require_complete_source_unit,
+            existing_target_oracle_contract=existing_target_oracle_contract,
         )
         dependents = (
             _find_rulespec_dependents(overlay_content_root, relative_output)

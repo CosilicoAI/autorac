@@ -173,6 +173,7 @@ class ExistingTargetSurfaceContract:
     period: str
     unit: str
     indexed_by: tuple[str, ...]
+    private: bool
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ class ExistingTargetOracleContract:
     target: str
     surfaces: tuple[ExistingTargetSurfaceContract, ...]
     inputs: tuple[ExistingTargetInputContract, ...]
+    replacement_name_identity: str
 
 
 @dataclass(frozen=True)
@@ -4371,6 +4373,26 @@ def _iter_normalized_special_numeric_matches(
         matches.append((match.span(), (whole + numerator / denominator) / 100))
 
     for match in re.finditer(
+        rf"\b(?:(?P<whole>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})\s+and\s+)?"
+        rf"(?P<numerator>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})[-\s]+"
+        rf"{_DECIMAL_FRACTION_DENOMINATOR_PATTERN}\s+"
+        r"(?:percent|per\s*cent(?:um)?)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        whole_text = match.group("whole")
+        whole = (
+            0 if whole_text is None else _parse_strict_cardinal_number_words(whole_text)
+        )
+        numerator = _parse_strict_cardinal_number_words(match.group("numerator"))
+        denominator = _DECIMAL_FRACTION_DENOMINATORS.get(
+            match.group("denominator").lower().removesuffix("s")
+        )
+        if whole is None or numerator is None or denominator is None:
+            continue
+        matches.append((match.span(), (whole + numerator / denominator) / 100))
+
+    for match in re.finditer(
         rf"\b(?P<numerator>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})[-\s]+"
         rf"{_DECIMAL_FRACTION_DENOMINATOR_PATTERN}\s+of\s+"
         rf"(?P<percent>{_CARDINAL_NUMBER_WORD_PATTERN.pattern})\s+"
@@ -8053,6 +8075,29 @@ def _scalar_recall_numeric_inventory(
     )
 
 
+def _is_same_evidence_scaled_inventory_duplicate(
+    occurrence: NumericOccurrence,
+    occurrences: Sequence[NumericOccurrence],
+) -> bool:
+    """Collapse scaled/unscaled readings only when one source span supplied both."""
+    if math.isclose(
+        occurrence.value,
+        0,
+        rel_tol=0,
+        abs_tol=NUMERIC_GROUNDING_ABS_TOLERANCE,
+    ):
+        return True
+    if occurrence.value > 1:
+        return False
+    scaled_value = round(occurrence.value * 100, 9)
+    return any(
+        candidate is not occurrence
+        and candidate.span == occurrence.span
+        and _occurrence_value_matches(candidate.value, scaled_value)
+        for candidate in occurrences
+    )
+
+
 def _complete_typed_year_occurrences(
     collector: _LegacyNumericCollector,
     occurrences: Iterable[NumericOccurrence],
@@ -8831,13 +8876,13 @@ def _tokenize_numeric_occurrences_from_text(
     collector.inventory = list(
         _complete_typed_year_occurrences(collector, collector.inventory)
     )
-    occurrence_counts = Counter(occurrence.value for occurrence in collector.inventory)
+    inventory_occurrences = tuple(collector.inventory)
     normalized_inventory = _scalar_recall_numeric_inventory(
         occurrence
-        for occurrence in collector.inventory
-        if not (
-            occurrence.value <= 1
-            and round(occurrence.value * 100, 9) in occurrence_counts
+        for occurrence in inventory_occurrences
+        if not _is_same_evidence_scaled_inventory_duplicate(
+            occurrence,
+            inventory_occurrences,
         )
     )
     return _NumericTokenization(
@@ -12359,6 +12404,7 @@ def _existing_target_surface_contract(
         or not versions
     ):
         return None
+    metadata = rule.get("metadata")
     return ExistingTargetSurfaceContract(
         name=name,
         kind=kind,
@@ -12367,6 +12413,7 @@ def _existing_target_surface_contract(
         period=str(rule.get("period") or "").strip(),
         unit=str(rule.get("unit") or "").strip(),
         indexed_by=_contract_sequence(rule.get("indexed_by")),
+        private=(isinstance(metadata, Mapping) and metadata.get("private") is True),
     )
 
 
@@ -12383,6 +12430,57 @@ def _existing_target_input_contract(
         dtype=dtype,
         period=str(item.get("period") or "").strip(),
         unit=str(item.get("unit") or "").strip(),
+    )
+
+
+_REPLACEMENT_LEGAL_SOURCE_NAME_MARKERS = frozenset(
+    {
+        "article",
+        "chapter",
+        "code",
+        "cfr",
+        "krs",
+        "regulation",
+        "section",
+        "statute",
+        "title",
+        "usc",
+    }
+)
+_REPLACEMENT_LEGAL_SOURCE_FRAGMENT = re.compile(r"[0-9]+[a-z]*", re.IGNORECASE)
+
+
+def _replacement_target_name_identity(target: str) -> str:
+    """Return a narrow year/source identity repeated by legacy target names."""
+
+    target_path = target.partition(":")[2] or target
+    basename = Path(target_path).name
+    tokens = tuple(token for token in basename.lower().split("_") if token)
+    if len(tokens) < 3 or re.fullmatch(r"(?:19|20)\d{2}", tokens[0]) is None:
+        return ""
+    if tokens[1] not in _REPLACEMENT_LEGAL_SOURCE_NAME_MARKERS:
+        return ""
+    identity = list(tokens[:2])
+    for token in tokens[2:]:
+        if _REPLACEMENT_LEGAL_SOURCE_FRAGMENT.fullmatch(token) is None:
+            break
+        identity.append(token)
+    if len(identity) < 3:
+        return ""
+    return "_".join(identity)
+
+
+def _rule_name_contains_token_sequence(name: str, sequence: str) -> bool:
+    """Return whether one snake-case name contains an exact token sequence."""
+
+    name_tokens = tuple(token for token in name.lower().split("_") if token)
+    sequence_tokens = tuple(token for token in sequence.split("_") if token)
+    if not sequence_tokens or len(sequence_tokens) > len(name_tokens):
+        return False
+    width = len(sequence_tokens)
+    return any(
+        name_tokens[index : index + width] == sequence_tokens
+        for index in range(len(name_tokens) - width + 1)
     )
 
 
@@ -12460,7 +12558,12 @@ def build_existing_target_oracle_contract(
         explicit_inputs[name]
         for name in sorted(reachable_identifiers & explicit_inputs.keys() - invalid)
     )
-    return ExistingTargetOracleContract(target, surfaces, inputs)
+    return ExistingTargetOracleContract(
+        target,
+        surfaces,
+        inputs,
+        _replacement_target_name_identity(target),
+    )
 
 
 def find_existing_target_oracle_contract_issues(
@@ -12502,8 +12605,9 @@ def find_existing_target_oracle_contract_issues(
         issues.append(
             "[existing-target-oracle-contract] Replacement must retain valid "
             f"exact-oracle-mapped surface `{contract.target}#{expected.name}` "
-            "with its existing kind/entity/dtype/period/unit/index contract. "
-            "Repair its implementation under that stable public surface."
+            "with its existing kind/entity/dtype/period/unit/index and "
+            "metadata.private/public contract. Repair its implementation under "
+            "that stable surface."
         )
     for expected in contract.inputs:
         actual_item = inputs.get(expected.name)
@@ -12520,6 +12624,32 @@ def find_existing_target_oracle_contract_issues(
             "existing entity/dtype/period/unit contract because an exact-oracle-"
             "mapped surface depends on it. Invalid legacy inputs are not covered."
         )
+    mapped_names = {surface.name for surface in contract.surfaces}
+    if contract.replacement_name_identity:
+        for name, rule in sorted(rules.items()):
+            if name in mapped_names:
+                continue
+            kind = str(rule.get("kind") or "").strip().lower()
+            if kind not in {
+                "parameter",
+                "derived",
+                "derived_relation",
+                "data_relation",
+            }:
+                continue
+            if not _rule_name_contains_token_sequence(
+                name,
+                contract.replacement_name_identity,
+            ):
+                continue
+            issues.append(
+                "[existing-target-naming-contract] New replacement helper "
+                f"`{name}` repeats target-path year/legal-source identity "
+                f"`{contract.replacement_name_identity}`. The file path already "
+                "supplies that identity; use a concise semantic helper name. "
+                "Only exact-oracle-mapped legacy surface names listed by the "
+                "replacement contract may retain this prefix."
+            )
     return issues
 
 

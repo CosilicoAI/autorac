@@ -8,6 +8,8 @@ pinned by tests and guard encoding-benchmark regressions. Restructure freely;
 reword guarded content only with a benchmark run.
 """
 
+__version__ = 1
+
 SOURCE_SCOPE_PROTOCOL = """Source-scope protocol:
 - Match each executable rule's `entity:` to the legal subject stated by the
   supplied source text. If the source states an individual, member, claimant,
@@ -536,6 +538,10 @@ _NAMING_PROTOCOL = """- Do not create standalone small-number parameters just to
 - Do not append citation or file suffixes like `_2014_a` to new local rule
   names; the file path is already the legal ID. Keep names concise and
   semantic unless a copied public interface must be preserved.
+- For a replacement target, only exact names listed by the Exact-oracle
+  replacement contract may retain the target path's year/legal-source identity.
+  New helper concepts must use concise semantic names instead of repeating that
+  identity as a prefix or suffix.
 - Rule names ending in the current path fragments, such as `_2_C`, `_b_1`,
   `_d_2_C`, or `_2014_a`, are invalid.
 - If an existing copied output name violates the no-citation/path-suffix rule,
