@@ -480,6 +480,20 @@ _APPLY_IDENTITY_SOURCES = frozenset(
 APPLIED_ENCODING_ENCODER_BACKENDS = frozenset({"codex", "openai", "claude"})
 # Machine-generator backends accepted by the protected-content guard.
 APPLIED_ENCODING_GENERATED_BACKENDS = APPLIED_ENCODING_ENCODER_BACKENDS
+_GENERATED_RULESPEC_YAML_LOCATION_MAX = 999_999
+_GENERATED_RULESPEC_YAML_RESOURCE_ISSUE = (
+    "[generated-yaml:resource] generated YAML nesting exceeds safe parser capacity"
+)
+_GENERATED_RULESPEC_YAML_IO_ISSUE = (
+    "[generated-yaml:io] unable to read generated RuleSpec"
+)
+_GENERATED_RULESPEC_YAML_DECODE_ISSUE = (
+    "[generated-yaml:decode] generated RuleSpec text is not decodable"
+)
+_GENERATED_RULESPEC_NONRETRYABLE_PREFIXES = (
+    "[generated-yaml:io]",
+    "[generated-yaml:decode]",
+)
 _MODEL_APPLY_MANIFEST_FIELDS = frozenset(
     {
         "schema_version",
@@ -28490,7 +28504,8 @@ def _encode_attempt_was_validator_rejected(
 ) -> bool:
     """Return whether the attempt reached and failed a retryable validator gate."""
     if outcome.get("status") == "apply_blocked_validation":
-        return True
+        detail = str(outcome.get("apply_error") or "")
+        return not detail.startswith(_GENERATED_RULESPEC_NONRETRYABLE_PREFIXES)
     if outcome.get("apply_requested") is True:
         return False
     return str(getattr(result, "error", "") or "") in {
@@ -29034,6 +29049,29 @@ def _run_encode_attempt(
             outcome["final_success"] = False
             print(f"  apply=blocked_generation:{detail}")
         else:
+            yaml_preflight_issue = _generated_rulespec_yaml_nonparser_issue(
+                result,
+                Path(str(getattr(result, "output_file", "") or "")),
+                output_root=args.output,
+            )
+            if yaml_preflight_issue is not None:
+                retry_validation_issues = (yaml_preflight_issue,)
+                outcome["status"] = "apply_blocked_validation"
+                outcome["overlay_validation_success"] = False
+                outcome["apply_error"] = yaml_preflight_issue
+                _replace_overlay_validation_failures(
+                    outcome,
+                    [yaml_preflight_issue],
+                )
+                outcome["final_success"] = False
+                print(f"  apply=blocked_validation:{yaml_preflight_issue}")
+                return _EncodeAttemptExecution(
+                    result=result,
+                    outcome=outcome,
+                    apply_passed=False,
+                    logged_run=logged_run,
+                    validation_issues=retry_validation_issues,
+                )
 
             def _retry_generated_unsafe_formula_output_deferrals() -> list[str]:
                 nonlocal can_apply, apply_issues, supplemental_files
@@ -39798,7 +39836,7 @@ def _quote_unquoted_source_scalars(*, rules_file: Path) -> list[str]:
     try:
         yaml.safe_load(original)
         return []
-    except (yaml.YAMLError, ValueError):
+    except (RecursionError, yaml.YAMLError, ValueError):
         pass
 
     repaired_lines: list[str] = []
@@ -48902,6 +48940,105 @@ def _source_attestation_binding_issues(
     return issues
 
 
+def _generated_rulespec_yaml_parse_issue(error: yaml.YAMLError) -> str:
+    """Render bounded parser metadata without candidate or exception text."""
+
+    problem = getattr(error, "problem", None)
+    guidance = None
+    if type(problem) is str:
+        guidance = {
+            "mapping values are not allowed here": (
+                "unexpected mapping-value ':' delimiter; quote scalar text containing "
+                "': '"
+            ),
+            "could not find expected ':'": "mapping entry is missing a ':' delimiter",
+            "expected the node content, but found '<stream end>'": (
+                "incomplete YAML node at end of document"
+            ),
+            "expected ',' or '}', but got ':'": (
+                "flow mapping is missing an expected ',' or '}' delimiter"
+            ),
+            "expected ',' or '}', but got '['": (
+                "flow mapping is missing an expected ',' or '}' delimiter before "
+                "a '[' sequence"
+            ),
+            "expected ',' or ']', but got ':'": (
+                "flow sequence is missing an expected ',' or ']' delimiter"
+            ),
+        }.get(problem)
+    subtype = "error"
+    if guidance is None:
+        if isinstance(error, yaml.scanner.ScannerError):
+            subtype = "scanner"
+            guidance = "scanner rejected YAML syntax"
+        elif isinstance(error, yaml.parser.ParserError):
+            subtype = "parser"
+            guidance = "parser rejected YAML structure"
+        elif isinstance(error, yaml.composer.ComposerError):
+            subtype = "composer"
+            guidance = "invalid YAML document structure"
+        elif isinstance(error, yaml.constructor.ConstructorError):
+            subtype = "constructor"
+            guidance = "unsupported YAML value or tag"
+        elif isinstance(error, yaml.reader.ReaderError):
+            subtype = "reader"
+            guidance = "invalid YAML character encoding"
+        else:
+            guidance = "invalid YAML syntax"
+    elif isinstance(error, yaml.scanner.ScannerError):
+        subtype = "scanner"
+    elif isinstance(error, yaml.parser.ParserError):
+        subtype = "parser"
+    elif isinstance(error, yaml.composer.ComposerError):
+        subtype = "composer"
+    elif isinstance(error, yaml.constructor.ConstructorError):
+        subtype = "constructor"
+    elif isinstance(error, yaml.reader.ReaderError):
+        subtype = "reader"
+    problem_mark = getattr(error, "problem_mark", None)
+    line = getattr(problem_mark, "line", None)
+    column = getattr(problem_mark, "column", None)
+    location = ""
+    if (
+        type(line) is int
+        and 0 <= line <= _GENERATED_RULESPEC_YAML_LOCATION_MAX
+        and type(column) is int
+        and 0 <= column <= _GENERATED_RULESPEC_YAML_LOCATION_MAX
+    ):
+        location = f" at line {line + 1}, column {column + 1}"
+    return f"[generated-yaml:{subtype}] invalid YAML{location}: {guidance}"
+
+
+def _generated_rulespec_yaml_nonparser_issue(
+    result,
+    output_file: Path,
+    *,
+    output_root: Path,
+) -> str | None:
+    """Preflight non-parser failures before YAML-reading auto-repair helpers."""
+
+    backend = str(getattr(result, "backend", "") or "").strip().lower()
+    if backend not in APPLIED_ENCODING_ENCODER_BACKENDS:
+        return None
+    try:
+        _relative_generated_output_path(result, output_root=output_root)
+    except RuntimeError:
+        # Preserve the normal validation error for a missing or out-of-root path
+        # without opening an untrusted candidate during this early preflight.
+        return None
+    try:
+        yaml.safe_load(output_file.read_text())
+    except yaml.YAMLError:
+        return None
+    except RecursionError:
+        return _GENERATED_RULESPEC_YAML_RESOURCE_ISSUE
+    except OSError:
+        return _GENERATED_RULESPEC_YAML_IO_ISSUE
+    except UnicodeError:
+        return _GENERATED_RULESPEC_YAML_DECODE_ISSUE
+    return None
+
+
 def _stamp_generated_source_attestation_for_apply(result, output_file: Path) -> None:
     """Mechanically bind model output to the resolver's full stored source body."""
 
@@ -48910,10 +49047,14 @@ def _stamp_generated_source_attestation_for_apply(result, output_file: Path) -> 
         return
     try:
         payload = yaml.safe_load(output_file.read_text())
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise RuntimeError(
-            f"Cannot stamp source attestation in generated RuleSpec: {output_file}"
-        ) from exc
+    except yaml.YAMLError as exc:
+        raise RuntimeError(_generated_rulespec_yaml_parse_issue(exc)) from None
+    except RecursionError:
+        raise RuntimeError(_GENERATED_RULESPEC_YAML_RESOURCE_ISSUE) from None
+    except OSError:
+        raise RuntimeError(_GENERATED_RULESPEC_YAML_IO_ISSUE) from None
+    except UnicodeError:
+        raise RuntimeError(_GENERATED_RULESPEC_YAML_DECODE_ISSUE) from None
     if not isinstance(payload, dict):
         return
     module = payload.get("module")
@@ -53072,7 +53213,10 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         _stamp_generated_source_attestation_for_apply(result, output_file)
         source_metadata = _generated_result_source_metadata(result)
     except RuntimeError as exc:
-        return False, [f"{relative_output}: {exc}"], {}
+        detail = str(exc)
+        if detail.startswith(_GENERATED_RULESPEC_NONRETRYABLE_PREFIXES):
+            return False, [detail], {}
+        return False, [f"{relative_output}: {detail}"], {}
 
     generated_content = output_file.read_text()
     output_test = _rulespec_test_path(output_file)

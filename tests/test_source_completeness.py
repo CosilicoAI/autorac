@@ -1406,6 +1406,275 @@ def test_progressive_min_clamp_binds_matching_subtracted_offset():
     )
 
 
+@pytest.mark.parametrize("floor_expression", ("bracket_floor", "5000"))
+def test_progressive_max_clamp_binds_exact_source_lower_boundary(
+    floor_expression: str,
+):
+    source = "Five percent of taxable income in excess of $5000."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        f"rate * max(0, taxable_income - {floor_expression})",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={"rate": 0.05, "bracket_floor": 5000},
+        source_bound_boundary_names={"bracket_floor"},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_progressive_max_clamp_binds_full_formula_witness():
+    source = "Five percent of taxable income in excess of 5000 dollars."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_floor
+    kind: parameter
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Five percent of taxable income in excess of 5000 dollars.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5000
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.05
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Five percent of taxable income in excess of 5000 dollars.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate * max(0, taxable_income - bracket_floor)
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": "income below floor",
+                "period": "2026-01-01",
+                "input": {"taxable_income": 4999},
+                "output": {"tax": 0},
+            },
+            {
+                "name": "income at floor",
+                "period": "2026-01-01",
+                "input": {"taxable_income": 5000},
+                "output": {"tax": 0},
+            },
+            {
+                "name": "income above floor",
+                "period": "2026-01-01",
+                "input": {"taxable_income": 5001},
+                "output": {"tax": 0.05},
+            },
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "formula", "5000")
+
+
+@pytest.mark.parametrize(
+    ("formula", "expected_outputs"),
+    (
+        (
+            "taxable_income + 0 * rate + 0 * max(0, taxable_income - bracket_floor)",
+            (4999, 5000, 5001),
+        ),
+        (
+            "min(0, max(0, taxable_income - bracket_floor))",
+            (0, 0, 0),
+        ),
+        (
+            "rate * max(0, taxable_income - unrelated_floor)",
+            (0, 0, 0.05),
+        ),
+    ),
+)
+def test_progressive_max_clamp_rejects_noncausal_or_unproven_full_witness(
+    formula: str,
+    expected_outputs: tuple[float, float, float],
+):
+    source = "Five percent of taxable income in excess of 5000 dollars."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_floor
+    kind: parameter
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Five percent of taxable income in excess of 5000 dollars.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5000
+  - name: unrelated_floor
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 5000
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.05
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Five percent of taxable income in excess of 5000 dollars.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: {formula}
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": name,
+                "period": "2026-01-01",
+                "input": {"taxable_income": income},
+                "output": {"tax": expected},
+            }
+            for name, income, expected in zip(
+                ("below floor", "at floor", "above floor"),
+                (4999, 5000, 5001),
+                expected_outputs,
+                strict=True,
+            )
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "boundary input", "5000")
+
+
+@pytest.mark.parametrize(
+    "formula",
+    (
+        "rate * max(0, bracket_floor - taxable_income)",
+        "rate * max(0, taxable_income - unrelated_floor)",
+        "rate * max(0, taxable_income - (bracket_floor + 100))",
+        "rate * max(0, taxable_income - 4999)",
+        "rate * max(0, (2 * taxable_income) - bracket_floor)",
+        "rate * max(taxable_income, bracket_floor)",
+    ),
+)
+def test_progressive_max_clamp_rejects_nonexact_lower_boundary_shape(
+    formula: str,
+):
+    source = "Five percent of taxable income in excess of $5000."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        formula,
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.05,
+            "bracket_floor": 5000,
+            "unrelated_floor": 5000,
+        },
+        source_bound_boundary_names={"bracket_floor"},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Taxable income not in excess of $5000 is taxed at five percent.",
+        "Taxable income of at least $5000 is taxed at five percent.",
+    ),
+)
+def test_progressive_max_clamp_rejects_non_strict_lower_source_boundary(
+    source: str,
+):
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "rate * max(0, taxable_income - bracket_floor)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_floor"},
+        boundary=boundary,
+        formula_environment={"rate": 0.05, "bracket_floor": 5000},
+        source_bound_boundary_names={"bracket_floor"},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
 def test_progressive_min_clamp_rejects_unrelated_cap():
     source = "Taxable income not in excess of $500 is taxed at two percent."
     boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
