@@ -19657,6 +19657,15 @@ _PURPOSE_AMOUNT_TOKENS = {
     "wage",
     "wages",
 }
+_PURPOSE_BRANCH_QUALIFIER_GROUPS = (
+    frozenset({"lower", "middle", "upper"}),
+    frozenset({"first", "second", "third", "fourth"}),
+)
+_DEFERRED_OUTPUT_YEAR_PATTERN = re.compile(
+    r"(?:^|_)(?:for|from|beginning|effective)(?:_in|_with|_calendar|_taxable|_year)*_"
+    r"(?P<year>(?:19|20)\d{2})(?:_|$)",
+    flags=re.IGNORECASE,
+)
 
 
 def find_current_purpose_placeholder_issues(content: str) -> list[str]:
@@ -19687,7 +19696,7 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
     if payload is None:
         return []
 
-    deferred_prefix_tokens: list[tuple[str, set[str]]] = []
+    deferred_prefix_tokens: list[tuple[str, set[str], date | None]] = []
     module = payload.get("module")
     deferred_outputs = (
         module.get("deferred_outputs") if isinstance(module, dict) else None
@@ -19713,7 +19722,9 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
         tokens = _purpose_surface_tokens(prefix)
         if len(tokens) < 2:
             continue
-        deferred_prefix_tokens.append((symbol, tokens))
+        deferred_prefix_tokens.append(
+            (symbol, tokens, _deferred_output_effective_start(symbol))
+        )
     if not deferred_prefix_tokens:
         return []
 
@@ -19731,7 +19742,11 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
         rule_tokens = _purpose_surface_tokens(name)
         if not rule_tokens or not rule_tokens.intersection(_PURPOSE_AMOUNT_TOKENS):
             continue
-        for deferred_symbol, deferred_tokens in deferred_prefix_tokens:
+        for deferred_symbol, deferred_tokens, deferred_start in deferred_prefix_tokens:
+            if not _purpose_branch_core_matches(rule_tokens, deferred_tokens):
+                continue
+            if _rule_ends_before_deferred_period(rule, deferred_start=deferred_start):
+                continue
             overlap = rule_tokens & deferred_tokens
             if len(overlap) < 3:
                 continue
@@ -19747,6 +19762,51 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
             )
             break
     return issues
+
+
+def _purpose_branch_core_matches(
+    rule_tokens: set[str], deferred_tokens: set[str]
+) -> bool:
+    """Keep mutually exclusive named branches from colliding on generic tokens."""
+
+    for qualifier_group in _PURPOSE_BRANCH_QUALIFIER_GROUPS:
+        rule_qualifiers = rule_tokens & qualifier_group
+        deferred_qualifiers = deferred_tokens & qualifier_group
+        if (
+            rule_qualifiers
+            and deferred_qualifiers
+            and rule_qualifiers.isdisjoint(deferred_qualifiers)
+        ):
+            return False
+    return True
+
+
+def _deferred_output_effective_start(symbol: str) -> date | None:
+    match = _DEFERRED_OUTPUT_YEAR_PATTERN.search(_normalize_identifier(symbol))
+    if match is None:
+        return None
+    return date(int(match.group("year")), 1, 1)
+
+
+def _rule_ends_before_deferred_period(
+    rule: dict[str, Any], *, deferred_start: date | None
+) -> bool:
+    """Return true only when every executable version ends before a deferral."""
+
+    if deferred_start is None:
+        return False
+    versions = rule.get("versions")
+    if not isinstance(versions, list) or not versions:
+        return False
+    effective_ends: list[date] = []
+    for version in versions:
+        if not isinstance(version, dict) or not version.get("effective_to"):
+            return False
+        try:
+            effective_ends.append(date.fromisoformat(str(version["effective_to"])))
+        except ValueError:
+            return False
+    return bool(effective_ends) and max(effective_ends) < deferred_start
 
 
 def find_imported_deferred_branch_composition_issues(

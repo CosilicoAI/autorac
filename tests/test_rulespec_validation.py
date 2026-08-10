@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1654"')
+        .startswith('__version__ = "0.2.1655"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1654"
+    assert encoder_package["version"] == "0.2.1655"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1654"
+    assert project["project"]["version"] == "0.2.1655"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1654"')
+        .startswith('__version__ = "0.2.1655"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1654"
+    assert encoder_package["version"] == "0.2.1655"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1654"
+    assert project["project"]["version"] == "0.2.1655"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1654"')
+        .startswith('__version__ = "0.2.1655"')
     )
 
 
@@ -37176,6 +37176,69 @@ rules:
 """
 
     assert find_deferred_purpose_specific_limitation_issues(content) == []
+
+
+def test_deferred_future_upper_band_does_not_remove_prior_or_sibling_bands():
+    content = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: Paragraph (7) has an exception for the 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+rules:
+  - name: individual_lower_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        formula: lower_band_income * lower_band_rate
+  - name: individual_middle_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        formula: middle_band_income * middle_band_rate
+  - name: individual_upper_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        effective_to: '2029-12-31'
+        formula: upper_band_income * upper_band_rate
+  - name: individual_income_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        effective_to: '2029-12-31'
+        formula: individual_lower_band_tax + individual_middle_band_tax + individual_upper_band_tax
+"""
+
+    assert find_deferred_purpose_specific_limitation_issues(content) == []
+
+
+def test_deferred_future_upper_band_rejects_upper_band_extending_into_period():
+    content = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: Paragraph (7) has an exception for the 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+rules:
+  - name: individual_upper_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        formula: upper_band_income * upper_band_rate
+"""
+
+    issues = find_deferred_purpose_specific_limitation_issues(content)
+
+    assert len(issues) == 1
+    assert "individual_upper_band_tax" in issues[0]
 
 
 def test_imported_deferred_branch_composition_rejects_generic_output(tmp_path):

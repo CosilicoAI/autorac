@@ -291,7 +291,7 @@ _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD = re.compile(
 _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)"
     r"(?!(?i:st|nd|rd|th)\b)"
-    r"(?=[A-ZÄÖÜ](?!:))"
+    r"(?=[A-ZÄÖÜ](?!:)(?![./-]\d))"
 )
 _EXPLICIT_SENTENCE_MARKER = re.compile(
     r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
@@ -1193,6 +1193,10 @@ _PRECISE_DEFERRAL_DEPENDENCY = re.compile(
     r"\b[a-z]{2}(?:-[a-z0-9-]+)?:"
     r"(?:statutes|regulations|guidance|manuals)/[A-Za-z0-9_./-]+#[A-Za-z0-9_]+"
     r")",
+    flags=re.IGNORECASE,
+)
+_SAME_ACT_SECTION_DEPENDENCY = re.compile(
+    r"\bsection\s+(?P<section>\d+[a-z]?)\s+of\s+(?P<act>this|the)\s+act\b",
     flags=re.IGNORECASE,
 )
 _USC_DEFERRAL_DEPENDENCY = re.compile(
@@ -4714,6 +4718,40 @@ def _deferred_coverage(
             )
             path = tuple(part.lower() for part in display_path)
         if path is None:
+            fragment = output.partition("#")[2]
+            jurisdiction = base_target.partition(":")[0].lower()
+            uses_local_policy_root = output_path.lower().startswith(
+                f"{jurisdiction}:policies/"
+            )
+            output_parts = tuple(
+                part.lower() for part in output_path.rstrip("/").split("/") if part
+            )
+            matching_branches = [
+                branch
+                for branch in branches
+                if branch.path
+                and len(output_parts) >= len(branch.path)
+                and output_parts[-len(branch.path) :] == branch.path
+            ]
+            if fragment and uses_local_policy_root and matching_branches:
+                matching_branch = max(
+                    matching_branches, key=lambda branch: len(branch.path)
+                )
+                display_branch = _deferred_branch_display_path(
+                    matching_branch.path,
+                    corpus_citation_path=corpus_citation_path,
+                    branches=branches,
+                )
+                corrected_output = (
+                    f"{base_target}/{'/'.join(display_branch)}#{fragment}"
+                )
+                issues.append(
+                    "[complete-source-unit:deferral] "
+                    f"`module.deferred_outputs[{index}].output` uses non-source "
+                    f"root `{output_path}` for source branch "
+                    f"(`{'/'.join(display_branch)}`). Use the canonical source "
+                    f"anchor, for example `{corrected_output}`."
+                )
             continue
         reason = str(record.get("reason") or "").strip()
         blocked_by = record.get("blocked_by")
@@ -4779,6 +4817,7 @@ def _deferred_coverage(
                     reason,
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
+                    path=candidate_path,
                 )
                 or _reason_names_source_bound_runtime_gap(
                     reason,
@@ -4845,6 +4884,7 @@ def _deferred_coverage(
                     reason,
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
+                    path=candidate,
                 )
                 for candidate, candidate_scope_text in most_specific_source_scopes.items()
             )
@@ -7058,8 +7098,17 @@ def _reason_dependency_is_source_bound(
     source_scope_text: str,
     *,
     corpus_citation_path: str,
+    path: tuple[str, ...] | None = None,
 ) -> bool:
     """Require one external dependency citation to bind to the deferred source."""
+
+    if _reason_names_missing_same_act_dependency(
+        reason,
+        source_scope_text,
+        corpus_citation_path=corpus_citation_path,
+        path=path,
+    ):
+        return True
 
     louisiana_dependencies = _qualified_louisiana_rs_dependencies(reason)
     if not _MISSING_DEPENDENCY_LANGUAGE.search(reason) and not any(
@@ -7172,6 +7221,67 @@ def _reason_dependency_is_source_bound(
         if normalized_dependency and normalized_dependency in normalized_source:
             return True
     return False
+
+
+def _reason_names_missing_same_act_dependency(
+    reason: str,
+    source_scope_text: str,
+    *,
+    corpus_citation_path: str,
+    path: tuple[str, ...] | None,
+) -> bool:
+    """Recognize an exact missing session-law section named by one source branch."""
+
+    if not path:
+        return False
+    exact_current_branch = _reason_cites_exact_current_statute_branch(
+        reason,
+        corpus_citation_path=corpus_citation_path,
+        path=path,
+        strict_terminal=True,
+    )
+    if not exact_current_branch:
+        current_section = corpus_citation_path.rstrip("/").rsplit("/", 1)[-1]
+        branch_pattern = r"\s*".join(
+            rf"\(\s*{re.escape(normalize_rulespec_path_segment(part))}\s*\)"
+            for part in path
+        )
+        exact_current_branch = bool(
+            current_section
+            and re.search(
+                rf"\bsection\s+{re.escape(current_section)}\s*{branch_pattern}"
+                r"(?!\s*\()(?![A-Za-z0-9_])",
+                reason,
+                flags=re.IGNORECASE,
+            )
+        )
+    if not exact_current_branch:
+        return False
+    reason_sections = {
+        (match.group("section").lower(), match.group("act").lower())
+        for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(reason)
+    }
+    source_sections = {
+        (match.group("section").lower(), match.group("act").lower())
+        for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(source_scope_text)
+        if re.search(
+            r"\b(?:except|unless|subject\s+to)\b",
+            source_scope_text[max(0, match.start() - 80) : match.start()],
+            flags=re.IGNORECASE,
+        )
+    }
+    if not reason_sections.intersection(source_sections):
+        return False
+    return bool(
+        _MISSING_DEPENDENCY_LANGUAGE.search(reason)
+        or re.search(
+            r"\b(?:no\s+executable|not\s+(?:available|encoded|implemented)|"
+            r"(?:is|are)\s+(?:not\s+)?(?:available|missing|unencoded|unsupplied)|"
+            r"(?:is|are)\s+not\s+supplied)\b",
+            reason,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _reason_match_names_missing_dependency(
@@ -12595,6 +12705,7 @@ def _formula_execution_is_source_branch_witness(
         selector_values = _reached_formula_interval_selector_values(
             execution,
             case,
+            rule=rule,
             principal_rules=principal_rules,
             formula_environment=formula_environment,
             dependency_environment=dependency_environment,
@@ -12925,6 +13036,7 @@ def _reached_formula_interval_selector_values(
     execution: _FormulaExecution,
     case: dict[str, Any],
     *,
+    rule: dict[str, Any],
     principal_rules: dict[str, dict[str, Any]],
     formula_environment: dict[str, Any],
     dependency_environment: dict[str, Any],
@@ -12993,7 +13105,7 @@ def _reached_formula_interval_selector_values(
             for dependency_name in reached
             if dependency_name in principal_rules and dependency_name not in visited
         )
-    return tuple(
+    values = tuple(
         value
         for selector in selectors
         for value in _formula_interval_subject_values(
@@ -13003,6 +13115,57 @@ def _reached_formula_interval_selector_values(
             interval=interval,
         )
     )
+    if values:
+        return values
+    clamp_subject_names = _formula_progressive_clamp_subject_names(execution.leaf)
+    if not clamp_subject_names:
+        return ()
+    reached_names = set().union(
+        *(
+            set(_FORMULA_IDENTIFIER.findall(expression))
+            for expression in (
+                execution.leaf,
+                *(selector for step in execution.trace for selector in step.selectors),
+            )
+        ),
+        set(),
+    )
+    return _case_numeric_selector_values(
+        case,
+        _rule_numeric_selector_names(rule) & reached_names & clamp_subject_names,
+        dependency_environment=dependency_environment,
+    )
+
+
+def _formula_progressive_clamp_subject_names(formula_text: str) -> set[str]:
+    """Return identifiers in a ``min(max(...), cap)`` progressive subject."""
+
+    expression = _parse_formula_expression(formula_text)
+    if expression is None:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(expression):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "min"
+            and len(node.args) == 2
+            and not node.keywords
+        ):
+            continue
+        for argument in node.args:
+            if not (
+                isinstance(argument, ast.Call)
+                and isinstance(argument.func, ast.Name)
+                and argument.func.id == "max"
+            ):
+                continue
+            names.update(
+                candidate.id
+                for candidate in ast.walk(argument)
+                if isinstance(candidate, ast.Name) and candidate.id != "max"
+            )
+    return names
 
 
 def _formula_interval_subject_values(
@@ -13296,7 +13459,9 @@ def _formula_execution_matches_source_branch(
         execution.leaf,
         environment=binding_environment,
     )
-    source_topology = _explicit_source_arithmetic_topology(branch.text)
+    source_topology = _explicit_source_arithmetic_topology(
+        authoritative_numeric_recall_text(branch.text)
+    )
     if source_topology is not None and source_topology != _formula_arithmetic_topology(
         operative_leaf,
         environment=binding_environment,
@@ -16675,6 +16840,63 @@ def _formula_text_has_boundary_comparison(
                     )
                 ):
                     return True
+        if source_interval is not None and _formula_expression_has_boundary_clamp(
+            expression,
+            input_names=input_names,
+            boundary_names=boundary_names,
+            boundary=boundary,
+            formula_environment=formula_environment,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        ):
+            return True
+    return False
+
+
+def _formula_expression_has_boundary_clamp(
+    expression: ast.expr,
+    *,
+    input_names: set[str],
+    boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    """Recognize a reached progressive ``min(subject, cap)`` boundary."""
+
+    for node in ast.walk(expression):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "min"
+            and len(node.args) == 2
+            and not node.keywords
+        ):
+            continue
+        for subject, cap in (
+            (node.args[0], node.args[1]),
+            (node.args[1], node.args[0]),
+        ):
+            if not (
+                _formula_node_references_names(subject, input_names)
+                and not _formula_node_references_names(cap, input_names)
+            ):
+                continue
+            if any(
+                _formula_node_boundary_value(
+                    candidate,
+                    boundary_names=boundary_names,
+                    boundary=boundary,
+                    formula_environment=formula_environment,
+                    extract_numeric_occurrences=extract_numeric_occurrences,
+                    numeric_value_is_grounded=numeric_value_is_grounded,
+                )
+                is not None
+                for candidate in ast.walk(cap)
+                if isinstance(candidate, ast.expr)
+            ):
+                return True
     return False
 
 
