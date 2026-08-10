@@ -4003,6 +4003,8 @@ def test_build_eval_prompt_targets_rulespec_yaml(tmp_path):
     assert 'If the source says only "joint return"' in prompt
     assert 'status 4 falls under any "other case" branch' in prompt
     assert "Existing executable output names are public API contracts" not in prompt
+    assert "only exact names listed by the Exact-oracle" in prompt
+    assert "target path's year/legal-source identity" in prompt
     assert "applicable_amount_in_effect_under_section_<section>" not in prompt
     assert "Do not put the date or year value in the fact name" in prompt
     assert "Never use `post_YYYY`, `pre_YYYY`, `after_YYYY`, `before_YYYY`" in prompt
@@ -4466,6 +4468,9 @@ inputs:
     assert "Exact-oracle replacement contract:" in guidance
     assert "#al_pit_2026_section_40_18_5_schedule_before_credits`" in guidance
     assert "#input.al_pit_completed_taxable_income`" in guidance
+    assert "visibility=public" in guidance
+    assert "`2026_section_40_18_5`" in guidance
+    assert "exact mapped legacy surface names listed above are the only" in guidance
     assert "invalid" in guidance
     assert "legacy input" in guidance
 

@@ -2443,6 +2443,116 @@ inputs:
     assert find_existing_target_oracle_contract_issues(existing, contract) == []
 
 
+def test_exact_oracle_replacement_contract_preserves_visibility_and_rejects_path_identity_helpers():
+    target = "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits"
+    mapped_name = "al_pit_2026_section_40_18_5_schedule_before_credits"
+    existing = f"""\
+format: rulespec/v1
+rules:
+  - name: {mapped_name}
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: al_pit_completed_taxable_income
+inputs:
+  - name: al_pit_completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    registry = SimpleNamespace(
+        mappings_by_legal_id={f"{target}#{mapped_name}": object()}
+    )
+    contract = build_existing_target_oracle_contract(
+        existing,
+        target=target,
+        policyengine_registry=registry,
+    )
+
+    assert contract is not None
+    assert contract.replacement_name_identity == "2026_section_40_18_5"
+    assert contract.surfaces[0].private is False
+
+    replacement = existing.replace(
+        "    unit: USD\n    versions:",
+        "    unit: USD\n    metadata:\n      private: true\n    versions:",
+        1,
+    ).replace(
+        "inputs:\n"
+        "  - name: al_pit_completed_taxable_income\n"
+        "    entity: TaxUnit\n"
+        "    dtype: Money\n",
+        "inputs:\n"
+        "  - name: al_pit_completed_taxable_income\n"
+        "    entity: TaxUnit\n"
+        "    dtype: Decimal\n",
+    )
+    replacement = replacement.replace(
+        "inputs:\n",
+        "  - name: al_pit_2026_section_40_18_5_taxable_income_floor\n"
+        "    kind: parameter\n"
+        "    dtype: Money\n"
+        "    unit: USD\n"
+        "    versions:\n"
+        "      - effective_from: '2026-01-01'\n"
+        "        formula: 0\n"
+        "inputs:\n",
+    )
+
+    issues = find_existing_target_oracle_contract_issues(replacement, contract)
+
+    assert len(issues) == 3
+    assert "metadata.private/public contract" in issues[0]
+    assert "#input.al_pit_completed_taxable_income" in issues[1]
+    assert "[existing-target-naming-contract]" in issues[2]
+    assert "`2026_section_40_18_5`" in issues[2]
+    assert mapped_name not in issues[2]
+
+
+def test_exact_oracle_replacement_naming_contract_allows_semantic_helpers():
+    target = "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits"
+    mapped_name = "al_pit_2026_section_40_18_5_schedule_before_credits"
+    existing = f"""\
+format: rulespec/v1
+rules:
+  - name: {mapped_name}
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        formula: taxable_income_floor
+  - name: taxable_income_floor
+    kind: parameter
+    dtype: Money
+    unit: USD
+    metadata:
+      private: true
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0
+"""
+    registry = SimpleNamespace(
+        mappings_by_legal_id={f"{target}#{mapped_name}": object()}
+    )
+    contract = build_existing_target_oracle_contract(
+        existing,
+        target=target,
+        policyengine_registry=registry,
+    )
+
+    assert contract is not None
+    assert find_existing_target_oracle_contract_issues(existing, contract) == []
+
+
 def test_rule_source_metadata_rejects_executable_rules_without_rule_source():
     content = """format: rulespec/v1
 module:
@@ -6106,7 +6216,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1662"')
+        .startswith('__version__ = "0.2.1663"')
     )
 
 
@@ -6338,13 +6448,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1662"
+    assert encoder_package["version"] == "0.2.1663"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1662"
+    assert project["project"]["version"] == "0.2.1663"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1662"')
+        .startswith('__version__ = "0.2.1663"')
     )
 
 
@@ -6606,13 +6716,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1662"
+    assert encoder_package["version"] == "0.2.1663"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1662"
+    assert project["project"]["version"] == "0.2.1663"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1662"')
+        .startswith('__version__ = "0.2.1663"')
     )
 
 
