@@ -403,13 +403,6 @@ _COMPUTATION_LANGUAGE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
-_EXCESS_BOUND_TAX_RATE_LANGUAGE = re.compile(
-    r"\b(?:not\s+)?in\s+excess\s+of\b[^.;]{0,180}"
-    r"\b(?:is|are|shall|must|will)\s+(?:be\s+)?taxed\s+at\b|"
-    r"\b(?:taxed\s+at|rate\s+of)\b[^.;]{0,180}"
-    r"\b(?:not\s+)?in\s+excess\s+of\b",
-    flags=re.IGNORECASE,
-)
 _ENGLISH_NUMBER_WORD = (
     r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
     r"twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
@@ -429,6 +422,25 @@ _EXPLICIT_NUMERIC_PERCENTAGE_OF = re.compile(
 _ENGLISH_CARDINAL_PHRASE = (
     rf"{_ENGLISH_NUMBER_WORD}"
     rf"(?:(?:[-\s]+(?:and[-\s]+)?){_ENGLISH_NUMBER_WORD})*"
+)
+_EXCESS_BOUND_TAX_RATE_VALUE = (
+    rf"(?:\d+(?:[.,]\d+)?\s*(?:%|percent|per\s+cent)|"
+    rf"{_ENGLISH_CARDINAL_PHRASE}\s+(?:percent|per\s+cent))"
+)
+_EXCESS_BOUND_TAX_RATE_PREDICATE = (
+    rf"(?:"
+    rf"(?:is|are|shall|must|will)\s+(?:be\s+)?taxed\s+at\s+"
+    rf"(?:the\s+rate\s+of\s+)?{_EXCESS_BOUND_TAX_RATE_VALUE}|"
+    rf"tax\s+(?:is|shall\s+be|must\s+be|will\s+be)\s+imposed\s+at\s+"
+    rf"(?:a\s+)?rate\s+of\s+{_EXCESS_BOUND_TAX_RATE_VALUE}"
+    rf")"
+)
+_EXCESS_BOUND_TAX_RATE_LANGUAGE = re.compile(
+    rf"\b(?:not\s+)?in\s+excess\s+of\b[^.;]{{0,180}}"
+    rf"\b{_EXCESS_BOUND_TAX_RATE_PREDICATE}(?=\W|$)|"
+    rf"\b{_EXCESS_BOUND_TAX_RATE_PREDICATE}(?=\W|$)[^.;]{{0,180}}"
+    rf"\b(?:not\s+)?in\s+excess\s+of\b",
+    flags=re.IGNORECASE,
 )
 _ENGLISH_ORDINAL_WORD = (
     r"(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
@@ -2640,10 +2652,11 @@ def _flattened_inline_numeric_root_starts(
     Official PDF extraction can place ``(1)`` through ``(N)`` after sentence
     punctuation on one physical line.  Those markers are ambiguous in
     isolation, so restore them only when the first outline candidate is an
-    inline ``(1)`` and later inline candidates prove contiguous ``(2)`` and
-    ``(3)`` successors.  The normal hierarchy pass still rejects any result
-    that does not produce sequential roots, while isolated or paired reference
-    markers remain excluded.
+    inline ``(1)`` and independently qualified inline candidates prove
+    contiguous ``(2)`` and ``(3)`` successors.  A root is qualified when it is
+    not reference-shaped or when a spaced attached first child such as
+    ``(2) (a)`` or sentence-opening provision text proves structure.  The
+    initial ``(1)`` remains provisional until those successors are found.
     """
 
     ordered_matches = tuple(
@@ -2668,18 +2681,38 @@ def _flattened_inline_numeric_root_starts(
         if not labels or re.fullmatch(r"\d+", labels[0]) is None:
             continue
         value = int(labels[0])
-        if value == expected:
+        if value == expected and _flattened_inline_numeric_root_is_proven(
+            source_text,
+            match,
+        ):
             selected_starts.append(match.start("marker"))
             expected += 1
         elif value > expected:
             break
-    selected_start_set = frozenset(selected_starts)
-    has_unqualified_root = any(
-        match.start("marker") in selected_start_set
-        and not _inline_outline_marker_has_reference_context(source_text, match)
-        for match in inline_matches
+    return frozenset(selected_starts) if expected >= 4 else frozenset()
+
+
+def _flattened_inline_numeric_root_is_proven(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Require local structural evidence before restoring one inline root."""
+
+    if not _inline_outline_marker_has_reference_context(source_text, match):
+        return True
+    raw_marker = match.group("marker")
+    labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", raw_marker))
+    prefix = source_text[: match.start("marker")].rstrip()
+    if not prefix or prefix[-1] not in ".!?":
+        return False
+    has_spaced_first_child = (
+        len(labels) >= 2
+        and labels[1].lower() == "a"
+        and re.search(r"\)\s+\(", raw_marker) is not None
     )
-    return selected_start_set if expected >= 4 and has_unqualified_root else frozenset()
+    suffix = source_text[match.end("marker") :].lstrip()
+    begins_provision_text = bool(re.match(r"[A-ZÄÖÜ\"]", suffix))
+    return has_spaced_first_child or begins_provision_text
 
 
 def _inline_outline_marker_has_reference_context(

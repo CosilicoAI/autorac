@@ -2461,6 +2461,16 @@ def test_flattened_numeric_outline_does_not_promote_only_cross_references():
     assert recognize_source_structure(source) == ()
 
 
+def test_flattened_numeric_outline_does_not_mix_root_with_cross_references():
+    source = (
+        "Heading. (1) The first subsection is operative. "
+        "See paragraph: (2) for an imported condition. "
+        "Refer to paragraph: (3) for an imported exception."
+    )
+
+    assert recognize_source_structure(source) == ()
+
+
 def test_parenthesized_cfr_outline_keeps_punctuated_cross_reference_formula_owner():
     source = """\
 (a) First rule.
@@ -3080,6 +3090,41 @@ def test_bare_in_excess_definition_does_not_create_formula_obligation():
     assert not interval.lower_inclusive
     assert interval.upper is not None and interval.upper.value == 3000
     assert interval.upper_inclusive
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "The annual rate of inflation in excess of the forecast is published.",
+        (
+            "The rate of recurring contributions in excess of the actuarial "
+            "target is a reporting metric."
+        ),
+        (
+            "A contribution rate of ten percent in excess of the recurring "
+            "contribution rate is reviewed annually."
+        ),
+    ),
+)
+def test_nontax_rate_in_excess_language_does_not_create_formula_obligation(
+    source: str,
+):
+    assert not source_states_explicit_computation(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "Taxable income not in excess of $500 is taxed at two percent.",
+        "Taxable income not in excess of $500 is taxed at 2%.",
+        (
+            "Tax is imposed at a rate of four percent on taxable income in "
+            "excess of five hundred dollars."
+        ),
+    ),
+)
+def test_tax_rate_in_excess_language_remains_computational(source: str):
+    assert source_states_explicit_computation(source)
 
 
 def test_editorial_slash_date_does_not_create_computation_obligation():
