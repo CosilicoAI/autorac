@@ -13353,29 +13353,39 @@ def _formula_progressive_clamp_subject_names(formula_text: str) -> tuple[str, ..
 def _formula_subject_matches_source(name: str, source_text: str) -> bool:
     """Bind an inferred clamp minuend to the source's named subject."""
 
-    generic_tokens = {"amount", "base", "input", "subject", "total", "value"}
-    name_tokens = tuple(
-        token
-        for token in re.findall(r"[a-z0-9]+", name.lower().replace("_", " "))
-        if token not in generic_tokens
-    )
-    if not name_tokens:
-        return False
-    subject_phrase = r"\s+".join(re.escape(token) for token in name_tokens)
+    generic_tokens = {
+        "amount",
+        "base",
+        "input",
+        "subject",
+        "total",
+        "value",
+    }
+    raw_name_tokens = tuple(re.findall(r"[a-z0-9]+", name.lower().replace("_", " ")))
+    candidate_name_tokens = [raw_name_tokens]
+    if raw_name_tokens and raw_name_tokens[-1] == "boundary":
+        candidate_name_tokens.append(raw_name_tokens[:-1])
     interval_comparison = (
         r"(?:above|at\s+(?:least|most)|below|between|exceeds?|exceeding|from|"
         r"greater\s+than|in\s+excess\s+of|less\s+than|more\s+than|"
         r"no\s+(?:less|more|greater)\s+than|not\s+(?:in\s+excess\s+of|"
         r"less\s+than|more\s+than|over)|over|through|under|up\s+to)"
     )
-    return bool(
-        re.search(
+    for candidate_tokens in candidate_name_tokens:
+        name_tokens = tuple(
+            token for token in candidate_tokens if token not in generic_tokens
+        )
+        if not name_tokens:
+            continue
+        subject_phrase = r"\s+".join(re.escape(token) for token in name_tokens)
+        if re.search(
             rf"\b{subject_phrase}\b\s+"
             rf"(?:(?:is|are|shall\s+be)\s+)?{interval_comparison}\b",
             source_text,
             flags=re.IGNORECASE,
-        )
-    )
+        ):
+            return True
+    return False
 
 
 def _formula_interval_subject_values(
@@ -17935,6 +17945,7 @@ def _formula_bound_from_comparison(
         "exceeding",
         "greater than",
         "higher than",
+        "in excess of",
         "larger than",
         "more than",
         "not equal or be less than",
@@ -18153,6 +18164,7 @@ def _formula_interval_from_text(
             r"less\s+than\s+or\s+equal\s+to|"
             r"equal\s+to\s+or\s+less\s+than|no\s+(?:greater|higher|larger|more)\s+than|"
             r"not\s+(?:greater|higher|larger|more)\s+than|not\s+(?:in\s+excess\s+of|over)|"
+            r"in\s+excess\s+of|"
             r"at\s+or\s+(?:below|under)|"
             r"no\s+less\s+than|not\s+less\s+than|less\s+than|below|"
             r"bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
@@ -18170,16 +18182,47 @@ def _formula_interval_from_text(
     )
     extracted_occurrences = tuple(extract_numeric_occurrences(occurrence_text))
     numeric_occurrences_list: list[NumericOccurrenceLike] = []
+    parenthetical_restatement_spans: list[tuple[int, int]] = []
     # Stable source ordering retains the extractor's preferred interpretation
-    # when one numeric phrase emits multiple overlapping candidates.
+    # when one numeric phrase emits multiple overlapping candidates. A spelled
+    # amount followed by its equal parenthetical currency restatement is also
+    # one legal threshold, not two consecutive interval bounds.
     for occurrence in sorted(extracted_occurrences, key=lambda item: item.start):
         if (
             numeric_occurrences_list
             and occurrence.start < numeric_occurrences_list[-1].end
         ):
             continue
+        if numeric_occurrences_list:
+            previous = numeric_occurrences_list[-1]
+            restatement_gap = text[previous.end : occurrence.start]
+            restatement_suffix = text[occurrence.end :]
+            restatement_close = re.match(r"\s*\)", restatement_suffix)
+            strict_parenthetical_restatement = (
+                re.fullmatch(
+                    r"\s*(?:dollars?|usd|euros?|eur|pounds?|gbp)?\s*"
+                    r"\(\s*(?:\$|€|£|usd|eur|gbp)?\s*",
+                    restatement_gap,
+                    flags=re.IGNORECASE,
+                )
+                and restatement_close is not None
+            )
+            if strict_parenthetical_restatement:
+                if not _numeric_occurrences_are_equivalent(previous, occurrence):
+                    return None
+                parenthetical_restatement_spans.append(
+                    (
+                        previous.end,
+                        occurrence.end + restatement_close.end(),
+                    )
+                )
+                continue
         numeric_occurrences_list.append(occurrence)
     numeric_occurrences = tuple(numeric_occurrences_list)
+    comparison_characters = list(text)
+    for start, end in parenthetical_restatement_spans:
+        comparison_characters[start:end] = " " * (end - start)
+    comparison_text = "".join(comparison_characters)
     keyword = None
     occurrences: tuple[NumericOccurrenceLike, ...] = ()
     for candidate in sorted(
@@ -18273,14 +18316,14 @@ def _formula_interval_from_text(
         if float(occurrences[0].value) > float(occurrences[1].value):
             return None
         return _NumericInterval(occurrences[0], True, occurrences[1], True)
-    first_bound = _formula_first_bound(text, occurrences[0])
+    first_bound = _formula_first_bound(comparison_text, occurrences[0])
     if first_bound is not None:
         first, first_inclusive, first_kind = first_bound
         return _formula_interval_with_conjoined_bound(
             first,
             first_inclusive,
             first_kind,
-            _formula_conjoined_bound(text, occurrences),
+            _formula_conjoined_bound(comparison_text, occurrences),
         )
     clause_start = max(
         lowered.rfind(".", 0, keyword.start()),
@@ -18300,7 +18343,7 @@ def _formula_interval_from_text(
         unparsed_prefix,
         flags=re.IGNORECASE,
     ):
-        second_bound = _formula_conjoined_bound(text, occurrences)
+        second_bound = _formula_conjoined_bound(comparison_text, occurrences)
         if second_bound is None or second_bound[2] == "permissive":
             return None
         second, inclusive, kind = second_bound
@@ -18316,7 +18359,7 @@ def _formula_interval_from_text(
             occurrences[0],
             False,
             "upper",
-            _formula_conjoined_bound(text, occurrences),
+            _formula_conjoined_bound(comparison_text, occurrences),
         )
     if re.match(
         r"(?:bis|up\s+to|höchstens|nicht\s+mehr\s+als|at\s+most|"
@@ -18330,11 +18373,11 @@ def _formula_interval_from_text(
             occurrences[0],
             True,
             "upper",
-            _formula_conjoined_bound(text, occurrences),
+            _formula_conjoined_bound(comparison_text, occurrences),
         )
     if re.match(
         r"(?:(?:von\s+)?mehr\s+als|über|more\s+than|"
-        r"greater\s+than(?!\s+or\s+equal\s+to)|"
+        r"greater\s+than(?!\s+or\s+equal\s+to)|in\s+excess\s+of|"
         r"exceeds?|exceeding|above)\b",
         lowered_range,
     ):
@@ -18342,7 +18385,7 @@ def _formula_interval_from_text(
             occurrences[0],
             False,
             "lower",
-            _formula_conjoined_bound(text, occurrences),
+            _formula_conjoined_bound(comparison_text, occurrences),
         )
     if re.match(
         r"(?:von|ab|from|at\s+least|no\s+less\s+than|"
@@ -18355,7 +18398,7 @@ def _formula_interval_from_text(
             occurrences[0],
             True,
             "lower",
-            _formula_conjoined_bound(text, occurrences),
+            _formula_conjoined_bound(comparison_text, occurrences),
         )
     return None
 

@@ -2798,6 +2798,133 @@ def test_formula_interval_recognizes_conjoined_upper_bound(
 
 
 @pytest.mark.parametrize(
+    ("source", "lower", "upper"),
+    (
+        (
+            "Four percent of taxable income in excess of five hundred dollars "
+            "($500) and not in excess of three thousand dollars ($3,000).",
+            500,
+            3000,
+        ),
+        (
+            "Four percent of taxable income in excess of one thousand dollars "
+            "($1,000) and not in excess of six thousand dollars ($6,000).",
+            1000,
+            6000,
+        ),
+    ),
+)
+def test_formula_interval_recognizes_alabama_in_excess_brackets(
+    source: str,
+    lower: int,
+    upper: int,
+):
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == lower
+    assert not interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == upper
+    assert interval.upper_inclusive
+
+
+def test_formula_subject_matches_established_boundary_helper_suffix():
+    source = (
+        "Four percent of taxable income in excess of five hundred dollars "
+        "and not in excess of three thousand dollars."
+    )
+
+    assert completeness_module._formula_subject_matches_source(
+        "taxable_income_boundary",
+        source,
+    )
+    assert not completeness_module._formula_subject_matches_source(
+        "gross_income_boundary",
+        source,
+    )
+    assert not completeness_module._formula_subject_matches_source(
+        "taxable_credit_boundary",
+        source,
+    )
+
+
+def test_formula_subject_preserves_literal_boundary_subject():
+    assert completeness_module._formula_subject_matches_source(
+        "benefit_boundary",
+        "The benefit boundary above five hundred dollars applies.",
+    )
+
+
+def test_alabama_middle_bracket_execution_accepts_taxable_income_boundary():
+    source = (
+        "Four percent of taxable income in excess of five hundred dollars "
+        "($500) and not in excess of three thousand dollars ($3,000)."
+    )
+    branch = completeness_module.SourceStructureBranch(
+        ("1", "b"),
+        "letter",
+        "Buchstabe (b)",
+        source,
+        0,
+        len(source),
+    )
+    interval = completeness_module._formula_branch_interval(
+        branch,
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    def execution(subject: str):
+        return completeness_module._FormulaExecution(
+            trace=(),
+            leaf=(
+                "nonjoint_second_bracket_rate * min(max(0, "
+                f"{subject} - nonjoint_second_bracket_lower_threshold), "
+                "nonjoint_second_bracket_ceiling - "
+                "nonjoint_second_bracket_lower_threshold)"
+            ),
+            evaluated_value=None,
+            evaluates_to_zero=False,
+            constant_environment={},
+        )
+
+    formula_environment = {
+        "nonjoint_second_bracket_rate": 0.04,
+        "nonjoint_second_bracket_lower_threshold": 500,
+        "nonjoint_second_bracket_ceiling": 3000,
+    }
+    shared_arguments = {
+        "interval": interval,
+        "formula_environment": formula_environment,
+        "extract_numeric_occurrences": (LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR),
+        "numeric_value_is_grounded": numeric_value_is_grounded,
+    }
+
+    assert completeness_module._formula_execution_matches_source_branch(
+        execution("taxable_income_boundary"),
+        branch,
+        **shared_arguments,
+    )
+    assert not completeness_module._formula_execution_matches_source_branch(
+        execution("gross_income_boundary"),
+        branch,
+        **shared_arguments,
+    )
+
+
+def test_formula_interval_does_not_merge_unequal_parenthetical_amount():
+    interval = completeness_module._formula_interval_from_text(
+        "Taxable income in excess of five hundred dollars ($600) and not in "
+        "excess of three thousand dollars ($3,000).",
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is None
+
+
+@pytest.mark.parametrize(
     ("lower", "lower_inclusive", "connector", "upper", "upper_inclusive"),
     (
         ("greater than", False, "but", "not exceeding", True),
