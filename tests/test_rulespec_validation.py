@@ -2332,6 +2332,68 @@ inputs:
     assert find_local_dependency_temporal_coverage_issues(content) == []
 
 
+def test_later_bounded_derived_cannot_outlive_direct_local_dependency():
+    content = """\
+format: rulespec/v1
+rules:
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    versions:
+      - effective_from: '2027-01-01'
+        effective_to: '2027-12-31'
+        formula: rate * income
+inputs:
+  - name: income
+    entity: TaxUnit
+    dtype: Money
+"""
+
+    issues = find_local_dependency_temporal_coverage_issues(content)
+
+    assert len(issues) == 1
+    assert "tax" in issues[0]
+    assert "rate" in issues[0]
+    assert "2027-01-01 through 2027-12-31" in issues[0]
+
+
+def test_implicitly_superseded_derived_version_is_not_treated_as_unbounded():
+    content = """\
+format: rulespec/v1
+rules:
+  - name: rate_2026
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate_2026 * income
+      - effective_from: '2027-01-01'
+        formula: income
+inputs:
+  - name: income
+    entity: TaxUnit
+    dtype: Money
+"""
+
+    assert find_local_dependency_temporal_coverage_issues(content) == []
+
+
 def test_exact_oracle_replacement_contract_preserves_surface_and_valid_input():
     target = "us-al:policies/income_tax/2026_section_40_18_5"
     existing = """\
@@ -2359,9 +2421,7 @@ inputs:
     period: Year
 """
     registry = SimpleNamespace(
-        mappings_by_legal_id={
-            f"{target}#al_pit_2026_schedule_before_credits": object()
-        }
+        mappings_by_legal_id={f"{target}#al_pit_2026_schedule_before_credits": object()}
     )
     contract = build_existing_target_oracle_contract(
         existing,
@@ -13185,6 +13245,20 @@ inputs:
     unit: USD
 """
     test_cases = [
+        {
+            "name": "negative_taxable_income_is_clamped",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2026-01-01",
+                "end": "2026-12-31",
+            },
+            "input": {
+                "us-al:policies/income_tax/example#input.taxable_income": -1,
+            },
+            "output": {
+                "us-al:policies/income_tax/example#first_bracket_tax": 0,
+            },
+        },
         {
             "name": "inside_first_bracket",
             "period": {

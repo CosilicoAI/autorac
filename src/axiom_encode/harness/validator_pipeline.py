@@ -12189,7 +12189,7 @@ def find_versioned_derived_formula_issues(content: str) -> list[str]:
 
 
 def find_local_dependency_temporal_coverage_issues(content: str) -> list[str]:
-    """Flag unbounded formulas whose direct local dependency ends finitely.
+    """Flag formula versions not covered by their direct local dependencies.
 
     This intentionally considers only direct, same-file rule references. It does
     not infer coverage through imports or through arbitrary formula expressions.
@@ -12210,29 +12210,16 @@ def find_local_dependency_temporal_coverage_issues(content: str) -> list[str]:
         if isinstance(rule, dict) and str(rule.get("name") or "").strip()
     }
 
-    finite_last_end: dict[str, str] = {}
+    coverage_by_rule: dict[str, tuple[tuple[date, date | None], ...]] = {}
     for name, rule in rules.items():
-        versions = rule.get("versions")
-        if not isinstance(versions, list) or not versions:
-            continue
-        dated_versions = [
-            version
-            for version in versions
-            if isinstance(version, dict)
-            and re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}",
-                str(version.get("effective_from") or "").strip(),
+        intervals = [
+            (effective_from, effective_to)
+            for _index, _version, effective_from, effective_to in (
+                _rule_effective_intervals(rule)
             )
         ]
-        if not dated_versions:
-            continue
-        last_version = max(
-            dated_versions,
-            key=lambda version: str(version.get("effective_from")),
-        )
-        effective_to = str(last_version.get("effective_to") or "").strip()
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", effective_to):
-            finite_last_end[name] = effective_to
+        if intervals:
+            coverage_by_rule[name] = tuple(sorted(intervals))
 
     issues: list[str] = []
     for name, rule in rules.items():
@@ -12241,30 +12228,111 @@ def find_local_dependency_temporal_coverage_issues(content: str) -> list[str]:
             "derived_relation",
         }:
             continue
-        versions = rule.get("versions")
-        if not isinstance(versions, list):
-            continue
-        for index, version in enumerate(versions):
-            if not isinstance(version, dict) or version.get("effective_to") not in (
-                None,
-                "",
-            ):
-                continue
+        for index, version, effective_from, effective_to in _rule_effective_intervals(
+            rule
+        ):
             formula = version.get("formula")
             if not isinstance(formula, str):
                 continue
             for dependency in sorted(
-                _formula_local_identifiers(formula) & finite_last_end.keys()
+                _formula_local_identifiers(formula) & coverage_by_rule.keys()
             ):
+                if _interval_is_covered(
+                    effective_from,
+                    effective_to,
+                    coverage_by_rule[dependency],
+                ):
+                    continue
+                consumer_end = (
+                    effective_to.isoformat()
+                    if effective_to is not None
+                    else "unbounded"
+                )
                 issues.append(
                     "[temporal-dependency-coverage] Derived rule "
-                    f"`{name}` version {index + 1} is unbounded but directly "
-                    f"references local rule `{dependency}`, whose final version "
-                    f"ends on {finite_last_end[dependency]}. Add a matching "
-                    "`effective_to`, extend the dependency with authoritative "
-                    "coverage, or add a later derived version."
+                    f"`{name}` version {index + 1} covers "
+                    f"{effective_from.isoformat()} through {consumer_end} but "
+                    f"directly references local rule `{dependency}`, whose "
+                    "version intervals "
+                    f"({_format_effective_intervals(coverage_by_rule[dependency])}) "
+                    "do not cover that entire period. Align "
+                    "the derived interval, extend the dependency with "
+                    "authoritative coverage, or add a later derived version."
                 )
     return issues
+
+
+def _rule_effective_intervals(
+    rule: Mapping[str, object],
+) -> tuple[tuple[int, dict[str, Any], date, date | None], ...]:
+    """Return explicit or next-version-bounded inclusive rule intervals."""
+
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return ()
+    dated: list[tuple[int, dict[str, Any], date]] = []
+    for index, version in enumerate(versions):
+        if not isinstance(version, dict):
+            continue
+        try:
+            effective_from = date.fromisoformat(str(version["effective_from"]).strip())
+        except (KeyError, TypeError, ValueError):
+            continue
+        dated.append((index, version, effective_from))
+    dated.sort(key=lambda item: (item[2], item[0]))
+
+    intervals: list[tuple[int, dict[str, Any], date, date | None]] = []
+    for position, (index, version, effective_from) in enumerate(dated):
+        raw_effective_to = version.get("effective_to")
+        if raw_effective_to not in (None, ""):
+            try:
+                effective_to = date.fromisoformat(str(raw_effective_to).strip())
+            except (TypeError, ValueError):
+                continue
+        elif position + 1 < len(dated):
+            next_effective_from = dated[position + 1][2]
+            if next_effective_from <= effective_from:
+                continue
+            effective_to = date.fromordinal(next_effective_from.toordinal() - 1)
+        else:
+            effective_to = None
+        if effective_to is not None and effective_to < effective_from:
+            continue
+        intervals.append((index, version, effective_from, effective_to))
+    return tuple(intervals)
+
+
+def _format_effective_intervals(
+    intervals: Sequence[tuple[date, date | None]],
+) -> str:
+    return ", ".join(
+        f"{effective_from.isoformat()} through "
+        f"{effective_to.isoformat() if effective_to is not None else 'unbounded'}"
+        for effective_from, effective_to in intervals
+    )
+
+
+def _interval_is_covered(
+    required_from: date,
+    required_to: date | None,
+    available: Sequence[tuple[date, date | None]],
+) -> bool:
+    """Return whether inclusive version intervals cover one required interval."""
+
+    cursor = required_from
+    for available_from, available_to in available:
+        if available_to is not None and available_to < cursor:
+            continue
+        if available_from > cursor:
+            return False
+        if available_to is None:
+            return True
+        if required_to is not None and available_to >= required_to:
+            return True
+        if available_to == date.max:
+            return required_to is not None and available_to >= required_to
+        cursor = date.fromordinal(available_to.toordinal() + 1)
+    return False
 
 
 def _contract_sequence(value: object) -> tuple[str, ...]:

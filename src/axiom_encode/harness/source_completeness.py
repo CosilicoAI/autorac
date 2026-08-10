@@ -4381,8 +4381,7 @@ def _analyze_rulespec_payload(
                 declared_input_names={
                     str(item.get("name") or "").strip()
                     for item in payload.get("inputs", [])
-                    if isinstance(item, dict)
-                    and str(item.get("name") or "").strip()
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
                 },
             )
         )
@@ -11560,9 +11559,7 @@ def _rule_formula_identifiers(rule: Mapping[str, Any]) -> set[str]:
     for version in versions:
         formula = version.get("formula") if isinstance(version, dict) else None
         if isinstance(formula, str):
-            identifiers.update(
-                re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
-            )
+            identifiers.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula))
     return identifiers
 
 
@@ -11621,10 +11618,22 @@ def _negative_local_input_clamp_test_issues(
                     continue
                 has_negative = any(
                     input_name in _input_key_names(key)
-                    and any(value < 0 for value in _numeric_test_input_values(raw_value))
+                    and any(
+                        value < 0 for value in _numeric_test_input_values(raw_value)
+                    )
                     for key, raw_value in inputs.items()
                 )
                 if not has_negative:
+                    continue
+                if not _is_iso_calendar_date(_normalized_case_period(case)):
+                    continue
+                selected_formula = _rule_formula_text_for_case(rule, case)
+                if selected_formula is None or not any(
+                    match.group("input") == input_name
+                    for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(
+                        selected_formula
+                    )
+                ):
                     continue
                 outputs = _test_case_output_names(case)
                 if owner in outputs and outputs & principal_outputs:

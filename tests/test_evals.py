@@ -4456,8 +4456,7 @@ inputs:
         source_path=str(target),
         workspace_path="context/existing_target.yaml",
         import_path=(
-            "us-al:policies/income_tax/"
-            "2026_section_40_18_5_schedule_before_credits"
+            "us-al:policies/income_tax/2026_section_40_18_5_schedule_before_credits"
         ),
         kind="existing_target",
     )
@@ -4465,9 +4464,7 @@ inputs:
     guidance = _format_existing_target_contract_guidance([context])
 
     assert "Exact-oracle replacement contract:" in guidance
-    assert (
-        "#al_pit_2026_section_40_18_5_schedule_before_credits`" in guidance
-    )
+    assert "#al_pit_2026_section_40_18_5_schedule_before_credits`" in guidance
     assert "#input.al_pit_completed_taxable_income`" in guidance
     assert "invalid" in guidance
     assert "legacy input" in guidance
@@ -19339,8 +19336,11 @@ rules:
         )
 
         assert "copied current target files as context" in prompt
-        assert "not as backward compatibility contracts" in prompt
-        assert "Source-faithful RuleSpec with canonical legal pointers" in prompt
+        assert "not as general backward compatibility contracts" in prompt
+        assert (
+            "Keep an old output only when it remains the cleanest source-faithful "
+            "RuleSpec surface" in prompt
+        )
         assert "Never preserve, rename, or recreate a legacy local input" in prompt
         assert "source-stated formula executable" in prompt
         assert "defer only that branch" in prompt
