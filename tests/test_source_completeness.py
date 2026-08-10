@@ -2757,6 +2757,65 @@ def test_dotted_subsection_children_match_canonical_source_paths():
     ) == {("a", "2")}
 
 
+def test_cfr_source_reference_alias_matches_canonical_source_paths():
+    assert completeness_module._paths_from_source_reference(
+        "7 CFR 273.4(a)(3)",
+        corpus_citation_path="us/regulation/7/273/4",
+    ) == {("a", "3")}
+
+
+def test_cfr_parent_and_child_source_aliases_cover_complete_structure():
+    source = """\
+(a) A person is eligible only if one of the following applies:
+(1) A U.S. citizen.
+(2) A U.S. non-citizen national.
+(3) An individual who is:
+(i) An American Indian born in Canada; or
+(ii) A member of an Indian tribe.
+(b) Reporting requirements.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us/regulation/7/273/4
+rules:
+  - name: american_indian_status_eligible
+    kind: derived
+    dtype: Judgment
+    source: 7 CFR 273.4(a)(3)
+    versions:
+      - effective_from: '2025-10-01'
+        formula: canada_born_status_eligible or tribe_status_eligible
+  - name: canada_born_status_eligible
+    kind: derived
+    dtype: Judgment
+    source: 7 CFR 273.4(a)(3)(i)
+    versions:
+      - effective_from: '2025-10-01'
+        formula: member_is_american_indian_born_in_canada
+  - name: tribe_status_eligible
+    kind: derived
+    dtype: Judgment
+    source: 7 CFR 273.4(a)(3)(ii)
+    versions:
+      - effective_from: '2025-10-01'
+        formula: member_is_member_of_indian_tribe
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us/regulation/7/273/4",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert not _has_issue(result, "Source branch (3)", "neither encoded")
+    assert not _has_issue(result, "Source branch (i)", "neither encoded")
+    assert not _has_issue(result, "Source branch (ii)", "neither encoded")
+
+
 def test_dotted_subsections_preserve_parenthesized_preamble():
     source = "(9) Preamble rule.\nA. First.\n(1) Nested.\nB. Second."
 
