@@ -15295,6 +15295,123 @@ rules:
     assert _has_issue(result, "(1)", "source branch")
 
 
+def test_authoritative_root_formula_proof_binds_before_later_source_branch():
+    formula_clause = (
+        "The tax shall be determined by applying the rates in subsection (2) "
+        "to net income and subtracting allowable tax credits."
+    )
+    source = f"{formula_clause}\n(2) A later source branch applies."
+    content = f"""\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+  - name: annual_tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-ky/statute/krs/141.020/document-1
+              excerpt: >-
+                {formula_clause}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: schedule_before_credits - allowable_credits
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-ky/statute/krs/141.020/document-1",
+        test_cases=[],
+    )
+
+    assert recognize_source_structure(source)
+    assert not _has_issue(result, "formula-output")
+
+
+def test_unmatched_formula_proof_cannot_gain_root_coverage_from_later_branch():
+    source = (
+        "The tax shall be determined by multiplying net income by the rate. "
+        "\n(2) A later source branch applies."
+    )
+    payload = yaml.safe_load(
+        """\
+format: rulespec/v1
+rules:
+  - name: annual_tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-ky/statute/krs/141.020/document-1
+              excerpt: The tax shall be determined by dividing income by a fabricated amount.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: net_income * rate
+"""
+    )
+    branches = recognize_source_structure(source)
+
+    _, principal_paths, _, principal_rule_paths = completeness_module._rule_coverage(
+        payload,
+        source_text=source,
+        branches=branches,
+        corpus_citation_path="us-ky/statute/krs/141.020/document-1",
+    )
+
+    assert branches
+    assert () not in principal_paths
+    assert principal_rule_paths["annual_tax"] == set()
+
+
+def test_formula_proof_inside_branch_keeps_most_specific_coverage():
+    formula_clause = (
+        "The tax shall be determined by multiplying net income by the rate."
+    )
+    source = f"(2) {formula_clause}"
+    payload = yaml.safe_load(
+        f"""\
+format: rulespec/v1
+rules:
+  - name: annual_tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-ky/statute/krs/141.020/document-1
+              excerpt: {formula_clause}
+    versions:
+      - effective_from: '2026-01-01'
+        formula: net_income * rate
+"""
+    )
+    branches = recognize_source_structure(source)
+
+    _, principal_paths, _, principal_rule_paths = completeness_module._rule_coverage(
+        payload,
+        source_text=source,
+        branches=branches,
+        corpus_citation_path="us-ky/statute/krs/141.020/document-1",
+    )
+
+    assert principal_paths == {("2",)}
+    assert principal_rule_paths["annual_tax"] == {("2",)}
+
+
 def test_unstructured_formula_requires_principal_output_bound_to_source_unit():
     source = "Die Steuer ergibt sich aus dem Einkommen geteilt durch den Grundwert."
     content = """\
