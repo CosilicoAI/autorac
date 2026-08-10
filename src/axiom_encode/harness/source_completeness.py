@@ -4911,29 +4911,34 @@ def _paths_from_source_reference(
     ):
         return set()
     paths: set[tuple[str, ...]] = set()
-    escaped_path = re.escape(corpus_citation_path.rstrip("/"))
-    for match in re.finditer(
-        rf"(?<![A-Za-z0-9_]){escaped_path}"
-        r"(?P<suffix>(?:/[A-Za-z0-9-]+)+|(?:\([A-Za-z0-9-]+\))+)",
-        value,
-        flags=re.IGNORECASE,
-    ):
-        suffix = match.group("suffix")
-        components = (
-            [part for part in suffix.split("/") if part]
-            if suffix.startswith("/")
-            else re.findall(r"\(([A-Za-z0-9-]+)\)", suffix)
-        )
-        if components:
-            base_components = tuple(component.lower() for component in components)
-            trailing = _reference_qualifier_tail(
-                value,
-                start=match.end(),
-                next_reference=corpus_citation_path,
+    reference_aliases = _authoritative_source_unit_aliases(corpus_citation_path)
+    for reference in reference_aliases:
+        escaped_reference = re.escape(reference)
+        for match in re.finditer(
+            rf"(?<![A-Za-z0-9_]){escaped_reference}"
+            r"(?P<suffix>(?:/[A-Za-z0-9-]+)+|(?:\([A-Za-z0-9-]+\))+)",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            suffix = match.group("suffix")
+            components = (
+                [part for part in suffix.split("/") if part]
+                if suffix.startswith("/")
+                else re.findall(r"\(([A-Za-z0-9-]+)\)", suffix)
             )
-            paths.add(
-                (*base_components, *_keyword_path_components(trailing, base_components))
-            )
+            if components:
+                base_components = tuple(component.lower() for component in components)
+                trailing = _reference_qualifier_tail(
+                    value,
+                    start=match.end(),
+                    next_reference=reference,
+                )
+                paths.add(
+                    (
+                        *base_components,
+                        *_keyword_path_components(trailing, base_components),
+                    )
+                )
 
     keyword_components = _keyword_path_components(value)
     if keyword_components:
@@ -5005,10 +5010,7 @@ def _source_reference_targets_authoritative_unit(
 ) -> bool:
     """Require branch claims to identify this unit, not merely a branch label."""
 
-    candidates = {
-        corpus_citation_path.rstrip("/"),
-        _rulespec_target_base(corpus_citation_path),
-    }
+    candidates = _authoritative_source_unit_aliases(corpus_citation_path)
     if any(
         re.search(
             rf"(?<![A-Za-z0-9_]){re.escape(candidate)}(?![A-Za-z0-9_.-])",
@@ -5028,6 +5030,24 @@ def _source_reference_targets_authoritative_unit(
             flags=re.IGNORECASE,
         )
     )
+
+
+def _authoritative_source_unit_aliases(
+    corpus_citation_path: str,
+) -> tuple[str, ...]:
+    """Return canonical and conventional citations for one source unit."""
+
+    canonical = corpus_citation_path.rstrip("/")
+    aliases = [canonical, _rulespec_target_base(canonical)]
+    parts = canonical.split("/")
+    if (
+        len(parts) == 5
+        and parts[:2] == ["us", "regulation"]
+        and all(re.fullmatch(r"[A-Za-z0-9-]+", part) for part in parts[2:])
+    ):
+        title, part, section = parts[2:]
+        aliases.append(f"{title} CFR {part}.{section}")
+    return tuple(dict.fromkeys(alias for alias in aliases if alias))
 
 
 def _deferred_coverage(
