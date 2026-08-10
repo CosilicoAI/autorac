@@ -398,9 +398,16 @@ _COMPUTATION_LANGUAGE = re.compile(
     r"twice|"
     r"amount\s+of\s+(?:the\s+)?excess|"
     r"\d+(?:[.,]\d+)?\s+times\b|"
-    r"percentage\s+of|in\s+excess\s+of|"
+    r"percentage\s+of|"
     r"equals?[^.;]{0,100}\b(?:plus|minus|times)\b"
     r")\b",
+    flags=re.IGNORECASE,
+)
+_EXCESS_BOUND_TAX_RATE_LANGUAGE = re.compile(
+    r"\b(?:not\s+)?in\s+excess\s+of\b[^.;]{0,180}"
+    r"\b(?:is|are|shall|must|will)\s+(?:be\s+)?taxed\s+at\b|"
+    r"\b(?:taxed\s+at|rate\s+of)\b[^.;]{0,180}"
+    r"\b(?:not\s+)?in\s+excess\s+of\b",
     flags=re.IGNORECASE,
 )
 _ENGLISH_NUMBER_WORD = (
@@ -2529,10 +2536,21 @@ def _qualified_parenthesized_legal_outline_markers(
     """
 
     line_matches = tuple(_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text))
+    all_inline_matches = tuple(
+        _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text)
+    )
+    flattened_root_starts = _flattened_inline_numeric_root_starts(
+        source_text,
+        line_matches,
+        all_inline_matches,
+    )
     inline_matches = tuple(
         match
-        for match in _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(source_text)
-        if not _inline_outline_marker_has_reference_context(source_text, match)
+        for match in all_inline_matches
+        if (
+            match.start("marker") in flattened_root_starts
+            or not _inline_outline_marker_has_reference_context(source_text, match)
+        )
     )
     inline_marker_starts = {match.start("marker") for match in inline_matches}
     matches = tuple(
@@ -2570,7 +2588,12 @@ def _qualified_parenthesized_legal_outline_markers(
                 attached_parent_level=attached_parent_level,
                 outline_levels=outline_levels,
             )
-            if marker_start in inline_marker_starts and label_index == 0 and level == 0:
+            if (
+                marker_start in inline_marker_starts
+                and marker_start not in flattened_root_starts
+                and label_index == 0
+                and level == 0
+            ):
                 break
             active = [entry for entry in active if entry[0] < level]
             normalized = raw_label.lower()
@@ -2605,6 +2628,58 @@ def _qualified_parenthesized_legal_outline_markers(
         for first, second in itertools.pairwise(root_labels)
     )
     return tuple(markers) if has_sequential_roots else ()
+
+
+def _flattened_inline_numeric_root_starts(
+    source_text: str,
+    line_matches: Sequence[re.Match[str]],
+    inline_matches: Sequence[re.Match[str]],
+) -> frozenset[int]:
+    """Recover a proven numeric root sequence from flattened statutory prose.
+
+    Official PDF extraction can place ``(1)`` through ``(N)`` after sentence
+    punctuation on one physical line.  Those markers are ambiguous in
+    isolation, so restore them only when the first outline candidate is an
+    inline ``(1)`` and later inline candidates prove contiguous ``(2)`` and
+    ``(3)`` successors.  The normal hierarchy pass still rejects any result
+    that does not produce sequential roots, while isolated or paired reference
+    markers remain excluded.
+    """
+
+    ordered_matches = tuple(
+        heapq.merge(
+            line_matches,
+            inline_matches,
+            key=lambda match: match.start("marker"),
+        )
+    )
+    if not ordered_matches or ordered_matches[0] not in inline_matches:
+        return frozenset()
+    first_labels = tuple(
+        re.findall(r"\(([A-Za-z0-9]+)\)", ordered_matches[0].group("marker"))
+    )
+    if not first_labels or first_labels[0] != "1":
+        return frozenset()
+
+    expected = 1
+    selected_starts: list[int] = []
+    for match in inline_matches:
+        labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker")))
+        if not labels or re.fullmatch(r"\d+", labels[0]) is None:
+            continue
+        value = int(labels[0])
+        if value == expected:
+            selected_starts.append(match.start("marker"))
+            expected += 1
+        elif value > expected:
+            break
+    selected_start_set = frozenset(selected_starts)
+    has_unqualified_root = any(
+        match.start("marker") in selected_start_set
+        and not _inline_outline_marker_has_reference_context(source_text, match)
+        for match in inline_matches
+    )
+    return selected_start_set if expected >= 4 and has_unqualified_root else frozenset()
 
 
 def _inline_outline_marker_has_reference_context(
@@ -3872,6 +3947,7 @@ def source_states_explicit_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _EXCESS_BOUND_TAX_RATE_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
         or _english_fraction_of_is_computational(computation_text)
@@ -3892,6 +3968,7 @@ def _source_states_nonrounding_computation(source_text: str) -> bool:
     return bool(
         _has_substantive_arithmetic_expression(computation_text)
         or _COMPUTATION_LANGUAGE.search(computation_text)
+        or _EXCESS_BOUND_TAX_RATE_LANGUAGE.search(computation_text)
         or _ENGLISH_WORDED_PERCENTAGE_OF.search(computation_text)
         or _EXPLICIT_NUMERIC_PERCENTAGE_OF.search(computation_text)
         or _english_fraction_of_is_computational(computation_text)
@@ -4028,9 +4105,15 @@ def _without_stated_conversion_results(source_text: str) -> str:
 def _has_substantive_arithmetic_expression(source_text: str) -> bool:
     """Ignore slash-separated year spans while recognizing actual arithmetic."""
 
-    if _WORDED_ARITHMETIC_EXPRESSION.search(source_text):
+    arithmetic_text = list(source_text)
+    for date_match in _STATED_CONVERSION_DATE.finditer(source_text):
+        arithmetic_text[date_match.start() : date_match.end()] = " " * (
+            date_match.end() - date_match.start()
+        )
+    masked_source_text = "".join(arithmetic_text)
+    if _WORDED_ARITHMETIC_EXPRESSION.search(masked_source_text):
         return True
-    for match in _ARITHMETIC_EXPRESSION.finditer(source_text):
+    for match in _ARITHMETIC_EXPRESSION.finditer(masked_source_text):
         expression = re.sub(r"\s+", "", match.group(0))
         if re.fullmatch(r"(?:19|20)\d{2}/(?:19|20)\d{2}", expression):
             continue
@@ -4177,6 +4260,19 @@ def _analyze_rulespec_payload(
     source_has_computation = source_states_explicit_computation(source_text)
     if source_has_computation:
         if formula_branches:
+            missing_formula_branches = tuple(
+                branch
+                for branch in formula_branches
+                if not principal_formula_clause_rules[branch]
+            )
+            missing_formula_branches_by_path: dict[
+                tuple[str, ...], list[SourceStructureBranch]
+            ] = {}
+            for missing_branch in missing_formula_branches:
+                missing_formula_branches_by_path.setdefault(
+                    missing_branch.path,
+                    [],
+                ).append(missing_branch)
             for branch in formula_branches:
                 if principal_formula_clause_rules[branch]:
                     continue
@@ -4196,6 +4292,9 @@ def _analyze_rulespec_payload(
                                 principal_rule_paths,
                             )
                         ),
+                        same_owner_missing=missing_formula_branches_by_path[
+                            branch.path
+                        ],
                     )
                 )
         elif not all_formula_branches and not _path_covered(
@@ -12207,10 +12306,14 @@ def _source_clause_spans(
         r";|[.!?](?=(?:[ \t]+[A-ZÄÖÜ(]|\s*$))",
         flags=re.MULTILINE,
     )
+    inline_operand_list_spans = _formula_inline_operand_list_spans(source_text)
     boundary_matches = (
         match
         for match in boundary.finditer(source_text)
         if not _source_clause_boundary_splits_state_code_citation(source_text, match)
+        and not any(
+            start < match.end() < end for start, end in inline_operand_list_spans
+        )
         and not (
             match.group() == ";"
             and _FORMULA_DIRECT_FOLLOWING_OPERANDS.search(
@@ -12237,6 +12340,41 @@ def _source_clause_spans(
                 start + right_trimmed,
                 raw[left_trimmed:right_trimmed],
             )
+
+
+def _formula_inline_operand_list_spans(source_text: str) -> tuple[tuple[int, int], ...]:
+    """Keep flattened colon-introduced formula operands in one source clause."""
+
+    introduction = re.compile(
+        r"\b(?:calculated|computed|determined)\s+(?:by|through)\s+"
+        r"(?:adding|subtracting|dividing|multiplying|reducing|deducting|"
+        r"increasing|decreasing)\b[^.;:\n]{0,360}:\s*a\.",
+        flags=re.IGNORECASE,
+    )
+    next_numeric_sibling = re.compile(
+        r";(?=\s*(?:and\s+)?\d+\.\s+[A-Z\"])",
+        flags=re.IGNORECASE,
+    )
+    later_letter_operand = re.compile(r";\s*(?:and\s+)?b\.", re.IGNORECASE)
+    spans: list[tuple[int, int]] = []
+    for match in introduction.finditer(source_text):
+        sibling = next_numeric_sibling.search(
+            source_text,
+            match.end(),
+            min(len(source_text), match.end() + 2400),
+        )
+        if (
+            sibling is None
+            or later_letter_operand.search(
+                source_text,
+                match.end(),
+                sibling.start(),
+            )
+            is None
+        ):
+            continue
+        spans.append((match.start(), sibling.end()))
+    return tuple(spans)
 
 
 def _source_clause_boundary_splits_state_code_citation(
@@ -22376,6 +22514,7 @@ def _formula_output_binding_feedback(
     *,
     corpus_citation_path: str,
     has_path_covering_principal: bool,
+    same_owner_missing: Sequence[SourceStructureBranch] = (),
 ) -> str:
     """Give a repair model the exact proof binding missing from a formula."""
 
@@ -22399,6 +22538,7 @@ def _formula_output_binding_feedback(
         if source_excerpt_was_truncated
         else ""
     )
+    same_owner_detail = _same_owner_formula_clause_feedback(same_owner_missing)
     return (
         " The formula-clause number is an internal punctuation-span ordinal, "
         "not a statutory paragraph number. "
@@ -22411,6 +22551,31 @@ def _formula_output_binding_feedback(
         "rule, a citation-only proof atom, a non-formula proof path, or a shorter "
         "excerpt that does not itself state the computation cannot bind a "
         f"principal output to this clause.{bounded_preview_warning}"
+        f"{same_owner_detail}"
+    )
+
+
+def _same_owner_formula_clause_feedback(
+    branches: Sequence[SourceStructureBranch],
+    *,
+    limit: int = 32,
+) -> str:
+    """Give retries the complete bounded missing set for one structural owner."""
+
+    ordered = sorted({(branch.start, branch.end, branch.label) for branch in branches})
+    if len(ordered) <= 1:
+        return ""
+    rendered = [
+        f"`{label}` at characters {start}:{end}"
+        for start, end, label in ordered[:limit]
+    ]
+    if len(ordered) > limit:
+        rendered.append(f"... ({len(ordered) - limit} additional clauses omitted)")
+    return (
+        f" Same structural owner has {len(ordered)} missing formula clauses; "
+        "repair or precisely defer the complete set in this attempt: "
+        + "; ".join(rendered)
+        + "."
     )
 
 

@@ -2244,6 +2244,65 @@ def test_numeric_root_parenthesized_outline_preserves_spaced_nested_markers():
     assert by_path[("4", "a")].end == by_path[("4", "b")].start
 
 
+def test_flattened_kentucky_numeric_outline_recovers_formula_owners():
+    source = (
+        "141.020 Levy of income tax -- Election under KRS 141.023. "
+        "(1) An annual tax applies. The tax shall be determined by applying "
+        "the rates in subsection (2) of this section. "
+        "(2) (a) As used in this subsection: 1. Balance means reserves; "
+        "2. Any lump-sum amount in excess of recurring contributions means "
+        "a payment; 3. General fund condition means receipts minus "
+        "appropriations; 4. IIT equivalent means the amount calculated by "
+        "dividing total receipts by: a. The sum of: i. The first rate; and "
+        "ii. The second rate; and b. Dividing the sum obtained under "
+        "subdivision a. of this subparagraph by two (2); and 5. The tax rate "
+        "reduction equals the current rate minus one-half percent. "
+        "(b) The tax rate applies. "
+        "(3) (a) Credits are deducted. (b) A resident credit applies. "
+        "(c) A nonresident credit applies. "
+        "(4) Nonresident income is taxed. "
+        "(5) An individual may elect under this section. "
+        "(6) A part-year resident is taxed."
+    )
+
+    branches = recognize_source_structure(source)
+
+    assert [branch.path for branch in branches] == [
+        ("1",),
+        ("2",),
+        ("2", "a"),
+        ("2", "b"),
+        ("3",),
+        ("3", "a"),
+        ("3", "b"),
+        ("3", "c"),
+        ("4",),
+        ("5",),
+        ("6",),
+    ]
+    formula_branches = completeness_module._source_formula_branches(
+        source,
+        branches=branches,
+        active_branches=branches,
+        deferred_paths=set(),
+    )
+    iit_equivalent = next(
+        branch for branch in formula_branches if "IIT equivalent" in branch.text
+    )
+    assert iit_equivalent.path == ("2", "a")
+    assert "ii. The second rate" in iit_equivalent.text
+    assert "b. Dividing the sum" in iit_equivalent.text
+    assert any(
+        branch.path == ("2", "a") and "receipts minus appropriations" in branch.text
+        for branch in formula_branches
+    )
+    assert any(
+        branch.path == ("2", "a") and "current rate minus" in branch.text
+        for branch in formula_branches
+    )
+    assert not any("lump-sum amount" in branch.text for branch in formula_branches)
+
+
 def test_parenthesized_cfr_outline_keeps_suffixed_numeric_siblings():
     source = """\
 (a) Status requirements.
@@ -2339,6 +2398,16 @@ def test_parenthesized_cfr_outline_does_not_promote_inline_cross_references():
         ("a", "1"),
         ("b",),
     ]
+
+
+def test_flattened_numeric_outline_does_not_promote_only_cross_references():
+    source = (
+        "Rule. See paragraph: (1) controls the first case. "
+        "Compare paragraph: (2) for the second case. "
+        "Refer to paragraph: (3) for the final case."
+    )
+
+    assert recognize_source_structure(source) == ()
 
 
 def test_parenthesized_cfr_outline_keeps_punctuated_cross_reference_formula_owner():
@@ -2937,6 +3006,38 @@ def test_formula_interval_recognizes_alabama_in_excess_brackets(
     assert not interval.lower_inclusive
     assert interval.upper is not None and interval.upper.value == upper
     assert interval.upper_inclusive
+
+
+def test_bare_in_excess_definition_does_not_create_formula_obligation():
+    definition = (
+        "Any lump-sum amount in excess of recurring contributions means a "
+        "payment made after the fiscal year."
+    )
+    alabama_interval = (
+        "Four percent of taxable income in excess of five hundred dollars "
+        "($500) and not in excess of three thousand dollars ($3,000)."
+    )
+
+    assert not source_states_explicit_computation(definition)
+    assert source_states_explicit_computation(alabama_interval)
+    interval = completeness_module._formula_interval_from_text(
+        alabama_interval,
+        extract_numeric_occurrences=LEGACY_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR,
+    )
+    assert interval is not None
+    assert interval.lower is not None and interval.lower.value == 500
+    assert not interval.lower_inclusive
+    assert interval.upper is not None and interval.upper.value == 3000
+    assert interval.upper_inclusive
+
+
+def test_editorial_slash_date_does_not_create_computation_obligation():
+    assert not source_states_explicit_computation(
+        "Legislative Research Commission Note (6/27/2025)."
+    )
+    assert source_states_explicit_computation(
+        "The amount is computed by dividing income by the divisor."
+    )
 
 
 def test_formula_subject_matches_established_boundary_helper_suffix():
@@ -15928,6 +16029,36 @@ def test_long_formula_output_locator_does_not_present_ellipsis_as_source_text(
     assert " ... " in feedback
     assert "only a bounded locator and is not source text" in feedback
     assert "copy one contiguous verbatim" in feedback
+
+
+def test_formula_output_feedback_aggregates_missing_clauses_for_same_owner():
+    source = (
+        "(1) Income equals wages plus dividends. "
+        "Tax equals income times 5 percent.\n"
+        "(2) Final rule."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/141.020
+rules: []
+"""
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-ky/statute/141.020",
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    issues = [issue for issue in result.issues if "formula-output" in issue]
+
+    assert len(issues) == 2
+    for issue in issues:
+        assert "Same structural owner has 2 missing formula clauses" in issue
+        assert "`(1) formula clause 1` at characters 0:39" in issue
+        assert "`(1) formula clause 2` at characters 40:74" in issue
 
 
 COMPANION_COVERAGE_SOURCE = """\
