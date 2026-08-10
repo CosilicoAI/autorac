@@ -19574,8 +19574,12 @@ def _candidate_local_corpus_provision_files(
 # JSONL once per citation path; a module citing thousands of provisions
 # (e.g. generated full-schedule HTS tables) made validation O(paths x
 # corpus bytes). Each file is now parsed once per content identity and
-# indexed by citation path; the identity key keeps edits during a run
-# visible, matching the prior per-call read semantics.
+# indexed by citation path. The identity key assumes corpus artifacts are
+# immutable snapshots for the life of the process (true for CI checkouts
+# and pinned local runs); an in-place edit that preserves both mtime_ns
+# and size serves the cached parse, which the prior per-call read did
+# not. Entries are never evicted, so memory is bounded by the parsed
+# size of the provisions actually touched (~3x raw JSONL bytes).
 _LOCAL_CORPUS_PROVISION_INDEX: dict[
     tuple[str, int, int], dict[str, list[dict[str, Any]]]
 ] = {}
@@ -19692,6 +19696,7 @@ def _read_local_corpus_descendant_text(
     return "\n\n".join(chunks)
 
 
+@functools.lru_cache(maxsize=512)
 def _fetch_supabase_corpus_source_text(citation_path: str) -> str | None:
     """Fetch current corpus source text by exact citation path from Supabase."""
     supabase_url = os.environ.get(
