@@ -28,6 +28,7 @@ from scripts.prepare_signed_backfill import (
     parse_canonical_refresh_bundle,
     parse_existing_signed_imports,
     parse_source_bundle,
+    reconcile_retired_manifest_inventory,
     split_atomic_source_input,
     stage_authorized_changes,
     validate_country,
@@ -1157,6 +1158,244 @@ def _write_signed_change(repo: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     return rule, manifest
+
+
+def _retired_inventory_replacement_repo(
+    tmp_path: Path,
+    *,
+    inventory_text: str | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    repo = _repo(tmp_path)
+    target = repo / "us/policies/income_tax/schedule.yaml"
+    target.parent.mkdir(parents=True)
+    target.write_text("format: rulespec/v1\nrules: []\n", encoding="utf-8")
+    manifest = (
+        repo
+        / ".axiom/encoding-manifests/us/policies/income_tax/schedule.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"schema_version": "axiom-encode/applied-rulespec/v1"}) + "\n",
+        encoding="utf-8",
+    )
+    inventory = repo / "tests/test_encoding_manifests.py"
+    inventory.parent.mkdir(parents=True)
+    manifest_relative = manifest.relative_to(repo).as_posix()
+    inventory.write_text(
+        inventory_text
+        or (
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+            f"    '{manifest_relative}',\n"
+            "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
+            "})\n"
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add retired target")
+
+    target.write_text(
+        "format: rulespec/v1\nrules:\n  - name: schedule\n",
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "axiom-encode/applied-rulespec/v5",
+                "tool": "axiom-encode encode --apply",
+                "backend": "openai",
+                "signature": {
+                    "algorithm": "ed25519-domain-v1",
+                    "key_id": "test-key",
+                    "value": "test-signature",
+                },
+                "applied_files": [
+                    {
+                        "path": target.relative_to(repo).as_posix(),
+                        "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return repo, target, manifest, inventory
+
+
+def test_reconcile_retired_manifest_inventory_is_end_to_end_authorized(
+    tmp_path: Path,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(tmp_path)
+    manifest_relative = PurePosixPath(manifest.relative_to(repo).as_posix())
+
+    assert (
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+        == manifest_relative
+    )
+    assert manifest_relative.as_posix() not in inventory.read_text(encoding="utf-8")
+    expected = {
+        PurePosixPath(target.relative_to(repo).as_posix()),
+        manifest_relative,
+        PurePosixPath("tests/test_encoding_manifests.py"),
+    }
+    assert authorized_changed_paths(repo) == expected
+
+    stage_authorized_changes(repo)
+
+    assert set(
+        _git(repo, "diff", "--cached", "--name-only").splitlines()
+    ) == {path.as_posix() for path in expected}
+
+
+def test_reconcile_retired_manifest_inventory_cli_reports_exact_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_signed_backfill.py",
+            "reconcile-retired-manifest-inventory",
+            str(repo),
+            target.relative_to(repo).as_posix(),
+        ],
+    )
+
+    prepare_signed_backfill_main()
+
+    assert capsys.readouterr().out == (
+        "retired manifest inventory removed "
+        f"{manifest.relative_to(repo).as_posix()}\n"
+    )
+
+
+def test_reconcile_retired_manifest_inventory_is_noop_when_absent(
+    tmp_path: Path,
+) -> None:
+    repo, target, manifest, inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        inventory_text=(
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+            "    '.axiom/encoding-manifests/us/statutes/other.json',\n"
+            "})\n"
+        ),
+    )
+    before = inventory.read_bytes()
+
+    assert (
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+        is None
+    )
+    assert inventory.read_bytes() == before
+    assert authorized_changed_paths(repo) == {
+        PurePosixPath(target.relative_to(repo).as_posix()),
+        PurePosixPath(manifest.relative_to(repo).as_posix()),
+    }
+
+
+@pytest.mark.parametrize(
+    ("inventory_text", "message"),
+    [
+        (
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+            "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',\n"
+            "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',\n"
+            "})\n",
+            "duplicate entries",
+        ),
+        (
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset()\n"
+            "# .axiom/encoding-manifests/us/policies/income_tax/schedule.json\n",
+            "set shape is not canonical",
+        ),
+        (
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS = {\n"
+            "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',\n"
+            "}\n",
+            "assignment is not canonical",
+        ),
+        (
+            "KNOWN_RETIRED_SCHEMA_MANIFESTS: frozenset[str] = frozenset({\n"
+            "    '.axiom/encoding-manifests/us/policies/income_tax/schedule.json',  # stale\n"
+            "})\n",
+            "not an exact entry",
+        ),
+    ],
+)
+def test_reconcile_retired_manifest_inventory_fails_closed_on_ambiguous_shape(
+    tmp_path: Path,
+    inventory_text: str,
+    message: str,
+) -> None:
+    repo, target, _manifest, _inventory = _retired_inventory_replacement_repo(
+        tmp_path,
+        inventory_text=inventory_text,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+def test_reconcile_retired_manifest_inventory_rejects_preexisting_edit(
+    tmp_path: Path,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(tmp_path)
+    inventory.write_text(
+        inventory.read_text(encoding="utf-8") + "# unrelated\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="changed before exact reconciliation"):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
+
+
+def test_stage_rejects_nonexact_retired_manifest_inventory_edit(
+    tmp_path: Path,
+) -> None:
+    repo, target, _manifest, inventory = _retired_inventory_replacement_repo(tmp_path)
+    reconcile_retired_manifest_inventory(
+        repo,
+        target.relative_to(repo).as_posix(),
+    )
+    inventory.write_text(
+        inventory.read_text(encoding="utf-8") + "# unsigned extra edit\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exact removal for one"):
+        authorized_changed_paths(repo)
+
+
+def test_reconcile_retired_manifest_inventory_requires_normal_model_apply(
+    tmp_path: Path,
+) -> None:
+    repo, target, manifest, _inventory = _retired_inventory_replacement_repo(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["tool"] = "axiom-encode encode --apply --replace-legacy-rulespec-path"
+    manifest.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not an exact signed-v5 model apply"):
+        reconcile_retired_manifest_inventory(
+            repo,
+            target.relative_to(repo).as_posix(),
+        )
 
 
 def _legacy_receipt_identity(receipt: dict[str, object]) -> dict[str, object]:

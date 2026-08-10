@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -21,7 +24,9 @@ MANIFEST_ROOT = PurePosixPath(".axiom/encoding-manifests")
 LEGACY_REPLACEMENT_RECEIPT_ROOT = PurePosixPath(".axiom/legacy-replacements")
 LEGACY_REPLACEMENT_TOOL = "axiom-encode encode --apply --replace-legacy-rulespec-path"
 APPLIED_MANIFEST_SCHEMA_V5 = "axiom-encode/applied-rulespec/v5"
+APPLIED_MANIFEST_SIGNATURE_ALGORITHM = "ed25519-domain-v1"
 PROVISIONS_TO_RULES_INDEX = PurePosixPath(".axiom/index/provisions_to_rules.json")
+RETIRED_MANIFEST_INVENTORY = PurePosixPath("tests/test_encoding_manifests.py")
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V1 = "axiom-encode/legacy-fresh-reencode-receipt/v1"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V2 = "axiom-encode/legacy-fresh-reencode-receipt/v2"
 LEGACY_REPLACEMENT_RECEIPT_SCHEMA_V3 = "axiom-encode/legacy-fresh-reencode-receipt/v3"
@@ -1593,6 +1598,253 @@ def _rulespec_companion_path(primary: PurePosixPath) -> PurePosixPath:
     return primary.with_name(f"{primary.stem}.test.yaml")
 
 
+def _rulespec_manifest_path(primary: PurePosixPath) -> PurePosixPath:
+    return MANIFEST_ROOT / primary.with_suffix(".json")
+
+
+def _retired_manifest_inventory_without_entry(
+    raw: bytes,
+    manifest_path: PurePosixPath,
+) -> bytes | None:
+    """Remove one exact literal from the canonical retired-manifest set."""
+
+    manifest = manifest_path.as_posix()
+    try:
+        text = raw.decode("utf-8")
+        module = ast.parse(text, filename=RETIRED_MANIFEST_INVENTORY.as_posix())
+    except (UnicodeError, SyntaxError, ValueError) as exc:
+        raise ValueError("retired manifest inventory is not valid UTF-8 Python") from exc
+
+    assignments: list[ast.AnnAssign] = []
+    for node in ast.walk(module):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "KNOWN_RETIRED_SCHEMA_MANIFESTS"
+        ):
+            assignments.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name)
+            and target.id == "KNOWN_RETIRED_SCHEMA_MANIFESTS"
+            for target in node.targets
+        ):
+            raise ValueError(
+                "retired manifest inventory assignment is not canonical"
+            )
+    if len(assignments) != 1 or assignments[0] not in module.body:
+        raise ValueError(
+            "retired manifest inventory lacks one canonical top-level assignment"
+        )
+    assignment = assignments[0]
+    value = assignment.value
+    if (
+        not isinstance(value, ast.Call)
+        or not isinstance(value.func, ast.Name)
+        or value.func.id != "frozenset"
+        or len(value.args) != 1
+        or value.keywords
+        or not isinstance(value.args[0], ast.Set)
+    ):
+        raise ValueError("retired manifest inventory set shape is not canonical")
+    elements = value.args[0].elts
+    if not all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str)
+        for element in elements
+    ):
+        raise ValueError("retired manifest inventory contains a non-literal entry")
+    values = [element.value for element in elements]
+    if len(values) != len(set(values)):
+        raise ValueError("retired manifest inventory contains duplicate entries")
+
+    matches = [
+        element
+        for element in elements
+        if isinstance(element, ast.Constant) and element.value == manifest
+    ]
+    textual_matches = text.count(manifest)
+    if not matches:
+        if textual_matches:
+            raise ValueError(
+                "retired manifest inventory path is present outside an exact entry"
+            )
+        return None
+    if len(matches) != 1 or textual_matches != 1:
+        raise ValueError("retired manifest inventory path match is ambiguous")
+
+    entry = matches[0]
+    if entry.end_lineno != entry.lineno:
+        raise ValueError("retired manifest inventory entry is not one canonical line")
+    lines = text.splitlines(keepends=True)
+    if entry.lineno < 1 or entry.lineno > len(lines):
+        raise ValueError("retired manifest inventory entry location is invalid")
+    line = lines[entry.lineno - 1]
+    if line not in {f"    '{manifest}',\n", f'    "{manifest}",\n'}:
+        raise ValueError("retired manifest inventory match is not an exact entry")
+    del lines[entry.lineno - 1]
+    rewritten = "".join(lines).encode("utf-8")
+    if manifest.encode("utf-8") in rewritten:
+        raise ValueError("retired manifest inventory still contains the removed path")
+    try:
+        compile(rewritten, RETIRED_MANIFEST_INVENTORY.as_posix(), "exec")
+    except (SyntaxError, ValueError) as exc:
+        raise ValueError(
+            "retired manifest inventory removal produced invalid Python"
+        ) from exc
+    return rewritten
+
+
+def _require_normal_model_apply_target_binding(
+    repo: Path,
+    target: PurePosixPath,
+    payload: dict[str, object],
+    *,
+    label: str,
+) -> None:
+    """Require one normal model manifest to hash-bind its canonical primary."""
+
+    signature = payload.get("signature")
+    if (
+        payload.get("schema_version") != APPLIED_MANIFEST_SCHEMA_V5
+        or payload.get("tool") != MODEL_APPLY_TOOL
+        or payload.get("backend") not in MODEL_APPLY_BACKENDS
+        or not isinstance(signature, dict)
+        or set(signature) != {"algorithm", "key_id", "value"}
+        or signature.get("algorithm") != APPLIED_MANIFEST_SIGNATURE_ALGORITHM
+        or not all(
+            isinstance(signature.get(field), str) and signature[field]
+            for field in ("key_id", "value")
+        )
+    ):
+        raise ValueError(f"{label} is not an exact signed-v5 model apply")
+    applied_files = payload.get("applied_files")
+    target_records = (
+        [
+            item
+            for item in applied_files
+            if isinstance(item, dict) and item.get("path") == target.as_posix()
+        ]
+        if isinstance(applied_files, list)
+        else []
+    )
+    target_raw = _read_bounded_regular(
+        repo,
+        target,
+        label=f"{label} RuleSpec",
+        max_bytes=16 * 1024 * 1024,
+    )
+    if (
+        len(target_records) != 1
+        or set(target_records[0]) != {"path", "sha256"}
+        or target_records[0].get("sha256")
+        != hashlib.sha256(target_raw).hexdigest()
+    ):
+        raise ValueError(f"{label} does not bind exact target bytes")
+
+
+def _normal_model_apply_manifest_for_target(
+    repo: Path,
+    target: PurePosixPath,
+) -> tuple[PurePosixPath, dict[str, object]]:
+    """Bind one changed signed-v5 model manifest to its exact target bytes."""
+
+    manifest_path = _rulespec_manifest_path(target)
+    changed = _changed_paths(repo)
+    if manifest_path not in changed:
+        raise ValueError(
+            "targeted replacement lacks its exact changed apply manifest"
+        )
+    try:
+        payload = _load_unambiguous_json(
+            _read_bounded_regular(
+                repo,
+                manifest_path,
+                label="targeted replacement apply manifest",
+                max_bytes=1024 * 1024,
+            ).decode("utf-8"),
+            label="targeted replacement apply manifest",
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("targeted replacement apply manifest is malformed") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("targeted replacement apply manifest is malformed")
+    _require_normal_model_apply_target_binding(
+        repo,
+        target,
+        payload,
+        label="targeted replacement apply manifest",
+    )
+    return manifest_path, payload
+
+
+def reconcile_retired_manifest_inventory(
+    repo: Path,
+    target_rulespec_path: str,
+) -> PurePosixPath | None:
+    """Retire one stale schema allowance after a normal signed replacement."""
+
+    target = _safe_relative_path(
+        target_rulespec_path,
+        label="target RuleSpec path",
+    )
+    _validate_rulespec_path(repo, target, label="target RuleSpec path")
+    if target.name.endswith(".test.yaml"):
+        raise ValueError("target RuleSpec path must be a primary module")
+    manifest_path, _payload = _normal_model_apply_manifest_for_target(repo, target)
+    if RETIRED_MANIFEST_INVENTORY in _changed_paths(repo):
+        raise ValueError(
+            "retired manifest inventory changed before exact reconciliation"
+        )
+    try:
+        base_raw = _git(
+            repo,
+            "show",
+            f"HEAD:{RETIRED_MANIFEST_INVENTORY.as_posix()}",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("retired manifest inventory is absent from HEAD") from exc
+    live_raw = _read_bounded_regular(
+        repo,
+        RETIRED_MANIFEST_INVENTORY,
+        label="retired manifest inventory",
+        max_bytes=16 * 1024 * 1024,
+    )
+    if live_raw != base_raw:
+        raise ValueError("retired manifest inventory differs from clean HEAD")
+    rewritten = _retired_manifest_inventory_without_entry(base_raw, manifest_path)
+    if rewritten is None:
+        return None
+
+    root = repo.resolve(strict=True)
+    destination = root.joinpath(*RETIRED_MANIFEST_INVENTORY.parts)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(rewritten)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        temporary_path.chmod(0o644)
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    observed = _read_bounded_regular(
+        repo,
+        RETIRED_MANIFEST_INVENTORY,
+        label="reconciled retired manifest inventory",
+        max_bytes=16 * 1024 * 1024,
+    )
+    if observed != rewritten:
+        raise ValueError("retired manifest inventory changed during reconciliation")
+    return manifest_path
+
+
 def authorize_legacy_index_manifest_shrink(
     repo: Path,
     target_rulespec_path: str,
@@ -2335,6 +2587,70 @@ def _validate_legacy_exact_dependents(
     return unchanged_authorized
 
 
+def _authorized_retired_manifest_inventory_reconciliation(
+    repo: Path,
+    *,
+    manifest_payloads: dict[PurePosixPath, dict[str, object]],
+) -> PurePosixPath:
+    """Authenticate the one unsigned inventory delta derived from signed paths."""
+
+    try:
+        base_raw = _git(
+            repo,
+            "show",
+            f"HEAD:{RETIRED_MANIFEST_INVENTORY.as_posix()}",
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("retired manifest inventory is absent from HEAD") from exc
+    live_raw = _read_bounded_regular(
+        repo,
+        RETIRED_MANIFEST_INVENTORY,
+        label="changed retired manifest inventory",
+        max_bytes=16 * 1024 * 1024,
+    )
+    candidates: list[PurePosixPath] = []
+    for manifest_path, payload in sorted(
+        manifest_payloads.items(),
+        key=lambda item: item[0].as_posix(),
+    ):
+        if (
+            payload.get("tool") != MODEL_APPLY_TOOL
+            or payload.get("backend") not in MODEL_APPLY_BACKENDS
+        ):
+            continue
+        target = PurePosixPath(
+            *manifest_path.relative_to(MANIFEST_ROOT).parts
+        ).with_suffix(".yaml")
+        try:
+            _validate_rulespec_path(
+                repo,
+                target,
+                label="retired inventory model apply target",
+            )
+            if target.name.endswith(".test.yaml"):
+                raise ValueError("model apply target is not a primary module")
+            _require_normal_model_apply_target_binding(
+                repo,
+                target,
+                payload,
+                label="retired inventory model apply manifest",
+            )
+        except ValueError:
+            continue
+        expected = _retired_manifest_inventory_without_entry(
+            base_raw,
+            manifest_path,
+        )
+        if expected is not None and expected == live_raw:
+            candidates.append(manifest_path)
+    if len(candidates) != 1:
+        raise ValueError(
+            "retired manifest inventory change is not the exact removal for one "
+            "changed signed-v5 model manifest"
+        )
+    return candidates[0]
+
+
 def authorized_changed_paths(
     repo: Path,
     *,
@@ -2360,13 +2676,14 @@ def authorized_changed_paths(
 
     manifest_payloads: dict[PurePosixPath, dict[str, object]] = {}
     for relative in live_manifests:
-        payload = json.loads(
+        payload = _load_unambiguous_json(
             _read_bounded_regular(
                 repo,
                 relative,
                 label="changed manifest",
                 max_bytes=1024 * 1024,
-            ).decode("utf-8")
+            ).decode("utf-8"),
+            label=f"changed manifest {relative.as_posix()}",
         )
         if not isinstance(payload, dict):
             raise ValueError(f"changed manifest is malformed: {relative}")
@@ -2384,6 +2701,12 @@ def authorized_changed_paths(
         )
 
     authorized = set(live_manifests)
+    if RETIRED_MANIFEST_INVENTORY in changed and not legacy_manifests:
+        _authorized_retired_manifest_inventory_reconciliation(
+            repo,
+            manifest_payloads=manifest_payloads,
+        )
+        authorized.add(RETIRED_MANIFEST_INVENTORY)
     authorized_unchanged: set[PurePosixPath] = set()
     authenticated_unchanged_claims: set[tuple[PurePosixPath, PurePosixPath]] = set()
     unchanged_claims: set[tuple[PurePosixPath, PurePosixPath]] = set()
@@ -3555,6 +3878,11 @@ def main() -> None:
     shrink_parser = subparsers.add_parser("authorize-legacy-index-manifest-shrink")
     shrink_parser.add_argument("repo", type=Path)
     shrink_parser.add_argument("target_rulespec_path")
+    retired_inventory_parser = subparsers.add_parser(
+        "reconcile-retired-manifest-inventory"
+    )
+    retired_inventory_parser.add_argument("repo", type=Path)
+    retired_inventory_parser.add_argument("target_rulespec_path")
     source_bundle_parser = subparsers.add_parser(
         "parse-source-bundle",
         help="validate a bounded source bundle and emit one normalized JSON array",
@@ -3700,6 +4028,15 @@ def main() -> None:
                 )
                 else "false"
             )
+        elif args.command == "reconcile-retired-manifest-inventory":
+            reconciled = reconcile_retired_manifest_inventory(
+                args.repo,
+                args.target_rulespec_path,
+            )
+            if reconciled is None:
+                print("retired manifest inventory unchanged")
+            else:
+                print(f"retired manifest inventory removed {reconciled.as_posix()}")
         elif args.command == "parse-source-bundle":
             print(
                 json.dumps(

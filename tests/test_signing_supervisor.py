@@ -2020,6 +2020,43 @@ def test_targeted_signed_reencode_only_allows_audited_legacy_index_shrink() -> N
     assert '[ -n "$replacement_path" ] && [ -z "$legacy_source_path" ]' in command
 
 
+def test_targeted_signed_reencode_reconciles_retired_inventory_before_commits() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["encode"]["steps"]
+        if item.get("name") == "Encode, review, validate, and apply"
+    )
+    command = step["run"]
+    invocation = "reconcile-retired-manifest-inventory"
+
+    assert command.count(invocation) == 2
+    assert '[ "$source_bundle_enabled" = "false" ]' in command
+    assert '[ -n "$REPLACE_RULESPEC_PATH" ]' in command
+    assert '[ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]' in command
+
+    preflight_apply = command.index("target-preflight")
+    preflight_reconciliation = command.index(invocation, preflight_apply)
+    preflight_checkpoint = command.index(
+        "Canonicalize signed replacement target before source bundle",
+        preflight_reconciliation,
+    )
+    assert preflight_apply < preflight_reconciliation < preflight_checkpoint
+
+    normal_gate = command.index('[ "$source_bundle_enabled" = "false" ]')
+    normal_reconciliation = command.index(
+        invocation,
+        preflight_reconciliation + len(invocation),
+    )
+    assert normal_gate < normal_reconciliation
+    assert normal_reconciliation < command.index(
+        'if [ "$source_bundle_enabled" = "true" ]; then',
+        normal_reconciliation,
+    )
+
+
 def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
@@ -4236,6 +4273,11 @@ def test_targeted_signed_reencode_composes_nonempty_source_bundle(
     ).replace(
         "/opt/axiom-verification/axiom-encode-apply-signer run",
         '"$SIGNER_STUB"',
+    ).replace(
+        '    "$workflow_python" "$backfill_helper" \\\n'
+        "      reconcile-retired-manifest-inventory \\\n"
+        '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
+        "    printf '%s\\n' 'retired manifest inventory unchanged'",
     )
     before_checkpoint, checkpoint_and_after = command.split(
         "checkpoint_signed_changes() {",
@@ -4591,6 +4633,11 @@ def test_targeted_signed_reencode_runs_replacement_target(
     ).replace(
         "/opt/axiom-verification/axiom-encode-apply-signer run",
         '"$SIGNER_STUB"',
+    ).replace(
+        '    "$workflow_python" "$backfill_helper" \\\n'
+        "      reconcile-retired-manifest-inventory \\\n"
+        '      "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"',
+        "    printf '%s\\n' 'retired manifest inventory unchanged'",
     )
     calls_path = tmp_path / "calls.jsonl"
     signer_stub = tmp_path / "signer-stub"

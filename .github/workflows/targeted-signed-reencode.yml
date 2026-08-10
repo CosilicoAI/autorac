@@ -1552,6 +1552,9 @@ jobs:
               run_signed_encode \
                 "$CITATION" "" false target-preflight \
                 "$REPLACE_RULESPEC_PATH" "" false
+              "$workflow_python" "$backfill_helper" \
+                reconcile-retired-manifest-inventory \
+                "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"
               checkpoint_signed_changes \
                 "Canonicalize signed replacement target before source bundle"
               cp "$RUNNER_TEMP/checkpoint-guard-generated.json" \
@@ -1593,6 +1596,14 @@ jobs:
                 target "$REPLACE_RULESPEC_PATH" \
                 "$REPLACE_LEGACY_RULESPEC_PATH" \
                 "$required_imports_enabled"
+            fi
+
+            if [ "$source_bundle_enabled" = "false" ] && \
+               [ -n "$REPLACE_RULESPEC_PATH" ] && \
+               [ -z "$REPLACE_LEGACY_RULESPEC_PATH" ]; then
+              "$workflow_python" "$backfill_helper" \
+                reconcile-retired-manifest-inventory \
+                "$RULESPEC_CHECKOUT" "$REPLACE_RULESPEC_PATH"
             fi
 
             if [ "$source_bundle_enabled" = "true" ]; then
