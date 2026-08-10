@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import bisect
 import contextlib
+import copy
 import functools
 import heapq
 import itertools
@@ -4571,6 +4572,13 @@ def _analyze_rulespec_payload(
                 extract_numeric_occurrences=extract_numeric_grounding_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 formula_environment=formula_environment,
+                source_bound_constant_occurrences=(
+                    _source_bound_constant_numeric_occurrences(
+                        payload,
+                        corpus_citation_path=corpus_citation_path,
+                        extract_numeric_occurrences=extract_numeric_occurrences,
+                    )
+                ),
                 declared_input_names={
                     str(item.get("name") or "").strip()
                     for item in payload.get("inputs", [])
@@ -4678,6 +4686,37 @@ def _rule_source_excerpt_atoms(
         if isinstance(excerpt, str) and excerpt.strip() and citation_path and path:
             excerpts.append((path, citation_path, excerpt.strip()))
     return excerpts
+
+
+def _source_bound_constant_numeric_occurrences(
+    payload: dict[str, Any],
+    *,
+    corpus_citation_path: str,
+    extract_numeric_occurrences: NumericOccurrenceExtractor,
+) -> dict[str, tuple[NumericOccurrenceLike, ...]]:
+    """Index constant-rule numerics with formula proof from this source unit."""
+
+    authoritative_path = corpus_citation_path.strip("/").casefold()
+    bound: dict[str, tuple[NumericOccurrenceLike, ...]] = {}
+    rules = payload.get("rules")
+    if not isinstance(rules, list):
+        return bound
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        name = str(rule.get("name") or "").strip()
+        if not name:
+            continue
+        occurrences = tuple(
+            occurrence
+            for path, citation_path, excerpt in _rule_source_excerpt_atoms(rule)
+            if re.fullmatch(r"versions(?:\[\d+\])?\.formula", path)
+            and citation_path.strip("/").casefold() == authoritative_path
+            for occurrence in extract_numeric_occurrences(excerpt)
+        )
+        if occurrences:
+            bound[name] = occurrences
+    return bound
 
 
 def _principal_formula_clause_rules(
@@ -11877,6 +11916,7 @@ def _companion_test_issues(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
     declared_input_names: set[str],
 ) -> list[str]:
     issues: list[str] = []
@@ -12057,6 +12097,7 @@ def _companion_test_issues(
             asserted_by_rule=asserted_by_rule,
             numeric_value_is_grounded=numeric_value_is_grounded,
             formula_environment=formula_environment,
+            source_bound_constant_occurrences=source_bound_constant_occurrences,
             extract_numeric_occurrences=extract_numeric_occurrences,
         ):
             continue
@@ -17556,6 +17597,8 @@ def _branch_boundary_test_witnesses(
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any] | None = None,
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]]
+    | None = None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
 ) -> set[tuple[str, str]]:
     witnesses: set[tuple[str, str]] = set()
@@ -17607,6 +17650,9 @@ def _branch_boundary_test_witnesses(
                         boundary,
                         input_names=input_names,
                         formula_environment=(controller_execution.constant_environment),
+                        source_bound_constant_occurrences=(
+                            source_bound_constant_occurrences or {}
+                        ),
                         source_interval=source_interval,
                         source_boolean_polarity=source_boolean_polarity,
                         extract_numeric_occurrences=(extract_numeric_occurrences),
@@ -17690,6 +17736,8 @@ def _branch_boundary_has_test_evidence(
     asserted_by_rule: dict[str, list[dict[str, Any]]],
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any] | None = None,
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]]
+    | None = None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None = None,
 ) -> bool:
     """Compatibility predicate for callers that do not allocate witnesses."""
@@ -17703,6 +17751,7 @@ def _branch_boundary_has_test_evidence(
             asserted_by_rule=asserted_by_rule,
             numeric_value_is_grounded=numeric_value_is_grounded,
             formula_environment=formula_environment,
+            source_bound_constant_occurrences=source_bound_constant_occurrences,
             extract_numeric_occurrences=extract_numeric_occurrences,
         )
     )
@@ -17714,6 +17763,7 @@ def _formula_execution_binds_boundary(
     *,
     input_names: set[str],
     formula_environment: dict[str, Any],
+    source_bound_constant_occurrences: dict[str, tuple[NumericOccurrenceLike, ...]],
     source_interval: _NumericInterval | None,
     source_boolean_polarity: int,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
@@ -17730,6 +17780,14 @@ def _formula_execution_binds_boundary(
     }
     if input_names & boundary_names:
         return False
+    source_bound_boundary_names = {
+        name
+        for name in boundary_names
+        if any(
+            numeric_value_is_grounded(float(boundary.value), (occurrence,))
+            for occurrence in source_bound_constant_occurrences.get(name, ())
+        )
+    }
     checks: list[tuple[str, bool]] = []
     for step in execution.trace:
         if step.kind not in {"if", "match"}:
@@ -17744,6 +17802,7 @@ def _formula_execution_binds_boundary(
             boundary_names=boundary_names,
             boundary=boundary,
             formula_environment=formula_environment,
+            source_bound_boundary_names=source_bound_boundary_names,
             source_interval=source_interval,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
@@ -17763,6 +17822,7 @@ def _formula_text_has_boundary_comparison(
     source_interval: _NumericInterval | None,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
+    source_bound_boundary_names: set[str] | None = None,
 ) -> bool:
     expression = _parse_formula_expression(text)
     if expression is not None:
@@ -17816,6 +17876,8 @@ def _formula_text_has_boundary_comparison(
             boundary_names=boundary_names,
             boundary=boundary,
             formula_environment=formula_environment,
+            source_bound_boundary_names=source_bound_boundary_names or set(),
+            source_interval=source_interval,
             extract_numeric_occurrences=extract_numeric_occurrences,
             numeric_value_is_grounded=numeric_value_is_grounded,
         ):
@@ -17830,12 +17892,31 @@ def _formula_expression_has_boundary_clamp(
     boundary_names: set[str],
     boundary: NumericOccurrenceLike,
     formula_environment: dict[str, Any],
+    source_bound_boundary_names: set[str],
+    source_interval: _NumericInterval,
     extract_numeric_occurrences: NumericOccurrenceExtractor | None,
     numeric_value_is_grounded: NumericGroundingPredicate,
 ) -> bool:
-    """Recognize a reached progressive ``min(subject, cap)`` boundary."""
+    """Recognize exact upper and lower clamps at a source-stated boundary."""
+
+    boundary_is_strict_lower = bool(
+        source_interval.lower is not None
+        and not source_interval.lower_inclusive
+        and _numeric_occurrences_are_equivalent(source_interval.lower, boundary)
+    )
 
     for node in ast.walk(expression):
+        if boundary_is_strict_lower and _formula_lower_boundary_clamp_matches(
+            node,
+            expression=expression,
+            input_names=input_names,
+            source_bound_boundary_names=source_bound_boundary_names,
+            boundary=boundary,
+            formula_environment=formula_environment,
+            extract_numeric_occurrences=extract_numeric_occurrences,
+            numeric_value_is_grounded=numeric_value_is_grounded,
+        ):
+            return True
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -17876,6 +17957,125 @@ def _formula_expression_has_boundary_clamp(
             ):
                 return True
     return False
+
+
+def _formula_lower_boundary_clamp_matches(
+    node: ast.AST,
+    *,
+    expression: ast.expr,
+    input_names: set[str],
+    source_bound_boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    formula_environment: dict[str, Any],
+    extract_numeric_occurrences: NumericOccurrenceExtractor | None,
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    """Accept only ``max(0, subject - floor)`` at the exact source floor."""
+
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "max"
+        and len(node.args) == 2
+        and not node.keywords
+    ):
+        return False
+    zero, positive_subject = node.args
+    if not (
+        isinstance(zero, ast.Constant)
+        and isinstance(zero.value, (int, float))
+        and not isinstance(zero.value, bool)
+        and zero.value == 0
+    ):
+        zero, positive_subject = positive_subject, zero
+    if not (
+        isinstance(zero, ast.Constant)
+        and isinstance(zero.value, (int, float))
+        and not isinstance(zero.value, bool)
+        and zero.value == 0
+        and isinstance(positive_subject, ast.BinOp)
+        and isinstance(positive_subject.op, ast.Sub)
+        and isinstance(positive_subject.left, ast.Name)
+        and positive_subject.left.id in input_names
+        and not _formula_node_references_names(positive_subject.right, input_names)
+    ):
+        return False
+    floor = positive_subject.right
+    named_floor = (
+        isinstance(floor, ast.Name) and floor.id in source_bound_boundary_names
+    )
+    literal_floor = (
+        isinstance(floor, ast.Constant)
+        and isinstance(floor.value, (int, float))
+        and not isinstance(floor.value, bool)
+    )
+    if not (named_floor or literal_floor):
+        return False
+    floor_value = _formula_node_boundary_value(
+        floor,
+        boundary_names=source_bound_boundary_names,
+        boundary=boundary,
+        formula_environment=formula_environment,
+        extract_numeric_occurrences=extract_numeric_occurrences,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+    return bool(
+        floor_value is not None
+        and numeric_value_is_grounded(float(floor_value), (boundary,))
+        and _formula_node_causally_contributes(
+            expression,
+            node,
+            formula_environment=formula_environment,
+        )
+    )
+
+
+def _formula_node_causally_contributes(
+    expression: ast.expr,
+    target: ast.AST,
+    *,
+    formula_environment: dict[str, Any],
+) -> bool:
+    """Require changing one clamp result to change the reached formula value."""
+
+    target_location = (
+        type(target),
+        getattr(target, "lineno", None),
+        getattr(target, "col_offset", None),
+        getattr(target, "end_lineno", None),
+        getattr(target, "end_col_offset", None),
+    )
+
+    def evaluate_with_replacement(replacement: int) -> Decimal | None:
+        replaced = False
+
+        class ReplaceTarget(ast.NodeTransformer):
+            def generic_visit(self, candidate: ast.AST):
+                nonlocal replaced
+                candidate_location = (
+                    type(candidate),
+                    getattr(candidate, "lineno", None),
+                    getattr(candidate, "col_offset", None),
+                    getattr(candidate, "end_lineno", None),
+                    getattr(candidate, "end_col_offset", None),
+                )
+                if not replaced and candidate_location == target_location:
+                    replaced = True
+                    return ast.copy_location(ast.Constant(replacement), candidate)
+                return super().generic_visit(candidate)
+
+        candidate = ReplaceTarget().visit(copy.deepcopy(expression))
+        if not replaced:
+            return None
+        return _rulespec_runtime_decimal(
+            _evaluate_condition_expression(candidate, formula_environment)
+        )
+
+    zero_value = evaluate_with_replacement(0)
+    one_value = evaluate_with_replacement(1)
+    return bool(
+        zero_value is not None and one_value is not None and zero_value != one_value
+    )
 
 
 def _formula_clamp_preserves_boundary_offset(

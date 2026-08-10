@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import traceback
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13190,6 +13191,144 @@ class TestCmdEncode:
             "initial_model": DEFAULT_OPENAI_MODEL,
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
+
+    @pytest.mark.parametrize(
+        "issue",
+        (
+            "[generated-yaml:io] unable to read generated RuleSpec",
+            "[generated-yaml:decode] generated RuleSpec text is not decodable",
+        ),
+    )
+    def test_encode_does_not_retry_noncorrectable_generated_yaml_io_failure(
+        self, issue, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+
+        exit_code, generated, validated, mock_run, _mock_validate, mock_apply = (
+            self._run_validator_escalation_case(args, [(False, [issue])])
+        )
+
+        assert exit_code == 1
+        assert generated == [DEFAULT_OPENAI_MODEL]
+        assert validated == [DEFAULT_OPENAI_MODEL]
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["validation_retry_feedback"] == ()
+        assert mock_run.call_args.kwargs["validation_retry_candidate"] is None
+        mock_apply.assert_not_called()
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert run.outcome["status"] == "apply_blocked_validation"
+        assert run.outcome["apply_error"] == issue
+        assert "generation_retry_blocked" not in run.outcome
+
+    @pytest.mark.parametrize(
+        ("malformed", "expected_issue"),
+        (
+            (
+                """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+  - name: taxpayer_age_credit
+    kind: derived
+    versions:
+      - formula: {if taxpayer_is_aged: 40 else [0]}
+""",
+                "[generated-yaml:parser] invalid YAML at line 9, column 48: "
+                "flow mapping is missing an expected ',' or '}' delimiter before "
+                "a '[' sequence",
+            ),
+            (
+                "root: " + ("[ " * 500) + "0" + (" ]" * 500) + "\n",
+                "[generated-yaml:resource] generated YAML nesting exceeds safe "
+                "parser capacity",
+            ),
+        ),
+    )
+    def test_encode_retries_malformed_yaml_with_unchanged_candidate_then_applies_valid(
+        self, malformed, expected_issue, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+        generated_attempts = 0
+        applied_contents: list[str] = []
+        valid = "format: rulespec/v1\nrules: []\n"
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            if generated_attempts == 1:
+                assert kwargs["validation_retry_feedback"] == ()
+                assert kwargs["validation_retry_candidate"] is None
+            else:
+                assert kwargs["validation_retry_feedback"] == (expected_issue,)
+                candidate = kwargs["validation_retry_candidate"]
+                assert candidate is not None
+                assert candidate.rulespec == malformed
+                assert candidate.tests == "[]\n"
+            backend, model = kwargs["runner_specs"][0].split(":", 1)
+            result = self._make_eval_result(True)
+            result.backend = backend
+            result.model = model
+            result.runner = f"{backend}-{model}"
+            result.generation_prompt_sha256 = f"prompt-{generated_attempts}"
+            output_file = (
+                args.output / result.runner / "statutes" / "26" / "1" / "j" / "2.yaml"
+            )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text(malformed if generated_attempts == 1 else valid)
+            output_file.with_suffix(".test.yaml").write_text("[]\n")
+            result.output_file = str(output_file)
+            return [result]
+
+        def validate(result, **_kwargs):
+            try:
+                _stamp_generated_source_attestation_for_apply(
+                    result, Path(result.output_file)
+                )
+            except RuntimeError as exc:
+                assert Path(result.output_file).read_text() == malformed
+                return False, [str(exc)], {}
+            return True, [], {}
+
+        def apply(result, **_kwargs):
+            content = Path(result.output_file).read_text()
+            applied_contents.append(content)
+            assert yaml.safe_load(content)["format"] == "rulespec/v1"
+            return [args.policy_repo_path / "us/statutes/26/1/j/2.yaml"]
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as model,
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                side_effect=validate,
+            ),
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                side_effect=apply,
+            ) as apply_call,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert model.call_count == 2
+        apply_call.assert_called_once()
+        assert len(applied_contents) == 1
+        assert malformed not in applied_contents[0]
 
     def test_encode_contract_rejection_retries_with_exact_context_before_apply(
         self, tmp_path
@@ -41824,6 +41963,415 @@ rules:
         assert len(issues) == 1
         assert issues[0].startswith("regulations/18-nycrr/387/12/f/3/v/c.yaml: ")
         assert "dropped existing source_relation" in issues[0]
+
+    def test_apply_overlay_reports_unquoted_colon_yaml_parse_failure(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "axiom_encode.cli._stamp_generated_source_attestation_for_apply",
+            _stamp_generated_source_attestation_for_apply,
+        )
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-ky"
+        relative = Path("policies/income_tax/schedule_before_credits.yaml")
+        generated = output_root / "openai-test-model" / relative
+        generated.parent.mkdir(parents=True)
+        malformed = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+  - name: taxpayer_age_credit
+    kind: derived
+    versions:
+      - formula: if taxpayer_is_aged: 40 else: 0
+"""
+        generated.write_text(malformed)
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="openai-test-model",
+            backend="openai",
+            source_attestation=_complete_source_attestation(
+                "us-ky/statute/krs/141.020/document-1"
+            ),
+        )
+
+        ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+            result,
+            output_root=output_root,
+            policy_repo_path=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            local_corpus_release=MagicMock(),
+        )
+
+        assert ok is False
+        assert issues == [
+            f"{relative}: [generated-yaml:scanner] invalid YAML at line 9, "
+            "column 37: unexpected mapping-value ':' delimiter; quote scalar "
+            "text containing ': '"
+        ]
+        assert supplemental == {}
+        assert generated.read_text() == malformed
+
+    def test_apply_overlay_reports_batch009_flow_mapping_parser_failure(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "axiom_encode.cli._stamp_generated_source_attestation_for_apply",
+            _stamp_generated_source_attestation_for_apply,
+        )
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-ky"
+        relative = Path("policies/income_tax/schedule_before_credits.yaml")
+        generated = output_root / "openai-test-model" / relative
+        generated.parent.mkdir(parents=True)
+        malformed = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+  - name: taxpayer_age_credit
+    kind: derived
+    versions:
+      - formula: {if taxpayer_is_aged: 40 else [0]}
+"""
+        generated.write_text(malformed)
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="openai-test-model",
+            backend="openai",
+            source_attestation=_complete_source_attestation(
+                "us-ky/statute/krs/141.020/document-1"
+            ),
+        )
+
+        ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+            result,
+            output_root=output_root,
+            policy_repo_path=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            local_corpus_release=MagicMock(),
+        )
+
+        assert ok is False
+        assert issues == [
+            f"{relative}: [generated-yaml:parser] invalid YAML at line 9, "
+            "column 48: flow mapping is missing an expected ',' or '}' delimiter "
+            "before a '[' sequence"
+        ]
+        assert supplemental == {}
+        assert generated.read_text() == malformed
+
+    def test_apply_overlay_reports_deep_yaml_resource_failure(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "axiom_encode.cli._stamp_generated_source_attestation_for_apply",
+            _stamp_generated_source_attestation_for_apply,
+        )
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-ky"
+        relative = Path("policies/income_tax/deep.yaml")
+        generated = output_root / "openai-test-model" / relative
+        generated.parent.mkdir(parents=True)
+        deep_yaml = "root: " + ("[ " * 500) + "0" + (" ]" * 500) + "\n"
+        generated.write_text(deep_yaml)
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="openai-test-model",
+            backend="openai",
+            source_attestation=_complete_source_attestation(),
+        )
+
+        ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+            result,
+            output_root=output_root,
+            policy_repo_path=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            local_corpus_release=MagicMock(),
+        )
+
+        assert ok is False
+        assert issues == [
+            f"{relative}: [generated-yaml:resource] generated YAML nesting exceeds "
+            "safe parser capacity"
+        ]
+        assert supplemental == {}
+        assert generated.read_text() == deep_yaml
+
+    @pytest.mark.parametrize(
+        ("malformed", "subtype"),
+        (
+            ("formula: if x: 1 else: 0\n", "scanner"),
+            ("formula: {if x: 1 else: 0}\n", "parser"),
+            ("---\na: 1\n---\nb: 2\n", "composer"),
+            ("a: !unknown b\n", "constructor"),
+            ("a: \ud800\n", "reader"),
+        ),
+    )
+    def test_generated_yaml_diagnostic_reports_honest_parser_subtype(
+        self, malformed, subtype, tmp_path
+    ):
+        captured_error = None
+        try:
+            yaml.safe_load(malformed)
+        except yaml.YAMLError as parse_error:
+            captured_error = parse_error
+        else:
+            raise AssertionError("fixture must raise a YAML parser exception")
+        output_file = tmp_path / "generated.yaml"
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(backend="openai")
+
+        with (
+            patch("axiom_encode.cli.yaml.safe_load", side_effect=captured_error),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            _stamp_generated_source_attestation_for_apply(result, output_file)
+
+        diagnostic = str(exc_info.value)
+        assert diagnostic.startswith(f"[generated-yaml:{subtype}] invalid YAML")
+        assert len(diagnostic) <= 1024
+
+    def test_source_attestation_failure_remains_distinct_from_yaml_parse_failure(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "axiom_encode.cli._stamp_generated_source_attestation_for_apply",
+            _stamp_generated_source_attestation_for_apply,
+        )
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-ky"
+        relative = Path("policies/income_tax/schedule_before_credits.yaml")
+        generated = output_root / "openai-test-model" / relative
+        generated.parent.mkdir(parents=True)
+        valid_yaml = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules: []
+"""
+        generated.write_text(valid_yaml)
+        result = SimpleNamespace(
+            output_file=str(generated),
+            runner="openai-test-model",
+            backend="openai",
+            source_attestation=None,
+        )
+
+        ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+            result,
+            output_root=output_root,
+            policy_repo_path=policy_repo,
+            axiom_rules_path=tmp_path / "axiom-rules-engine",
+            local_corpus_release=MagicMock(),
+        )
+
+        assert ok is False
+        assert issues == [
+            f"{relative}: Cannot apply a model-generated RuleSpec without resolver "
+            "source_attestation"
+        ]
+        assert supplemental == {}
+        assert generated.read_text() == valid_yaml
+
+    def test_generated_yaml_parse_failure_is_structural_bounded_and_nonleaking(
+        self, tmp_path
+    ):
+        output_file = tmp_path / "generated.yaml"
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(backend="openai")
+
+        class PoisonedYamlError(yaml.YAMLError):
+            def __str__(self):
+                raise AssertionError("raw parser exception was stringified")
+
+            def __repr__(self):
+                raise AssertionError("raw parser exception was represented")
+
+        secret = "SECRET_CANDIDATE_LINE\x1b\u202e"
+        parse_error = PoisonedYamlError()
+        parse_error.problem = secret + ("x" * 2_000)
+        parse_error.problem_mark = SimpleNamespace(
+            line=4,
+            column=6,
+            name=str(output_file),
+            buffer=f"rules:\n  - formula: {secret}\n",
+            snippet=secret,
+        )
+
+        with patch("axiom_encode.cli.yaml.safe_load", side_effect=parse_error):
+            with pytest.raises(RuntimeError) as exc_info:
+                _stamp_generated_source_attestation_for_apply(result, output_file)
+
+        diagnostic = str(exc_info.value)
+        assert diagnostic == (
+            "[generated-yaml:error] invalid YAML at line 5, column 7: "
+            "invalid YAML syntax"
+        )
+        rendered_traceback = "".join(traceback.format_exception(exc_info.value))
+        assert secret not in diagnostic
+        assert secret not in rendered_traceback
+        assert str(output_file) not in diagnostic
+        assert str(output_file) not in rendered_traceback
+        assert len(diagnostic) <= 1024
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__suppress_context__ is True
+
+        import axiom_encode.cli as cli_module
+
+        issue = f"policies/income_tax/example.yaml: {diagnostic}"
+        outcome = {"apply_error": issue}
+        cli_module._replace_overlay_validation_failures(outcome, [issue])
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(
+                metrics=SimpleNamespace(compile_issues=[], ci_issues=[])
+            ),
+            error="Generated RuleSpec failed CI validation",
+            validation_issues=(issue,),
+        )
+        prompt_feedback = cli_module._encode_validation_retry_feedback([failed_attempt])
+        workflow_surfaces = json.dumps(
+            {
+                "issue": issue,
+                "outcome": outcome,
+                "prompt_feedback": prompt_feedback,
+                "traceback": rendered_traceback,
+            },
+            sort_keys=True,
+        )
+        assert "[generated-yaml:error]" in workflow_surfaces
+        assert secret not in workflow_surfaces
+        assert str(output_file) not in workflow_surfaces
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_diagnostic"),
+        (
+            (
+                OSError("SECRET_PATH /private/generated.yaml"),
+                "[generated-yaml:io] unable to read generated RuleSpec",
+            ),
+            (
+                UnicodeError("SECRET_SOURCE could not decode"),
+                "[generated-yaml:decode] generated RuleSpec text is not decodable",
+            ),
+        ),
+    )
+    def test_generated_yaml_read_failures_remain_nonparser_failures(
+        self, failure, expected_diagnostic, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "axiom_encode.cli._stamp_generated_source_attestation_for_apply",
+            _stamp_generated_source_attestation_for_apply,
+        )
+        output_root = tmp_path / "out"
+        output_file = output_root / "openai-test-model" / "policies/example.yaml"
+        output_file.parent.mkdir(parents=True)
+        original = "format: rulespec/v1\nrules: []\n"
+        output_file.write_text(original)
+        result = SimpleNamespace(
+            backend="openai",
+            runner="openai-test-model",
+            output_file=str(output_file),
+            source_attestation=_complete_source_attestation(),
+        )
+
+        with (
+            patch.object(Path, "read_text", side_effect=failure),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            _stamp_generated_source_attestation_for_apply(result, output_file)
+
+        diagnostic = str(exc_info.value)
+        rendered_traceback = "".join(traceback.format_exception(exc_info.value))
+        assert diagnostic == expected_diagnostic
+        assert str(output_file) not in diagnostic
+        assert "SECRET_" not in diagnostic
+        assert "SECRET_" not in rendered_traceback
+        assert str(output_file) not in rendered_traceback
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__suppress_context__ is True
+        assert output_file.read_bytes().decode() == original
+
+        with patch.object(Path, "read_text", side_effect=failure):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=tmp_path / "rulespec-us" / "us-ky",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=MagicMock(),
+            )
+
+        assert ok is False
+        assert issues == [expected_diagnostic]
+        assert supplemental == {}
+        outcome = {
+            "status": "apply_blocked_validation",
+            "apply_error": issues[0],
+        }
+        import axiom_encode.cli as cli_module
+
+        assert not cli_module._encode_attempt_was_validator_rejected(result, outcome)
+        workflow_surfaces = json.dumps(
+            {
+                "issues": issues,
+                "outcome": outcome,
+                "prompt_feedback": (),
+                "traceback": rendered_traceback,
+            },
+            sort_keys=True,
+        )
+        assert "SECRET_" not in workflow_surfaces
+        assert str(output_file) not in workflow_surfaces
+
+    def test_generated_yaml_preflight_does_not_read_out_of_root_candidate(
+        self, tmp_path
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        outside_file = tmp_path / "outside.yaml"
+        outside_file.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            backend="openai",
+            runner="openai-test-model",
+            output_file=str(outside_file),
+        )
+
+        with patch.object(
+            Path,
+            "read_text",
+            side_effect=AssertionError("out-of-root candidate was opened"),
+        ):
+            issue = cli_module._generated_rulespec_yaml_nonparser_issue(
+                result,
+                outside_file,
+                output_root=output_root,
+            )
+
+        assert issue is None
+
+    @pytest.mark.parametrize(
+        "failure",
+        (
+            MemoryError("resource exhausted"),
+            KeyboardInterrupt("interrupted"),
+            SystemExit("stopped"),
+        ),
+    )
+    def test_generated_yaml_process_failures_propagate(self, failure, tmp_path):
+        output_file = tmp_path / "generated.yaml"
+        original = "format: rulespec/v1\nrules: []\n"
+        output_file.write_text(original)
+        result = SimpleNamespace(backend="openai")
+        with (
+            patch.object(Path, "read_text", side_effect=failure),
+            pytest.raises(type(failure)) as exc_info,
+        ):
+            _stamp_generated_source_attestation_for_apply(result, output_file)
+
+        assert exc_info.value is failure
+        assert output_file.read_bytes().decode() == original
 
     def test_apply_overlay_validation_aggregates_structured_issues(self, tmp_path):
         output_root = tmp_path / "out"
