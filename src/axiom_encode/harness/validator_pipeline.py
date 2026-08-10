@@ -1290,7 +1290,7 @@ _SOURCE_REFERENCE_PATTERNS = (
         # Rwanda excise schedule, "RWF 3,000", "GHS 100") - the amount
         # must survive for numeric grounding, so currency codes are
         # excluded from the reference pattern.
-        r"\b(?!(?:FRW|RWF|GHS|GHP|NGN|UGX|ZMW|ETB|USD|EUR|GBP|CAD|AUD|"
+        r"\b(?!(?:FRW|RWF|GHS|GHP|NGN|UGX|ZMW|ETB|USD|EUR|GBP|CAD|AUD|CHF|"
         r"KES|TZS|XAF|XOF|ZAR)\b)[A-Z]{2,6}[ \t]+\d+(?:\.\d+)*(?:\([^)]+\))*",
     ),
     re.compile(r"\b(?:Act|Order|Regulations?)\s+\d{4}\b"),
@@ -1888,12 +1888,18 @@ _STRUCTURAL_LINE_MARKER_PATTERN = re.compile(
 _STRUCTURAL_GLUED_SENTENCE_MARKER_PATTERN = re.compile(
     r"(?<![\w])(?:[1-9]\d?)(?=[A-ZÄÖÜ])"
 )
+_CURRENCY_MARKER_FRAGMENT = (
+    r"(?:[$£€¥₹]|"
+    r"(?:euros?|eur|dollars?|usd|pounds?|gbp|cad|aud|chf)\b|"
+    r"(?:(?:u\.?\s*s\.?|united\s+states|canadian|australian)\s+dollars?|"
+    r"swiss\s+francs?)\b)"
+)
 _CURRENCY_MARKER_BEFORE_NUMBER_PATTERN = re.compile(
-    r"(?:[$£€¥₹]|(?:euros?|eur|usd|gbp|cad|aud|chf)\b)\s*$",
+    rf"{_CURRENCY_MARKER_FRAGMENT}\s*$",
     re.IGNORECASE,
 )
 _CURRENCY_MARKER_AFTER_NUMBER_PATTERN = re.compile(
-    r"^\s*(?:[$£€¥₹]|(?:euros?|eur|dollars?|usd|pounds?|gbp)\b)",
+    rf"^\s*{_CURRENCY_MARKER_FRAGMENT}",
     re.IGNORECASE,
 )
 _DANISH_CURRENCY_MARKER_PATTERN = re.compile(
@@ -1901,7 +1907,7 @@ _DANISH_CURRENCY_MARKER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_CURRENCY_MARKER_PATTERN = re.compile(
-    r"(?:[$£€¥₹]|(?:euros?|eur|dollars?|usd|pounds?|gbp|cad|aud|chf)\b)",
+    _CURRENCY_MARKER_FRAGMENT,
     re.IGNORECASE,
 )
 _VEHICLE_TAX_FISCAL_POWER_TABLE_CELL_PATTERN = re.compile(
@@ -8468,6 +8474,26 @@ def _tokenize_numeric_occurrences_from_text(
         with contextlib.suppress(ValueError):
             source_value = float(raw)
             if source_value <= 1:
+                continue
+            source_span = cleaned_view.source_span(match.span(1))
+            if (
+                any(
+                    money_start <= source_span[0] and source_span[1] <= money_end
+                    for money_start, money_end in collector.money_spans
+                )
+                or _currency_marker_before_number(
+                    cleaned,
+                    match.start(1),
+                    profile=profile,
+                    boundaries=collector.context_boundaries,
+                )
+                or _currency_marker_after_number(
+                    cleaned,
+                    match.end(1),
+                    profile=profile,
+                    boundaries=collector.context_boundaries,
+                )
+            ):
                 continue
             context = cleaned[max(0, match.start() - 500) : match.end() + 80].lower()
             if not re.search(r"\bpercent(?:age|ages)?\b", context):

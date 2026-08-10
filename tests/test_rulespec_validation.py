@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1656"')
+        .startswith('__version__ = "0.2.1657"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1656"
+    assert encoder_package["version"] == "0.2.1657"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1656"
+    assert project["project"]["version"] == "0.2.1657"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1656"')
+        .startswith('__version__ = "0.2.1657"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1656"
+    assert encoder_package["version"] == "0.2.1657"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1656"
+    assert project["project"]["version"] == "0.2.1657"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1656"')
+        .startswith('__version__ = "0.2.1657"')
     )
 
 
@@ -12956,6 +12956,7 @@ def test_da_numeric_profile_terminates_at_glued_juris_sentence_marker():
         ),
         ("de/statute/estg/32a", "de-DE"),
         ("us/statute/example/1", "legacy"),
+        ("us-al/statute/40-18-5", "legacy"),
         (None, "legacy"),
     ),
 )
@@ -12965,6 +12966,158 @@ def test_numeric_profile_selection_uses_canonical_citation_country(
 ):
     assert (
         validator_pipeline._numeric_profile_for_citation_path(citation_path) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "threshold",
+    (
+        "$500",
+        "500 dollars",
+        "500 U.S. dollars",
+        "CAD 500",
+        "500 CAD",
+        "CHF 500",
+        "500 CHF",
+        "AUD 500",
+        "500 AUD",
+    ),
+)
+def test_legacy_percentage_context_does_not_scale_currency_threshold(threshold):
+    grounding = extract_typed_numeric_occurrences_from_text(
+        f"A threshold of {threshold} applies; the rate is 2 percent.",
+        profile="legacy",
+    )
+
+    assert [item.value for item in grounding if item.raw == "500"] == [500.0]
+    assert any(item.value == 0.02 and item.has_rate_context for item in grounding)
+
+
+def test_legacy_percentage_context_keeps_real_scaled_rate():
+    grounding = extract_typed_numeric_occurrences_from_text(
+        "The applicable rate is 500 percent.",
+        profile="legacy",
+    )
+
+    assert any(
+        item.value == 5.0 and item.raw == "500" and item.has_rate_context
+        for item in grounding
+    )
+
+
+def test_us_pipeline_does_not_reinterpret_money_as_nearby_percentage():
+    citation_path = "us-al/statute/40-18-5"
+    source_text = (
+        "Two percent of taxable income not in excess of five hundred dollars ($500)."
+    )
+    grounding = extract_typed_numeric_occurrences_from_text(
+        source_text,
+        profile="legacy",
+    )
+    assert [(item.value, item.raw) for item in grounding] == [
+        (0.02, "Two percent"),
+        (500.0, "five hundred"),
+        (500.0, "500"),
+    ]
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: first_bracket_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '0.02'
+  - name: first_bracket_ceiling
+    kind: parameter
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        formula: '500'
+  - name: first_bracket_tax
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-al/statute/40-18-5
+              excerpt: Two percent of taxable income not in excess of five hundred dollars ($500).
+    versions:
+      - effective_from: '2026-01-01'
+        formula: first_bracket_rate * min(max(0, taxable_income), first_bracket_ceiling)
+inputs:
+  - name: taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    test_cases = [
+        {
+            "name": "inside_first_bracket",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2026-01-01",
+                "end": "2026-12-31",
+            },
+            "input": {
+                "us-al:policies/income_tax/example#input.taxable_income": 499,
+            },
+            "output": {
+                "us-al:policies/income_tax/example#first_bracket_tax": 9.98,
+            },
+        },
+        {
+            "name": "at_first_bracket_ceiling",
+            "period": {
+                "period_kind": "tax_year",
+                "start": "2026-01-01",
+                "end": "2026-12-31",
+            },
+            "input": {
+                "us-al:policies/income_tax/example#input.taxable_income": 500,
+            },
+            "output": {
+                "us-al:policies/income_tax/example#first_bracket_tax": 10,
+            },
+        },
+    ]
+    pipeline = ValidatorPipeline(
+        policy_repo_path=Path("/tmp/rulespec-us/us-al"),
+        axiom_rules_path=Path("/tmp/axiom-rules-engine"),
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+        source_citation_path=citation_path,
+    )
+
+    assert (
+        find_ungrounded_numeric_issues(
+            content,
+            source_text=source_text,
+            source_citation_path=citation_path,
+        )
+        == []
+    )
+    assert (
+        pipeline._complete_source_unit_issues(
+            content,
+            validation_source_texts={citation_path: source_text},
+            test_cases=test_cases,
+        )
+        == []
     )
 
 
