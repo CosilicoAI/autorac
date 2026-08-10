@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 import requests
 import yaml
+from axiom_oracles.bridges.registry import load_policyengine_registry
 
 from axiom_encode import __version__
 from axiom_encode import corpus_resolver as _corpus_resolver
@@ -118,6 +119,7 @@ from .source_completeness import (
     collect_artifact_numeric_values,
 )
 from .validator_pipeline import (
+    ExistingTargetOracleContract,
     NumericOccurrence,
     ValidationResult,
     ValidatorPipeline,
@@ -129,6 +131,7 @@ from .validator_pipeline import (
     _parse_rulespec_target,
     _resolve_rulespec_target_file,
     _source_text_looks_like_table,
+    build_existing_target_oracle_contract,
     evaluate_numeric_grounding_values_scoped,
     extract_embedded_source_text,
     extract_named_scalar_occurrences,
@@ -7247,6 +7250,23 @@ def _evaluate_artifact_in_scope(
     replacement_overlay_scope: bool = False,
 ) -> EvalArtifactMetrics:
     """Evaluate one RuleSpec artifact with deterministic checks plus optional oracles."""
+    existing_target_oracle_contract: ExistingTargetOracleContract | None = None
+    relative_target = _relative_rulespec_source_path(rulespec_file)
+    if relative_target is not None:
+        existing_target = Path(policy_repo_root).resolve() / relative_target
+        if existing_target.is_file() and not existing_target.is_symlink():
+            target = (
+                f"{Path(policy_repo_root).name}:"
+                f"{relative_target.with_suffix('').as_posix()}"
+            )
+            existing_target_oracle_contract = build_existing_target_oracle_contract(
+                existing_target.read_text(),
+                target=target,
+                policyengine_registry=load_policyengine_registry(),
+                invalid_input_names=_context_file_invalid_local_inputs(
+                    str(existing_target)
+                ),
+            )
     with _rulespec_validation_target(
         rulespec_file,
         policy_repo_root,
@@ -7281,6 +7301,7 @@ def _evaluate_artifact_in_scope(
                 document.citation_path: document.body
                 for document in amendment_documents
             },
+            existing_target_oracle_contract=existing_target_oracle_contract,
         )
         compile_result = pipeline._run_compile_check(validation_file)
         _add_attached_amendment_import_retry_guidance(
@@ -9842,8 +9863,8 @@ Import and context rules:
   import target must use exactly `us:statutes/26/24/h#some_output`, not
   `statutes/26/24/h#some_output`.
 - In formulas, reference imported exports by their bare local rule name after adding an `imports:` entry; never write an absolute `us:...#rule_name` reference inside a formula.
-- Treat copied current target files as context, not as backward compatibility contracts. You may drop, rename, rebuild, or defer existing executable rules, tests, imports, and local factual inputs when the source text, schema, canonical imports, or validation guardrails require a cleaner encoding.
-- Do not preserve legacy executable surfaces merely because downstream tests or oracle mappings used them. Source-faithful RuleSpec with canonical legal pointers is more important than compatibility with old local names.
+- Treat copied current target files as context, not as general backward compatibility contracts. You may drop, rename, rebuild, or defer existing executable rules, tests, imports, and local factual inputs when the source text, schema, canonical imports, or validation guardrails require a cleaner encoding, except for surfaces explicitly listed above under `Exact-oracle replacement contract`.
+- An exact-oracle replacement contract is a narrow registry-owned exception: preserve its valid mapped names/public shapes and the listed valid explicit inputs while repairing their implementation. Prefix/fallback mappings and invalid legacy inputs create no preservation contract.
 - Never preserve, rename, or recreate a legacy local input if it conflicts with the current no-placeholder, no-bare-friendly-name, filing-status, temporal, import, or source-grounding rules. If an existing output cannot be represented faithfully without such a local input, defer that executable surface or leave it out of executable formulas.
 - When source text cites a section or subsection and a copied context file for
   that citation is listed, import and use the listed exported symbol from that
@@ -11471,10 +11492,23 @@ def _format_existing_target_contract_guidance(
 ) -> str:
     """Return explicit public-surface contracts for copied target files."""
     contract_lines: list[str] = []
+    required_lines: list[str] = []
     for item in context_files:
         if item.kind != "existing_target":
             continue
         surfaces = _context_file_executable_surfaces(item.source_path)
+        oracle_contract = build_existing_target_oracle_contract(
+            Path(item.source_path).read_text(),
+            target=item.import_path,
+            policyengine_registry=load_policyengine_registry(),
+            invalid_input_names=_context_file_invalid_local_inputs(
+                item.source_path,
+                context_files=context_files,
+            ),
+        )
+        required_names = {
+            surface.name for surface in oracle_contract.surfaces
+        } if oracle_contract is not None else set()
         for name, surface in surfaces.items():
             details = [
                 f"kind={surface.get('kind') or ''}",
@@ -11491,19 +11525,49 @@ def _format_existing_target_contract_guidance(
             effective_dates = surface.get("effective_dates") or ()
             if effective_dates:
                 details.append(f"effective_from={','.join(effective_dates)}")
-            contract_lines.append(
-                f"- `{item.import_path}#{name}` ({'; '.join(details)})"
+            line = f"- `{item.import_path}#{name}` ({'; '.join(details)})"
+            if name in required_names:
+                required_lines.append(line)
+            else:
+                contract_lines.append(line)
+        if oracle_contract is not None:
+            required_lines.extend(
+                f"- `{item.import_path}#input.{input_contract.name}` "
+                f"(entity={input_contract.entity}; dtype={input_contract.dtype}; "
+                f"period={input_contract.period}; unit={input_contract.unit})"
+                for input_contract in oracle_contract.inputs
             )
-    if not contract_lines:
+    if not contract_lines and not required_lines:
         return ""
-    return """
-Existing target executable surfaces:
-The copied current target exports these executable names for inspection. They
-are not compatibility contracts. Preserve a name only when it remains the
+    required_section = ""
+    if required_lines:
+        required_section = """
+Exact-oracle replacement contract:
+These valid existing names are owned by exact oracle registry entries. Preserve
+each executable name and its listed public shape, and preserve each listed valid
+explicit input contract. Repair formulas, proofs, tests, and temporal coverage
+behind those stable surfaces. This exception does not preserve any invalid
+legacy input:
+{lines}
+""".format(lines="\n".join(required_lines))
+    advisory_section = ""
+    if contract_lines:
+        advisory_section = """
+Other existing target executable surfaces:
+The copied current target also exports these executable names for inspection.
+They are not compatibility contracts. Preserve a name only when it remains the
 cleanest source-faithful surface under current validation; otherwise rename,
 rebuild, drop, or defer it:
 {lines}
 """.format(lines="\n".join(contract_lines))
+    return """
+Existing target executable surfaces:
+{required_section}
+{advisory_section}
+""".format(
+        required_section=required_section,
+        advisory_section=advisory_section,
+    )
 
 
 def _format_existing_target_invalid_input_guidance(

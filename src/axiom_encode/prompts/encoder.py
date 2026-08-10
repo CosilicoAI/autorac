@@ -470,14 +470,17 @@ _COMPOSITION_AND_DEFERRAL = """- If source text is a broad application, furnishi
   aggregate only when a compatible relation and numeric amount field are present.
   If neither is available, defer the numeric output instead of using the
   Judgment import as a placeholder scalar.
-- Treat any existing copied target file as context, not as a backward
+- Treat any existing copied target file as context, not as a general backward
   compatibility contract. You may drop, rename, rebuild, or defer existing
   executable rules, tests, imports, and local factual inputs when the source
   text, schema, canonical imports, or validation guardrails require a cleaner
-  encoding.
-- Do not preserve legacy executable surfaces merely because downstream tests or
-  oracle mappings used them. Source-faithful RuleSpec with canonical legal
-  pointers is more important than compatibility with old local names.
+  encoding, except when eval context explicitly lists a narrow exact-oracle
+  replacement contract.
+- For an explicitly listed exact-oracle replacement contract, preserve each
+  valid mapped name and public shape plus its listed valid explicit input
+  contract while repairing formulas, proofs, tests, and temporal coverage.
+  Prefix/fallback mappings and invalid legacy inputs create no preservation
+  contract.
 - Never preserve, rename, or recreate a legacy local input if it conflicts with
   the current no-placeholder, no-bare-friendly-name, filing-status, temporal,
   import, or source-grounding rules. If an existing output cannot be represented

@@ -12,6 +12,7 @@ import textwrap
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -52,6 +53,7 @@ from axiom_encode.harness.validator_pipeline import (
     _policyengine_period_string,
     _policyengine_us_snap_input_aliases,
     _tax_unit_member_aged_flags,
+    build_existing_target_oracle_contract,
     extract_embedded_source_text,
     extract_grounding_values,
     extract_named_scalar_occurrences,
@@ -74,6 +76,7 @@ from axiom_encode.harness.validator_pipeline import (
     find_empty_rules_module_issues,
     find_entity_limited_aggregation_order_issues,
     find_exception_test_coverage_issues,
+    find_existing_target_oracle_contract_issues,
     find_filtered_entity_dependency_issues,
     find_formula_absolute_reference_issues,
     find_formula_date_literal_issues,
@@ -85,6 +88,7 @@ from axiom_encode.harness.validator_pipeline import (
     find_interval_table_reencoding_issues,
     find_judgment_conditional_formula_issues,
     find_judgment_positive_companion_output_issues,
+    find_local_dependency_temporal_coverage_issues,
     find_missing_child_exception_import_issues,
     find_missing_derived_companion_output_issues,
     find_missing_same_section_subsection_import_issues,
@@ -2261,6 +2265,122 @@ rules:
     issues = find_versioned_derived_formula_issues(content)
 
     assert issues == []
+
+
+def test_unbounded_derived_cannot_outlive_direct_finite_local_dependency():
+    content = """\
+format: rulespec/v1
+rules:
+  - name: al_pit_2026_first_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: al_pit_2026_schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        formula: al_pit_2026_first_rate * taxable_income
+inputs:
+  - name: taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+
+    issues = find_local_dependency_temporal_coverage_issues(content)
+
+    assert len(issues) == 1
+    assert "al_pit_2026_schedule_before_credits" in issues[0]
+    assert "al_pit_2026_first_rate" in issues[0]
+    assert "2026-12-31" in issues[0]
+
+
+def test_bounded_derived_matches_direct_local_dependency_coverage():
+    content = """\
+format: rulespec/v1
+rules:
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: rate * income
+inputs:
+  - name: income
+    entity: TaxUnit
+    dtype: Money
+"""
+
+    assert find_local_dependency_temporal_coverage_issues(content) == []
+
+
+def test_exact_oracle_replacement_contract_preserves_surface_and_valid_input():
+    target = "us-al:policies/income_tax/2026_section_40_18_5"
+    existing = """\
+format: rulespec/v1
+rules:
+  - name: al_pit_2026_schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, al_taxable_income) if filing_status == 'single' else 0
+inputs:
+  - name: al_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+  - name: filing_status
+    entity: TaxUnit
+    dtype: String
+    period: Year
+"""
+    registry = SimpleNamespace(
+        mappings_by_legal_id={
+            f"{target}#al_pit_2026_schedule_before_credits": object()
+        }
+    )
+    contract = build_existing_target_oracle_contract(
+        existing,
+        target=target,
+        policyengine_registry=registry,
+        invalid_input_names={"filing_status"},
+    )
+    assert contract is not None
+    assert [item.name for item in contract.inputs] == ["al_taxable_income"]
+
+    renamed = existing.replace(
+        "al_pit_2026_schedule_before_credits", "al_income_tax"
+    ).replace("al_taxable_income", "taxable_income")
+    issues = find_existing_target_oracle_contract_issues(renamed, contract)
+
+    assert len(issues) == 2
+    assert "#al_pit_2026_schedule_before_credits" in issues[0]
+    assert "#input.al_taxable_income" in issues[1]
+    assert find_existing_target_oracle_contract_issues(existing, contract) == []
 
 
 def test_rule_source_metadata_rejects_executable_rules_without_rule_source():

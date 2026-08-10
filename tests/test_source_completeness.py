@@ -1203,6 +1203,114 @@ def test_legal_section_citation_does_not_hide_real_arithmetic_topology():
     assert with_citation == without_citation
 
 
+def _al_direct_input_clamp_analysis(test_cases):
+    source = "The tax is two percent of taxable income not in excess of $500."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-al/statute/40-18-5
+rules:
+  - name: first_rate
+    kind: parameter
+    dtype: Rate
+    period: Year
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: 0.02
+  - name: taxable_income_boundary
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: max(0, completed_taxable_income)
+  - name: schedule_before_credits
+    kind: derived
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+    source: us-al/statute/40-18-5
+    versions:
+      - effective_from: '2026-01-01'
+        effective_to: '2026-12-31'
+        formula: first_rate * min(taxable_income_boundary, 500)
+inputs:
+  - name: completed_taxable_income
+    entity: TaxUnit
+    dtype: Money
+    period: Year
+    unit: USD
+"""
+    return _analyze(
+        content,
+        source,
+        corpus_citation_path="us-al/statute/40-18-5",
+        test_cases=test_cases,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+
+def test_direct_local_input_clamp_rejects_zero_only_companion_evidence():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "zero_income",
+                "period": "2026",
+                "input": {"completed_taxable_income": 0},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_accepts_negative_shared_dependency_evidence():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_is_clamped",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {
+                    "taxable_income_boundary": 0,
+                    "schedule_before_credits": 0,
+                },
+            }
+        ]
+    )
+
+    assert not _has_issue(result, "direct nonnegative clamp", "below zero")
+
+
+def test_direct_local_input_clamp_requires_clamped_dependency_assertion():
+    result = _al_direct_input_clamp_analysis(
+        [
+            {
+                "name": "negative_income_only_asserts_principal",
+                "period": "2026",
+                "input": {"completed_taxable_income": -1},
+                "output": {"schedule_before_credits": 0},
+            }
+        ]
+    )
+
+    assert _has_issue(result, "direct nonnegative clamp", "taxable_income_boundary")
+
+
 def test_progressive_min_clamp_binds_exact_source_boundary():
     source = "Taxable income not in excess of $500 is taxed at two percent."
     boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]

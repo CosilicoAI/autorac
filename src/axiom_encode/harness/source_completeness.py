@@ -27,7 +27,7 @@ from decimal import (
     InvalidOperation,
     localcontext,
 )
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 import yaml
 
@@ -4275,6 +4275,12 @@ def _analyze_rulespec_payload(
                 extract_numeric_occurrences=extract_numeric_grounding_occurrences,
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 formula_environment=formula_environment,
+                declared_input_names={
+                    str(item.get("name") or "").strip()
+                    for item in payload.get("inputs", [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip()
+                },
             )
         )
 
@@ -11372,6 +11378,121 @@ def _numeric_binding_sequences_match(
     )
 
 
+_DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP = re.compile(
+    r"\bmax\s*\(\s*(?:0+(?:\.0+)?)\s*,\s*"
+    r"(?P<input>[A-Za-z_][A-Za-z0-9_]*)\s*\)"
+)
+
+
+def _rule_formula_identifiers(rule: Mapping[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return identifiers
+    for version in versions:
+        formula = version.get("formula") if isinstance(version, dict) else None
+        if isinstance(formula, str):
+            identifiers.update(
+                re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", formula)
+            )
+    return identifiers
+
+
+def _direct_local_input_clamps(
+    rule: Mapping[str, Any],
+    declared_input_names: set[str],
+) -> set[str]:
+    clamped: set[str] = set()
+    versions = rule.get("versions")
+    if not isinstance(versions, list):
+        return clamped
+    for version in versions:
+        formula = version.get("formula") if isinstance(version, dict) else None
+        if not isinstance(formula, str):
+            continue
+        clamped.update(
+            match.group("input")
+            for match in _DIRECT_LOCAL_INPUT_NONNEGATIVE_CLAMP.finditer(formula)
+            if match.group("input") in declared_input_names
+        )
+    return clamped
+
+
+def _negative_local_input_clamp_test_issues(
+    principal_rules: dict[str, dict[str, Any]],
+    *,
+    cases: Sequence[dict[str, Any]],
+    declared_input_names: set[str],
+) -> list[str]:
+    """Require negative evidence for direct max(0, local_input) clamps."""
+
+    dependencies = {
+        name: _rule_formula_identifiers(rule) & principal_rules.keys()
+        for name, rule in principal_rules.items()
+    }
+    issues: list[str] = []
+    for owner, rule in principal_rules.items():
+        for input_name in sorted(
+            _direct_local_input_clamps(rule, declared_input_names)
+        ):
+            downstream = {
+                candidate
+                for candidate in principal_rules
+                if candidate != owner
+                and _formula_rule_depends_on(
+                    candidate,
+                    owner,
+                    dependencies=dependencies,
+                )
+            }
+            principal_outputs = downstream or {owner}
+            witnessed = False
+            for case in cases:
+                inputs = case.get("input")
+                if not isinstance(inputs, dict):
+                    continue
+                has_negative = any(
+                    input_name in _input_key_names(key)
+                    and any(value < 0 for value in _numeric_test_input_values(raw_value))
+                    for key, raw_value in inputs.items()
+                )
+                if not has_negative:
+                    continue
+                outputs = _test_case_output_names(case)
+                if owner in outputs and outputs & principal_outputs:
+                    witnessed = True
+                    break
+            if witnessed:
+                continue
+            issues.append(
+                "[complete-source-unit:tests] Direct nonnegative clamp "
+                f"`max(0, {input_name})` in `{owner}` requires an executed "
+                f"companion case with `{input_name}` below zero that asserts "
+                f"the clamped rule `{owner}` and a principal output depending "
+                "on it. A zero-valued case does not exercise the negative clamp."
+            )
+    return issues
+
+
+def _formula_rule_depends_on(
+    candidate: str,
+    dependency: str,
+    *,
+    dependencies: Mapping[str, set[str]],
+) -> bool:
+    pending = list(dependencies.get(candidate, set()))
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == dependency:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(dependencies.get(current, set()) - seen)
+    return False
+
+
 def _companion_test_issues(
     principal_rules: dict[str, dict[str, Any]],
     *,
@@ -11386,6 +11507,7 @@ def _companion_test_issues(
     extract_numeric_occurrences: NumericOccurrenceExtractor,
     numeric_value_is_grounded: NumericGroundingPredicate,
     formula_environment: dict[str, Any],
+    declared_input_names: set[str],
 ) -> list[str]:
     issues: list[str] = []
     cases = [case for case in (test_cases or ()) if isinstance(case, dict)]
@@ -11422,6 +11544,13 @@ def _companion_test_issues(
         name: [case for case in cases if name in _test_case_output_names(case)]
         for name in principal_rules
     }
+    issues.extend(
+        _negative_local_input_clamp_test_issues(
+            principal_rules,
+            cases=cases,
+            declared_input_names=declared_input_names,
+        )
+    )
     for name, asserted_cases in asserted_by_rule.items():
         if not asserted_cases:
             issues.append(
