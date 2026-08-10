@@ -349,7 +349,7 @@ jobs:
             --corpus-path "$GITHUB_WORKSPACE/_axiom/axiom-corpus" \
             --axiom-rules-engine-path "$GITHUB_WORKSPACE/_axiom/axiom-rules-engine" \
             --policy-repo-path "$genroot" \
-            --mode cold --no-sync --skip-reviewers \
+            --mode cold --skip-reviewers \
             --db "$RUNNER_TEMP/enc.db"
           if [[ "$require_complete_source_unit" == true ]]; then
             set -- "$@" --require-complete-source-unit

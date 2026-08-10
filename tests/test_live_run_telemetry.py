@@ -1,8 +1,13 @@
 """Tests for live encode-run presence telemetry."""
 
+import json
 from unittest.mock import MagicMock, patch
 
-from axiom_encode.live_run_telemetry import LiveRunTelemetry, runner_identity
+from axiom_encode.live_run_telemetry import (
+    LiveRunTelemetry,
+    runner_identity,
+    telemetry_mode,
+)
 
 
 def _mock_client():
@@ -21,6 +26,31 @@ def _configured_env(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
 
+def _ingest_env(monkeypatch):
+    monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("AXIOM_ENCODE_TELEMETRY", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+
+def _mock_urlopen(status=204):
+    response = MagicMock()
+    response.status = status
+    response.__enter__ = lambda self: self
+    response.__exit__ = lambda self, *args: None
+    return patch(
+        "axiom_encode.live_run_telemetry.urllib.request.urlopen",
+        return_value=response,
+    )
+
+
+def _ingest_payloads(urlopen_mock):
+    return [
+        json.loads(call.args[0].data.decode("utf-8"))
+        for call in urlopen_mock.call_args_list
+    ]
+
+
 class TestRunnerIdentity:
     def test_contains_machine_fields(self):
         identity = runner_identity()
@@ -29,19 +59,87 @@ class TestRunnerIdentity:
         assert isinstance(identity["is_ci"], bool)
 
 
+class TestTelemetryMode:
+    def test_defaults_to_ingest_without_credentials(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        assert telemetry_mode() == "ingest"
+
+    def test_direct_with_credentials(self, monkeypatch):
+        _configured_env(monkeypatch)
+        assert telemetry_mode() == "direct"
+
+    def test_off_under_pytest_or_explicit_optout(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "off")
+        assert telemetry_mode() == "off"
+        monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "false")
+        assert telemetry_mode() == "off"
+        monkeypatch.delenv("AXIOM_ENCODE_TELEMETRY")
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_x.py::test_y")
+        assert telemetry_mode() == "off"
+
+
 class TestLiveRunTelemetry:
-    def test_noop_without_credentials(self, monkeypatch):
-        monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_URL", raising=False)
-        monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", raising=False)
-        with patch("axiom_encode.supabase_sync.get_supabase_client") as mock_get:
+    def test_ingest_mode_reports_lifecycle_without_credentials(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        with _mock_urlopen() as urlopen_mock:
+            with LiveRunTelemetry(
+                citation="us/statute/26/32",
+                backend="codex",
+                model="gpt-5.5",
+                encoder_version="0.2.1668",
+            ) as live:
+                live.set_attempt(2, "gpt-5.5-max")
+                live.finish("completed", run_id="abc12345")
+
+        payloads = _ingest_payloads(urlopen_mock)
+        assert payloads[0]["op"] == "start"
+        assert payloads[0]["citation"] == "us/statute/26/32"
+        assert payloads[0]["runner"]["hostname"] == runner_identity()["hostname"]
+        assert payloads[1] == {
+            "op": "heartbeat",
+            "id": live.id,
+            "attempt": 2,
+            "model": "gpt-5.5-max",
+        }
+        assert payloads[2]["op"] == "finish"
+        assert payloads[2]["status"] == "completed"
+        assert payloads[2]["run_id"] == "abc12345"
+        request = urlopen_mock.call_args_list[0].args[0]
+        assert request.full_url.startswith("https://axiom-foundation.org/")
+
+    def test_ingest_url_override(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        monkeypatch.setenv(
+            "AXIOM_ENCODE_TELEMETRY_INGEST_URL", "https://staging.example/ingest"
+        )
+        with _mock_urlopen() as urlopen_mock:
+            with LiveRunTelemetry(
+                citation="us/statute/26/32",
+                backend="codex",
+                model="gpt-5.5",
+                encoder_version="0.0.0",
+            ):
+                pass
+        assert urlopen_mock.call_args_list[0].args[0].full_url == (
+            "https://staging.example/ingest"
+        )
+
+    def test_ingest_start_failure_disables_telemetry(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        with patch(
+            "axiom_encode.live_run_telemetry.urllib.request.urlopen",
+            side_effect=OSError("unreachable"),
+        ) as urlopen_mock:
             with LiveRunTelemetry(
                 citation="us/statute/26/32",
                 backend="codex",
                 model="gpt-5.5",
                 encoder_version="0.0.0",
             ) as live:
-                assert live._client is None
-        mock_get.assert_not_called()
+                live.finish("completed")
+        # Only the failed start attempt — no heartbeat or finish posts after.
+        assert urlopen_mock.call_count == 1
 
     def test_noop_under_pytest_even_with_credentials(self, monkeypatch):
         monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_URL", "https://example.supabase.co")
@@ -150,7 +248,9 @@ class TestLiveRunTelemetry:
                 live.set_attempt(2, "gpt-5.5-max")
                 live.finish("completed")
         attempt_update = table.update.call_args_list[0][0][0]
-        assert attempt_update == {"attempt": 2, "model": "gpt-5.5-max"}
+        assert attempt_update["attempt"] == 2
+        assert attempt_update["model"] == "gpt-5.5-max"
+        assert attempt_update["last_heartbeat_at"]
 
     def test_insert_failure_disables_telemetry(self, monkeypatch):
         _configured_env(monkeypatch)

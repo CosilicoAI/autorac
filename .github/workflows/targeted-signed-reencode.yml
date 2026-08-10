@@ -1087,7 +1087,6 @@ jobs:
               --mode repo-augmented
               --require-complete-source-unit
               --db "$RUNNER_TEMP/encodings.db"
-              --no-sync
               --apply
             )
             if [ "$target_only" = "true" ]; then

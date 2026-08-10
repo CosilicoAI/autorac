@@ -59,7 +59,6 @@ def _base_encoder_argv(tmp_path: Path) -> list[str]:
         f"{tmp_path}/genroot/rulespec-de",
         "--mode",
         "cold",
-        "--no-sync",
         "--skip-reviewers",
         "--db",
         f"{tmp_path}/enc.db",
