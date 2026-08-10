@@ -95,7 +95,7 @@ class TestLiveRunTelemetry:
                 citation="us/statute/26/32",
                 backend="codex",
                 model="gpt-5.5",
-                encoder_version="0.2.1670",
+                encoder_version="0.2.1671",
             ) as live:
                 live.set_attempt(2, "gpt-5.5-max")
                 live.finish("completed", run_id="abc12345")
