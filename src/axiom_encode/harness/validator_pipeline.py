@@ -2115,7 +2115,12 @@ def _authenticated_same_act_aliases_from_metadata(
     if not isinstance(metadata, dict):
         return ()
     aliases: list[str] = []
-    law_vintage = metadata.get("law_vintage")
+    attestation = metadata.get("source_attestation")
+    row = attestation.get("row") if isinstance(attestation, dict) else None
+    row_metadata = row.get("metadata") if isinstance(row, dict) else None
+    law_vintage = (
+        row_metadata.get("law_vintage") if isinstance(row_metadata, dict) else None
+    )
     if isinstance(law_vintage, dict):
         bill = law_vintage.get("bill")
         legislature = law_vintage.get("legislature")
@@ -2126,8 +2131,6 @@ def _authenticated_same_act_aliases_from_metadata(
                 if year_match is not None:
                     aliases.append(f"{year_match.group(1)} {normalized_bill}")
 
-    attestation = metadata.get("source_attestation")
-    row = attestation.get("row") if isinstance(attestation, dict) else None
     source_path = row.get("source_path") if isinstance(row, dict) else None
     if isinstance(source_path, str):
         bill_match = re.search(

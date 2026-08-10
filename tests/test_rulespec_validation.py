@@ -31818,6 +31818,25 @@ def test_same_act_alias_is_derived_from_authenticated_source_path():
     assert validator_pipeline._authenticated_same_act_aliases_from_metadata(None) == ()
 
 
+def test_same_act_alias_uses_only_attested_row_law_vintage_metadata():
+    law_vintage = {
+        "bill": "House Bill 1",
+        "legislature": "2025 Regular Session",
+    }
+    attested = {
+        "source_attestation": {"row": {"metadata": {"law_vintage": law_vintage}}}
+    }
+    unattested = {"law_vintage": law_vintage}
+
+    assert validator_pipeline._authenticated_same_act_aliases_from_metadata(
+        attested
+    ) == ("2025 House Bill 1",)
+    assert (
+        validator_pipeline._authenticated_same_act_aliases_from_metadata(unattested)
+        == ()
+    )
+
+
 def test_complete_source_accepts_same_act_bill_alias_from_authenticated_metadata(
     tmp_path,
 ):
