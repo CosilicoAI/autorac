@@ -15590,15 +15590,23 @@ def find_deferred_output_issues(content: str) -> list[str]:
     payload = _rulespec_payload(content)
     if payload is None:
         return []
+    issues: list[str] = []
+    if "deferred_outputs" in payload:
+        issues.append(
+            "`deferred_outputs` is misplaced at the document root; move it to "
+            "`module.deferred_outputs`."
+        )
     module = payload.get("module")
     if not isinstance(module, dict) or "deferred_outputs" not in module:
-        return []
+        return issues
 
     deferred_outputs = module.get("deferred_outputs")
     if not isinstance(deferred_outputs, list):
-        return ["`module.deferred_outputs` must be a list of deferred output records."]
+        issues.append(
+            "`module.deferred_outputs` must be a list of deferred output records."
+        )
+        return issues
 
-    issues: list[str] = []
     for index, record in enumerate(deferred_outputs):
         label = f"module.deferred_outputs[{index}]"
         if not isinstance(record, dict):
