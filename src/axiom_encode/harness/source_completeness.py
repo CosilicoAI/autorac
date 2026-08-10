@@ -288,6 +288,16 @@ _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD = re.compile(
     r"\s+(?:the\s+)?following\b",
     flags=re.IGNORECASE,
 )
+_INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND = re.compile(
+    r"(?:^|[.!?;:—]\s+)(?:"
+    r"(?:see(?:\s*,\s*e\.g\.,?)?|refer(?:\s+back)?(?:\s+to)?|"
+    r"compare(?:\s+(?:to|with))?|subject\s+to|pursuant\s+to|"
+    r"according\s+to|in\s+accordance\s+with|for\s+purposes\s+of|under)\b|"
+    r"(?:except\s+)?as\s+(?:provided|specified|described|stated)\s+"
+    r"(?:in|under)\b)"
+    r".{0,160}[:;.!?—]\s*$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)"
     r"(?!(?i:st|nd|rd|th)\b)"
@@ -2653,9 +2663,11 @@ def _flattened_inline_numeric_root_starts(
     punctuation on one physical line.  Those markers are ambiguous in
     isolation, so restore them only when the first outline candidate is an
     inline ``(1)`` and independently qualified inline candidates prove
-    contiguous ``(2)`` and ``(3)`` successors.  A root is qualified when it is
-    not reference-shaped or when a spaced attached first child such as
-    ``(2) (a)`` or sentence-opening provision text proves structure.  The
+    contiguous ``(2)`` and ``(3)`` successors.  Every recovered root must be
+    free of direct cross-reference context.  A trailing ``of/under this
+    section.`` from the preceding statutory sentence is treated as stale only
+    when that sentence has no explicit see/refer/compare command.  Attached
+    children and capitalization never override an explicit reference.  The
     initial ``(1)`` remains provisional until those successors are found.
     """
 
@@ -2668,10 +2680,11 @@ def _flattened_inline_numeric_root_starts(
     )
     if not ordered_matches or ordered_matches[0] not in inline_matches:
         return frozenset()
-    first_labels = tuple(
-        re.findall(r"\(([A-Za-z0-9]+)\)", ordered_matches[0].group("marker"))
+    has_inline_first_root = any(
+        tuple(re.findall(r"\(([A-Za-z0-9]+)\)", match.group("marker")))[:1] == ("1",)
+        for match in inline_matches
     )
-    if not first_labels or first_labels[0] != "1":
+    if not has_inline_first_root:
         return frozenset()
 
     expected = 1
@@ -2681,15 +2694,105 @@ def _flattened_inline_numeric_root_starts(
         if not labels or re.fullmatch(r"\d+", labels[0]) is None:
             continue
         value = int(labels[0])
-        if value == expected and _flattened_inline_numeric_root_is_proven(
+        if value == expected:
+            candidate_is_proven = (
+                _flattened_inline_numeric_first_root_is_proven(source_text, match)
+                if expected == 1
+                else _flattened_inline_numeric_root_is_proven(source_text, match)
+            )
+            if candidate_is_proven:
+                selected_starts.append(match.start("marker"))
+                expected += 1
+            continue
+        if value > expected and _flattened_inline_numeric_root_is_proven(
             source_text,
             match,
         ):
-            selected_starts.append(match.start("marker"))
-            expected += 1
-        elif value > expected:
             break
     return frozenset(selected_starts) if expected >= 4 else frozenset()
+
+
+def _flattened_inline_numeric_root_has_explicit_reference_command(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    return _INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND.search(prefix) is not None
+
+
+def _flattened_inline_numeric_first_root_is_proven(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Keep the first root provisional without admitting a reference marker."""
+
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    if _INLINE_OUTLINE_EXPLICIT_REFERENCE_COMMAND.search(prefix):
+        return False
+    has_reference_context = bool(
+        _INLINE_OUTLINE_REFERENCE_CONTEXT.search(prefix)
+        or _INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT.search(prefix)
+    )
+    if not has_reference_context:
+        return True
+    return (
+        re.search(
+            r"\bKRS\s+\d+[A-Za-z]?(?:\.\d+[A-Za-z]?)*[.!?]\s*$",
+            prefix,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _flattened_inline_numeric_root_context_prefix(
+    source_text: str,
+    match: re.Match[str],
+) -> str:
+    """Return local context without bleeding through a prior inline marker."""
+
+    marker_start = match.start("marker")
+    context_start = max(0, marker_start - 256)
+    for previous in _INLINE_PARENTHESIZED_OUTLINE_MARKER.finditer(
+        source_text,
+        context_start,
+        marker_start,
+    ):
+        context_start = max(context_start, previous.end("marker"))
+    return source_text[context_start:marker_start]
+
+
+def _flattened_inline_numeric_root_immediate_clause(
+    source_text: str,
+    match: re.Match[str],
+) -> str:
+    """Return the final clause while preserving periods in legal abbreviations."""
+
+    prefix = _flattened_inline_numeric_root_context_prefix(source_text, match)
+    masked = list(prefix)
+    abbreviation_patterns = (
+        re.compile(r"\b(?:e\.g|i\.e|U\.S)\.", re.IGNORECASE),
+        re.compile(r"\b(?:[A-Z]\.){2,}"),
+        re.compile(r"\b[A-Z][A-Za-z]{0,7}\.(?=\s+(?:Code|Rev|Stat|Comp|Gen)\b)"),
+        re.compile(r"\b(?:Code|Rev|Stat|Comp|Gen)\.(?=\s+\d)"),
+    )
+    for pattern in abbreviation_patterns:
+        for abbreviation in pattern.finditer(prefix):
+            for index in range(abbreviation.start(), abbreviation.end()):
+                if masked[index] == ".":
+                    masked[index] = "\u2024"
+    masked_text = "".join(masked)
+    content_end = len(masked_text.rstrip())
+    boundary_end = content_end
+    if content_end and masked_text[content_end - 1] in ".!?":
+        boundary_end -= 1
+    clause_start = 0
+    for boundary in re.finditer(
+        r"[.!?]\s+(?=[A-Z\dÄÖÜ\"“])",
+        masked_text[:boundary_end],
+    ):
+        clause_start = boundary.end()
+    return prefix[clause_start:content_end]
 
 
 def _flattened_inline_numeric_root_is_proven(
@@ -2698,21 +2801,30 @@ def _flattened_inline_numeric_root_is_proven(
 ) -> bool:
     """Require local structural evidence before restoring one inline root."""
 
-    if not _inline_outline_marker_has_reference_context(source_text, match):
-        return True
-    raw_marker = match.group("marker")
-    labels = tuple(re.findall(r"\(([A-Za-z0-9]+)\)", raw_marker))
-    prefix = source_text[: match.start("marker")].rstrip()
-    if not prefix or prefix[-1] not in ".!?":
+    if _flattened_inline_numeric_root_has_explicit_reference_command(
+        source_text,
+        match,
+    ):
         return False
-    has_spaced_first_child = (
-        len(labels) >= 2
-        and labels[1].lower() == "a"
-        and re.search(r"\)\s+\(", raw_marker) is not None
+    prefix = _flattened_inline_numeric_root_immediate_clause(source_text, match)
+    if _INLINE_OUTLINE_STRUCTURAL_CHAPEAU_CONTEXT.search(prefix) and not (
+        _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD.search(prefix)
+    ):
+        return True
+    has_reference_context = bool(
+        _INLINE_OUTLINE_REFERENCE_CONTEXT.search(prefix)
+        or _INLINE_OUTLINE_NAMED_REFERENCE_CONTEXT.search(prefix)
     )
-    suffix = source_text[match.end("marker") :].lstrip()
-    begins_provision_text = bool(re.match(r"[A-ZÄÖÜ\"]", suffix))
-    return has_spaced_first_child or begins_provision_text
+    if not has_reference_context:
+        return True
+    stale_section_tail = re.search(
+        r"\b(?:of|under)\s+this\s+section[.!?]\s*$",
+        prefix,
+        re.IGNORECASE,
+    )
+    if stale_section_tail is not None:
+        return True
+    return False
 
 
 def _inline_outline_marker_has_reference_context(

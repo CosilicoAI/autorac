@@ -11506,9 +11506,11 @@ def _format_existing_target_contract_guidance(
                 context_files=context_files,
             ),
         )
-        required_names = {
-            surface.name for surface in oracle_contract.surfaces
-        } if oracle_contract is not None else set()
+        required_names = (
+            {surface.name for surface in oracle_contract.surfaces}
+            if oracle_contract is not None
+            else set()
+        )
         for name, surface in surfaces.items():
             details = [
                 f"kind={surface.get('kind') or ''}",

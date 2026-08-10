@@ -2354,6 +2354,23 @@ def test_flattened_kentucky_numeric_outline_recovers_formula_owners():
     assert not any("lump-sum amount" in branch.text for branch in formula_branches)
 
 
+@pytest.mark.parametrize("section", ["141.020", "7A.210", "26A.015"])
+def test_flattened_kentucky_numeric_outline_accepts_krs_heading_without_dash(
+    section: str,
+):
+    source = (
+        f"{section} Tax under KRS {section}. (1) First actual root. "
+        "Second provision. (2) Second actual root. "
+        "Third provision. (3) Third actual root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
 def test_parenthesized_cfr_outline_keeps_suffixed_numeric_siblings():
     source = """\
 (a) Status requirements.
@@ -2469,6 +2486,164 @@ def test_flattened_numeric_outline_does_not_mix_root_with_cross_references():
     )
 
     assert recognize_source_structure(source) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection. (2) (a) An imported condition. "
+            "Refer to subsection. (3) (a) An imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection. (2) An Imported Condition. "
+            "Refer to subsection. (3) An Imported Exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See paragraph no. (2) Imported condition. "
+            "Refer to paragraph no. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See subsection under this section. (2) Imported condition. "
+            "Refer to subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "Subject to subsection under this section. (2) Imported condition. "
+            "Pursuant to subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "In accordance with subsection under this section. (2) Imported condition. "
+            "See, e.g., Miss. Code subsection under this section. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "As provided in subsection under this section. (2) Imported condition. "
+            "Except as specified under subsection under this section. "
+            "(3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See 7 C.F.R. 273.2. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See 26 U.S.C. 1. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+        (
+            "Heading. (1) The first subsection is operative. "
+            "See Ky. Rev. Stat. 141.020. (2) Imported condition. "
+            "Next provision. (3) Imported exception."
+        ),
+    ],
+)
+def test_flattened_numeric_outline_does_not_promote_decorated_references(source: str):
+    assert recognize_source_structure(source) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "See subsection. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Refer to subsection. (1) (a) Imported reference. "
+            "Heading ends. (2) (a) Actual second provision. "
+            "Next provision. (3) (a) Actual third provision."
+        ),
+        (
+            "As specified in paragraph. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Paragraph no. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+        (
+            "Preamble; see paragraph. (1) Imported reference. "
+            "Heading ends. (2) Actual second provision. "
+            "Next provision. (3) Actual third provision."
+        ),
+    ],
+)
+def test_flattened_numeric_outline_rejects_explicit_first_reference(source: str):
+    assert recognize_source_structure(source) == ()
+
+
+def test_flattened_numeric_outline_skips_higher_numbered_reference_noise():
+    source = (
+        "Heading. (1) First root. See paragraph: (9) for an exception. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+def test_flattened_numeric_outline_skips_noise_before_first_real_root():
+    source = (
+        "Paragraph: (9) imported noise. Heading. (1) First root. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+def test_flattened_numeric_outline_skips_first_reference_before_real_roots():
+    source = (
+        "See paragraph: (1) for an imported rule. Heading. (1) First root. "
+        "Second provision. (2) Second root. Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("command", "transition"),
+    [
+        ("See", "Transitional sentence applies."),
+        ("Refer to", "Transitional sentence applies."),
+        ("See", "2026 rules apply."),
+    ],
+)
+def test_flattened_numeric_outline_does_not_bleed_completed_reference_sentence(
+    command: str,
+    transition: str,
+):
+    source = (
+        f"Heading. (1) First root. {command} subsection (9). "
+        f"{transition} (2) Second root. "
+        "Third provision. (3) Third root."
+    )
+
+    assert [branch.path for branch in recognize_source_structure(source)] == [
+        ("1",),
+        ("2",),
+        ("3",),
+    ]
 
 
 def test_parenthesized_cfr_outline_keeps_punctuated_cross_reference_formula_owner():
