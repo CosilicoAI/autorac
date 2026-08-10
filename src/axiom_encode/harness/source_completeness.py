@@ -4367,11 +4367,59 @@ def _analyze_rulespec_payload(
             source_text=source_text,
         ):
             continue
+        descendants = tuple(
+            candidate
+            for candidate in branches
+            if len(candidate.path) > len(branch.path)
+            and candidate.path[: len(branch.path)] == branch.path
+        )
+        covered_descendant_detail = ""
+        if descendants and all(
+            _path_covered(
+                candidate.path,
+                all_covered_paths,
+                deferred_paths,
+            )
+            or _is_marker_only_container(
+                candidate,
+                branches=branches,
+                source_text=source_text,
+            )
+            for candidate in descendants
+        ):
+            direct_source_text = _source_branch_direct_text(
+                branch,
+                branches=branches,
+            )
+            direct_text, direct_text_truncated = _bounded_source_feedback_preview(
+                direct_source_text
+            )
+            if direct_text:
+                direct_end = branch.start + len(direct_source_text)
+                truncation_detail = (
+                    " The ellipsis is a locator only; copy a short contiguous "
+                    "verbatim proof excerpt from that source span, not the "
+                    "ellipsis."
+                    if direct_text_truncated
+                    else ""
+                )
+                covered_descendant_detail = (
+                    " Descendant `source:` citations and proof excerpts cover only "
+                    "the descendants, not this substantive parent. Exact parent "
+                    f"chapeau (characters {branch.start}:{direct_end}): "
+                    f"`{direct_text}`.{truncation_detail} Attach a separate exact "
+                    "contiguous "
+                    "parent-chapeau excerpt to the source-faithful rule that "
+                    "implements or scopes it (use a `versions[N].formula` proof "
+                    "atom on the affected principal formula when applicable), or "
+                    "precisely defer the parent; do not invent a dummy output."
+                )
         issues.append(
             "[complete-source-unit:structure] "
             f"Source branch {branch.label} at "
             f"{_branch_citation(corpus_citation_path, branch)} is neither "
             "encoded nor precisely deferred."
+            f"{covered_descendant_detail}"
         )
 
     active_branches = tuple(
@@ -13712,12 +13760,201 @@ def _reached_formula_interval_selector_values(
     )
     if values:
         return values
+    dependency_values = _corroborated_dependency_interval_subject_values(
+        execution.leaf,
+        environment=environment,
+        dependency_names=set(dependency_environment),
+        interval=interval,
+        source_text=source_text,
+    )
+    if dependency_values:
+        return dependency_values
     return _formula_progressive_clamp_subject_values(
         execution.leaf,
         environment=environment,
-        evidence_names=evidence_names,
+        evidence_names=evidence_names.difference(dependency_environment),
         source_text=source_text,
     )
+
+
+def _corroborated_dependency_interval_subject_values(
+    formula_text: str,
+    *,
+    environment: dict[str, Any],
+    dependency_names: set[str],
+    interval: _NumericInterval,
+    source_text: str,
+) -> tuple[float, ...]:
+    """Trace source bounds applied to an asserted local derived selector."""
+
+    expression = _parse_formula_expression(formula_text)
+    if expression is None:
+        return ()
+    values: list[float] = []
+
+    def numeric_value(node: ast.expr) -> float | None:
+        value = _evaluate_condition_expression(node, environment)
+        numeric = _rulespec_runtime_decimal(value)
+        return float(numeric) if numeric is not None else None
+
+    counterfactual_environment = dict(environment)
+    for environment_name, environment_value in environment.items():
+        if isinstance(environment_value, bool) or not isinstance(
+            environment_value,
+            (int, float, Decimal),
+        ):
+            continue
+        numeric_environment_value = _rulespec_runtime_decimal(environment_value)
+        if numeric_environment_value is not None:
+            counterfactual_environment[environment_name] = float(
+                numeric_environment_value
+            )
+
+    def subject_influences_formula(name: str) -> bool:
+        baseline = _rulespec_runtime_decimal(
+            _evaluate_condition_expression(expression, counterfactual_environment)
+        )
+        subject_value = _rulespec_runtime_decimal(counterfactual_environment.get(name))
+        if baseline is None or subject_value is None:
+            return False
+        delta = max(abs(subject_value) / Decimal(1000), Decimal("0.000001"))
+        for candidate_value in (subject_value - delta, subject_value + delta):
+            candidate_environment = dict(counterfactual_environment)
+            candidate_environment[name] = float(candidate_value)
+            candidate = _rulespec_runtime_decimal(
+                _evaluate_condition_expression(expression, candidate_environment)
+            )
+            if candidate is not None and not math.isclose(
+                float(candidate),
+                float(baseline),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                return True
+        return False
+
+    def operation_influences_formula(operation: ast.expr) -> bool:
+        baseline = _rulespec_runtime_decimal(
+            _evaluate_condition_expression(expression, counterfactual_environment)
+        )
+        operation_value = _rulespec_runtime_decimal(
+            _evaluate_condition_expression(operation, counterfactual_environment)
+        )
+        if baseline is None or operation_value is None:
+            return False
+        target = (
+            type(operation),
+            getattr(operation, "lineno", None),
+            getattr(operation, "col_offset", None),
+            getattr(operation, "end_lineno", None),
+            getattr(operation, "end_col_offset", None),
+            ast.dump(operation, include_attributes=False),
+        )
+        delta = max(abs(operation_value) / Decimal(1000), Decimal("0.000001"))
+        for candidate_value in (operation_value - delta, operation_value + delta):
+            candidate_expression = _parse_formula_expression(formula_text)
+            if candidate_expression is None:
+                return False
+
+            class MatchedOperationReplacement(ast.NodeTransformer):
+                replaced = False
+
+                def visit(self, node: ast.AST) -> ast.AST:
+                    descriptor = (
+                        type(node),
+                        getattr(node, "lineno", None),
+                        getattr(node, "col_offset", None),
+                        getattr(node, "end_lineno", None),
+                        getattr(node, "end_col_offset", None),
+                        ast.dump(node, include_attributes=False),
+                    )
+                    if not self.replaced and descriptor == target:
+                        self.replaced = True
+                        return ast.copy_location(
+                            ast.Constant(value=float(candidate_value)),
+                            node,
+                        )
+                    return super().visit(node)
+
+            replacement = MatchedOperationReplacement()
+            candidate_expression = replacement.visit(candidate_expression)
+            if not replacement.replaced:
+                return False
+            candidate = _rulespec_runtime_decimal(
+                _evaluate_condition_expression(
+                    candidate_expression,
+                    counterfactual_environment,
+                )
+            )
+            if candidate is not None and not math.isclose(
+                float(candidate),
+                float(baseline),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                return True
+        return False
+
+    def record(
+        subject: ast.expr,
+        bound: ast.expr,
+        *,
+        boundary: NumericOccurrenceLike | None,
+        operation: ast.expr,
+    ) -> None:
+        if (
+            not isinstance(subject, ast.Name)
+            or subject.id not in dependency_names
+            or not _formula_subject_matches_source(subject.id, source_text)
+            or not subject_influences_formula(subject.id)
+            or not operation_influences_formula(operation)
+        ):
+            return
+        subject_value = numeric_value(subject)
+        bound_value = numeric_value(bound)
+        if (
+            subject_value is None
+            or bound_value is None
+            or boundary is None
+            or boundary.value is None
+            or not math.isclose(
+                bound_value,
+                float(boundary.value),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+        ):
+            return
+        values.append(subject_value)
+
+    for node in ast.walk(expression):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "min"
+            and len(node.args) == 2
+            and not node.keywords
+        ):
+            record(
+                node.args[0],
+                node.args[1],
+                boundary=interval.upper,
+                operation=node,
+            )
+            record(
+                node.args[1],
+                node.args[0],
+                boundary=interval.upper,
+                operation=node,
+            )
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
+            record(
+                node.left,
+                node.right,
+                boundary=interval.lower,
+                operation=node,
+            )
+    return tuple(values)
 
 
 def _formula_progressive_clamp_subject_values(
@@ -13852,9 +14089,25 @@ def _formula_subject_matches_source(name: str, source_text: str) -> bool:
         "value",
     }
     raw_name_tokens = tuple(re.findall(r"[a-z0-9]+", name.lower().replace("_", " ")))
-    candidate_name_tokens = [raw_name_tokens]
-    if raw_name_tokens and raw_name_tokens[-1] == "boundary":
-        candidate_name_tokens.append(raw_name_tokens[:-1])
+    base_name_candidates = [raw_name_tokens]
+    section_indexes = tuple(
+        index for index, token in enumerate(raw_name_tokens) if token == "section"
+    )
+    if section_indexes:
+        semantic_start = section_indexes[-1] + 1
+        while (
+            semantic_start < len(raw_name_tokens)
+            and raw_name_tokens[semantic_start].isdigit()
+        ):
+            semantic_start += 1
+        if semantic_start < len(raw_name_tokens):
+            base_name_candidates.append(raw_name_tokens[semantic_start:])
+    candidate_name_tokens = list(base_name_candidates)
+    candidate_name_tokens.extend(
+        candidate_tokens[:-1]
+        for candidate_tokens in base_name_candidates
+        if candidate_tokens and candidate_tokens[-1] == "boundary"
+    )
     interval_comparison = (
         r"(?:above|at\s+(?:least|most)|below|between|exceeds?|exceeding|from|"
         r"greater\s+than|in\s+excess\s+of|less\s+than|more\s+than|"

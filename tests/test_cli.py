@@ -28323,7 +28323,8 @@ rules:
                 issues=[
                     "Judgment rule missing positive companion output coverage: "
                     f"`{target}` is not asserted as `holds` by the companion "
-                    "`.test.yaml` file."
+                    "`.test.yaml` file.",
+                    "regulations/example.yaml: ci: unrelated validation issue",
                 ],
             )
 
@@ -28340,6 +28341,71 @@ rules:
             "vat-electricity-water-exemption-directive#input.receives_water": True,
         }
         assert case["output"] == {target: "holds"}
+
+    def test_encode_apply_repairs_mixed_judgment_issue_but_remains_blocked(
+        self, capsys, tmp_path
+    ):
+        args = self._make_args(tmp_path, backend="codex", sync=False)
+        args.apply = True
+        result = self._make_eval_result(False)
+        result.error = "Generated RuleSpec failed CI validation"
+        output_file = (
+            tmp_path / "out" / "codex-test-model" / "statutes" / "26" / "24.yaml"
+        )
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text(
+            """format: rulespec/v1
+rules:
+  - name: child_tax_credit_eligible
+    kind: derived
+    dtype: Judgment
+    versions:
+      - effective_from: '2026-01-01'
+        formula: qualifying_child_requirements_met
+"""
+        )
+        test_file = output_file.with_name("24.test.yaml")
+        test_file.write_text("[]\n")
+        result.output_file = str(output_file)
+        target = "us:statutes/26/24#child_tax_credit_eligible"
+        judgment_issue = (
+            "statutes/26/24.yaml: ci: Judgment rule missing positive companion "
+            f"output coverage: `{target}` is not asserted as `holds` by the "
+            "companion `.test.yaml` file."
+        )
+        unrelated_issue = "statutes/26/24.yaml: ci: dependent failed"
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                side_effect=[
+                    (False, [judgment_issue, unrelated_issue], {}),
+                    (False, [unrelated_issue], {}),
+                ],
+            ) as mock_overlay,
+            patch("axiom_encode.cli._apply_generated_encoding_result") as mock_apply,
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 1
+        assert (
+            "apply=auto_repaired_judgment_positive_tests:"
+            "auto_positive_child_tax_credit_eligible"
+        ) in capsys.readouterr().out
+        assert mock_overlay.call_count == 2
+        mock_apply.assert_not_called()
+        [case] = yaml.safe_load(test_file.read_text())
+        assert case["output"] == {target: "holds"}
+        run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
+        assert run.outcome["auto_repaired_judgment_positive_tests"] == [
+            "auto_positive_child_tax_credit_eligible"
+        ]
+        assert run.outcome["overlay_validation_success"] is False
+        assert run.outcome["status"] == "apply_blocked_validation"
+        assert run.outcome["apply_error"] == unrelated_issue
 
     def test_judgment_positive_overlay_skips_unrelated_companion_issues(self, tmp_path):
         with patch("axiom_encode.cli._stage_apply_overlay_dependency_root") as stage:

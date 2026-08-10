@@ -10276,6 +10276,13 @@ Complete-source-unit mode is enabled for this request:
   concrete source-stated missing input or runtime capability. The output path
   is not a source citation.
   Never guess a blocker target.
+- A child-branch `source:` citation does not cover a distinct parent chapeau.
+  When a parent chapeau states applicability, temporal scope, or a shared
+  computation, bind one consuming executable rule to that exact parent path
+  and include an exact parent-chapeau proof excerpt. Keep the child bindings as
+  well; do not substitute an older parallel chapeau or infer parent coverage
+  from encoded descendants. Do not invent a dummy output for a chapeau that
+  only scopes the child computations.
 - When an authoritative branch is exactly a bare `Repealed.` tombstone, or a
   Louisiana `Repealed by Acts ...` tombstone whose remaining text is solely a
   finite session-law citation and optional effective date, preserve that branch
@@ -10295,6 +10302,10 @@ Complete-source-unit mode is enabled for this request:
   exception, and rounding rule with assertions on the affected principal
   output. Each branch needs distinct runtime evidence; descriptive test
   metadata is not coverage evidence.
+- Every emitted derived `dtype: Judgment` output, other than a source-faithful
+  Judgment whose versions are all constant false, must be asserted as `holds`
+  by at least one companion case. When `not_holds` is reachable, include that
+  negative companion too; testing only the negative state is incomplete.
 - When a principal formula reaches a branch through local derived selectors or
   intermediates, assert every reached local derived dependency's expected
   output in that same companion case. Raw inputs alone do not corroborate a
