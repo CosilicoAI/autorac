@@ -41,6 +41,7 @@ INGEST_TIMEOUT_SECONDS = 10.0
 
 _CI_ENV_VARS = ("CI", "GITHUB_ACTIONS", "BUILDKITE", "CIRCLECI")
 _TELEMETRY_OFF_VALUES = {"off", "0", "false", "disabled"}
+_TELEMETRY_ON_VALUES = {"on", "1", "true"}
 
 
 def _utcnow() -> str:
@@ -66,18 +67,30 @@ def runner_identity() -> dict:
     }
 
 
+def running_under_tests() -> bool:
+    """Test-suite invocations of the encode path must never reach the real
+    dashboard. The env marker alone is not enough: hermetic tests clear
+    os.environ (in-process) or spawn the CLI with scrubbed envs, so the
+    in-process signal is the pytest module itself.
+    """
+    return "pytest" in sys.modules or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def telemetry_blocked_for_tests() -> bool:
+    """True when test detection should suppress telemetry. The explicit
+    `AXIOM_ENCODE_TELEMETRY=on` override bypasses detection — used by
+    telemetry tests exercising the (mocked) transports, never in
+    production config."""
+    override = os.environ.get("AXIOM_ENCODE_TELEMETRY", "").strip().lower()
+    return override not in _TELEMETRY_ON_VALUES and running_under_tests()
+
+
 def telemetry_mode() -> str:
     """Resolve the transport: 'direct', 'ingest', or 'off'."""
-    # Test-suite invocations of the encode path must never reach the real
-    # dashboard: developer machines carry write credentials in their shell
-    # environment, so credential presence alone cannot distinguish a real
-    # encode from a pytest fixture run.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    override = os.environ.get("AXIOM_ENCODE_TELEMETRY", "").strip().lower()
+    if override in _TELEMETRY_OFF_VALUES:
         return "off"
-    if (
-        os.environ.get("AXIOM_ENCODE_TELEMETRY", "").strip().lower()
-        in _TELEMETRY_OFF_VALUES
-    ):
+    if telemetry_blocked_for_tests():
         return "off"
     if os.environ.get("AXIOM_ENCODE_SUPABASE_URL") and os.environ.get(
         "AXIOM_ENCODE_SUPABASE_SECRET_KEY"
