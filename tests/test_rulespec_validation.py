@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1659"')
+        .startswith('__version__ = "0.2.1660"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1659"
+    assert encoder_package["version"] == "0.2.1660"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1659"
+    assert project["project"]["version"] == "0.2.1660"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1659"')
+        .startswith('__version__ = "0.2.1660"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1659"
+    assert encoder_package["version"] == "0.2.1660"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1659"
+    assert project["project"]["version"] == "0.2.1660"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1659"')
+        .startswith('__version__ = "0.2.1660"')
     )
 
 
@@ -30438,6 +30438,23 @@ rules: []
         "source_values" in issue and "absolute RuleSpec target" in issue
         for issue in issues
     )
+
+
+def test_deferred_output_rejects_misplaced_document_root_records():
+    content = """format: rulespec/v1
+deferred_outputs:
+  - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax
+    reason: Missing same-act Section 2 dependency.
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+rules: []
+"""
+
+    assert find_deferred_output_issues(content) == [
+        "`deferred_outputs` is misplaced at the document root; move it to "
+        "`module.deferred_outputs`."
+    ]
 
 
 def test_deferred_output_rejects_absolute_blocker_without_rule_fragment():

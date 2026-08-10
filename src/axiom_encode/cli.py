@@ -223,6 +223,7 @@ from .harness.proof_validator import (
     proof_source_citation_paths,
     validate_rulespec_proofs,
 )
+from .harness.source_completeness import _rulespec_target_base
 from .harness.validator_pipeline import (
     _SNAP_UTILITY_ALLOWANCE_SETTING_TARGETS,
     _US_TAX_JOINT_ONLY_ANY_OTHER_CASE_TEXT_PATTERN,
@@ -26162,9 +26163,9 @@ def _latest_validation_retry_candidate(
 def _validation_retry_issue_snapshot(
     *issue_groups: object,
 ) -> tuple[str, ...]:
-    """Snapshot bounded validator issues that match one captured candidate."""
+    """Snapshot bounded, category-diverse issues for one captured candidate."""
 
-    issues: list[str] = []
+    candidates: list[str] = []
     seen: set[str] = set()
     inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
     for issue_group in issue_groups:
@@ -26174,10 +26175,7 @@ def _validation_retry_issue_snapshot(
             continue
         inspected = 0
         issue_iterator = iter(issue_group)
-        while (
-            len(issues) < VALIDATION_RETRY_FEEDBACK_MAX_ITEMS
-            and inspected < inspection_limit
-        ):
+        while inspected < inspection_limit:
             try:
                 issue = next(issue_iterator)
             except StopIteration:
@@ -26189,10 +26187,105 @@ def _validation_retry_issue_snapshot(
             if not item or item in seen:
                 continue
             seen.add(item)
-            issues.append(item)
-        if len(issues) >= VALIDATION_RETRY_FEEDBACK_MAX_ITEMS:
+            candidates.append(item)
+    return _category_diverse_validation_retry_issues(candidates)
+
+
+def _category_diverse_validation_retry_issues(
+    candidates: Sequence[str],
+) -> tuple[str, ...]:
+    """Keep the first failure while retaining paired and diverse diagnostics."""
+
+    if not candidates:
+        return ()
+    limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS
+    selected: list[str] = [candidates[0]]
+    selected_set = {candidates[0]}
+
+    structure_issue = next(
+        (
+            issue
+            for issue in candidates
+            if issue.startswith("[complete-source-unit:structure]")
+        ),
+        None,
+    )
+    if structure_issue is not None and structure_issue not in selected_set:
+        selected.append(structure_issue)
+        selected_set.add(structure_issue)
+    structure_locator = (
+        _validation_retry_branch_locator(structure_issue) if structure_issue else None
+    )
+    if structure_locator:
+        paired_formula_issue = next(
+            (
+                issue
+                for issue in candidates
+                if issue.startswith("[complete-source-unit:formula-output]")
+                and _validation_retry_branch_locator(issue) == structure_locator
+            ),
+            None,
+        )
+        if paired_formula_issue is not None:
+            selected.append(paired_formula_issue)
+            selected_set.add(paired_formula_issue)
+
+    selected_categories = {
+        category
+        for issue in selected
+        if (category := _validation_retry_issue_category(issue)) is not None
+    }
+    for issue in candidates:
+        category = _validation_retry_issue_category(issue)
+        if (
+            len(selected) >= limit
+            or issue in selected_set
+            or category is None
+            or category in selected_categories
+        ):
+            continue
+        selected.append(issue)
+        selected_set.add(issue)
+        selected_categories.add(category)
+    for issue in candidates:
+        if len(selected) >= limit:
             break
-    return tuple(issues)
+        if issue in selected_set:
+            continue
+        selected.append(issue)
+        selected_set.add(issue)
+    return tuple(selected)
+
+
+def _validation_retry_issue_category(issue: str) -> str | None:
+    match = re.match(r"\[([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)\]", issue)
+    return match.group(1).lower() if match is not None else None
+
+
+def _validation_retry_branch_locator(issue: str) -> str | None:
+    if issue.startswith("[complete-source-unit:structure]"):
+        match = re.search(
+            r"\bat (.+?) is neither encoded nor precisely deferred", issue
+        )
+    elif issue.startswith("[complete-source-unit:formula-output]"):
+        match = re.search(r"\bin (.+?) has no principal derived/relation output", issue)
+    else:
+        return None
+    if match is None:
+        return None
+    locator = match.group(1).strip()
+    structured = re.fullmatch(r"(.+?)\s+\[([^]]+)\]", locator)
+    if structured is None:
+        return " ".join(locator.casefold().split())
+    citation, rendered_components = structured.groups()
+    components = tuple(
+        component.strip().rsplit(maxsplit=1)[-1].casefold()
+        for component in rendered_components.split(",")
+        if component.strip()
+    )
+    if not components:
+        return " ".join(locator.casefold().split())
+    return f"{' '.join(citation.casefold().split())} [{' / '.join(components)}]"
 
 
 def _encode_validation_retry_feedback(
@@ -39827,6 +39920,7 @@ def _remove_out_of_scope_deferred_outputs(
     deferred_outputs = module.get("deferred_outputs")
     if not isinstance(deferred_outputs, list):
         return []
+    source_anchor = _source_verification_rulespec_anchor(module)
 
     kept: list[Any] = []
     removed: list[str] = []
@@ -39841,6 +39935,12 @@ def _remove_out_of_scope_deferred_outputs(
         if _rulespec_target_within_anchor(output, base_anchor=base_anchor):
             kept.append(record)
             continue
+        if source_anchor and _rulespec_target_within_anchor(
+            output,
+            base_anchor=source_anchor,
+        ):
+            kept.append(record)
+            continue
         removed.append(f"deferred_outputs[{index}]")
 
     if not removed:
@@ -39851,6 +39951,20 @@ def _remove_out_of_scope_deferred_outputs(
         module.pop("deferred_outputs", None)
     rules_file.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=False))
     return removed
+
+
+def _source_verification_rulespec_anchor(module: dict[str, Any]) -> str | None:
+    source_verification = module.get("source_verification")
+    if not isinstance(source_verification, dict):
+        return None
+    citation_path = source_verification.get("corpus_citation_path")
+    if not isinstance(citation_path, str):
+        return None
+    try:
+        canonical_path = require_canonical_corpus_citation_path(citation_path)
+    except CorpusResolutionError:
+        return None
+    return _rulespec_target_base(canonical_path)
 
 
 def _rulespec_target_within_anchor(target: str, *, base_anchor: str) -> bool:

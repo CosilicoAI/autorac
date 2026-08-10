@@ -13509,6 +13509,48 @@ class TestCmdEncode:
             ["current CI issue"],
         ) == ("duplicate compile issue", "current CI issue")
 
+    def test_encode_retry_issue_snapshot_pairs_structure_with_formula_remediation(self):
+        import axiom_encode.cli as cli_module
+
+        structure_locator = "us-ms/statute/27-7-5(1) [Absatz 1, Nummer b, Buchstabe ii]"
+        formula_locator = "us-ms/statute/27-7-5(1) [Absatz 1, Nummer b, Nummer ii]"
+        structure = (
+            "[complete-source-unit:structure] Source branch (1)(b)(ii) at "
+            f"{structure_locator} is neither encoded nor precisely deferred."
+        )
+        formula = (
+            "[complete-source-unit:formula-output] Explicit source computation "
+            f"(1)(b)(ii) in {formula_locator} has no principal derived/relation "
+            "output "
+            "(`derived` or `derived_relation`) and is not precisely deferred; "
+            "add a `versions[N].formula` proof atom whose "
+            "`source.corpus_citation_path` is exactly "
+            "`us-ms/statute/27-7-5` and whose excerpt is the complete chapeau."
+        )
+        unrelated_formula = (
+            "[complete-source-unit:formula-output] Explicit source computation "
+            "(1)(a)(iii) in us-ms/statute/27-7-5(1) "
+            "[Absatz 1, Nummer a, Nummer iii] has no principal derived/relation "
+            "output (`derived` or `derived_relation`)."
+        )
+        structure_flood = tuple(
+            "[complete-source-unit:structure] Source branch "
+            f"{index} at us-ms/statute/27-7-5(1) [Nummer {index}] is neither "
+            "encoded nor precisely deferred."
+            for index in range(20)
+        )
+        tests_issue = "[complete-source-unit:tests] missing positive control"
+
+        snapshot = cli_module._validation_retry_issue_snapshot(
+            (structure, *structure_flood, unrelated_formula, formula, tests_issue)
+        )
+
+        assert snapshot[:2] == (structure, formula)
+        assert unrelated_formula not in snapshot
+        assert tests_issue in snapshot
+        assert "complete chapeau" in snapshot[1]
+        assert "`us-ms/statute/27-7-5`" in snapshot[1]
+
     def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
         import axiom_encode.cli as cli_module
 
@@ -18979,7 +19021,7 @@ rules:
 module:
   status: deferred
   source_verification:
-    corpus_citation_path: us/statute/26/3121
+    corpus_citation_path: us/statute/26/3121/t
   deferred_outputs:
     - output: us:statutes/26/3121/a#wages
       reason: Outside subsection t.
@@ -19025,6 +19067,45 @@ rules: []
         ]
         assert run.outcome["overlay_validation_success"] is True
         assert run.outcome["status"] == "apply_applied"
+
+    def test_apply_scope_repair_preserves_requested_source_root_deferral(
+        self,
+        tmp_path,
+    ):
+        import axiom_encode.cli as cli_module
+
+        rules_file = tmp_path / "2026_section_27_7_5_schedule.yaml"
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: Precise requested-source deferral.
+    - output: us-ms:policies/income_tax/2026_section_27_7_5_schedule#individual_income_tax
+      reason: Generated policy output.
+    - output: us-ms:statutes/27-7-9#unrelated_credit
+      reason: Unrelated source unit.
+rules: []
+"""
+        )
+
+        removed = cli_module._remove_out_of_scope_deferred_outputs(
+            rules_file=rules_file,
+            base_anchor=("us-ms:policies/income_tax/2026_section_27_7_5_schedule"),
+        )
+
+        assert removed == ["deferred_outputs[2]"]
+        repaired = yaml.safe_load(rules_file.read_text())
+        assert [
+            record["output"] for record in repaired["module"]["deferred_outputs"]
+        ] == [
+            "us-ms:statutes/27-7-5/1/b/ii/7#"
+            "individual_upper_band_tax_for_2030_and_later",
+            "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
+            "individual_income_tax",
+        ]
 
     def test_encode_apply_promotes_module_imports(self, capsys, tmp_path):
         args = self._make_args(tmp_path, backend="codex", sync=False)
