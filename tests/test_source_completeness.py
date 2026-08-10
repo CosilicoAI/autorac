@@ -1747,6 +1747,263 @@ def test_interval_selector_fallback_does_not_use_clamp_subtractor():
 
 
 @pytest.mark.parametrize(
+    ("source", "leaf", "constants", "dependency_value"),
+    (
+        (
+            "Taxable income not in excess of $500 is taxed at two percent.",
+            "rate * min(taxable_income_boundary, first_ceiling)",
+            {"rate": 0.02, "first_ceiling": 500},
+            250,
+        ),
+        (
+            "Taxable income from $500 through $3000 is taxed at four percent.",
+            (
+                "rate * max(0, min(taxable_income_boundary, second_ceiling) "
+                "- second_floor)"
+            ),
+            {"rate": 0.04, "second_floor": 500, "second_ceiling": 3000},
+            1000,
+        ),
+        (
+            "Taxable income more than $3000 is taxed at five percent.",
+            "rate * max(0, taxable_income_boundary - third_floor)",
+            {"rate": 0.05, "third_floor": 3000},
+            4000,
+        ),
+    ),
+)
+def test_interval_selector_traces_corroborated_derived_progressive_clamp(
+    source: str,
+    leaf: str,
+    constants: dict[str, float],
+    dependency_value: int,
+):
+    subject = "al_pit_2026_section_40_18_5_taxable_income_boundary"
+    leaf = leaf.replace("taxable_income_boundary", subject)
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf=leaf,
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment=constants,
+    )
+
+    assert interval is not None
+    assert completeness_module._reached_formula_interval_selector_values(
+        execution,
+        {"input": {}},
+        principal_rules={},
+        formula_environment=constants,
+        dependency_environment={subject: Decimal(str(dependency_value))},
+        interval=interval,
+        source_text=source,
+    ) == (float(dependency_value),)
+
+
+def test_interval_selector_rejects_uncorroborated_or_wrong_bound_derived_clamp():
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf="rate * min(taxable_income_boundary, first_ceiling)",
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.02, "first_ceiling": 500},
+    )
+
+    assert interval is not None
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": {"taxable_income_boundary": 250}},
+            principal_rules={},
+            formula_environment={"rate": 0.02, "first_ceiling": 500},
+            dependency_environment={},
+            interval=interval,
+            source_text=source,
+        )
+        == ()
+    )
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": {}},
+            principal_rules={},
+            formula_environment={"rate": 0.02, "first_ceiling": 600},
+            dependency_environment={"taxable_income_boundary": 250},
+            interval=interval,
+            source_text=source,
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("leaf", "dependency_environment"),
+    (
+        (
+            "rate * min(unrelated_child_credit, first_ceiling)",
+            {"unrelated_child_credit": 250},
+        ),
+        (
+            "rate * max(taxable_income_boundary, first_ceiling)",
+            {"taxable_income_boundary": 4000},
+        ),
+    ),
+)
+def test_interval_selector_rejects_unrelated_or_reversed_derived_clamp(
+    leaf: str,
+    dependency_environment: dict[str, int],
+):
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf=leaf,
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.02, "first_ceiling": 500},
+    )
+
+    assert interval is not None
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": {}},
+            principal_rules={},
+            formula_environment={"rate": 0.02, "first_ceiling": 500},
+            dependency_environment=dependency_environment,
+            interval=interval,
+            source_text=source,
+        )
+        == ()
+    )
+
+
+def test_interval_selector_rejects_direct_max_for_excess_derived_clamp():
+    source = "Five percent of taxable income in excess of $3000."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf="rate * max(taxable_income_boundary, floor)",
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.05, "floor": 3000},
+    )
+
+    assert interval is not None
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": {}},
+            principal_rules={},
+            formula_environment={"rate": 0.05, "floor": 3000},
+            dependency_environment={"taxable_income_boundary": 4000},
+            interval=interval,
+            source_text=source,
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "leaf", "constants", "dependency_value"),
+    (
+        (
+            "Five percent of taxable income in excess of $3000.",
+            "rate * ((subject - floor) - (subject - floor))",
+            {"rate": 0.05, "floor": 3000},
+            4000,
+        ),
+        (
+            "Five percent of taxable income in excess of $3000.",
+            "rate * (0 * (subject - floor))",
+            {"rate": 0.05, "floor": 3000},
+            4000,
+        ),
+        (
+            "Five percent of taxable income in excess of $3000.",
+            "rate * subject - 0 * (subject - floor)",
+            {"rate": 0.05, "floor": 3000},
+            4000,
+        ),
+        (
+            "Taxable income not in excess of $500 is taxed at two percent.",
+            "rate * subject - 0 * min(subject, ceiling)",
+            {"rate": 0.02, "ceiling": 500},
+            250,
+        ),
+        (
+            "Taxable income not in excess of $500 is taxed at two percent.",
+            "rate * subject - 0 * min(max(0, subject), ceiling)",
+            {"rate": 0.02, "ceiling": 500},
+            250,
+        ),
+        (
+            "Taxable income not in excess of $500 is taxed at two percent.",
+            "0 * min(max(0, subject), ceiling)",
+            {"ceiling": 500},
+            250,
+        ),
+        (
+            "Taxable income from $500 through $3000 is taxed at four percent.",
+            (
+                "rate * (min(max(0, subject - floor), ceiling - floor) "
+                "- min(max(0, subject - floor), ceiling - floor))"
+            ),
+            {"rate": 0.04, "floor": 500, "ceiling": 3000},
+            1000,
+        ),
+    ),
+)
+def test_interval_selector_rejects_inoperative_derived_excess_subexpression(
+    source: str,
+    leaf: str,
+    constants: dict[str, float],
+    dependency_value: int,
+):
+    subject = "al_pit_2026_section_40_18_5_taxable_income_boundary"
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf=leaf.replace("subject", subject),
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment=constants,
+    )
+
+    assert interval is not None
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": {}},
+            principal_rules={},
+            formula_environment=constants,
+            dependency_environment={subject: Decimal(str(dependency_value))},
+            interval=interval,
+            source_text=source,
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
     ("leaf", "case_input"),
     (
         (
@@ -7626,7 +7883,113 @@ rules:
 
     result = _analyze(content, source, test_cases=[])
 
-    assert any(f"Source branch {parent_label} at " in issue for issue in result.issues)
+    issue = next(
+        issue for issue in result.issues if f"Source branch {parent_label} at " in issue
+    )
+    assert "Descendant `source:` citations and proof excerpts cover only" in issue
+    assert "Exact parent chapeau (characters " in issue
+    assert "do not invent a dummy output" in issue
+
+
+def test_exact_parent_chapeau_formula_proof_covers_only_that_parent():
+    source = """\
+1. For calendar year 2024 and all calendar years thereafter, the tax imposed shall be at the following rates:
+a) On taxable income not in excess of Five Thousand Dollars ($5,000), the rate is zero percent (0%).
+2. A separate filing condition applies.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+rules:
+  - name: resident_first_band_tax
+    kind: derived
+    dtype: Money
+    unit: USD
+    source: us-ms/statute/27-7-5 Nummer 1 Buchstabe a
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-ms/statute/27-7-5
+              excerpt: "On taxable income not in excess of Five Thousand Dollars ($5,000), the rate is zero percent (0%)."
+    versions:
+      - effective_from: '2026-01-01'
+        formula: taxable_income * first_band_rate
+"""
+
+    child_only = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        test_cases=[],
+    )
+    parent_issue = next(
+        issue
+        for issue in child_only.issues
+        if "Source branch 1." in issue and "structure" in issue
+    )
+    assert "For calendar year 2024 and all calendar years thereafter" in parent_issue
+
+    parent_proof = """\
+          - path: versions[0].formula
+            kind: effective_period
+            source:
+              corpus_citation_path: us-ms/statute/27-7-5
+              excerpt: "For calendar year 2024 and all calendar years thereafter, the tax imposed shall be at the following rates:"
+"""
+    with_parent = content.replace(
+        "    versions:\n",
+        f"{parent_proof}    versions:\n",
+    )
+    covered = _analyze(
+        with_parent,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        test_cases=[],
+    )
+
+    assert not any(
+        "Source branch 1." in issue and "structure" in issue for issue in covered.issues
+    )
+    assert any(
+        "Source branch 2." in issue and "structure" in issue for issue in covered.issues
+    )
+
+
+def test_substantive_parent_chapeau_feedback_is_bounded():
+    parent_text = " ".join(["This applicability condition controls the child"] * 80)
+    source = f"1. {parent_text}.\na) The allowance is 259 Euro."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/32a
+rules:
+  - name: allowance_amount
+    kind: parameter
+    dtype: Money
+    source: de/statute/estg/32a Nummer 1 Buchstabe a
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 259
+"""
+
+    result = _analyze(content, source, test_cases=[])
+    issue = next(
+        issue
+        for issue in result.issues
+        if "Source branch 1." in issue and "structure" in issue
+    )
+
+    assert len(issue) < 1400
+    assert "Exact parent chapeau (characters " in issue
+    assert " ... " in issue
+    assert "The ellipsis is a locator only" in issue
+    assert "copy a short contiguous verbatim proof excerpt" in issue
 
 
 def test_child_encoding_covers_marker_only_parent_container():

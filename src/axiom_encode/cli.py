@@ -44638,7 +44638,7 @@ def _try_repair_generated_judgment_positive_tests_for_apply(
     issues: list[str],
 ) -> list[str]:
     """Append deterministic positive companion tests for Judgment outputs."""
-    if not _only_pending_judgment_positive_output_coverage_issues(issues):
+    if not _judgment_positive_output_targets_from_issues(issues):
         return []
 
     try:
@@ -44732,15 +44732,6 @@ def _append_generated_judgment_positive_tests_in_overlay(
             issues=issues,
             test_failure_checker=check_generated_test,
         )
-
-
-def _only_pending_judgment_positive_output_coverage_issues(
-    issues: list[str],
-) -> bool:
-    return bool(issues) and all(
-        "Judgment rule missing positive companion output coverage:" in str(issue)
-        for issue in issues
-    )
 
 
 def _try_repair_generated_import_output_inputs_for_apply(

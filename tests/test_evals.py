@@ -21474,6 +21474,15 @@ rules:
             prompt
         )
         assert "assert every reached local derived dependency's expected" in prompt
+        assert "child-branch `source:` citation does not cover a distinct parent" in (
+            prompt
+        )
+        assert "Do not invent a dummy output for a chapeau" in prompt
+        assert "Every emitted derived `dtype: Judgment` output" in prompt
+        assert "source-faithful\n  Judgment whose versions are all constant false" in (
+            prompt
+        )
+        assert "testing only the negative state is incomplete" in prompt
         assert "mandatory when multiple\n  computations share" in prompt
         assert "citation-only proof atom" in prompt
         assert "keep that output executable from the earliest" in prompt

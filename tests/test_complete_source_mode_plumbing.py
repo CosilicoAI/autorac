@@ -128,6 +128,16 @@ def test_generic_encoder_prompt_adds_completeness_only_when_enabled():
     assert (
         "formula branch, boundary,\n  exception, and rounding rule" in complete_prompt
     )
+    assert "child-branch `source:` citation does not cover a distinct parent" in (
+        complete_prompt
+    )
+    assert "exact parent-chapeau proof excerpt" in complete_prompt
+    assert "Do not invent a dummy output for a chapeau" in complete_prompt
+    assert "Every emitted derived `dtype: Judgment` output" in complete_prompt
+    assert "source-faithful\n  Judgment whose versions are all constant false" in (
+        complete_prompt
+    )
+    assert "testing only the negative state is incomplete" in complete_prompt
     assert "historical branch's runtime evidence must use" in complete_prompt
     assert "not unambiguously bound by a canonical\n  structural source path" in (
         complete_prompt
