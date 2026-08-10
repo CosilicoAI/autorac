@@ -4325,7 +4325,7 @@ def _rule_coverage(
             excerpt_branch = _most_specific_excerpt_branch(excerpt, branches)
             if excerpt_branch is not None:
                 paths.add(excerpt_branch.path)
-            elif not branches:
+            elif _collapse_text(excerpt) in _collapse_text(source_text):
                 paths.add(())
         for path in paths:
             all_paths.add(path)
