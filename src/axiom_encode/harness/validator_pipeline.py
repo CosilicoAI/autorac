@@ -19569,15 +19569,34 @@ def _candidate_local_corpus_provision_files(
     return tuple(candidates)
 
 
-def _read_local_corpus_provision_records(
+# Parsed-provisions index, keyed by (resolved path, mtime_ns, size). Local
+# corpus source lookups previously re-read and re-parsed every provisions
+# JSONL once per citation path; a module citing thousands of provisions
+# (e.g. generated full-schedule HTS tables) made validation O(paths x
+# corpus bytes). Each file is now parsed once per content identity and
+# indexed by citation path; the identity key keeps edits during a run
+# visible, matching the prior per-call read semantics.
+_LOCAL_CORPUS_PROVISION_INDEX: dict[
+    tuple[str, int, int], dict[str, list[dict[str, Any]]]
+] = {}
+
+
+def _local_corpus_provision_index(
     provision_file: Path,
-    citation_path: str,
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
+    try:
+        stat = provision_file.stat()
+        key = (str(provision_file), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return {}
+    cached = _LOCAL_CORPUS_PROVISION_INDEX.get(key)
+    if cached is not None:
+        return cached
+    index: dict[str, list[dict[str, Any]]] = {}
     try:
         lines = provision_file.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return []
-    records: list[dict[str, Any]] = []
+        return {}
     for line in lines:
         if not line.strip():
             continue
@@ -19585,10 +19604,21 @@ def _read_local_corpus_provision_records(
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(record, dict) or record.get("citation_path") != citation_path:
+        if not isinstance(record, dict):
             continue
-        records.append(record)
-    return records
+        record_path = record.get("citation_path")
+        if not isinstance(record_path, str):
+            continue
+        index.setdefault(record_path, []).append(record)
+    _LOCAL_CORPUS_PROVISION_INDEX[key] = index
+    return index
+
+
+def _read_local_corpus_provision_records(
+    provision_file: Path,
+    citation_path: str,
+) -> list[dict[str, Any]]:
+    return list(_local_corpus_provision_index(provision_file).get(citation_path, []))
 
 
 def _read_local_corpus_provision_file(
@@ -19632,36 +19662,24 @@ def _read_local_corpus_descendant_text(
     citation_path: str,
 ) -> str | None:
     """Read body-bearing child provisions for a metadata-only source document."""
-    try:
-        lines = provision_file.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-
     descendants: list[tuple[int, int, str | None, str]] = []
     child_prefix = f"{citation_path}/"
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
-        record_path = str(record.get("citation_path") or "")
+    index = _local_corpus_provision_index(provision_file)
+    for record_path, records in index.items():
         if not record_path.startswith(child_prefix):
             continue
-        body = _local_corpus_record_text(record)
-        if body is None:
-            continue
-        descendants.append(
-            (
-                int(record.get("level") or 0),
-                int(record.get("ordinal") or 0),
-                str(record.get("heading") or "") or None,
-                body,
+        for record in records:
+            body = _local_corpus_record_text(record)
+            if body is None:
+                continue
+            descendants.append(
+                (
+                    int(record.get("level") or 0),
+                    int(record.get("ordinal") or 0),
+                    str(record.get("heading") or "") or None,
+                    body,
+                )
             )
-        )
 
     if not descendants:
         return None
@@ -19674,7 +19692,6 @@ def _read_local_corpus_descendant_text(
     return "\n\n".join(chunks)
 
 
-@functools.lru_cache(maxsize=512)
 def _fetch_supabase_corpus_source_text(citation_path: str) -> str | None:
     """Fetch current corpus source text by exact citation path from Supabase."""
     supabase_url = os.environ.get(
