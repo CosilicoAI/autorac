@@ -366,7 +366,7 @@ from .legacy_replacement_overlay import (
 from .legacy_replacement_overlay import (
     stage_legacy_replacement_overlay as _stage_legacy_replacement_overlay,
 )
-from .live_run_telemetry import LiveRunTelemetry
+from .live_run_telemetry import LiveRunTelemetry, telemetry_blocked_for_tests
 from .oracles.policyengine.pending import (
     PendingDeclarationError,
     apply_pending_to_report,
@@ -57724,9 +57724,10 @@ def _eval_repair_manifest_path(result) -> Path | None:
 def _sync_run_to_supabase_if_configured(
     run: EncodingRun, *, db_path: Path = DEFAULT_DB
 ) -> dict[str, bool]:
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if telemetry_blocked_for_tests():
         # Developer machines carry write credentials in their shell env; a
-        # pytest fixture run must never reach the real dashboard.
+        # pytest fixture run must never reach the real dashboard. Checked
+        # via sys.modules too — hermetic tests clear os.environ.
         return {"configured": False, "run": False, "session": False}
     if not (
         os.environ.get("AXIOM_ENCODE_SUPABASE_URL")

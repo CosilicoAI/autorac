@@ -14672,6 +14672,9 @@ rules:
                 {
                     "AXIOM_ENCODE_SUPABASE_URL": "https://example.supabase.co",
                     "AXIOM_ENCODE_SUPABASE_SECRET_KEY": "secret",
+                    # Deliberate opt-in past in-test suppression: both sync
+                    # transports below are mocked.
+                    "AXIOM_ENCODE_TELEMETRY": "on",
                 },
                 clear=True,
             ),

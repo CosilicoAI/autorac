@@ -21,16 +21,15 @@ def _mock_client():
 def _configured_env(monkeypatch):
     monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", "secret")
-    # These tests exercise the enabled path with a mocked client; lift the
-    # pytest guard that would otherwise force telemetry off.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    # These tests exercise the enabled path with mocked transports; the
+    # explicit "on" override is the only way past the in-test detection.
+    monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "on")
 
 
 def _ingest_env(monkeypatch):
     monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_URL", raising=False)
     monkeypatch.delenv("AXIOM_ENCODE_SUPABASE_SECRET_KEY", raising=False)
-    monkeypatch.delenv("AXIOM_ENCODE_TELEMETRY", raising=False)
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "on")
 
 
 def _mock_urlopen(status=204):
@@ -74,8 +73,17 @@ class TestTelemetryMode:
         assert telemetry_mode() == "off"
         monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "false")
         assert telemetry_mode() == "off"
+        # Without the explicit "on" override, in-process test detection wins
+        # even when hermetic tests have scrubbed every env marker: the
+        # pytest module itself is the signal.
         monkeypatch.delenv("AXIOM_ENCODE_TELEMETRY")
-        monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_x.py::test_y")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        assert telemetry_mode() == "off"
+
+    def test_explicit_off_beats_explicit_on_semantics(self, monkeypatch):
+        _ingest_env(monkeypatch)
+        assert telemetry_mode() == "ingest"
+        monkeypatch.setenv("AXIOM_ENCODE_TELEMETRY", "disabled")
         assert telemetry_mode() == "off"
 
 
@@ -87,7 +95,7 @@ class TestLiveRunTelemetry:
                 citation="us/statute/26/32",
                 backend="codex",
                 model="gpt-5.5",
-                encoder_version="0.2.1669",
+                encoder_version="0.2.1670",
             ) as live:
                 live.set_attempt(2, "gpt-5.5-max")
                 live.finish("completed", run_id="abc12345")

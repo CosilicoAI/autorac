@@ -1,0 +1,1 @@
+Encode telemetry is suppressed for all in-process test invocations via `sys.modules` detection, not just the `PYTEST_CURRENT_TEST` env marker: hermetic tests that clear `os.environ` were reporting fixture runs to the production ops dashboard through the credential-free ingest path. Telemetry tests opt back in explicitly with `AXIOM_ENCODE_TELEMETRY=on` against mocked transports.
