@@ -13551,6 +13551,94 @@ class TestCmdEncode:
         assert "complete chapeau" in snapshot[1]
         assert "`us-ms/statute/27-7-5`" in snapshot[1]
 
+    def test_encode_retry_snapshot_pairs_prefixed_overlay_diagnostics_in_prompt(self):
+        import axiom_encode.cli as cli_module
+
+        prefix = "policies/income_tax/2026_section_27_7_5_schedule.yaml: ci: "
+        first = prefix + (
+            "[complete-source-unit:deferral] `module.deferred_outputs[0]` "
+            "does not name its exact missing dependency."
+        )
+        structure = prefix + (
+            "[complete-source-unit:structure] Source branch (ii) at "
+            "us-ms/statute/27-7-5(1) "
+            "[Absatz 1, Nummer b, Buchstabe ii] is neither encoded nor "
+            "precisely deferred."
+        )
+        formula = prefix + (
+            "[complete-source-unit:formula-output] Explicit source computation "
+            "(ii) in us-ms/statute/27-7-5(1) "
+            "[Absatz 1, Nummer b, Nummer ii] has no principal derived/relation "
+            "output (`derived` or `derived_relation`)."
+        )
+
+        snapshot = cli_module._validation_retry_issue_snapshot(
+            (first, structure, formula)
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(),
+            error=first,
+            candidate=cli_module.ValidationRetryCandidate(
+                rulespec="format: rulespec/v1\nrules: []\n",
+                tests="[]\n",
+            ),
+            validation_issues=snapshot,
+        )
+        feedback, candidate = cli_module._encode_validation_retry_context(
+            [failed_attempt],
+            initial_retry_candidate=None,
+        )
+
+        assert snapshot[:3] == (first, structure, formula)
+        assert feedback[:3] == (first, structure, formula)
+        assert candidate is failed_attempt.candidate
+
+    def test_overlay_validator_issues_preserve_all_bounded_deduplicated_issues(self):
+        import axiom_encode.cli as cli_module
+
+        validator_result = SimpleNamespace(
+            issues=["first issue", "second issue", "first issue", None],
+            error="first issue",
+        )
+
+        issues = cli_module._bounded_overlay_validator_issues(
+            validator_result,
+            relative_file=Path("policies/income_tax/schedule.yaml"),
+            validator_name="ci",
+        )
+
+        assert issues == (
+            "policies/income_tax/schedule.yaml: ci: first issue",
+            "policies/income_tax/schedule.yaml: ci: second issue",
+        )
+
+    def test_overlay_validator_issues_bound_diagnostic_flood_and_fallback(self):
+        import axiom_encode.cli as cli_module
+
+        class CountingIssues(list):
+            inspected = 0
+
+            def __iter__(self):
+                for index in range(10_000):
+                    self.inspected += 1
+                    yield f"issue {index}"
+
+        flooded = CountingIssues()
+        issues = cli_module._bounded_overlay_validator_issues(
+            SimpleNamespace(issues=flooded, error="fallback"),
+            relative_file=Path("statutes/26/1.yaml"),
+            validator_name="ci",
+        )
+        fallback = cli_module._bounded_overlay_validator_issues(
+            SimpleNamespace(issues=[None], error="fallback"),
+            relative_file=Path("statutes/26/1.yaml"),
+            validator_name="ci",
+        )
+
+        assert flooded.inspected == 48
+        assert len(issues) == 48
+        assert fallback == ("statutes/26/1.yaml: ci: fallback",)
+
     def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
         import axiom_encode.cli as cli_module
 
@@ -19106,6 +19194,63 @@ rules: []
             "us-ms:policies/income_tax/2026_section_27_7_5_schedule#"
             "individual_income_tax",
         ]
+
+    def test_encode_apply_scope_repair_preserves_source_root_deferral(
+        self,
+        capsys,
+        tmp_path,
+    ):
+        args = self._make_args(tmp_path, backend="codex", sync=False)
+        args.apply = True
+        result = self._make_eval_result(True)
+        output_file = (
+            tmp_path / "out" / "codex-test-model" / "statutes" / "26" / "3121/t.yaml"
+        )
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text(
+            """format: rulespec/v1
+module:
+  status: deferred
+  source_verification:
+    corpus_citation_path: us/statute/26/3121
+  deferred_outputs:
+    - output: us:statutes/26/3121/1#requested_source_branch
+      reason: Requested-source branch is precisely deferred.
+    - output: us:statutes/26/3121/t#generated_target
+      reason: Generated target is precisely deferred.
+    - output: us:statutes/26/3122#unrelated_output
+      reason: Unrelated source unit.
+rules: []
+"""
+        )
+        result.output_file = str(output_file)
+        applied_file = args.policy_repo_path / "statutes/26/3121/t.yaml"
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
+                return_value=(True, [], {}),
+            ),
+            patch(
+                "axiom_encode.cli._apply_generated_encoding_result",
+                return_value=[applied_file],
+            ),
+            patch.dict(os.environ, TEST_APPLY_SIGNING_ENV, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        repaired = yaml.safe_load(output_file.read_text())
+        assert [
+            record["output"] for record in repaired["module"]["deferred_outputs"]
+        ] == [
+            "us:statutes/26/3121/1#requested_source_branch",
+            "us:statutes/26/3121/t#generated_target",
+        ]
+        output = capsys.readouterr().out
+        assert "apply=auto_repaired_out_of_scope_deferred_outputs:" in output
 
     def test_encode_apply_promotes_module_imports(self, capsys, tmp_path):
         args = self._make_args(tmp_path, backend="codex", sync=False)
@@ -41613,6 +41758,52 @@ rules:
         assert len(issues) == 1
         assert issues[0].startswith("regulations/18-nycrr/387/12/f/3/v/c.yaml: ")
         assert "dropped existing source_relation" in issues[0]
+
+    def test_apply_overlay_validation_aggregates_structured_issues(self, tmp_path):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-us" / "us-ms"
+        generated = output_root / "codex-test-model/statutes/27-7-5.yaml"
+        policy_repo.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            output_file=str(generated), runner="codex-test-model", backend="codex"
+        )
+
+        class FakePipeline:
+            def __init__(self, **_kwargs):
+                pass
+
+            def validate(self, _path, *, skip_reviewers):
+                assert skip_reviewers is True
+                return SimpleNamespace(
+                    all_passed=False,
+                    results={
+                        "ci": SimpleNamespace(
+                            validator_name="ci",
+                            issues=["first diagnostic", "second diagnostic"],
+                            error="fallback diagnostic",
+                        )
+                    },
+                )
+
+        with patch("axiom_encode.cli.ValidatorPipeline", FakePipeline):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo, tmp_path / "axiom-corpus"
+                ),
+            )
+
+        assert ok is False
+        assert issues == [
+            "statutes/27-7-5.yaml: ci: first diagnostic",
+            "statutes/27-7-5.yaml: ci: second diagnostic",
+        ]
+        assert supplemental == {}
 
     def test_apply_overlay_scopes_authenticated_canonical_replacement(self, tmp_path):
         output_root = tmp_path / "out"

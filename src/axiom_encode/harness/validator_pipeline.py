@@ -2107,6 +2107,48 @@ def _requested_source_from_metadata(metadata: dict[str, object] | None) -> str |
     return requested_source or None
 
 
+def _authenticated_same_act_aliases_from_metadata(
+    metadata: dict[str, object] | None,
+) -> tuple[str, ...]:
+    """Derive session-law aliases only from resolver-authenticated metadata."""
+
+    if not isinstance(metadata, dict):
+        return ()
+    aliases: list[str] = []
+    law_vintage = metadata.get("law_vintage")
+    if isinstance(law_vintage, dict):
+        bill = law_vintage.get("bill")
+        legislature = law_vintage.get("legislature")
+        if isinstance(bill, str) and bill.strip():
+            normalized_bill = " ".join(bill.split())
+            if isinstance(legislature, str):
+                year_match = re.search(r"\b(20\d{2})\b", legislature)
+                if year_match is not None:
+                    aliases.append(f"{year_match.group(1)} {normalized_bill}")
+
+    attestation = metadata.get("source_attestation")
+    row = attestation.get("row") if isinstance(attestation, dict) else None
+    source_path = row.get("source_path") if isinstance(row, dict) else None
+    if isinstance(source_path, str):
+        bill_match = re.search(
+            r"(?:^|/)(?P<year>20\d{2})-(?P<chamber>hb|sb)-0*(?P<number>\d+)"
+            r"(?:[-./]|$)",
+            source_path,
+            flags=re.IGNORECASE,
+        )
+        if bill_match is not None:
+            chamber = (
+                "House Bill"
+                if bill_match.group("chamber").casefold() == "hb"
+                else "Senate Bill"
+            )
+            aliases.append(
+                f"{bill_match.group('year')} {chamber} "
+                f"{int(bill_match.group('number'))}"
+            )
+    return tuple(dict.fromkeys(aliases))
+
+
 def _rulespec_file_normalized_target(rulespec_file: Path) -> tuple[str, ...] | None:
     """Best-effort tuple of statute/regulations path parts for matching."""
     parts = list(rulespec_file.with_suffix("").parts)
@@ -26774,6 +26816,9 @@ class ValidatorPipeline:
             numeric_value_is_grounded=numeric_value_is_grounded,
             artifact_numeric_values=artifact_numeric_values,
             artifact_numeric_bindings=artifact_numeric_bindings,
+            authenticated_same_act_aliases=(
+                _authenticated_same_act_aliases_from_metadata(self.source_metadata)
+            ),
         )
         return list(completeness.issues)
 

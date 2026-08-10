@@ -7816,6 +7816,50 @@ def test_same_act_section_dependency_normalizes_act_determiner():
     )
 
 
+def test_same_act_section_dependency_accepts_truthful_missing_text_possessive():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) applies except as otherwise "
+        "provided in Section 2 of this act, whose text is unavailable."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_accepts_authenticated_bill_alias():
+    reason = (
+        "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the 2030 rate subject to "
+        "Section 2 of 2025 House Bill 1, and the text of that exact same-act "
+        "Section 2 dependency is not supplied in the available context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+        authenticated_same_act_aliases=("2025 House Bill 1",),
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
 @pytest.mark.parametrize(
     "reason",
     (
@@ -7877,6 +7921,10 @@ def test_same_act_section_dependency_scopes_adversative_to_bridge(reason: str):
         (
             "is deferred because there is no executable rule for Section 2 of this "
             "act, but an executable rule exists"
+        ),
+        (
+            "is deferred because Section 2 of this act, whose text is unavailable, "
+            "but it is actually supplied"
         ),
     ),
 )

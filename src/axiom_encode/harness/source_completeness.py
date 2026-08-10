@@ -4133,6 +4133,7 @@ def analyze_complete_source_unit(
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None = None,
     artifact_numeric_bindings: Sequence[tuple[str, float]] | None = None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> CompleteSourceUnitAnalysis:
     """Analyze one artifact against its authoritative, resolver-owned body."""
 
@@ -4162,6 +4163,7 @@ def analyze_complete_source_unit(
                 numeric_value_is_grounded=numeric_value_is_grounded,
                 artifact_numeric_values=artifact_numeric_values,
                 artifact_numeric_bindings=artifact_numeric_bindings,
+                authenticated_same_act_aliases=authenticated_same_act_aliases,
             )
 
     return CompleteSourceUnitAnalysis((), (), 0, 0, 0)
@@ -4180,6 +4182,7 @@ def _analyze_rulespec_payload(
     numeric_value_is_grounded: NumericGroundingPredicate,
     artifact_numeric_values: Sequence[float] | None,
     artifact_numeric_bindings: Sequence[tuple[str, float]] | None,
+    authenticated_same_act_aliases: Sequence[str],
 ) -> CompleteSourceUnitAnalysis:
     branches = recognize_source_structure(source_text)
     (
@@ -4203,6 +4206,7 @@ def _analyze_rulespec_payload(
         corpus_citation_path=corpus_citation_path,
         source_text=source_text,
         branches=branches,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     )
     issues: list[str] = []
     issues.extend(imprecise_deferrals)
@@ -4800,6 +4804,7 @@ def _deferred_coverage(
     corpus_citation_path: str,
     source_text: str,
     branches: Sequence[SourceStructureBranch],
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> tuple[set[tuple[str, ...]], list[str]]:
     module = payload.get("module")
     records = module.get("deferred_outputs") if isinstance(module, dict) else None
@@ -4924,6 +4929,7 @@ def _deferred_coverage(
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
                     path=candidate_path,
+                    authenticated_same_act_aliases=authenticated_same_act_aliases,
                 )
                 or _reason_names_source_bound_runtime_gap(
                     reason,
@@ -4991,6 +4997,7 @@ def _deferred_coverage(
                     candidate_scope_text,
                     corpus_citation_path=corpus_citation_path,
                     path=candidate,
+                    authenticated_same_act_aliases=authenticated_same_act_aliases,
                 )
                 for candidate, candidate_scope_text in most_specific_source_scopes.items()
             )
@@ -7205,6 +7212,7 @@ def _reason_dependency_is_source_bound(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...] | None = None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
     """Require one external dependency citation to bind to the deferred source."""
 
@@ -7213,6 +7221,7 @@ def _reason_dependency_is_source_bound(
         source_scope_text,
         corpus_citation_path=corpus_citation_path,
         path=path,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     ):
         return True
 
@@ -7335,6 +7344,7 @@ def _reason_names_missing_same_act_dependency(
     *,
     corpus_citation_path: str,
     path: tuple[str, ...] | None,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
     """Recognize an exact missing session-law section named by one source branch."""
 
@@ -7363,8 +7373,11 @@ def _reason_names_missing_same_act_dependency(
         )
     if not exact_current_branch:
         return False
-    reason_matches = tuple(_SAME_ACT_SECTION_DEPENDENCY.finditer(reason))
-    reason_sections = {match.group("section").lower() for match in reason_matches}
+    reason_matches = _same_act_section_dependencies(
+        reason,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
+    )
+    reason_sections = {section.lower() for section, _start, _end in reason_matches}
     source_sections = {
         match.group("section").lower()
         for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(source_scope_text)
@@ -7378,21 +7391,21 @@ def _reason_names_missing_same_act_dependency(
     if not matching_sections:
         return False
     clauses = tuple(re.finditer(r"[^.;\n]+", reason))
-    for dependency_match in reason_matches:
-        identity = dependency_match.group("section").lower()
+    for dependency_section, dependency_start, _dependency_end in reason_matches:
+        identity = dependency_section.lower()
         if identity not in matching_sections:
             continue
         clause_index = next(
             (
                 index
                 for index, clause in enumerate(clauses)
-                if clause.start() <= dependency_match.start() < clause.end()
+                if clause.start() <= dependency_start < clause.end()
             ),
             None,
         )
         if clause_index is None:
             continue
-        section = re.escape(dependency_match.group("section"))
+        section = re.escape(dependency_section)
         for clause in clauses[clause_index : clause_index + 2]:
             clause_text = clause.group(0)
             if not re.search(rf"\bsection\s+{section}\b", clause_text, re.IGNORECASE):
@@ -7400,17 +7413,58 @@ def _reason_names_missing_same_act_dependency(
             if _same_act_clause_names_missing_dependency(
                 clause_text,
                 section=section,
+                authenticated_same_act_aliases=authenticated_same_act_aliases,
             ):
                 return True
     return False
 
 
+def _same_act_section_dependencies(
+    text: str,
+    *,
+    authenticated_same_act_aliases: Sequence[str],
+) -> tuple[tuple[str, int, int], ...]:
+    """Return canonical and provenance-authenticated same-act section references."""
+
+    matches = [
+        (match.group("section"), match.start(), match.end())
+        for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(text)
+    ]
+    for alias in dict.fromkeys(authenticated_same_act_aliases):
+        normalized_alias = " ".join(str(alias).split())
+        if not normalized_alias:
+            continue
+        pattern = re.compile(
+            r"\bsection\s+(?P<section>\d+[a-z]?)\s+of\s+"
+            + re.escape(normalized_alias)
+            + r"\b",
+            flags=re.IGNORECASE,
+        )
+        matches.extend(
+            (match.group("section"), match.start(), match.end())
+            for match in pattern.finditer(text)
+        )
+    return tuple(dict.fromkeys(matches))
+
+
 def _same_act_clause_names_missing_dependency(
-    clause_text: str, *, section: str
+    clause_text: str,
+    *,
+    section: str,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
-    reference = rf"\bsection\s+{section}(?:\s+of\s+(?:this|the)\s+act)?\b"
+    alias_alternatives = "|".join(
+        re.escape(" ".join(str(alias).split()))
+        for alias in dict.fromkeys(authenticated_same_act_aliases)
+        if " ".join(str(alias).split())
+    )
+    act_identity = r"(?:this|the)\s+act"
+    if alias_alternatives:
+        act_identity = rf"(?:{act_identity}|{alias_alternatives})"
+    reference = rf"\bsection\s+{section}(?:\s+of\s+{act_identity})?\b"
     direct_state = (
-        r"\s*(?:,\s*)?(?:(?:which|that)\s+)?(?:is|remains)\s+"
+        r"\s*(?:,\s*)?(?:(?:which|that)\s+|whose\s+(?:text|body)\s+)?"
+        r"(?:is|remains)\s+"
         r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b"
     )
     direct_match = re.search(reference + direct_state, clause_text, flags=re.IGNORECASE)
@@ -7431,6 +7485,21 @@ def _same_act_clause_names_missing_dependency(
     if no_executable_match and not _same_act_dependency_state_is_reversed(
         clause_text,
         no_executable_match,
+        section=section,
+    ):
+        return True
+    same_act_text_state = re.search(
+        reference + r"[^.;\n]{0,180}\b(?:text|body)\s+of\s+(?:that|the)\s+"
+        r"(?:exact\s+)?same[- ]act\s+section\s+"
+        + section
+        + r"\s+dependency\s+(?:is|remains)\s+"
+        r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b",
+        clause_text,
+        flags=re.IGNORECASE,
+    )
+    if same_act_text_state and not _same_act_dependency_state_is_reversed(
+        clause_text,
+        same_act_text_state,
         section=section,
     ):
         return True

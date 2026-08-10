@@ -19,6 +19,7 @@ import csv
 import difflib
 import fcntl
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -26206,7 +26207,8 @@ def _category_diverse_validation_retry_issues(
         (
             issue
             for issue in candidates
-            if issue.startswith("[complete-source-unit:structure]")
+            if _validation_retry_issue_category(issue)
+            == "complete-source-unit:structure"
         ),
         None,
     )
@@ -26221,7 +26223,8 @@ def _category_diverse_validation_retry_issues(
             (
                 issue
                 for issue in candidates
-                if issue.startswith("[complete-source-unit:formula-output]")
+                if _validation_retry_issue_category(issue)
+                == "complete-source-unit:formula-output"
                 and _validation_retry_branch_locator(issue) == structure_locator
             ),
             None,
@@ -26258,16 +26261,20 @@ def _category_diverse_validation_retry_issues(
 
 
 def _validation_retry_issue_category(issue: str) -> str | None:
-    match = re.match(r"\[([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)\]", issue)
+    match = re.search(
+        r"(?:^|:\s)\[([A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?)\]",
+        issue,
+    )
     return match.group(1).lower() if match is not None else None
 
 
 def _validation_retry_branch_locator(issue: str) -> str | None:
-    if issue.startswith("[complete-source-unit:structure]"):
+    category = _validation_retry_issue_category(issue)
+    if category == "complete-source-unit:structure":
         match = re.search(
             r"\bat (.+?) is neither encoded nor precisely deferred", issue
         )
-    elif issue.startswith("[complete-source-unit:formula-output]"):
+    elif category == "complete-source-unit:formula-output":
         match = re.search(r"\bin (.+?) has no principal derived/relation output", issue)
     else:
         return None
@@ -53778,20 +53785,61 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 dependents=dependents,
             )
         issues: list[str] = []
+        seen_issues: set[str] = set()
         for validated_file, validation in validations:
             if getattr(validation, "all_passed", False):
                 continue
             for validator_result in validation.results.values():
-                if validator_result.error:
-                    relative_file = _relative_to_rulespec_apply_content_root(
-                        validated_file,
-                        overlay_content_root,
-                    )
-                    validator_name = getattr(validator_result, "validator_name", "ci")
-                    issues.append(
-                        f"{relative_file}: {validator_name}: {validator_result.error}"
-                    )
+                relative_file = _relative_to_rulespec_apply_content_root(
+                    validated_file,
+                    overlay_content_root,
+                )
+                validator_name = getattr(validator_result, "validator_name", "ci")
+                for issue in _bounded_overlay_validator_issues(
+                    validator_result,
+                    relative_file=relative_file,
+                    validator_name=validator_name,
+                ):
+                    if issue in seen_issues:
+                        continue
+                    seen_issues.add(issue)
+                    issues.append(issue)
         return False, issues, {}
+
+
+def _bounded_overlay_validator_issues(
+    validator_result: object,
+    *,
+    relative_file: Path,
+    validator_name: str,
+) -> tuple[str, ...]:
+    """Preserve bounded validator diagnostics across the apply-overlay boundary."""
+
+    prefix = f"{relative_file}: {validator_name}: "
+    raw_issues = getattr(validator_result, "issues", ())
+    candidates = (
+        raw_issues
+        if isinstance(raw_issues, Sequence) and not isinstance(raw_issues, (str, bytes))
+        else ()
+    )
+    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
+    bounded: list[str] = []
+    seen: set[str] = set()
+    for raw_issue in itertools.islice(iter(candidates), inspection_limit):
+        if not isinstance(raw_issue, str):
+            continue
+        issue = bounded_validation_retry_feedback_item(f"{prefix}{raw_issue}")
+        if not issue or issue in seen:
+            continue
+        seen.add(issue)
+        bounded.append(issue)
+    if bounded:
+        return tuple(bounded)
+    error = getattr(validator_result, "error", None)
+    if not isinstance(error, str):
+        return ()
+    fallback = bounded_validation_retry_feedback_item(f"{prefix}{error}")
+    return (fallback,) if fallback else ()
 
 
 # Keep the apply-overlay validator importable for focused tests and internal

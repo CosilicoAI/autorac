@@ -31800,6 +31800,73 @@ def test_validator_pipeline_does_not_discover_ambient_source_metadata(tmp_path):
     assert pipeline.source_metadata is None
 
 
+def test_same_act_alias_is_derived_from_authenticated_source_path():
+    metadata = {
+        "source_attestation": {
+            "row": {
+                "source_path": (
+                    "sources/us-ms/statute/release/mississippi-legislature/"
+                    "2025-hb-1-sg.html"
+                )
+            }
+        }
+    }
+
+    assert validator_pipeline._authenticated_same_act_aliases_from_metadata(
+        metadata
+    ) == ("2025 House Bill 1",)
+    assert validator_pipeline._authenticated_same_act_aliases_from_metadata(None) == ()
+
+
+def test_complete_source_accepts_same_act_bill_alias_from_authenticated_metadata(
+    tmp_path,
+):
+    citation_path = "us-ms/statute/27-7-5"
+    content = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1#individual_upper_band_rate
+      reason: >-
+        us-ms/statute/27-7-5(1) makes the rate subject to Section 2 of 2025
+        House Bill 1, and the text of that exact same-act Section 2 dependency
+        is not supplied in the available context.
+rules: []
+"""
+    source_text = """(1) For calendar year 2030 and later, except as otherwise
+provided in Section 2 of this act, the rate shall be three percent (3%).
+"""
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-us/us-ms",
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+        source_citation_path=citation_path,
+        source_metadata={
+            "source_attestation": {
+                "row": {
+                    "source_path": (
+                        "sources/us-ms/statute/release/mississippi-legislature/"
+                        "2025-hb-1-sg.html"
+                    )
+                }
+            }
+        },
+    )
+
+    issues = pipeline._complete_source_unit_issues(
+        content,
+        validation_source_texts={citation_path: source_text},
+        test_cases=[],
+    )
+
+    assert not any(
+        issue.startswith("[complete-source-unit:deferral]") for issue in issues
+    )
+
+
 def test_validator_pipeline_snapshots_explicit_source_metadata(tmp_path):
     policy_repo = _canonical_rulespec_content_root(tmp_path, "us-co")
     source_metadata = {
