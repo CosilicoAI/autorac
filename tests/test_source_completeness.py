@@ -1152,6 +1152,484 @@ def test_nj_title_54a_citations_are_not_glued_german_sentence_markers():
     ]
 
 
+@pytest.mark.parametrize(
+    "legal_citation",
+    (
+        "KRS 7A.210",
+        "KRS 26A.015",
+        "section 12B/4",
+        "section 12B / 4",
+        "section 9C-2",
+        "section 9C - 2",
+        "KRS 7A. 210",
+        "section 7A–210",
+        "N.J.S. 54A : 4-7",
+        "section 7A : 210",
+    ),
+)
+def test_alphanumeric_legal_citations_are_not_glued_german_sentence_markers(
+    legal_citation: str,
+):
+    branches = recognize_source_structure(
+        f"The cross-reference is {legal_citation}. 1Das ist Satz eins."
+    )
+
+    assert [branch.label for branch in branches if branch.kind == "sentence"] == [
+        "Satz 1"
+    ]
+
+
+def test_legal_section_citation_does_not_invent_arithmetic_topology():
+    topology = completeness_module._explicit_source_arithmetic_topology(
+        authoritative_numeric_recall_text(
+            "The tax imposed by Section 40-18-2 shall be computed as follows."
+        )
+    )
+
+    assert topology is None
+
+
+def test_legal_section_citation_does_not_hide_real_arithmetic_topology():
+    with_citation = completeness_module._explicit_source_arithmetic_topology(
+        authoritative_numeric_recall_text(
+            "Under Section 40-18-2, tax is (income - 500) * 0.04."
+        )
+    )
+    without_citation = completeness_module._explicit_source_arithmetic_topology(
+        "tax is (income - 500) * 0.04."
+    )
+
+    assert with_citation is not None
+    assert with_citation == without_citation
+
+
+def test_progressive_min_clamp_binds_exact_source_boundary():
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "rate * min(max(0, taxable_income), bracket_ceiling)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_ceiling"},
+        boundary=boundary,
+        formula_environment={"rate": 0.02, "bracket_ceiling": 500},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_progressive_min_clamp_binds_matching_subtracted_offset():
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert completeness_module._formula_text_has_boundary_comparison(
+        "rate * min(max(0, taxable_income - lower_bound), ceiling - lower_bound)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"lower_bound", "ceiling"},
+        boundary=boundary,
+        formula_environment={"rate": 0.02, "lower_bound": 100, "ceiling": 500},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_progressive_min_clamp_rejects_unrelated_cap():
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        "rate * min(max(0, taxable_income), unrelated_cap)",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_ceiling"},
+        boundary=boundary,
+        formula_environment={
+            "rate": 0.02,
+            "bracket_ceiling": 500,
+            "unrelated_cap": 600,
+        },
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+@pytest.mark.parametrize(
+    "cap_expression",
+    ("bracket_ceiling + 100", "bracket_ceiling * 2"),
+)
+def test_progressive_min_clamp_rejects_shifted_or_scaled_boundary(
+    cap_expression: str,
+):
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    boundary = EN_NUMERIC_OCCURRENCE_EXTRACTOR(source)[0]
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert not completeness_module._formula_text_has_boundary_comparison(
+        f"rate * min(max(0, taxable_income), {cap_expression})",
+        allow_complement_relation=False,
+        input_names={"taxable_income"},
+        boundary_names={"bracket_ceiling"},
+        boundary=boundary,
+        formula_environment={"rate": 0.02, "bracket_ceiling": 500},
+        source_interval=interval,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        numeric_value_is_grounded=numeric_value_is_grounded,
+    )
+
+
+def test_progressive_min_clamp_shift_fails_full_formula_witness():
+    source = "Taxable income not in excess of 500 dollars is taxed at two percent."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_ceiling
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 500
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Taxable income not in excess of 500 dollars is taxed at two percent.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate * min(max(0, taxable_income), bracket_ceiling + 100)
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": "shifted cap",
+                "period": "2026-01-01",
+                "input": {"taxable_income": 499},
+                "output": {"tax": 9.98},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "formula", "500")
+
+
+@pytest.mark.parametrize("reversed_subject", ("threshold", "percent", "taxed"))
+def test_progressive_min_clamp_paired_reversal_fails_full_formula_witness(
+    reversed_subject: str,
+):
+    source = "Taxable income not in excess of 500 dollars is taxed at two percent."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_ceiling
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 500
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Taxable income not in excess of 500 dollars is taxed at two percent.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate * min(max(0, threshold - taxable_income), bracket_ceiling - taxable_income)
+""".replace("threshold", reversed_subject)
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": "paired reversed clamp",
+                "period": "2026-01-01",
+                "input": {"taxable_income": 1000, reversed_subject: 100},
+                "output": {"tax": -10},
+            }
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "formula", "500")
+
+
+def test_progressive_min_clamp_rejects_nested_decoy_full_formula_witness():
+    source = "Taxable income not in excess of 500 dollars is taxed at two percent."
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-zz/statute/2
+rules:
+  - name: bracket_ceiling
+    kind: parameter
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 500
+  - name: rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2026-01-01'
+        formula: 0.02
+  - name: tax
+    kind: derived
+    dtype: Money
+    metadata:
+      proof:
+        atoms:
+          - path: versions[0].formula
+            kind: formula
+            source:
+              corpus_citation_path: us-zz/statute/2
+              excerpt: Taxable income not in excess of 500 dollars is taxed at two percent.
+    versions:
+      - effective_from: '2026-01-01'
+        formula: rate * min(min(max(0, threshold - real_income), bracket_ceiling - real_income), min(max(0, taxable_income), bracket_ceiling))
+"""
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="us-zz/statute/2",
+        test_cases=[
+            {
+                "name": "operative reversed clamp",
+                "period": "2026-01-01",
+                "input": {
+                    "taxable_income": 100,
+                    "real_income": 1000,
+                    "threshold": 100,
+                },
+                "output": {"tax": -10},
+            },
+            {
+                "name": "decoy boundary clamp",
+                "period": "2026-01-01",
+                "input": {
+                    "taxable_income": 500,
+                    "real_income": 0,
+                    "threshold": 500,
+                },
+                "output": {"tax": 10},
+            },
+        ],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "formula", "500")
+
+
+def test_interval_selector_falls_back_to_reached_clamp_leaf():
+    source = "Taxable income not in excess of $500 is taxed at two percent."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    rule = {
+        "versions": [
+            {
+                "effective_from": "2026-01-01",
+                "formula": (
+                    "if joint_return_was_made then "
+                    "rate * min(max(0, taxable_income), bracket_ceiling) "
+                    "else unrelated_income"
+                ),
+            }
+        ]
+    }
+    execution = completeness_module._FormulaExecution(
+        trace=(
+            completeness_module._FormulaTraceStep(
+                kind="if",
+                selectors=("joint_return_was_made",),
+                choice=0,
+            ),
+        ),
+        leaf="rate * min(max(0, taxable_income), bracket_ceiling)",
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.02, "bracket_ceiling": 500},
+    )
+    case = {
+        "input": {
+            "joint_return_was_made": True,
+            "taxable_income": 499,
+            "unrelated_income": 250,
+        }
+    }
+
+    assert interval is not None
+    assert completeness_module._reached_formula_interval_selector_values(
+        execution,
+        case,
+        principal_rules={"tax": rule},
+        formula_environment={"rate": 0.02, "bracket_ceiling": 500},
+        dependency_environment={},
+        interval=interval,
+        source_text=source,
+    ) == (499.0,)
+
+
+def test_interval_selector_fallback_does_not_use_clamp_subtractor():
+    source = "Taxable income from $500 through $1000 is taxed at two percent."
+    interval = completeness_module._formula_interval_from_text(
+        source,
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+    rule = {
+        "versions": [
+            {
+                "effective_from": "2026-01-01",
+                "formula": (
+                    "if return_was_made then rate * min(max(0, taxable_income - "
+                    "exemption), ceiling - exemption) else 0"
+                ),
+            }
+        ]
+    }
+    execution = completeness_module._FormulaExecution(
+        trace=(
+            completeness_module._FormulaTraceStep(
+                kind="if",
+                selectors=("return_was_made",),
+                choice=0,
+            ),
+        ),
+        leaf=("rate * min(max(0, taxable_income - exemption), ceiling - exemption)"),
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.02, "ceiling": 1000},
+    )
+    case = {
+        "input": {
+            "return_was_made": True,
+            "taxable_income": 1500,
+            "exemption": 600,
+        }
+    }
+
+    assert interval is not None
+    assert completeness_module._reached_formula_interval_selector_values(
+        execution,
+        case,
+        principal_rules={"tax": rule},
+        formula_environment={"rate": 0.02, "ceiling": 1000},
+        dependency_environment={},
+        interval=interval,
+        source_text=source,
+    ) == (1500.0,)
+
+
+@pytest.mark.parametrize(
+    ("leaf", "case_input"),
+    (
+        (
+            "rate * min(max(0, threshold - taxable_income), ceiling)",
+            {"taxable_income": 1000, "threshold": 100},
+        ),
+        (
+            "rate * min(max(taxable_income, unrelated_income), ceiling)",
+            {"taxable_income": 1000, "unrelated_income": 100},
+        ),
+    ),
+)
+def test_interval_selector_fallback_rejects_reversed_or_multi_operand_clamp(
+    leaf: str, case_input: dict[str, int]
+):
+    execution = completeness_module._FormulaExecution(
+        trace=(),
+        leaf=leaf,
+        evaluated_value=None,
+        evaluates_to_zero=False,
+        constant_environment={"rate": 0.02, "ceiling": 500},
+    )
+    interval = completeness_module._formula_interval_from_text(
+        "Taxable income not in excess of $500 is taxed at two percent.",
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+    )
+
+    assert interval is not None
+    assert (
+        completeness_module._reached_formula_interval_selector_values(
+            execution,
+            {"input": case_input},
+            principal_rules={},
+            formula_environment={"rate": 0.02, "ceiling": 500},
+            dependency_environment={},
+            interval=interval,
+            source_text="Taxable income not in excess of $500 is taxed at two percent.",
+        )
+        == ()
+    )
+
+
 @pytest.mark.parametrize("ordinal", ["1ST", "2ND", "3RD", "4TH", "21st"])
 def test_english_ordinals_are_not_glued_german_sentence_markers(ordinal: str):
     branches = recognize_source_structure(
@@ -6868,6 +7346,250 @@ def test_precise_root_state_deferral_retry_preserves_branch_in_output_path():
     )
     assert "branch citation in `reason` is already recognized" in issue
     assert "literal canonical citation required" not in issue
+
+
+def test_policy_root_state_deferral_retry_names_canonical_source_branch():
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:policies/income_tax/2026_section_27_7_5_schedule/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: >-
+        Miss. Code section 27-7-5(1)(b)(ii)(7) cannot be fully encoded because
+        Section 2 of this act is not available.
+rules: []
+"""
+    source = """\
+(1) Individual tax.
+(b) For later calendar years:
+(ii) The upper-band tax rate is as follows:
+7. For calendar year 2030 and later, except as otherwise provided in Section 2
+of this act, the rate shall be three percent (3%).
+"""
+
+    payload = yaml.safe_load(content)
+    branches = (
+        completeness_module.SourceStructureBranch(
+            path=("1", "b", "ii", "7"),
+            kind="outline",
+            label="7",
+            text=source,
+            start=0,
+            end=len(source),
+        ),
+    )
+
+    _covered, issues = completeness_module._deferred_coverage(
+        payload,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        source_text=source,
+        branches=branches,
+    )
+
+    issue = next(issue for issue in issues if "uses non-source root" in issue)
+    assert (
+        "`us-ms:statutes/27-7-5/1/b/ii/7#"
+        "individual_upper_band_tax_for_2030_and_later`" in issue
+    )
+
+
+def test_same_act_section_dependency_is_bound_to_exact_source_branch():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) provides the 2030 rate except "
+        "as otherwise provided in Section 2 of this act; no executable RuleSpec "
+        "output for Section 2 of this act is supplied in the available context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_rejects_unrelated_missing_input():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) is operative except as "
+        "otherwise provided in Section 2 of this act. The taxpayer income input "
+        "is unavailable."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) is operative except as "
+            "provided in Section 2 of this act, which is available, but the "
+            "taxpayer income input is unavailable."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) requires household income "
+            "that is unavailable, except as otherwise provided in Section 2 of "
+            "this act."
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_same_clause_unrelated_gap(reason: str):
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_normalizes_act_determiner():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) applies except as otherwise "
+        "provided in Section 2 of the act, which is unavailable."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) cannot be encoded without "
+            "Section 2 of the act, but the 2029 rule remains executable."
+        ),
+        (
+            "The 2029 rule remains executable, but Miss. Code section "
+            "27-7-5(1)(b)(ii)(7) cannot be encoded without Section 2 of this act."
+        ),
+    ),
+)
+def test_same_act_section_dependency_scopes_adversative_to_bridge(reason: str):
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    "dependency_state",
+    (
+        "cannot be encoded, but not because Section 2 of this act is unavailable",
+        "is deferred because it is false that Section 2 of the act is unavailable",
+        (
+            "is deferred because Section 2 of this act is unavailable, but it is "
+            "actually available"
+        ),
+        (
+            "cannot be encoded without Section 2 of this act, but Section 2 is "
+            "available and not required"
+        ),
+        "is deferred because there is no evidence that Section 2 is unavailable",
+        (
+            "is deferred because it is false that there is no executable rule for "
+            "Section 2 of the act"
+        ),
+        (
+            "is deferred because there is no executable rule for Section 2 of this "
+            "act, but an executable rule is available"
+        ),
+        (
+            "is deferred because there is no executable rule for Section 2 of this "
+            "act, although Section 2 is fully implemented"
+        ),
+        "is deferred because it is not true that Section 2 is unavailable",
+        (
+            "is deferred because Section 2 of this act is unavailable, but it is "
+            "in fact available"
+        ),
+        (
+            "is deferred because there is no executable rule for Section 2 of this "
+            "act, but an executable rule exists"
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_reversed_missing_state(
+    dependency_state: str,
+):
+    reason = f"Miss. Code section 27-7-5(1)(b)(ii)(7) {dependency_state}."
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "path"),
+    (
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) cannot be encoded because "
+            "Section 3 of this act is unavailable.",
+            ("1", "b", "ii", "7"),
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(6) cannot be encoded because "
+            "Section 2 of this act is unavailable.",
+            ("1", "b", "ii", "7"),
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_mismatched_binding(
+    reason: str, path: tuple[str, ...]
+):
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=path,
+    )
 
 
 def test_root_deferral_retry_preserves_uppercase_federal_subparagraph():
