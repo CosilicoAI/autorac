@@ -3661,6 +3661,7 @@ def test_validate_rulespec_base_rejects_stale_main_pr_base(
 @pytest.mark.parametrize(
     ("country", "reviewed_ref"),
     [
+        ("dk", "06489d04e7d4b8d424d1711d99df883c6411248a"),
         ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
         ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
         ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
@@ -3685,6 +3686,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
     repo = tmp_path / f"rulespec-{country}"
     assert REVIEWED_RULESPEC_REFS == frozenset(
         {
+            ("dk", "06489d04e7d4b8d424d1711d99df883c6411248a"),
             ("us", "b61918da93fe8a1a29b35b9330aef2085291a5d0"),
             ("us", "251d8d66dabdebcb763d9e7c9b8322a281440c36"),
             ("us", "68cca4a6fa806b63f95277c129575d88d2ac07f1"),
@@ -3701,7 +3703,7 @@ def test_validate_rulespec_base_accepts_exact_reviewed_head_artifact_only(
         }
     )
     assert REVIEWED_RULESPEC_PR_BASE_BRANCHES == frozenset(
-        {("us", "hard-cut/canonical-layout-us")}
+        {("dk", "pin/dk-rulespec-2026-08-07"), ("us", "hard-cut/canonical-layout-us")}
     )
     monkeypatch.setattr(
         "scripts.prepare_signed_backfill._git",

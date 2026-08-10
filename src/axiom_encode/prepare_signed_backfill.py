@@ -69,6 +69,10 @@ STRUCTURED_REVIEW_CONTRACT_SCHEMA = "axiom-encode/review-contract/v2"
 REVIEWED_RULESPEC_REFS = frozenset(
     {
         (
+            "dk",
+            "06489d04e7d4b8d424d1711d99df883c6411248a",
+        ),
+        (
             "us",
             "b61918da93fe8a1a29b35b9330aef2085291a5d0",
         ),
@@ -124,6 +128,7 @@ REVIEWED_RULESPEC_REFS = frozenset(
 )
 REVIEWED_RULESPEC_PR_BASE_BRANCHES = frozenset(
     {
+        ("dk", "pin/dk-rulespec-2026-08-07"),
         ("us", "hard-cut/canonical-layout-us"),
     }
 )
