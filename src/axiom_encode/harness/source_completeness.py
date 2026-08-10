@@ -291,7 +291,8 @@ _INLINE_OUTLINE_CHAPEAU_REFERENCE_LEAD = re.compile(
 _GLUED_SENTENCE_MARKER = re.compile(
     r"(?<![\w])(?P<label>[1-9]\d?)"
     r"(?!(?i:st|nd|rd|th)\b)"
-    r"(?=[A-ZÄÖÜ](?!:)(?![./-]\d))"
+    r"(?=[A-ZÄÖÜ](?!:)(?![ \t]*[.:/\-\u2010-\u2015\u2212\ufe58\ufe63\uff0d]"
+    r"[ \t]*\d))"
 )
 _EXPLICIT_SENTENCE_MARKER = re.compile(
     r"(?:(?<=^)|(?<=[.;])|(?<=\)))[ \t]*Satz[ \t]+"
@@ -7257,12 +7258,10 @@ def _reason_names_missing_same_act_dependency(
         )
     if not exact_current_branch:
         return False
-    reason_sections = {
-        (match.group("section").lower(), match.group("act").lower())
-        for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(reason)
-    }
+    reason_matches = tuple(_SAME_ACT_SECTION_DEPENDENCY.finditer(reason))
+    reason_sections = {match.group("section").lower() for match in reason_matches}
     source_sections = {
-        (match.group("section").lower(), match.group("act").lower())
+        match.group("section").lower()
         for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(source_scope_text)
         if re.search(
             r"\b(?:except|unless|subject\s+to)\b",
@@ -7270,15 +7269,121 @@ def _reason_names_missing_same_act_dependency(
             flags=re.IGNORECASE,
         )
     }
-    if not reason_sections.intersection(source_sections):
+    matching_sections = reason_sections.intersection(source_sections)
+    if not matching_sections:
         return False
+    clauses = tuple(re.finditer(r"[^.;\n]+", reason))
+    for dependency_match in reason_matches:
+        identity = dependency_match.group("section").lower()
+        if identity not in matching_sections:
+            continue
+        clause_index = next(
+            (
+                index
+                for index, clause in enumerate(clauses)
+                if clause.start() <= dependency_match.start() < clause.end()
+            ),
+            None,
+        )
+        if clause_index is None:
+            continue
+        section = re.escape(dependency_match.group("section"))
+        for clause in clauses[clause_index : clause_index + 2]:
+            clause_text = clause.group(0)
+            if not re.search(rf"\bsection\s+{section}\b", clause_text, re.IGNORECASE):
+                continue
+            if _same_act_clause_names_missing_dependency(
+                clause_text,
+                section=section,
+            ):
+                return True
+    return False
+
+
+def _same_act_clause_names_missing_dependency(
+    clause_text: str, *, section: str
+) -> bool:
+    reference = rf"\bsection\s+{section}(?:\s+of\s+(?:this|the)\s+act)?\b"
+    direct_state = (
+        r"\s*(?:,\s*)?(?:(?:which|that)\s+)?(?:is|remains)\s+"
+        r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b"
+    )
+    direct_match = re.search(reference + direct_state, clause_text, flags=re.IGNORECASE)
+    if direct_match and not _same_act_dependency_state_is_reversed(
+        clause_text,
+        direct_match,
+        section=section,
+    ):
+        return True
+    no_executable_for_section = (
+        r"\bno\s+executable\b[^,;]{0,100}\b(?:for|from|under)\s+(?:the\s+)?" + reference
+    )
+    no_executable_match = re.search(
+        no_executable_for_section,
+        clause_text,
+        flags=re.IGNORECASE,
+    )
+    if no_executable_match and not _same_act_dependency_state_is_reversed(
+        clause_text,
+        no_executable_match,
+        section=section,
+    ):
+        return True
+    dependency_bridge = (
+        r"\b(?:requires?|depends?\s+on|until|without)\s+"
+        r"(?:an?\s+|the\s+)?(?:executable\s+)?" + reference
+    )
+    bridge_match = re.search(dependency_bridge, clause_text, flags=re.IGNORECASE)
     return bool(
-        _MISSING_DEPENDENCY_LANGUAGE.search(reason)
-        or re.search(
-            r"\b(?:no\s+executable|not\s+(?:available|encoded|implemented)|"
-            r"(?:is|are)\s+(?:not\s+)?(?:available|missing|unencoded|unsupplied)|"
-            r"(?:is|are)\s+not\s+supplied)\b",
-            reason,
+        bridge_match
+        and not _ADVERSATIVE_LANGUAGE.search(bridge_match.group(0))
+        and not _same_act_dependency_state_is_reversed(
+            clause_text,
+            bridge_match,
+            section=section,
+        )
+    )
+
+
+def _same_act_dependency_state_is_reversed(
+    clause_text: str,
+    dependency_match: re.Match[str],
+    *,
+    section: str,
+) -> bool:
+    """Reject bounded negation or a coordinated reversal of this dependency."""
+
+    prefix = clause_text[
+        max(0, dependency_match.start() - 80) : dependency_match.start()
+    ]
+    if re.search(
+        r"\b(?:"
+        r"(?:it\s+is\s+)?(?:false|untrue|not\s+true)\s+that"
+        r"(?:\s+there\s+is)?|"
+        r"no\s+(?:basis|evidence|indication|support)\s+that|"
+        r"not\s+(?:because|due\s+to)"
+        r")\s*$",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    suffix = clause_text[dependency_match.end() :]
+    reversal_subject = (
+        rf"(?:it|that\s+section|the\s+section|"
+        rf"section\s+{section}(?:\s+of\s+(?:this|the)\s+act)?|"
+        r"an?\s+executable\s+(?:output|rule))"
+    )
+    reversal_state = (
+        r"(?:is|remains)\s+(?:(?:actually|fully|in\s+fact)\s+)?"
+        r"(?:available|encoded|implemented|"
+        r"supplied|not\s+(?:missing|required|unavailable))|"
+        r"(?:is\s+)?not\s+required|(?:does\s+)?exists?"
+    )
+    return bool(
+        re.search(
+            rf"\b(?:although|but|however|nevertheless|nonetheless|though|yet)\b"
+            rf"[^.;\n]{{0,100}}?\b{reversal_subject}\s+{reversal_state}\b",
+            suffix,
             flags=re.IGNORECASE,
         )
     )
@@ -12705,11 +12810,11 @@ def _formula_execution_is_source_branch_witness(
         selector_values = _reached_formula_interval_selector_values(
             execution,
             case,
-            rule=rule,
             principal_rules=principal_rules,
             formula_environment=formula_environment,
             dependency_environment=dependency_environment,
             interval=interval,
+            source_text=branch.text,
         )
     else:
         selector_names = _rule_numeric_selector_names(rule)
@@ -13036,11 +13141,11 @@ def _reached_formula_interval_selector_values(
     execution: _FormulaExecution,
     case: dict[str, Any],
     *,
-    rule: dict[str, Any],
     principal_rules: dict[str, dict[str, Any]],
     formula_environment: dict[str, Any],
     dependency_environment: dict[str, Any],
     interval: _NumericInterval,
+    source_text: str,
 ) -> tuple[float, ...]:
     """Trace values paired with the source bound through derived selectors."""
 
@@ -13117,33 +13222,27 @@ def _reached_formula_interval_selector_values(
     )
     if values:
         return values
-    clamp_subject_names = _formula_progressive_clamp_subject_names(execution.leaf)
-    if not clamp_subject_names:
-        return ()
-    reached_names = set().union(
-        *(
-            set(_FORMULA_IDENTIFIER.findall(expression))
-            for expression in (
-                execution.leaf,
-                *(selector for step in execution.trace for selector in step.selectors),
-            )
-        ),
-        set(),
-    )
-    return _case_numeric_selector_values(
-        case,
-        _rule_numeric_selector_names(rule) & reached_names & clamp_subject_names,
-        dependency_environment=dependency_environment,
+    return _formula_progressive_clamp_subject_values(
+        execution.leaf,
+        environment=environment,
+        evidence_names=evidence_names,
+        source_text=source_text,
     )
 
 
-def _formula_progressive_clamp_subject_names(formula_text: str) -> set[str]:
-    """Return identifiers in a ``min(max(...), cap)`` progressive subject."""
+def _formula_progressive_clamp_subject_values(
+    formula_text: str,
+    *,
+    environment: dict[str, Any],
+    evidence_names: set[str],
+    source_text: str,
+) -> tuple[float, ...]:
+    """Evaluate the minuend subject in a reached ``min(max(...), cap)`` clamp."""
 
     expression = _parse_formula_expression(formula_text)
     if expression is None:
-        return set()
-    names: set[str] = set()
+        return ()
+    values: list[float] = []
     for node in ast.walk(expression):
         if not (
             isinstance(node, ast.Call)
@@ -13153,19 +13252,130 @@ def _formula_progressive_clamp_subject_names(formula_text: str) -> set[str]:
             and not node.keywords
         ):
             continue
-        for argument in node.args:
+        for argument, cap in (
+            (node.args[0], node.args[1]),
+            (node.args[1], node.args[0]),
+        ):
             if not (
                 isinstance(argument, ast.Call)
                 and isinstance(argument.func, ast.Name)
                 and argument.func.id == "max"
+                and len(argument.args) == 2
+                and not argument.keywords
             ):
                 continue
-            names.update(
-                candidate.id
-                for candidate in ast.walk(argument)
-                if isinstance(candidate, ast.Name) and candidate.id != "max"
+            zero_operands = [
+                operand
+                for operand in argument.args
+                if isinstance(operand, ast.Constant) and operand.value == 0
+            ]
+            if len(zero_operands) != 1:
+                continue
+            positive_operand = next(
+                operand for operand in argument.args if operand is not zero_operands[0]
             )
-    return names
+            if isinstance(positive_operand, ast.Name):
+                subject = positive_operand
+            elif (
+                isinstance(positive_operand, ast.BinOp)
+                and isinstance(positive_operand.op, ast.Sub)
+                and isinstance(positive_operand.left, ast.Name)
+                and isinstance(cap, ast.BinOp)
+                and isinstance(cap.op, ast.Sub)
+                and ast.dump(positive_operand.right) == ast.dump(cap.right)
+            ):
+                subject = positive_operand.left
+            else:
+                continue
+            if subject.id not in evidence_names or not _formula_subject_matches_source(
+                subject.id,
+                source_text,
+            ):
+                continue
+            value = _evaluate_condition_expression(subject, environment)
+            if _rulespec_runtime_decimal(value) is not None:
+                values.append(float(value))
+    return tuple(values)
+
+
+def _formula_progressive_clamp_subject_names(formula_text: str) -> tuple[str, ...]:
+    """Return structurally valid subject names from progressive clamps."""
+
+    expression = _parse_formula_expression(formula_text)
+    if expression is None:
+        return ()
+    names: list[str] = []
+    for node in ast.walk(expression):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "min"
+            and len(node.args) == 2
+            and not node.keywords
+        ):
+            continue
+        for argument, cap in (
+            (node.args[0], node.args[1]),
+            (node.args[1], node.args[0]),
+        ):
+            if not (
+                isinstance(argument, ast.Call)
+                and isinstance(argument.func, ast.Name)
+                and argument.func.id == "max"
+                and len(argument.args) == 2
+                and not argument.keywords
+            ):
+                continue
+            zero_operands = [
+                operand
+                for operand in argument.args
+                if isinstance(operand, ast.Constant) and operand.value == 0
+            ]
+            if len(zero_operands) != 1:
+                continue
+            positive_operand = next(
+                operand for operand in argument.args if operand is not zero_operands[0]
+            )
+            if isinstance(positive_operand, ast.Name):
+                names.append(positive_operand.id)
+            elif (
+                isinstance(positive_operand, ast.BinOp)
+                and isinstance(positive_operand.op, ast.Sub)
+                and isinstance(positive_operand.left, ast.Name)
+                and isinstance(cap, ast.BinOp)
+                and isinstance(cap.op, ast.Sub)
+                and ast.dump(positive_operand.right) == ast.dump(cap.right)
+            ):
+                names.append(positive_operand.left.id)
+    return tuple(names)
+
+
+def _formula_subject_matches_source(name: str, source_text: str) -> bool:
+    """Bind an inferred clamp minuend to the source's named subject."""
+
+    generic_tokens = {"amount", "base", "input", "subject", "total", "value"}
+    name_tokens = tuple(
+        token
+        for token in re.findall(r"[a-z0-9]+", name.lower().replace("_", " "))
+        if token not in generic_tokens
+    )
+    if not name_tokens:
+        return False
+    subject_phrase = r"\s+".join(re.escape(token) for token in name_tokens)
+    interval_comparison = (
+        r"(?:above|at\s+(?:least|most)|below|between|exceeds?|exceeding|from|"
+        r"greater\s+than|in\s+excess\s+of|less\s+than|more\s+than|"
+        r"no\s+(?:less|more|greater)\s+than|not\s+(?:in\s+excess\s+of|"
+        r"less\s+than|more\s+than|over)|over|through|under|up\s+to)"
+    )
+    return bool(
+        re.search(
+            rf"\b{subject_phrase}\b\s+"
+            rf"(?:(?:is|are|shall\s+be)\s+)?{interval_comparison}\b",
+            source_text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _formula_interval_subject_values(
@@ -13459,6 +13669,13 @@ def _formula_execution_matches_source_branch(
         execution.leaf,
         environment=binding_environment,
     )
+    clamp_subject_names = _formula_progressive_clamp_subject_names(operative_leaf)
+    if interval is not None and clamp_subject_names:
+        if len(clamp_subject_names) != 1 or not _formula_subject_matches_source(
+            clamp_subject_names[0],
+            branch.text,
+        ):
+            return False
     source_topology = _explicit_source_arithmetic_topology(
         authoritative_numeric_recall_text(branch.text)
     )
@@ -16883,21 +17100,74 @@ def _formula_expression_has_boundary_clamp(
                 and not _formula_node_references_names(cap, input_names)
             ):
                 continue
-            if any(
-                _formula_node_boundary_value(
-                    candidate,
-                    boundary_names=boundary_names,
-                    boundary=boundary,
-                    formula_environment=formula_environment,
-                    extract_numeric_occurrences=extract_numeric_occurrences,
-                    numeric_value_is_grounded=numeric_value_is_grounded,
-                )
-                is not None
+            cap_names = {
+                candidate.id
                 for candidate in ast.walk(cap)
-                if isinstance(candidate, ast.expr)
+                if isinstance(candidate, ast.Name)
+            }
+            if not cap_names or cap_names.issubset(boundary_names):
+                cap_value = _evaluate_condition_expression(cap, formula_environment)
+                if _rulespec_runtime_decimal(
+                    cap_value
+                ) is not None and numeric_value_is_grounded(
+                    float(cap_value), (boundary,)
+                ):
+                    return True
+            if _formula_clamp_preserves_boundary_offset(
+                subject,
+                cap,
+                boundary_names=boundary_names,
+                boundary=boundary,
+                formula_environment=formula_environment,
+                numeric_value_is_grounded=numeric_value_is_grounded,
             ):
                 return True
     return False
+
+
+def _formula_clamp_preserves_boundary_offset(
+    subject: ast.expr,
+    cap: ast.expr,
+    *,
+    boundary_names: set[str],
+    boundary: NumericOccurrenceLike,
+    formula_environment: dict[str, Any],
+    numeric_value_is_grounded: NumericGroundingPredicate,
+) -> bool:
+    """Accept ``min(max(0, x - a), ceiling - a)`` as an exact ceiling clamp."""
+
+    if not (isinstance(cap, ast.BinOp) and isinstance(cap.op, ast.Sub)):
+        return False
+    ceiling_names = {
+        candidate.id
+        for candidate in ast.walk(cap.left)
+        if isinstance(candidate, ast.Name)
+    }
+    if ceiling_names and not ceiling_names.issubset(boundary_names):
+        return False
+    positive_subject = next(
+        (
+            operand
+            for node in ast.walk(subject)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "max"
+            for operand in node.args
+            if not (isinstance(operand, ast.Constant) and operand.value == 0)
+        ),
+        None,
+    )
+    if not (
+        isinstance(positive_subject, ast.BinOp)
+        and isinstance(positive_subject.op, ast.Sub)
+        and ast.dump(positive_subject.right) == ast.dump(cap.right)
+    ):
+        return False
+    ceiling_value = _evaluate_condition_expression(cap.left, formula_environment)
+    return bool(
+        _rulespec_runtime_decimal(ceiling_value) is not None
+        and numeric_value_is_grounded(float(ceiling_value), (boundary,))
+    )
 
 
 def _parse_formula_expression(text: str) -> ast.expr | None:

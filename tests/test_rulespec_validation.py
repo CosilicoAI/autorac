@@ -5926,7 +5926,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1655"')
+        .startswith('__version__ = "0.2.1656"')
     )
 
 
@@ -6158,13 +6158,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1655"
+    assert encoder_package["version"] == "0.2.1656"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1655"
+    assert project["project"]["version"] == "0.2.1656"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1655"')
+        .startswith('__version__ = "0.2.1656"')
     )
 
 
@@ -6426,13 +6426,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1655"
+    assert encoder_package["version"] == "0.2.1656"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1655"
+    assert project["project"]["version"] == "0.2.1656"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1655"')
+        .startswith('__version__ = "0.2.1656"')
     )
 
 
@@ -37178,14 +37178,18 @@ rules:
     assert find_deferred_purpose_specific_limitation_issues(content) == []
 
 
-def test_deferred_future_upper_band_does_not_remove_prior_or_sibling_bands():
+def test_deferred_future_upper_band_does_not_remove_prior_or_sibling_bands(
+    tmp_path,
+):
     content = """format: rulespec/v1
 module:
   source_verification:
     corpus_citation_path: us-ms/statute/27-7-5
   deferred_outputs:
     - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
-      reason: Paragraph (7) has an exception for the 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+      reason: Paragraph (7) has an exception for the calendar year 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+      source_values:
+        - us-ms:policies/income_tax/2026_section_27_7_5_schedule#upper_band_rate
 rules:
   - name: individual_lower_band_tax
     kind: derived
@@ -37213,9 +37217,29 @@ rules:
       - effective_from: '2024-01-01'
         effective_to: '2029-12-31'
         formula: individual_lower_band_tax + individual_middle_band_tax + individual_upper_band_tax
+  - name: upper_band_rate
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2030-01-01'
+        formula: 0.03
 """
 
-    assert find_deferred_purpose_specific_limitation_issues(content) == []
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-ms")
+    rules_file = (
+        policy_repo / "policies" / "income_tax" / "2026_section_27_7_5_schedule.yaml"
+    )
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(content)
+
+    assert (
+        find_deferred_purpose_specific_limitation_issues(
+            content,
+            rules_file=rules_file,
+            policy_repo_path=policy_repo,
+        )
+        == []
+    )
 
 
 def test_deferred_future_upper_band_rejects_upper_band_extending_into_period():
@@ -37225,7 +37249,9 @@ module:
     corpus_citation_path: us-ms/statute/27-7-5
   deferred_outputs:
     - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
-      reason: Paragraph (7) has an exception for the 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+      reason: Paragraph (7) has an exception for the calendar year 2030 upper-band tax that cannot be encoded until Section 2 of the act is available.
+      source_values:
+        - us-ms:policies/income_tax/2026_section_27_7_5_schedule#upper_band_rate
 rules:
   - name: individual_upper_band_tax
     kind: derived
@@ -37236,6 +37262,158 @@ rules:
 """
 
     issues = find_deferred_purpose_specific_limitation_issues(content)
+
+    assert len(issues) == 1
+    assert "individual_upper_band_tax" in issues[0]
+
+
+def test_deferred_period_requires_matching_structured_source_evidence():
+    content = """format: rulespec/v1
+module:
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: The exception applies for calendar year 2031 and later.
+      source_values:
+        - us-ms:policies/income_tax/2026_section_27_7_5_schedule#upper_band_rate
+rules:
+  - name: individual_upper_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        effective_to: '2029-12-31'
+        formula: upper_band_income * upper_band_rate
+"""
+
+    issues = find_deferred_purpose_specific_limitation_issues(content)
+
+    assert len(issues) == 1
+    assert "individual_upper_band_tax" in issues[0]
+
+
+def test_deferred_fifth_band_does_not_collide_with_sixth_band():
+    content = """format: rulespec/v1
+module:
+  deferred_outputs:
+    - output: us-zz:statutes/1/1/5#individual_fifth_band_tax_for_section_2
+      reason: The fifth-band exception shall not apply until section 2 is available.
+rules:
+  - name: individual_sixth_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: sixth_band_income * sixth_band_rate
+"""
+
+    assert find_deferred_purpose_specific_limitation_issues(content) == []
+
+
+def test_deferred_twenty_first_band_does_not_collide_with_first_band():
+    content = """format: rulespec/v1
+module:
+  deferred_outputs:
+    - output: us-zz:statutes/1/1/21#individual_twenty_first_band_tax_for_section_2
+      reason: The twenty-first-band exception shall not apply until section 2 is available.
+rules:
+  - name: individual_first_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2026-01-01'
+        formula: first_band_income * first_band_rate
+"""
+
+    assert find_deferred_purpose_specific_limitation_issues(content) == []
+
+
+def test_deferred_temporal_parameter_requires_adjacent_compound_ordinal():
+    deferred_symbol = "individual_twenty_first_band_tax_for_2030_and_later"
+
+    assert validator_pipeline._deferred_temporal_parameter_matches_branch(
+        "twenty_first_band_rate",
+        deferred_symbol=deferred_symbol,
+    )
+    assert not validator_pipeline._deferred_temporal_parameter_matches_branch(
+        "first_band_rate_for_twenty_year_period",
+        deferred_symbol=deferred_symbol,
+    )
+    assert not validator_pipeline._purpose_branch_core_matches(
+        "first_band_rate_for_twenty_year_period",
+        "individual_twenty_first_band_tax",
+    )
+
+
+@pytest.mark.parametrize(
+    ("source_reference", "parameter_name"),
+    (
+        (
+            "us-ms:policies/income_tax/2026_section_27_7_5_schedule#unrelated_future_parameter",
+            "unrelated_future_parameter",
+        ),
+        (
+            "us-ms:policies/income_tax/2026_section_27_7_5_schedule#individual_tax_rate",
+            "individual_tax_rate",
+        ),
+        (
+            "us-ms:policies/income_tax/2026_section_27_7_5_schedule#lower_band_rate",
+            "lower_band_rate",
+        ),
+        (
+            "us-ms:policies/income_tax/other_schedule_27_7_5#upper_band_rate",
+            "upper_band_rate",
+        ),
+        (
+            "us-ms:policies/income_tax/27-7-5/other_schedule#upper_band_rate",
+            "upper_band_rate",
+        ),
+        (
+            "us-ms:policies/income_tax/section_27_7_5_unrelated#upper_band_rate",
+            "upper_band_rate",
+        ),
+    ),
+)
+def test_deferred_period_rejects_unbound_same_year_source_value(
+    source_reference: str,
+    parameter_name: str,
+    tmp_path,
+):
+    content = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_upper_band_tax_for_2030_and_later
+      reason: The exception applies for calendar year 2030 and later.
+      source_values:
+        - {source_reference}
+rules:
+  - name: individual_upper_band_tax
+    kind: derived
+    dtype: Money
+    versions:
+      - effective_from: '2024-01-01'
+        effective_to: '2029-12-31'
+        formula: upper_band_income * upper_band_rate
+  - name: {parameter_name}
+    kind: parameter
+    dtype: Rate
+    versions:
+      - effective_from: '2030-01-01'
+        formula: 0.01
+"""
+
+    policy_repo = _canonical_rulespec_content_root(tmp_path, "us-ms")
+    rules_file = (
+        policy_repo / "policies" / "income_tax" / "2026_section_27_7_5_schedule.yaml"
+    )
+    rules_file.parent.mkdir(parents=True)
+    rules_file.write_text(content)
+    issues = find_deferred_purpose_specific_limitation_issues(
+        content,
+        rules_file=rules_file,
+        policy_repo_path=policy_repo,
+    )
 
     assert len(issues) == 1
     assert "individual_upper_band_tax" in issues[0]

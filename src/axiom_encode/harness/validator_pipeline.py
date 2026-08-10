@@ -19657,10 +19657,35 @@ _PURPOSE_AMOUNT_TOKENS = {
     "wage",
     "wages",
 }
-_PURPOSE_BRANCH_QUALIFIER_GROUPS = (
-    frozenset({"lower", "middle", "upper"}),
-    frozenset({"first", "second", "third", "fourth"}),
-)
+_PURPOSE_BRANCH_QUALIFIER_GROUPS = (frozenset({"lower", "middle", "upper"}),)
+_PURPOSE_ORDINAL_VALUES = {
+    name: index
+    for index, name in enumerate(
+        (
+            "first",
+            "second",
+            "third",
+            "fourth",
+            "fifth",
+            "sixth",
+            "seventh",
+            "eighth",
+            "ninth",
+            "tenth",
+            "eleventh",
+            "twelfth",
+            "thirteenth",
+            "fourteenth",
+            "fifteenth",
+            "sixteenth",
+            "seventeenth",
+            "eighteenth",
+            "nineteenth",
+            "twentieth",
+        ),
+        start=1,
+    )
+}
 _DEFERRED_OUTPUT_YEAR_PATTERN = re.compile(
     r"(?:^|_)(?:for|from|beginning|effective)(?:_in|_with|_calendar|_taxable|_year)*_"
     r"(?P<year>(?:19|20)\d{2})(?:_|$)",
@@ -19690,7 +19715,12 @@ def find_current_purpose_placeholder_issues(content: str) -> list[str]:
     return issues
 
 
-def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
+def find_deferred_purpose_specific_limitation_issues(
+    content: str,
+    *,
+    rules_file: Path | None = None,
+    policy_repo_path: Path | None = None,
+) -> list[str]:
     """Reject generic executable outputs when purpose-specific limitations defer."""
     payload = _rulespec_payload(content)
     if payload is None:
@@ -19703,6 +19733,20 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
     )
     if not isinstance(deferred_outputs, list):
         return []
+    rules_by_name = {
+        str(rule.get("name") or "").strip(): rule
+        for rule in payload.get("rules", [])
+        if isinstance(rule, dict) and str(rule.get("name") or "").strip()
+    }
+    current_module_target = None
+    if rules_file is not None:
+        canonical_target = _canonical_rulespec_file_target(
+            policy_repo_path=policy_repo_path,
+            rules_file=rules_file,
+            symbol="__module__",
+        )
+        if canonical_target is not None:
+            current_module_target = canonical_target.rsplit("#", 1)[0]
     for record in deferred_outputs:
         if not isinstance(record, dict):
             continue
@@ -19723,7 +19767,17 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
         if len(tokens) < 2:
             continue
         deferred_prefix_tokens.append(
-            (symbol, tokens, _deferred_output_effective_start(symbol))
+            (
+                symbol,
+                tokens,
+                _deferred_output_effective_start(
+                    symbol,
+                    reason=reason,
+                    source_values=record.get("source_values"),
+                    rules_by_name=rules_by_name,
+                    current_module_target=current_module_target,
+                ),
+            )
         )
     if not deferred_prefix_tokens:
         return []
@@ -19743,7 +19797,10 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
         if not rule_tokens or not rule_tokens.intersection(_PURPOSE_AMOUNT_TOKENS):
             continue
         for deferred_symbol, deferred_tokens, deferred_start in deferred_prefix_tokens:
-            if not _purpose_branch_core_matches(rule_tokens, deferred_tokens):
+            if not _purpose_branch_core_matches(
+                name,
+                _purpose_specific_prefix(deferred_symbol),
+            ):
                 continue
             if _rule_ends_before_deferred_period(rule, deferred_start=deferred_start):
                 continue
@@ -19765,10 +19822,15 @@ def find_deferred_purpose_specific_limitation_issues(content: str) -> list[str]:
 
 
 def _purpose_branch_core_matches(
-    rule_tokens: set[str], deferred_tokens: set[str]
+    rule_name: str,
+    deferred_name: str,
 ) -> bool:
     """Keep mutually exclusive named branches from colliding on generic tokens."""
 
+    rule_sequence = _purpose_surface_token_sequence(rule_name)
+    deferred_sequence = _purpose_surface_token_sequence(deferred_name)
+    rule_tokens = set(rule_sequence)
+    deferred_tokens = set(deferred_sequence)
     for qualifier_group in _PURPOSE_BRANCH_QUALIFIER_GROUPS:
         rule_qualifiers = rule_tokens & qualifier_group
         deferred_qualifiers = deferred_tokens & qualifier_group
@@ -19778,14 +19840,174 @@ def _purpose_branch_core_matches(
             and rule_qualifiers.isdisjoint(deferred_qualifiers)
         ):
             return False
+    rule_ordinals = _purpose_branch_ordinal_values(rule_sequence)
+    deferred_ordinals = _purpose_branch_ordinal_values(deferred_sequence)
+    if (
+        rule_ordinals
+        and deferred_ordinals
+        and rule_ordinals.isdisjoint(deferred_ordinals)
+    ):
+        return False
     return True
 
 
-def _deferred_output_effective_start(symbol: str) -> date | None:
+def _purpose_branch_ordinal_values(tokens: Sequence[str]) -> set[int]:
+    tens = {
+        "twenty": 20,
+        "thirty": 30,
+        "forty": 40,
+        "fifty": 50,
+        "sixty": 60,
+        "seventy": 70,
+        "eighty": 80,
+        "ninety": 90,
+    }
+    values: set[int] = set()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token in tens
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in _PURPOSE_ORDINAL_VALUES
+            and _PURPOSE_ORDINAL_VALUES[tokens[index + 1]] < 10
+        ):
+            values.add(tens[token] + _PURPOSE_ORDINAL_VALUES[tokens[index + 1]])
+            index += 2
+            continue
+        if token in _PURPOSE_ORDINAL_VALUES:
+            values.add(_PURPOSE_ORDINAL_VALUES[token])
+        elif match := re.fullmatch(r"(?P<number>\d+)(?:st|nd|rd|th)?", token):
+            values.add(int(match.group("number")))
+        index += 1
+    return values
+
+
+def _deferred_output_effective_start(
+    symbol: str,
+    *,
+    reason: str,
+    source_values: object,
+    rules_by_name: dict[str, dict[str, Any]],
+    current_module_target: str | None,
+) -> date | None:
     match = _DEFERRED_OUTPUT_YEAR_PATTERN.search(_normalize_identifier(symbol))
     if match is None:
         return None
-    return date(int(match.group("year")), 1, 1)
+    year = match.group("year")
+    if not re.search(
+        rf"\b(?:calendar|taxable|fiscal)?\s*year\s+{year}\b|"
+        rf"\b{year}\s+(?:and\s+later|and\s+thereafter|or\s+later)\b",
+        reason,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    if not isinstance(source_values, list):
+        return None
+    typed_temporal_value = False
+    for item in source_values:
+        item_text = str(item or "").strip()
+        if not _deferred_temporal_reference_is_current_module(
+            item_text,
+            current_module_target=current_module_target,
+        ):
+            continue
+        source_symbol = item_text.rsplit("#", 1)[-1] if "#" in item_text else ""
+        if not _deferred_temporal_parameter_matches_branch(
+            source_symbol,
+            deferred_symbol=symbol,
+        ):
+            continue
+        source_rule = rules_by_name.get(source_symbol)
+        if not isinstance(source_rule, dict) or source_rule.get("kind") != "parameter":
+            continue
+        versions = source_rule.get("versions")
+        if not isinstance(versions, list):
+            continue
+        if any(
+            isinstance(version, dict)
+            and str(version.get("effective_from") or "").strip() == f"{year}-01-01"
+            for version in versions
+        ):
+            typed_temporal_value = True
+            break
+    if not typed_temporal_value:
+        return None
+    return date(int(year), 1, 1)
+
+
+def _deferred_temporal_reference_is_current_module(
+    reference: str,
+    *,
+    current_module_target: str | None,
+) -> bool:
+    """Require an exact absolute target to the file currently under validation."""
+
+    if current_module_target is None or "#" not in reference:
+        return False
+    reference_path, source_symbol = reference.rsplit("#", 1)
+    if not reference_path or not source_symbol:
+        return False
+    return reference_path == current_module_target
+
+
+def _deferred_temporal_parameter_matches_branch(
+    source_symbol: str,
+    *,
+    deferred_symbol: str,
+) -> bool:
+    """Bind temporal evidence to the deferred branch, not generic tax words."""
+
+    deferred_tokens = _purpose_surface_tokens(_purpose_specific_prefix(deferred_symbol))
+    source_tokens = _purpose_surface_tokens(source_symbol)
+    deferred_prefix = _purpose_specific_prefix(deferred_symbol)
+    if not _purpose_branch_core_matches(source_symbol, deferred_prefix):
+        return False
+    for qualifier_group in _PURPOSE_BRANCH_QUALIFIER_GROUPS:
+        deferred_qualifiers = deferred_tokens & qualifier_group
+        if deferred_qualifiers and not deferred_qualifiers.issubset(source_tokens):
+            return False
+    deferred_ordinals = {
+        value
+        for value in _purpose_branch_ordinal_values(
+            _purpose_surface_token_sequence(deferred_prefix)
+        )
+        if value < 1900
+    }
+    if deferred_ordinals and not deferred_ordinals.intersection(
+        {
+            value
+            for value in _purpose_branch_ordinal_values(
+                _purpose_surface_token_sequence(source_symbol)
+            )
+            if value < 1900
+        }
+    ):
+        return False
+    generic_tokens = (
+        _PURPOSE_AMOUNT_TOKENS
+        | _PURPOSE_TOKEN_STOPWORDS
+        | {
+            "calendar",
+            "computed",
+            "gross",
+            "household",
+            "individual",
+            "later",
+            "net",
+            "person",
+            "persons",
+            "taxpayer",
+            "total",
+            "year",
+        }
+    )
+    discriminators = {
+        token
+        for token in deferred_tokens - generic_tokens
+        if not re.fullmatch(r"(?:19|20)\d{2}", token)
+    }
+    return len(discriminators & source_tokens) >= 2
 
 
 def _rule_ends_before_deferred_period(
@@ -19927,12 +20149,16 @@ def _purpose_specific_prefix(symbol: str) -> str:
 
 
 def _purpose_surface_tokens(name: str) -> set[str]:
-    tokens = {
+    return set(_purpose_surface_token_sequence(name))
+
+
+def _purpose_surface_token_sequence(name: str) -> tuple[str, ...]:
+    tokens = (
         _normalize_purpose_token(token)
         for token in _normalize_identifier(name).split("_")
         if token and token not in _PURPOSE_TOKEN_STOPWORDS
-    }
-    return {token for token in tokens if token}
+    )
+    return tuple(token for token in tokens if token)
 
 
 def _normalize_purpose_token(token: str) -> str:
@@ -27881,7 +28107,13 @@ class ValidatorPipeline:
         issues.extend(find_partial_extent_zeroing_issues(content))
         issues.extend(find_scoped_exception_category_gate_issues(content))
         issues.extend(find_current_purpose_placeholder_issues(content))
-        issues.extend(find_deferred_purpose_specific_limitation_issues(content))
+        issues.extend(
+            find_deferred_purpose_specific_limitation_issues(
+                content,
+                rules_file=rules_file,
+                policy_repo_path=self.policy_repo_path,
+            )
+        )
         issues.extend(
             find_imported_deferred_branch_composition_issues(
                 content,
