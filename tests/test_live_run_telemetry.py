@@ -87,7 +87,7 @@ class TestLiveRunTelemetry:
                 citation="us/statute/26/32",
                 backend="codex",
                 model="gpt-5.5",
-                encoder_version="0.2.1668",
+                encoder_version="0.2.1669",
             ) as live:
                 live.set_attempt(2, "gpt-5.5-max")
                 live.finish("completed", run_id="abc12345")
@@ -106,7 +106,7 @@ class TestLiveRunTelemetry:
         assert payloads[2]["status"] == "completed"
         assert payloads[2]["run_id"] == "abc12345"
         request = urlopen_mock.call_args_list[0].args[0]
-        assert request.full_url.startswith("https://axiom-foundation.org/")
+        assert request.full_url.startswith("https://axiom.org/")
 
     def test_ingest_url_override(self, monkeypatch):
         _ingest_env(monkeypatch)

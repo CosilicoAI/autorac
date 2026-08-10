@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 HEARTBEAT_INTERVAL_SECONDS = 30.0
-DEFAULT_INGEST_URL = "https://axiom-foundation.org/api/ops/encoding/ingest"
+DEFAULT_INGEST_URL = "https://axiom.org/api/ops/encoding/ingest"
 INGEST_TIMEOUT_SECONDS = 10.0
 
 _CI_ENV_VARS = ("CI", "GITHUB_ACTIONS", "BUILDKITE", "CIRCLECI")
