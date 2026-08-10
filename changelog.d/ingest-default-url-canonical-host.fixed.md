@@ -1,0 +1,1 @@
+The default telemetry ingest URL now points at the canonical `axiom.org` host. The previous `axiom-foundation.org` default hit a 308 redirect, which urllib does not follow for POSTs — silently disabling credential-free telemetry on first contact.
