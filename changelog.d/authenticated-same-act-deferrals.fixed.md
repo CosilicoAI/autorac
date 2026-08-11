@@ -1,0 +1,1 @@
+Accept provenance-authenticated same-act deferrals that name a concrete unavailable dependency, including metadata-derived year-act references, while rejecting unrelated inputs and contradictory availability claims.

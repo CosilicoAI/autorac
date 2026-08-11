@@ -6217,7 +6217,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1675"')
+        .startswith('__version__ = "0.2.1676"')
     )
 
 
@@ -6449,13 +6449,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1675"
+    assert encoder_package["version"] == "0.2.1676"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1675"
+    assert project["project"]["version"] == "0.2.1676"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1675"')
+        .startswith('__version__ = "0.2.1676"')
     )
 
 
@@ -6717,13 +6717,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1675"
+    assert encoder_package["version"] == "0.2.1676"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1675"
+    assert project["project"]["version"] == "0.2.1676"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1675"')
+        .startswith('__version__ = "0.2.1676"')
     )
 
 
@@ -34379,6 +34379,90 @@ rules: []
 """
     source_text = """(1) For calendar year 2030 and later, except as otherwise
 provided in Section 2 of this act, the rate shall be three percent (3%).
+"""
+    pipeline = ValidatorPipeline(
+        policy_repo_path=tmp_path / "rulespec-us/us-ms",
+        axiom_rules_path=tmp_path / "axiom-rules-engine",
+        local_corpus_release=None,
+        enable_oracles=False,
+        require_complete_source_unit=True,
+        source_citation_path=citation_path,
+        source_metadata={
+            "source_attestation": {
+                "row": {
+                    "source_path": (
+                        "sources/us-ms/statute/release/mississippi-legislature/"
+                        "2025-hb-1-sg.html"
+                    )
+                }
+            }
+        },
+    )
+
+    issues = pipeline._complete_source_unit_issues(
+        content,
+        validation_source_texts={citation_path: source_text},
+        test_cases=[],
+    )
+
+    assert not any(
+        issue.startswith("[complete-source-unit:deferral]") for issue in issues
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied in the available context."
+        ),
+        (
+            "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to Section "
+            "2 of the 2025 act; the operative Section 2 displacement conditions "
+            "needed to determine the controlling rate are not supplied in the "
+            "available legal context."
+        ),
+    ),
+)
+def test_complete_source_accepts_bound_not_supplied_same_act_dependency(
+    tmp_path,
+    reason: str,
+):
+    citation_path = "us-ms/statute/27-7-5"
+    content = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ms/statute/27-7-5
+  deferred_outputs:
+    - output: us-ms:statutes/27-7-5/1/b/ii/7#individual_excess_income_rate
+      reason: >-
+        {reason}
+rules: []
+"""
+    source_text = """(1) (a) The former schedule applies at these rates:
+
+(i) The first band applies.
+
+(ii) The second band applies.
+
+(iii) The third band applies.
+
+(b) (i) For calendar year 2023 and later, the middle band changes; and
+
+(ii) For calendar year 2024 and later, the excess-income rate is as follows:
+
+1. For calendar year 2024, the rate is 4.7%;
+2. For calendar year 2025, the rate is 4.4%;
+3. For calendar year 2026, the rate is 4%;
+4. For calendar year 2027, the rate is 3.75%;
+5. For calendar year 2028, the rate is 3.5%;
+6. For calendar year 2029, the rate is 3.25%; and
+7. For calendar year 2030 and later, except as otherwise provided in Section 2
+of this act, the rate is 3%.
+
+(2) The next subsection applies.
 """
     pipeline = ValidatorPipeline(
         policy_repo_path=tmp_path / "rulespec-us/us-ms",
