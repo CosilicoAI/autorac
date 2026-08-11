@@ -26,6 +26,7 @@ from typing import Any, Mapping
 import yaml
 
 from ..corpus_resolver import (
+    PROOF_EVIDENCE_SEGMENT_SEPARATOR,
     InvalidCorpusCitationError,
     require_canonical_corpus_citation_path,
     split_proof_evidence_text,
@@ -937,6 +938,409 @@ def _is_hyphen_marker(character: str) -> bool:
     )
 
 
+_ALPHA_SUBSECTION_RANGE_RE = re.compile(
+    r"\((?P<start>[a-z])\)\s*(?P<separator>[^\w\s])\s*"
+    r"\((?P<end>[a-z])\)"
+)
+_NUMERIC_PARENT_ALPHA_RANGE_RE = re.compile(
+    r"\((?P<parent>\d+)\)\s*\((?P<start>[a-z])\)\s*"
+    r"(?P<separator>[^\w\s])\s*\((?P<end>[a-z])\)"
+)
+_STRUCTURAL_COORDINATE_TOKEN = r"(?:\d+|[a-z]|[IVXLCDM]|[ivxlcdmIVXLCDM]{2,})"
+_NUMERIC_PARENT_ALPHA_SINGLETON_RE = re.compile(
+    r"\((?P<parent>\d+)\)\s*\((?P<child>[a-z])\)"
+    rf"(?!\s*\({_STRUCTURAL_COORDINATE_TOKEN}\))"
+)
+_DEEPER_ROMAN_COORDINATE_RE = re.compile(
+    r"(?P<outer_chain>(?:\(\d+\)\s*)*)"
+    r"\((?P<parent>[a-z])\)(?P<numeric_chain>(?:\s*\(\d+\))*)\s*"
+    r"\((?P<start>[ivxlcdmIVXLCDM]+)\)"
+    r"(?:\s*(?P<separator>[^\w\s])\s*"
+    r"\((?P<end>[ivxlcdmIVXLCDM]+)\))?"
+)
+_SUBSECTION_RANGE_SEPARATORS = frozenset(
+    {
+        "-",  # HYPHEN-MINUS
+        "\u2010",  # HYPHEN
+        "\u2011",  # NON-BREAKING HYPHEN
+        "\u2012",  # FIGURE DASH
+        "\u2013",  # EN DASH
+        "\u2014",  # EM DASH
+        "\u2015",  # HORIZONTAL BAR
+        "\u2212",  # MINUS SIGN
+        "\uff0d",  # FULLWIDTH HYPHEN-MINUS
+    }
+)
+_UNRESOLVED_NUMERIC_ALPHA_PARENT = "<unresolved>"
+
+
+def _is_subsection_range_separator(character: str) -> bool:
+    """Recognize legal hyphen/dash glyphs without admitting other punctuation."""
+    return character in _SUBSECTION_RANGE_SEPARATORS
+
+
+def _canonical_roman_value(token: str) -> int | None:
+    """Return a bounded canonical Roman value, independent of source case."""
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    upper = token.upper()
+    total = 0
+    previous = 0
+    for character in reversed(upper):
+        value = values[character]
+        if value < previous:
+            total -= value
+        else:
+            total += value
+            previous = value
+    if not 0 < total <= 3999:
+        return None
+
+    remainder = total
+    rendered = []
+    for value, numeral in (
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ):
+        count, remainder = divmod(remainder, value)
+        rendered.append(numeral * count)
+    return total if "".join(rendered) == upper else None
+
+
+def _canonical_roman_marker(value: int) -> str:
+    """Render a validated Roman coordinate in its normalized lowercase form."""
+    remainder = value
+    rendered = []
+    for number, numeral in (
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ):
+        count, remainder = divmod(remainder, number)
+        rendered.append(numeral * count)
+    return "".join(rendered)
+
+
+def _deeper_roman_match_markers(match: re.Match[str]) -> frozenset[str]:
+    """Expand one canonical singleton/range, failing closed on malformed ranges."""
+    start = _canonical_roman_value(match.group("start"))
+    if start is None:
+        return frozenset()
+    end_token = match.group("end")
+    if end_token is None:
+        return frozenset({_canonical_roman_marker(start)})
+    separator = match.group("separator")
+    end = _canonical_roman_value(end_token)
+    if (
+        separator is None
+        or not _is_subsection_range_separator(separator)
+        or end is None
+        or start > end
+        or end - start > 100
+    ):
+        return frozenset()
+    return frozenset(_canonical_roman_marker(value) for value in range(start, end + 1))
+
+
+def _rule_source_deeper_roman_scope(
+    rule_source: str,
+) -> dict[tuple[str, ...], frozenset[str] | None]:
+    """Parse exact Roman children with their complete alpha/numeric ownership."""
+    scope: dict[tuple[str, ...], set[str] | None] = {}
+    for match in _DEEPER_ROMAN_COORDINATE_RE.finditer(rule_source):
+        chain = (
+            *re.findall(r"\((\d+)\)", match.group("outer_chain")),
+            match.group("parent"),
+            *re.findall(r"\((\d+)\)", match.group("numeric_chain")),
+        )
+        markers = _deeper_roman_match_markers(match)
+        if not markers:
+            scope[chain] = None
+        elif scope.get(chain, set()) is not None:
+            current = scope.setdefault(chain, set())
+            assert isinstance(current, set)
+            current.update(markers)
+    return {
+        chain: None if markers is None else frozenset(markers)
+        for chain, markers in scope.items()
+    }
+
+
+def _roman_chain_alpha_parent(chain: tuple[str, ...]) -> str:
+    """Return the single alphabetic owner retained in a Roman coordinate chain."""
+    return next(coordinate for coordinate in chain if not coordinate.isdigit())
+
+
+def _rule_source_broad_structural_chains(
+    rule_source: str,
+) -> frozenset[tuple[str, ...]]:
+    """Retain broad numeric/alpha ancestry at arbitrary structural depth."""
+    chains: set[tuple[str, ...]] = set()
+    coordinate_pattern = re.compile(
+        r"\((?P<coordinate>\d+|[a-z]|[ivxlcdmIVXLCDM]{2,}|[IVXLCDM])\)"
+    )
+    groups: list[tuple[int, int, tuple[str, ...]]] = []
+    current: list[re.Match[str]] = []
+    for match in coordinate_pattern.finditer(rule_source):
+        if current and rule_source[current[-1].end() : match.start()].strip():
+            groups.append(
+                (
+                    current[0].start(),
+                    current[-1].end(),
+                    tuple(item.group("coordinate") for item in current),
+                )
+            )
+            current = []
+        current.append(match)
+    if current:
+        groups.append(
+            (
+                current[0].start(),
+                current[-1].end(),
+                tuple(item.group("coordinate") for item in current),
+            )
+        )
+
+    previous_end: int | None = None
+    previous_chain: tuple[str, ...] | None = None
+    connected_range_active = False
+    connected_range_chains: set[tuple[str, ...]] = set()
+    for start, end, coordinates in groups:
+        gap = "" if previous_end is None else rule_source[previous_end:start].strip()
+        if len(gap) == 1 and (_is_subsection_range_separator(gap) or gap == "/"):
+            if connected_range_active:
+                chains.difference_update(connected_range_chains)
+                connected_range_chains.clear()
+                previous_chain = None
+                previous_end = end
+                continue
+            suffix = coordinates[0] if len(coordinates) == 1 else None
+            range_values: list[str] = []
+            if (
+                previous_chain is not None
+                and _is_subsection_range_separator(gap)
+                and suffix is not None
+            ):
+                if previous_chain[-1].isdigit() and suffix.isdigit():
+                    if len(previous_chain[-1]) <= 10 and len(suffix) <= 10:
+                        range_start = int(previous_chain[-1])
+                        range_end = int(suffix)
+                        if range_start <= range_end and range_end - range_start <= 100:
+                            range_values = [
+                                str(value)
+                                for value in range(range_start, range_end + 1)
+                            ]
+                elif (
+                    re.fullmatch(r"[a-z]", previous_chain[-1]) is not None
+                    and re.fullmatch(r"[a-z]", suffix) is not None
+                ):
+                    range_start = ord(previous_chain[-1])
+                    range_end = ord(suffix)
+                    if range_start <= range_end and range_end - range_start <= 25:
+                        range_values = [
+                            chr(value) for value in range(range_start, range_end + 1)
+                        ]
+            if previous_chain is not None:
+                chains.discard(previous_chain)
+            if range_values:
+                prefix = previous_chain[:-1]
+                connected_range_chains = {(*prefix, value) for value in range_values}
+                chains.update(connected_range_chains)
+                previous_chain = (*prefix, range_values[-1])
+            else:
+                previous_chain = None
+            connected_range_active = True
+            previous_end = end
+            continue
+
+        connected_range_active = False
+        connected_range_chains.clear()
+
+        if gap == "," and len(coordinates) == 1:
+            if (
+                previous_chain is not None
+                and previous_chain[-1].isdigit() == coordinates[0].isdigit()
+            ):
+                shorthand = (*previous_chain[:-1], coordinates[0])
+                chains.add(shorthand)
+                previous_chain = shorthand
+            else:
+                previous_chain = None
+            previous_end = end
+            continue
+
+        alpha_coordinates = [
+            coordinate for coordinate in coordinates if not coordinate.isdigit()
+        ]
+        chain = (
+            coordinates
+            if len(alpha_coordinates) == 1
+            and re.fullmatch(r"[a-z]", alpha_coordinates[0]) is not None
+            else None
+        )
+        if chain is not None:
+            chains.add(chain)
+        previous_chain = chain
+        previous_end = end
+    return frozenset(chains)
+
+
+def _expanded_alpha_subsection_range_markers(value: str) -> frozenset[str]:
+    """Expand bounded ascending single-letter subsection ranges."""
+    expanded: set[str] = set()
+    for match in _ALPHA_SUBSECTION_RANGE_RE.finditer(value):
+        if not _is_subsection_range_separator(match.group("separator")):
+            continue
+        start = ord(match.group("start"))
+        end = ord(match.group("end"))
+        if start <= end and end - start <= 25:
+            expanded.update(chr(codepoint) for codepoint in range(start, end + 1))
+    return frozenset(expanded)
+
+
+def _numeric_parent_alpha_range_match_markers(
+    segment: str,
+    match: re.Match[str],
+) -> frozenset[str]:
+    """Return a direct alphabetic child range or fail closed for nested/Roman use."""
+    prefix = segment[: match.start()]
+    if re.search(rf"\({_STRUCTURAL_COORDINATE_TOKEN}\)\s*$", prefix):
+        return frozenset()
+    return _expanded_alpha_subsection_range_markers(match.group(0))
+
+
+def _masked_numeric_parent_alpha_segment(
+    segment: str,
+) -> tuple[str, dict[str, set[str]], str | None]:
+    """Mask handled direct numeric-parent alpha coordinates in one segment."""
+    masked = segment
+    scope: dict[str, set[str]] = {}
+    rightmost_parent: tuple[int, str] | None = None
+    for match in reversed(list(_NUMERIC_PARENT_ALPHA_RANGE_RE.finditer(masked))):
+        markers = _numeric_parent_alpha_range_match_markers(masked, match)
+        if not markers:
+            continue
+        scope.setdefault(match.group("parent"), set()).update(markers)
+        if rightmost_parent is None or match.end() > rightmost_parent[0]:
+            rightmost_parent = (match.end(), match.group("parent"))
+        masked = (
+            masked[: match.start()]
+            + " " * (match.end() - match.start())
+            + masked[match.end() :]
+        )
+    for match in reversed(list(_NUMERIC_PARENT_ALPHA_SINGLETON_RE.finditer(masked))):
+        prefix = masked[: match.start()]
+        if re.search(rf"\({_STRUCTURAL_COORDINATE_TOKEN}\)\s*$", prefix):
+            continue
+        scope.setdefault(match.group("parent"), set()).add(match.group("child"))
+        if rightmost_parent is None or match.end() > rightmost_parent[0]:
+            rightmost_parent = (match.end(), match.group("parent"))
+        masked = (
+            masked[: match.start()]
+            + " " * (match.end() - match.start())
+            + masked[match.end() :]
+        )
+    if rightmost_parent is not None and re.search(
+        rf"\({_STRUCTURAL_COORDINATE_TOKEN}\)",
+        masked[rightmost_parent[0] :],
+    ):
+        rightmost_parent = None
+    return masked, scope, None if rightmost_parent is None else rightmost_parent[1]
+
+
+def _masked_deeper_roman_segment(segment: str) -> tuple[str, frozenset[str]]:
+    """Mask unsupported deeper Roman coordinates while preserving other scope."""
+    masked = segment
+    parents: set[str] = set()
+    for match in reversed(list(_DEEPER_ROMAN_COORDINATE_RE.finditer(segment))):
+        parents.add(match.group("parent"))
+        masked = (
+            masked[: match.start()]
+            + " " * (match.end() - match.start())
+            + masked[match.end() :]
+        )
+    return masked, frozenset(parents)
+
+
+def _masked_numeric_parent_alpha_segments(
+    rule_source: str,
+) -> list[tuple[str, dict[str, set[str]]]]:
+    """Mask direct coordinates and carry exact alpha comma shorthand ownership."""
+    results: list[tuple[str, dict[str, set[str]]]] = []
+    current_parent: str | None = None
+    carry_blocked = False
+    for raw_segment in str(rule_source).split(","):
+        masked, segment_scope, rightmost_parent = _masked_numeric_parent_alpha_segment(
+            raw_segment
+        )
+        if segment_scope:
+            current_parent = rightmost_parent
+            carry_blocked = rightmost_parent is None
+        elif shorthand := re.fullmatch(
+            r"\s*\((?P<child>[a-z])\)\s*",
+            raw_segment,
+        ):
+            if current_parent is not None:
+                segment_scope = {current_parent: {shorthand.group("child")}}
+                masked = " " * len(raw_segment)
+            elif carry_blocked:
+                segment_scope = {
+                    _UNRESOLVED_NUMERIC_ALPHA_PARENT: {shorthand.group("child")}
+                }
+                masked = " " * len(raw_segment)
+        else:
+            current_parent = None
+            carry_blocked = False
+        results.append((masked, segment_scope))
+    return results
+
+
+def _rule_source_numeric_parent_alpha_scope(
+    rule_source: str,
+) -> dict[str, frozenset[str]]:
+    """Parse direct numeric-parent alphabetic coordinates without flattening."""
+    raw_scope: dict[str, set[str]] = {}
+    for _, segment_scope in _masked_numeric_parent_alpha_segments(rule_source):
+        for parent, markers in segment_scope.items():
+            raw_scope.setdefault(parent, set()).update(markers)
+    valid_pairs = {
+        chain
+        for chain in _rule_source_broad_structural_chains(rule_source)
+        if len(chain) == 2 and chain[0].isdigit() and not chain[1].isdigit()
+    }
+    scope: dict[str, set[str]] = {}
+    for parent, markers in raw_scope.items():
+        if parent == _UNRESOLVED_NUMERIC_ALPHA_PARENT:
+            scope.setdefault(parent, set()).update(markers)
+            continue
+        for marker in markers:
+            if (parent, marker) in valid_pairs:
+                scope.setdefault(parent, set()).add(marker)
+            else:
+                scope.setdefault(_UNRESOLVED_NUMERIC_ALPHA_PARENT, set()).add(marker)
+    return {parent: frozenset(markers) for parent, markers in scope.items()}
+
+
 def _proof_excerpt_subsection_scope_issues(
     *,
     source_text: str,
@@ -949,18 +1353,162 @@ def _proof_excerpt_subsection_scope_issues(
     if not isinstance(rule_source, str):
         return []
     scope = _rule_source_subsection_scope(rule_source)
+    numeric_parent_alpha_scope = _rule_source_numeric_parent_alpha_scope(rule_source)
     declared = {
         match.group("marker")
         for match in re.finditer(r"\((?P<marker>[a-z])\)", rule_source)
     }
     excerpt_marker = re.match(r"^\s*\((?P<marker>[a-z])\)(?:\s|$)", evidence_text)
     marker = excerpt_marker.group("marker") if excerpt_marker is not None else None
-    if declared and marker is not None and marker not in declared:
-        if _is_nested_alpha_marker_in_declared_numeric_scope(
+    parent_scoped_markers = {
+        child for children in numeric_parent_alpha_scope.values() for child in children
+    }
+    unresolved_parent_scoped_markers = numeric_parent_alpha_scope.get(
+        _UNRESOLVED_NUMERIC_ALPHA_PARENT,
+        frozenset(),
+    )
+    if marker is not None and marker in unresolved_parent_scoped_markers:
+        resolved_numeric_parent_alpha_scope = {
+            parent: children
+            for parent, children in numeric_parent_alpha_scope.items()
+            if parent != _UNRESOLVED_NUMERIC_ALPHA_PARENT
+        }
+        if marker in {
+            child
+            for children in resolved_numeric_parent_alpha_scope.values()
+            for child in children
+        } and _is_alpha_marker_in_declared_numeric_parent_scope(
             source_text=source_text,
             evidence_text=evidence_text,
             marker=marker,
-            scope=scope,
+            scope=resolved_numeric_parent_alpha_scope,
+        ):
+            return []
+        authoritative_broad_chains = _rule_source_broad_structural_chains(rule_source)
+        if (
+            marker,
+        ) in authoritative_broad_chains and _source_evidence_is_direct_alpha_header(
+            source_text=source_text,
+            evidence_text=evidence_text,
+        ):
+            return []
+        return [
+            "Proof source evidence not found: "
+            f"{label} `source.{field}` appears outside the rule's declared "
+            f"subsection scope `{rule_source}` (excerpt begins at `({marker})`)."
+        ]
+    if marker is not None and marker in parent_scoped_markers and marker not in scope:
+        if _is_alpha_marker_in_declared_numeric_parent_scope(
+            source_text=source_text,
+            evidence_text=evidence_text,
+            marker=marker,
+            scope=numeric_parent_alpha_scope,
+        ):
+            return []
+        return [
+            "Proof source evidence not found: "
+            f"{label} `source.{field}` appears outside the rule's declared "
+            f"subsection scope `{rule_source}` (excerpt begins at `({marker})`)."
+        ]
+    deeper_roman_scope = _rule_source_deeper_roman_scope(rule_source)
+    deeper_roman_parents = frozenset(
+        _roman_chain_alpha_parent(chain) for chain in deeper_roman_scope
+    )
+    independently_broad = (
+        marker is not None and marker in scope and scope[marker] is None
+    )
+    roman_evidence_marker = re.match(
+        r"^\s*\((?P<marker>[ivxlcdmIVXLCDM]+)\)(?:\s|$)",
+        evidence_text,
+    )
+    source_chain = _source_roman_evidence_chain(
+        source_text=source_text,
+        evidence_text=evidence_text,
+    )
+    verified_broad_alpha = independently_broad and (
+        _source_text_is_exact_evidence_scalar(source_text, evidence_text)
+        or _source_evidence_is_direct_alpha_header(
+            source_text=source_text,
+            evidence_text=evidence_text,
+        )
+    )
+    roman_marker_is_authorized = False
+    if (
+        deeper_roman_parents
+        and roman_evidence_marker is not None
+        and not verified_broad_alpha
+    ):
+        roman_marker = roman_evidence_marker.group("marker")
+        normalized_roman_marker = _canonical_roman_value(roman_marker)
+        broad_roman_chains = set(_rule_source_broad_structural_chains(rule_source))
+        broad_roman_parents = {
+            _roman_chain_alpha_parent(chain) for chain in broad_roman_chains
+        }
+        matching_broad_chains = (
+            []
+            if source_chain is None
+            else [
+                chain
+                for chain in broad_roman_chains
+                if source_chain[: len(chain)] == chain
+            ]
+        )
+        broad_roman_parent = (
+            source_chain is not None
+            and len(matching_broad_chains) == 1
+            and normalized_roman_marker is not None
+            and _source_roman_coordinate_occurrence_count(
+                source_text=source_text,
+                chain=source_chain,
+                marker=_canonical_roman_marker(normalized_roman_marker),
+            )
+            == 1
+        ) or (
+            source_chain is None
+            and _source_text_is_exact_evidence_scalar(source_text, evidence_text)
+            and len(broad_roman_chains) == 1
+            and len(deeper_roman_parents) == 1
+            and deeper_roman_parents <= broad_roman_parents
+        )
+        roman_marker_is_owned = (
+            normalized_roman_marker is not None
+            and _is_roman_marker_in_declared_scope(
+                source_text=source_text,
+                evidence_text=evidence_text,
+                marker=_canonical_roman_marker(normalized_roman_marker),
+                scope=deeper_roman_scope,
+            )
+        )
+        if not broad_roman_parent and not roman_marker_is_owned:
+            return [
+                "Proof source evidence not found: "
+                f"{label} `source.{field}` appears outside the rule's declared "
+                f"subsection scope `{rule_source}` "
+                f"(excerpt begins at `({roman_marker})`)."
+            ]
+        roman_marker_is_authorized = True
+    if (
+        marker is not None
+        and marker in deeper_roman_parents
+        and not independently_broad
+        and not roman_marker_is_authorized
+    ):
+        return [
+            "Proof source evidence not found: "
+            f"{label} `source.{field}` appears outside the rule's declared "
+            f"subsection scope `{rule_source}` (excerpt begins at `({marker})`)."
+        ]
+    if declared and marker is not None and marker not in declared:
+        has_explicit_deeper_alpha_coordinate = (
+            re.search(r"\([a-z]\)\s*\(\d+\)\s*\([a-z]\)", rule_source) is not None
+        )
+        if not has_explicit_deeper_alpha_coordinate and (
+            _is_nested_alpha_marker_in_declared_numeric_scope(
+                source_text=source_text,
+                evidence_text=evidence_text,
+                marker=marker,
+                scope=scope,
+            )
         ):
             return []
         return [
@@ -988,6 +1536,455 @@ def _proof_excerpt_subsection_scope_issues(
         f"{label} `source.{field}` appears outside the rule's declared "
         f"subsection scope `{rule_source}` (excerpt begins at `({numeric})`)."
     ]
+
+
+def _is_roman_marker_in_declared_scope(
+    *,
+    source_text: str,
+    evidence_text: str,
+    marker: str,
+    scope: Mapping[tuple[str, ...], frozenset[str] | None],
+) -> bool:
+    """Require a Roman excerpt to belong to its cited alpha/numeric chain."""
+    declared_chains = {
+        chain
+        for chain, children in scope.items()
+        if children is not None and marker in children
+    }
+    if not declared_chains:
+        return False
+
+    if _source_text_is_exact_evidence_scalar(source_text, evidence_text):
+        # Some corpus units are already the exact cited scalar, with no parent
+        # headings available to resolve. Marker membership is the tightest
+        # ownership proof possible for that established representation.
+        return len(declared_chains) == 1
+
+    source_chain = _source_roman_evidence_chain(
+        source_text=source_text,
+        evidence_text=evidence_text,
+    )
+    return source_chain in declared_chains and (
+        _source_roman_coordinate_occurrence_count(
+            source_text=source_text,
+            chain=source_chain,
+            marker=marker,
+        )
+        == 1
+    )
+
+
+def _source_roman_coordinate_occurrence_count(
+    *,
+    source_text: str,
+    chain: tuple[str, ...],
+    marker: str,
+) -> int:
+    """Count a complete Roman coordinate without carrying ancestry across records."""
+    count = 0
+    header_pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)"
+        r"\((?P<marker>\d+|[ivxlcdmIVXLCDM]{2,}|[IVXLCDM]|[a-z])\)"
+        r"[ \t]+"
+    )
+    for record in source_text.split(PROOF_EVIDENCE_SEGMENT_SEPARATOR):
+        stack: list[tuple[int, str]] = []
+        for header in header_pattern.finditer(record):
+            indent = len(header.group("indent").expandtabs(2))
+            while stack and indent <= stack[-1][0]:
+                stack.pop()
+            raw_marker = header.group("marker")
+            roman_value = (
+                _canonical_roman_value(raw_marker)
+                if re.fullmatch(r"[ivxlcdmIVXLCDM]+", raw_marker) is not None
+                else None
+            )
+            if (
+                tuple(value for _, value in stack) == chain
+                and roman_value is not None
+                and _canonical_roman_marker(roman_value) == marker
+            ):
+                count += 1
+            stack.append((indent, raw_marker))
+    return count
+
+
+def _source_text_is_exact_evidence_scalar(
+    source_text: str,
+    evidence_text: str,
+) -> bool:
+    """Recognize an established corpus unit containing only the proof scalar."""
+    return source_text.strip() == evidence_text.strip()
+
+
+def _source_roman_evidence_chain(
+    *,
+    source_text: str,
+    evidence_text: str,
+) -> tuple[str, ...] | None:
+    """Resolve one Roman excerpt's structural owner within one evidence record."""
+    words = re.split(r"\s+", evidence_text.strip())
+    evidence_pattern = r"\s+".join(re.escape(word) for word in words)
+    evidence_matches = [
+        match
+        for match in re.finditer(evidence_pattern, source_text)
+        if _source_evidence_span_is_bounded(
+            evidence_text=evidence_text,
+            source_text=source_text,
+            start=match.start(),
+            end=match.end(),
+        )
+    ]
+    if len(evidence_matches) != 1:
+        return None
+    evidence_match = evidence_matches[0]
+    record_start = source_text.rfind(
+        PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+        0,
+        evidence_match.start(),
+    )
+    record_start = (
+        0
+        if record_start < 0
+        else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
+    )
+
+    structural_headers = list(
+        re.compile(
+            r"(?m)^(?P<indent>[ \t]*)"
+            r"\((?P<marker>\d+|[ivxlcdmIVXLCDM]{2,}|[IVXLCDM]|[a-z])\)"
+            r"[ \t]+",
+        ).finditer(source_text, record_start, evidence_match.end())
+    )
+    stack: list[tuple[int, str]] = []
+    for header in structural_headers:
+        if header.start() > evidence_match.start():
+            break
+        indent = len(header.group("indent").expandtabs(2))
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        marker_start = header.start("marker") - 1
+        if marker_start == evidence_match.start():
+            ancestry = tuple(value for _, value in stack)
+            alpha_indexes = [
+                index
+                for index, coordinate in enumerate(ancestry)
+                if not coordinate.isdigit()
+            ]
+            if len(alpha_indexes) != 1:
+                return None
+            alpha = ancestry[alpha_indexes[0]]
+            if len(alpha) != 1 or not alpha.islower():
+                return None
+            return ancestry
+        stack.append((indent, header.group("marker")))
+    return None
+
+
+def _source_evidence_is_direct_alpha_header(
+    *,
+    source_text: str,
+    evidence_text: str,
+) -> bool:
+    """Prove a Roman-looking singleton is a direct alpha header, not nested."""
+    words = re.split(r"\s+", evidence_text.strip())
+    evidence_pattern = r"\s+".join(re.escape(word) for word in words)
+    evidence_matches = [
+        match
+        for match in re.finditer(evidence_pattern, source_text)
+        if _source_evidence_span_is_bounded(
+            evidence_text=evidence_text,
+            source_text=source_text,
+            start=match.start(),
+            end=match.end(),
+        )
+    ]
+    if len(evidence_matches) != 1:
+        return False
+    evidence_match = evidence_matches[0]
+    record_start = source_text.rfind(
+        PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+        0,
+        evidence_match.start(),
+    )
+    record_start = (
+        0
+        if record_start < 0
+        else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
+    )
+    record_end = source_text.find(
+        PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+        evidence_match.end(),
+    )
+    record_end = len(source_text) if record_end < 0 else record_end
+    headers = list(
+        re.compile(
+            r"(?m)^(?P<indent>[ \t]*)"
+            r"\((?P<marker>\d+|[ivxlcdmIVXLCDM]{2,}|[IVXLCDM]|[a-z])\)"
+            r"[ \t]+"
+        ).finditer(source_text, record_start, record_end)
+    )
+    evidence_header = next(
+        (
+            header
+            for header in headers
+            if header.start("marker") - 1 == evidence_match.start()
+            and re.fullmatch(r"[a-z]", header.group("marker")) is not None
+        ),
+        None,
+    )
+    if evidence_header is None:
+        return False
+    evidence_indent = len(evidence_header.group("indent").expandtabs(2))
+    direct_indent = min(
+        (len(header.group("indent").expandtabs(2)) for header in headers),
+        default=evidence_indent,
+    )
+    if evidence_indent != direct_indent:
+        return False
+    same_depth_same_marker = [
+        header
+        for header in headers
+        if header.group("marker") == evidence_header.group("marker")
+        and len(header.group("indent").expandtabs(2)) == evidence_indent
+    ]
+    if len(same_depth_same_marker) != 1:
+        return False
+    direct_alpha_headers = [
+        header
+        for header in headers
+        if re.fullmatch(r"[a-z]", header.group("marker")) is not None
+        and len(header.group("indent").expandtabs(2)) == evidence_indent
+    ]
+    if len(direct_alpha_headers) > 1:
+        expected = direct_alpha_headers[0].group("marker")
+        ordered_headers = []
+        previous_header = None
+        for header in direct_alpha_headers:
+            if header.group("marker") != expected:
+                if previous_header is None or not any(
+                    previous_header.start() < nested.start() < header.start()
+                    and len(nested.group("indent").expandtabs(2)) > evidence_indent
+                    for nested in headers
+                ):
+                    break
+                expected = header.group("marker")
+            ordered_headers.append(header)
+            expected = chr(ord(expected) + 1)
+            previous_header = header
+        if evidence_header not in ordered_headers:
+            return False
+    prior_same_depth_numerics = [
+        header
+        for header in headers
+        if header.start() < evidence_header.start()
+        and header.group("marker").isdigit()
+        and len(header.group("indent").expandtabs(2)) == evidence_indent
+    ]
+    if not prior_same_depth_numerics:
+        return True
+    prior_numeric = prior_same_depth_numerics[-1]
+    return any(
+        prior_numeric.start() < header.start() < evidence_header.start()
+        and len(header.group("indent").expandtabs(2)) > evidence_indent
+        for header in headers
+    )
+
+
+def _is_alpha_marker_in_declared_numeric_parent_scope(
+    *,
+    source_text: str,
+    evidence_text: str,
+    marker: str,
+    scope: Mapping[str, frozenset[str]],
+) -> bool:
+    """Match a ranged alpha child to its declared numeric parent in the source."""
+    words = re.split(r"\s+", evidence_text.strip())
+    evidence_pattern = r"\s+".join(re.escape(word) for word in words)
+    scoped_blocks = [
+        (start, end)
+        for _, child, start, end in _source_numeric_parent_alpha_range_blocks(
+            source_text,
+            scope,
+        )
+        if child == marker
+    ]
+    for evidence_match in re.finditer(evidence_pattern, source_text):
+        if not _source_evidence_span_is_bounded(
+            evidence_text=evidence_text,
+            source_text=source_text,
+            start=evidence_match.start(),
+            end=evidence_match.end(),
+        ):
+            continue
+        if any(start <= evidence_match.start() < end for start, end in scoped_blocks):
+            return True
+    return False
+
+
+def _source_numeric_parent_alpha_range_blocks(
+    source_text: str,
+    scope: Mapping[str, frozenset[str]],
+) -> list[tuple[str, str, int, int]]:
+    """Return ordered alpha-child blocks owned by cited numeric parents."""
+    events = [
+        *(
+            (match.start(), "numeric", match)
+            for match in re.finditer(
+                r"(?m)^(?P<indent>[ \t]*)\((?P<marker>\d+)\)[ \t]+",
+                source_text,
+            )
+        ),
+        *(
+            (match.start(), "alpha", match)
+            for match in re.finditer(
+                r"(?m)^(?P<indent>[ \t]*)\((?P<marker>[a-z])\)[ \t]+",
+                source_text,
+            )
+        ),
+        *(
+            (match.start(), "boundary", match)
+            for match in re.finditer(
+                re.escape(PROOF_EVIDENCE_SEGMENT_SEPARATOR),
+                source_text,
+            )
+        ),
+    ]
+    events.sort(key=lambda event: event[0])
+    candidate_blocks: dict[str, list[list[tuple[str, str, int, int]]]] = {}
+    parent_occurrence_counts: dict[str, int] = {}
+    for event_index, (parent_start, kind, parent_match) in enumerate(events):
+        if kind != "numeric":
+            continue
+        parent = parent_match.group("marker")
+        allowed_children = scope.get(parent)
+        if not allowed_children:
+            continue
+        parent_indent = len(parent_match.group("indent").expandtabs(2))
+        record_start = source_text.rfind(
+            PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+            0,
+            parent_start,
+        )
+        record_start = (
+            0
+            if record_start < 0
+            else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
+        )
+        record_end = source_text.find(
+            PROOF_EVIDENCE_SEGMENT_SEPARATOR,
+            parent_start,
+        )
+        record_end = len(source_text) if record_end < 0 else record_end
+        record_structural_indents = [
+            len(match.group("indent").expandtabs(2))
+            for start, event_kind, match in events
+            if event_kind in {"numeric", "alpha"} and record_start <= start < record_end
+        ]
+        if parent_indent != min(record_structural_indents, default=parent_indent):
+            continue
+        parent_occurrence_counts[parent] = parent_occurrence_counts.get(parent, 0) + 1
+        prior_record_events = [
+            (start, event_kind, match)
+            for start, event_kind, match in events[:event_index]
+            if record_start <= start < parent_start
+            and event_kind in {"numeric", "alpha"}
+        ]
+        previous_peer_numeric_position = max(
+            (
+                position
+                for position, (_, event_kind, match) in enumerate(prior_record_events)
+                if event_kind == "numeric"
+                and len(match.group("indent").expandtabs(2)) == parent_indent
+            ),
+            default=-1,
+        )
+        prior_alpha_after_peer = any(
+            event_kind == "alpha"
+            for _, event_kind, _ in prior_record_events[
+                previous_peer_numeric_position + 1 :
+            ]
+        )
+        if prior_alpha_after_peer:
+            continue
+        sequence: list[tuple[str, int]] = []
+        expected = "a"
+        inside_nested_numeric = False
+        ambiguous_nested_alpha = False
+        direct_alpha_indent: int | None = None
+        boundary = len(source_text)
+        for start, child_kind, child_match in events[event_index + 1 :]:
+            if child_kind == "boundary":
+                boundary = start
+                break
+            if child_kind == "numeric":
+                numeric_indent = len(child_match.group("indent").expandtabs(2))
+                if not sequence or numeric_indent <= parent_indent:
+                    boundary = start
+                    break
+                inside_nested_numeric = True
+                continue
+            child = child_match.group("marker")
+            child_indent = len(child_match.group("indent").expandtabs(2))
+            if (
+                not sequence
+                and child in allowed_children
+                and child_indent > parent_indent
+            ):
+                direct_alpha_indent = child_indent
+                sequence.append((child, start))
+                expected = chr(ord(child) + 1)
+                inside_nested_numeric = False
+                continue
+            if (
+                child in allowed_children
+                and any(existing == child for existing, _ in sequence)
+                and child_indent == direct_alpha_indent
+            ):
+                ambiguous_nested_alpha = True
+                break
+            if (
+                inside_nested_numeric
+                and child in "ivxlcdm"
+                and direct_alpha_indent is not None
+                and direct_alpha_indent > parent_indent
+                and child_indent > direct_alpha_indent
+            ):
+                continue
+            if child == expected:
+                if direct_alpha_indent is None:
+                    if child_indent < parent_indent:
+                        ambiguous_nested_alpha = True
+                        break
+                    direct_alpha_indent = child_indent
+                elif child_indent != direct_alpha_indent:
+                    ambiguous_nested_alpha = True
+                    break
+            if child != expected:
+                boundary = start
+                break
+            sequence.append((child, start))
+            expected = chr(ord(expected) + 1)
+            inside_nested_numeric = False
+        if ambiguous_nested_alpha:
+            continue
+        candidate: list[tuple[str, str, int, int]] = []
+        for child_index, (child, start) in enumerate(sequence):
+            if child not in allowed_children:
+                continue
+            end = (
+                sequence[child_index + 1][1]
+                if child_index + 1 < len(sequence)
+                else boundary
+            )
+            candidate.append((parent, child, start, end))
+        if candidate:
+            candidate_blocks.setdefault(parent, []).append(candidate)
+    blocks: list[tuple[str, str, int, int]] = []
+    for parent, candidates in candidate_blocks.items():
+        if len(candidates) == 1 and parent_occurrence_counts.get(parent) == 1:
+            blocks.extend(candidates[0])
+    return blocks
 
 
 def _is_nested_alpha_marker_in_declared_numeric_scope(
@@ -1285,10 +2282,19 @@ def _source_marker_has_nested_list_context(
 def _rule_source_subsection_scope(
     rule_source: str,
 ) -> dict[str, frozenset[str] | None]:
-    """Parse top-level subsection markers and explicit numeric child ranges."""
+    """Parse top-level markers and explicit numeric child ranges."""
     scope: dict[str, set[str] | None] = {}
     current_top: str | None = None
-    for segment in str(rule_source).split(","):
+    for segment, parent_alpha_scope in _masked_numeric_parent_alpha_segments(
+        rule_source
+    ):
+        segment, deeper_roman_parents = _masked_deeper_roman_segment(segment)
+        if deeper_roman_parents and re.search(r"\([a-z]\)", segment) is None:
+            current_top = None
+            continue
+        if parent_alpha_scope and re.search(r"\([a-z]\)", segment) is None:
+            current_top = None
+            continue
         top_match = re.search(r"\((?P<top>[a-z])\)", segment)
         if top_match is not None:
             current_top = top_match.group("top")
@@ -1312,10 +2318,13 @@ def _rule_source_subsection_scope(
             match.group("value") for match in re.finditer(r"\((?P<value>\d+)\)", suffix)
         }
         for match in re.finditer(r"\((?P<start>\d+)\)\s*-\s*\((?P<end>\d+)\)", suffix):
-            start = int(match.group("start"))
-            end = int(match.group("end"))
-            if start <= end and end - start <= 100:
-                numeric.update(str(value) for value in range(start, end + 1))
+            start_token = match.group("start")
+            end_token = match.group("end")
+            if len(start_token) <= 10 and len(end_token) <= 10:
+                start = int(start_token)
+                end = int(end_token)
+                if start <= end and end - start <= 100:
+                    numeric.update(str(value) for value in range(start, end + 1))
         if not numeric:
             scope[top] = None
         elif scope.get(top, set()) is not None:
