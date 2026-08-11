@@ -38599,8 +38599,7 @@ def _declared_rule_subsection_source_segment(
             )
         )
         direct_indent = min(
-            len(match.group("indent").expandtabs(2))
-            for match in structural_markers
+            len(match.group("indent").expandtabs(2)) for match in structural_markers
         )
         markers = [
             match
@@ -38634,8 +38633,7 @@ def _declared_rule_subsection_source_segment(
                     for structural in structural_markers
                     if structural.start() < match.start()
                     and structural.group("marker").isdigit()
-                    and len(structural.group("indent").expandtabs(2))
-                    == direct_indent
+                    and len(structural.group("indent").expandtabs(2)) == direct_indent
                 ]
             )
             or any(

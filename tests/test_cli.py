@@ -11877,12 +11877,8 @@ def test_declared_subsection_source_keeps_mixed_numeric_parent_ownership():
 
 
 def test_declared_subsection_source_rejects_ambiguous_expected_nested_roman():
-    outer_prefix = "\n".join(
-        f"({child}) Outer child {child}." for child in "abcdefgh"
-    )
-    outer_suffix = "\n".join(
-        f"({child}) Outer child {child}." for child in "ijklm"
-    )
+    outer_prefix = "\n".join(f"({child}) Outer child {child}." for child in "abcdefgh")
+    outer_suffix = "\n".join(f"({child}) Outer child {child}." for child in "ijklm")
     source_text = f"""(4) Outer paragraph.
 {outer_prefix}
   (1) Nested numeric child.
@@ -12069,10 +12065,7 @@ def test_declared_subsection_source_rejects_shorthand_after_unhandled_coordinate
 
     scoped = _declared_rule_subsection_source_text(
         source_text,
-        rule_source=(
-            "Miss. Code section 27-7-5(2)(c); "
-            "42 CFR 1(a)(1)(i)-(v), (d)"
-        ),
+        rule_source=("Miss. Code section 27-7-5(2)(c); 42 CFR 1(a)(1)(i)-(v), (d)"),
     )
 
     assert scoped is not None

@@ -17304,9 +17304,7 @@ def test_rulespec_proof_validator_allows_interior_alphabetic_range_excerpt(
         excerpt=excerpt,
     )
     child_blocks = [
-        excerpt
-        if child == marker
-        else f"({child}) Declared fiscal-year step {child}."
+        excerpt if child == marker else f"({child}) Declared fiscal-year step {child}."
         for child in "abcde"
     ]
     child_blocks.insert(
@@ -17317,9 +17315,8 @@ def test_rulespec_proof_validator_allows_interior_alphabetic_range_excerpt(
             "  (5) Nested numbered detail five."
         ),
     )
-    source_text = (
-        "(4) The fiscal-year calculation is determined by:\n\n"
-        + "\n\n".join(child_blocks)
+    source_text = "(4) The fiscal-year calculation is determined by:\n\n" + "\n\n".join(
+        child_blocks
     )
 
     result = validate_rulespec_proofs(
@@ -17858,10 +17855,7 @@ def test_rulespec_proof_validator_rejects_shorthand_after_unhandled_coordinate()
 {excerpt}
 """
     content = _proof_scope_fixture(
-        rule_source=(
-            "Miss. Code section 27-7-5(2)(c); "
-            "42 CFR 1(a)(1)(i)-(v), (d)"
-        ),
+        rule_source=("Miss. Code section 27-7-5(2)(c); 42 CFR 1(a)(1)(i)-(v), (d)"),
         excerpt=excerpt,
     )
 
@@ -17898,9 +17892,7 @@ def test_rulespec_proof_validator_rejects_parent_ambiguous_across_evidence_recor
         content,
         source_texts={
             "us-nj/statute/54a:4-7": (
-                current_record
-                + PROOF_EVIDENCE_SEGMENT_SEPARATOR
-                + history_record
+                current_record + PROOF_EVIDENCE_SEGMENT_SEPARATOR + history_record
             )
         },
     )
@@ -17915,10 +17907,7 @@ def test_rulespec_proof_validator_rejects_parent_ambiguous_across_evidence_recor
 def test_rulespec_proof_validator_preserves_same_segment_numeric_restriction():
     excerpt = "(99) An undeclared numeric child."
     content = _proof_scope_fixture(
-        rule_source=(
-            "Miss. Code section 27-7-5(4)(a)-(e); "
-            "42 CFR 1(f)(1)-(3)"
-        ),
+        rule_source=("Miss. Code section 27-7-5(4)(a)-(e); 42 CFR 1(f)(1)-(3)"),
         excerpt=excerpt,
     )
 
@@ -18022,10 +18011,7 @@ def test_rulespec_proof_validator_fails_closed_for_deeper_roman_evidence(
 def test_rulespec_proof_validator_preserves_numeric_scope_beside_deeper_roman():
     excerpt = "(99) An undeclared numeric child."
     content = _proof_scope_fixture(
-        rule_source=(
-            "Miss. Code section 27-7-5(4)(a)(ii); "
-            "42 CFR 1(f)(1)-(3)"
-        ),
+        rule_source=("Miss. Code section 27-7-5(4)(a)(ii); 42 CFR 1(f)(1)-(3)"),
         excerpt=excerpt,
     )
 
@@ -18303,9 +18289,7 @@ def test_rulespec_proof_validator_allows_unique_broad_chain_prefix(
     rule_source: str,
     source_text: str,
 ):
-    excerpt = next(
-        line.strip() for line in source_text.splitlines() if "(iii)" in line
-    )
+    excerpt = next(line.strip() for line in source_text.splitlines() if "(iii)" in line)
     content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
 
     result = validate_rulespec_proofs(
@@ -18466,9 +18450,7 @@ def test_rulespec_proof_validator_fails_closed_for_invalid_broad_alpha_range(
     broad_source: str,
     source_text: str,
 ):
-    excerpt = next(
-        line.strip() for line in source_text.splitlines() if "(iii)" in line
-    )
+    excerpt = next(line.strip() for line in source_text.splitlines() if "(iii)" in line)
     content = _proof_scope_fixture(
         rule_source=f"section (b)(ii), {broad_source}",
         excerpt=excerpt,
@@ -18517,9 +18499,7 @@ def test_rulespec_proof_validator_fails_closed_for_compound_range_suffix(
     broad_source: str,
     source_text: str,
 ):
-    excerpt = next(
-        line.strip() for line in source_text.splitlines() if "(iii)" in line
-    )
+    excerpt = next(line.strip() for line in source_text.splitlines() if "(iii)" in line)
     content = _proof_scope_fixture(
         rule_source=f"section (c)(ii), {broad_source}",
         excerpt=excerpt,
@@ -18572,9 +18552,7 @@ def test_rulespec_proof_validator_suppresses_connected_invalid_range_groups(
     broad_source: str,
     source_text: str,
 ):
-    excerpt = next(
-        line.strip() for line in source_text.splitlines() if "(iii)" in line
-    )
+    excerpt = next(line.strip() for line in source_text.splitlines() if "(iii)" in line)
     content = _proof_scope_fixture(
         rule_source=f"section (d)(ii), {broad_source}",
         excerpt=excerpt,

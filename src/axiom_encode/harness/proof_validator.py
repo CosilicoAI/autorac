@@ -946,9 +946,7 @@ _NUMERIC_PARENT_ALPHA_RANGE_RE = re.compile(
     r"\((?P<parent>\d+)\)\s*\((?P<start>[a-z])\)\s*"
     r"(?P<separator>[^\w\s])\s*\((?P<end>[a-z])\)"
 )
-_STRUCTURAL_COORDINATE_TOKEN = (
-    r"(?:\d+|[a-z]|[IVXLCDM]|[ivxlcdmIVXLCDM]{2,})"
-)
+_STRUCTURAL_COORDINATE_TOKEN = r"(?:\d+|[a-z]|[IVXLCDM]|[ivxlcdmIVXLCDM]{2,})"
 _NUMERIC_PARENT_ALPHA_SINGLETON_RE = re.compile(
     r"\((?P<parent>\d+)\)\s*\((?P<child>[a-z])\)"
     rf"(?!\s*\({_STRUCTURAL_COORDINATE_TOKEN}\))"
@@ -1093,7 +1091,9 @@ def _roman_chain_alpha_parent(chain: tuple[str, ...]) -> str:
     return next(coordinate for coordinate in chain if not coordinate.isdigit())
 
 
-def _rule_source_broad_structural_chains(rule_source: str) -> frozenset[tuple[str, ...]]:
+def _rule_source_broad_structural_chains(
+    rule_source: str,
+) -> frozenset[tuple[str, ...]]:
     """Retain broad numeric/alpha ancestry at arbitrary structural depth."""
     chains: set[tuple[str, ...]] = set()
     coordinate_pattern = re.compile(
@@ -1127,10 +1127,7 @@ def _rule_source_broad_structural_chains(rule_source: str) -> frozenset[tuple[st
     connected_range_chains: set[tuple[str, ...]] = set()
     for start, end, coordinates in groups:
         gap = "" if previous_end is None else rule_source[previous_end:start].strip()
-        if (
-            len(gap) == 1
-            and (_is_subsection_range_separator(gap) or gap == "/")
-        ):
+        if len(gap) == 1 and (_is_subsection_range_separator(gap) or gap == "/"):
             if connected_range_active:
                 chains.difference_update(connected_range_chains)
                 connected_range_chains.clear()
@@ -1148,10 +1145,7 @@ def _rule_source_broad_structural_chains(rule_source: str) -> frozenset[tuple[st
                     if len(previous_chain[-1]) <= 10 and len(suffix) <= 10:
                         range_start = int(previous_chain[-1])
                         range_end = int(suffix)
-                        if (
-                            range_start <= range_end
-                            and range_end - range_start <= 100
-                        ):
+                        if range_start <= range_end and range_end - range_start <= 100:
                             range_values = [
                                 str(value)
                                 for value in range(range_start, range_end + 1)
@@ -1170,9 +1164,7 @@ def _rule_source_broad_structural_chains(rule_source: str) -> frozenset[tuple[st
                 chains.discard(previous_chain)
             if range_values:
                 prefix = previous_chain[:-1]
-                connected_range_chains = {
-                    (*prefix, value) for value in range_values
-                }
+                connected_range_chains = {(*prefix, value) for value in range_values}
                 chains.update(connected_range_chains)
                 previous_chain = (*prefix, range_values[-1])
             else:
@@ -1298,8 +1290,8 @@ def _masked_numeric_parent_alpha_segments(
     current_parent: str | None = None
     carry_blocked = False
     for raw_segment in str(rule_source).split(","):
-        masked, segment_scope, rightmost_parent = (
-            _masked_numeric_parent_alpha_segment(raw_segment)
+        masked, segment_scope, rightmost_parent = _masked_numeric_parent_alpha_segment(
+            raw_segment
         )
         if segment_scope:
             current_parent = rightmost_parent
@@ -1345,9 +1337,7 @@ def _rule_source_numeric_parent_alpha_scope(
             if (parent, marker) in valid_pairs:
                 scope.setdefault(parent, set()).add(marker)
             else:
-                scope.setdefault(_UNRESOLVED_NUMERIC_ALPHA_PARENT, set()).add(
-                    marker
-                )
+                scope.setdefault(_UNRESOLVED_NUMERIC_ALPHA_PARENT, set()).add(marker)
     return {parent: frozenset(markers) for parent, markers in scope.items()}
 
 
@@ -1371,9 +1361,7 @@ def _proof_excerpt_subsection_scope_issues(
     excerpt_marker = re.match(r"^\s*\((?P<marker>[a-z])\)(?:\s|$)", evidence_text)
     marker = excerpt_marker.group("marker") if excerpt_marker is not None else None
     parent_scoped_markers = {
-        child
-        for children in numeric_parent_alpha_scope.values()
-        for child in children
+        child for children in numeric_parent_alpha_scope.values() for child in children
     }
     unresolved_parent_scoped_markers = numeric_parent_alpha_scope.get(
         _UNRESOLVED_NUMERIC_ALPHA_PARENT,
@@ -1396,15 +1384,12 @@ def _proof_excerpt_subsection_scope_issues(
             scope=resolved_numeric_parent_alpha_scope,
         ):
             return []
-        authoritative_broad_chains = _rule_source_broad_structural_chains(
-            rule_source
-        )
+        authoritative_broad_chains = _rule_source_broad_structural_chains(rule_source)
         if (
-            (marker,) in authoritative_broad_chains
-            and _source_evidence_is_direct_alpha_header(
-                source_text=source_text,
-                evidence_text=evidence_text,
-            )
+            marker,
+        ) in authoritative_broad_chains and _source_evidence_is_direct_alpha_header(
+            source_text=source_text,
+            evidence_text=evidence_text,
         ):
             return []
         return [
@@ -1514,9 +1499,9 @@ def _proof_excerpt_subsection_scope_issues(
             f"subsection scope `{rule_source}` (excerpt begins at `({marker})`)."
         ]
     if declared and marker is not None and marker not in declared:
-        has_explicit_deeper_alpha_coordinate = re.search(
-            r"\([a-z]\)\s*\(\d+\)\s*\([a-z]\)", rule_source
-        ) is not None
+        has_explicit_deeper_alpha_coordinate = (
+            re.search(r"\([a-z]\)\s*\(\d+\)\s*\([a-z]\)", rule_source) is not None
+        )
         if not has_explicit_deeper_alpha_coordinate and (
             _is_nested_alpha_marker_in_declared_numeric_scope(
                 source_text=source_text,
@@ -1658,8 +1643,10 @@ def _source_roman_evidence_chain(
         0,
         evidence_match.start(),
     )
-    record_start = 0 if record_start < 0 else (
-        record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+    record_start = (
+        0
+        if record_start < 0
+        else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
     )
 
     structural_headers = list(
@@ -1720,8 +1707,10 @@ def _source_evidence_is_direct_alpha_header(
         0,
         evidence_match.start(),
     )
-    record_start = 0 if record_start < 0 else (
-        record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+    record_start = (
+        0
+        if record_start < 0
+        else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
     )
     record_end = source_text.find(
         PROOF_EVIDENCE_SEGMENT_SEPARATOR,
@@ -1877,8 +1866,10 @@ def _source_numeric_parent_alpha_range_blocks(
             0,
             parent_start,
         )
-        record_start = 0 if record_start < 0 else (
-            record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+        record_start = (
+            0
+            if record_start < 0
+            else (record_start + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR))
         )
         record_end = source_text.find(
             PROOF_EVIDENCE_SEGMENT_SEPARATOR,
@@ -1888,8 +1879,7 @@ def _source_numeric_parent_alpha_range_blocks(
         record_structural_indents = [
             len(match.group("indent").expandtabs(2))
             for start, event_kind, match in events
-            if event_kind in {"numeric", "alpha"}
-            and record_start <= start < record_end
+            if event_kind in {"numeric", "alpha"} and record_start <= start < record_end
         ]
         if parent_indent != min(record_structural_indents, default=parent_indent):
             continue
@@ -1903,9 +1893,7 @@ def _source_numeric_parent_alpha_range_blocks(
         previous_peer_numeric_position = max(
             (
                 position
-                for position, (_, event_kind, match) in enumerate(
-                    prior_record_events
-                )
+                for position, (_, event_kind, match) in enumerate(prior_record_events)
                 if event_kind == "numeric"
                 and len(match.group("indent").expandtabs(2)) == parent_indent
             ),
