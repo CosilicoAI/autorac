@@ -579,6 +579,10 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          canonical_refresh_primary_required_test_cases_json="$primary_required_test_cases_json"
+          if [ -n "${REPAIR_RUN_ID:-}" ]; then
+            canonical_refresh_primary_required_test_cases_json="[]"
+          fi
           source_bundle_args=(
             axiom-encode/.venv/bin/python
             axiom-encode/scripts/prepare_signed_backfill.py
@@ -607,7 +611,7 @@ jobs:
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
               --primary-required-test-cases-json \
-                "$primary_required_test_cases_json"
+                "$canonical_refresh_primary_required_test_cases_json"
           )"
           existing_import_args=(
             axiom-encode/.venv/bin/python
@@ -889,6 +893,7 @@ jobs:
           LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
+          REPAIR_TESTS_ONLY: ${{ steps.repair_candidate.outputs.tests_only }}
           RULESPEC_CHECKOUT: ${{ github.workspace }}/rulespec-${{ inputs.country }}
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
@@ -907,6 +912,10 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          canonical_refresh_primary_required_test_cases_json="$primary_required_test_cases_json"
+          if [ "${REPAIR_TESTS_ONLY:-false}" = "true" ]; then
+            canonical_refresh_primary_required_test_cases_json="[]"
+          fi
           source_bundle_args=(
             "$workflow_python" -I "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
@@ -927,7 +936,7 @@ jobs:
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
               --primary-required-test-cases-json \
-                "$primary_required_test_cases_json"
+                "$canonical_refresh_primary_required_test_cases_json"
           )"
           printf '%s\n' "$normalized_canonical_refresh_bundle" \
             > "$RUNNER_TEMP/canonical-refresh-bundle.json"
@@ -1337,6 +1346,10 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          canonical_refresh_primary_required_test_cases_json="$primary_required_test_cases_json"
+          if [ "$REPAIR_TESTS_ONLY" = "true" ]; then
+            canonical_refresh_primary_required_test_cases_json="[]"
+          fi
           source_bundle_args=(
             "$workflow_python" "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
@@ -1355,7 +1368,7 @@ jobs:
               --primary-citation "$CITATION" \
               --primary-rulespec-path "$REPLACE_RULESPEC_PATH" \
               --primary-required-test-cases-json \
-                "$primary_required_test_cases_json"
+                "$canonical_refresh_primary_required_test_cases_json"
           )"
           verified_canonical_refresh_bundle="$(tr -d '\n' \
             < "$RUNNER_TEMP/canonical-refresh-bundle.json")"

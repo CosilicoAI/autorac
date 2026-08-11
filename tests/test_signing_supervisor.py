@@ -3029,6 +3029,104 @@ def test_fresh_v2_required_test_cases_do_not_require_a_repair_run(
     assert completed.returncode == 0, completed.stderr
 
 
+def test_repair_required_test_cases_do_not_enable_canonical_refresh(
+    tmp_path: Path,
+) -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    command = (
+        next(
+            step["run"]
+            for step in workflow["jobs"]["encode"]["steps"]
+            if step.get("name") == "Validate atomic source inputs"
+        )
+        .replace("axiom-encode/.venv/bin/python", sys.executable)
+        .replace(
+            "axiom-encode/scripts/prepare_signed_backfill.py",
+            str(ROOT / "scripts/prepare_signed_backfill.py"),
+        )
+    )
+    checkout, primary_citation, primary_path, _additions = (
+        _prepare_canonical_refresh_inputs(tmp_path)
+    )
+    manifest = (
+        checkout / ".axiom/encoding-manifests" / Path(primary_path).with_suffix(".json")
+    )
+    manifest.write_text('{"schema_version":"legacy"}\n', encoding="utf-8")
+    required_cases_payload = json.dumps(
+        {
+            "schema": "axiom-encode/atomic-source-transaction/v2",
+            "source_bundle": [],
+            "canonical_refresh_bundle": [],
+            "primary_required_test_cases": [
+                {
+                    "name": "required repair control",
+                    "period": {
+                        "period_kind": "tax_year",
+                        "start": "2026-01-01",
+                        "end": "2026-12-31",
+                    },
+                    "input": {"example_input": 1},
+                    "required_output": {"example_output": 1},
+                }
+            ],
+        }
+    )
+    completed = subprocess.run(
+        ["bash", "-c", command],
+        cwd=ROOT.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "ATOMIC_SOURCE_JSON": required_cases_payload,
+            "CITATION": primary_citation,
+            "DEPENDENT_CITATION": "",
+            "EXISTING_SIGNED_IMPORTS_JSON": "[]",
+            "LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+            "LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON": "[]",
+            "QUEUE_ID": "",
+            "REPAIR_RUN_ID": "100",
+            "REPLACE_LEGACY_RULESPEC_PATH": "",
+            "REPLACE_RULESPEC_PATH": primary_path,
+            "RULESPEC_CHECKOUT": str(checkout),
+            "SECOND_DEPENDENT_CITATION": "",
+            "SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH": "",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_repair_witness_routing_is_rechecked_in_protected_steps() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/targeted-signed-reencode.yml").read_text()
+    )
+    steps = workflow["jobs"]["encode"]["steps"]
+    validate = next(
+        step for step in steps if step.get("name") == "Validate atomic source inputs"
+    )
+    verify = next(
+        step for step in steps if step.get("name") == "Verify existing signed imports"
+    )
+    encode = next(
+        step
+        for step in steps
+        if step.get("name") == "Encode, review, validate, and apply"
+    )
+
+    assert 'if [ -n "${REPAIR_RUN_ID:-}" ]; then' in validate["run"]
+    assert verify["env"]["REPAIR_TESTS_ONLY"] == (
+        "${{ steps.repair_candidate.outputs.tests_only }}"
+    )
+    assert 'if [ "${REPAIR_TESTS_ONLY:-false}" = "true" ]; then' in verify["run"]
+    assert 'if [ "$REPAIR_TESTS_ONLY" = "true" ]; then' in encode["run"]
+    for step in (validate, verify, encode):
+        assert '"$canonical_refresh_primary_required_test_cases_json"' in step["run"]
+
+
 @pytest.mark.parametrize(
     ("provision_conclusion", "protected_runtime_state"),
     [
