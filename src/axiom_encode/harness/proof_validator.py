@@ -1418,6 +1418,9 @@ def _proof_excerpt_subsection_scope_issues(
         marker is not None and marker in scope and scope[marker] is None
     )
     roman_evidence_marker = re.match(
+        r"^\s*\([a-z]\)\s*\((?P<marker>[ivxlcdmIVXLCDM]+)\)(?:\s|$)",
+        evidence_text,
+    ) or re.match(
         r"^\s*\((?P<marker>[ivxlcdmIVXLCDM]+)\)(?:\s|$)",
         evidence_text,
     )
@@ -1606,7 +1609,233 @@ def _source_roman_coordinate_occurrence_count(
             ):
                 count += 1
             stack.append((indent, raw_marker))
-    return count
+    return count + sum(
+        1
+        for flattened_chain, flattened_marker, _ in (
+            _source_flattened_roman_coordinate_occurrences(source_text)
+        )
+        if flattened_chain == chain and flattened_marker == marker
+    )
+
+
+def _source_flattened_roman_coordinate_occurrences(
+    source_text: str,
+) -> list[tuple[tuple[str, ...], str, int]]:
+    """Recover unambiguous Roman ownership from flat leading coordinates.
+
+    Some released statute text puts compound parents such as ``(1) (a)`` and
+    ``(b) (i)`` at the record's baseline indentation, followed by Roman peers
+    such as ``(ii)`` at that same baseline. The ordinary indentation stack must
+    remain authoritative for structured text, so this fallback considers only
+    baseline, line-leading coordinate bundles. It resets at every evidence
+    record and numeric peer, and carries a Roman continuation only in canonical
+    ascending order from an established alpha owner.
+    """
+    header_pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)(?P<bundle>"
+        rf"(?:\({_STRUCTURAL_COORDINATE_TOKEN}\)[ \t]*)+"
+        r")"
+    )
+    coordinate_pattern = re.compile(rf"\((?P<value>{_STRUCTURAL_COORDINATE_TOKEN})\)")
+    occurrences: list[tuple[tuple[str, ...], str, int]] = []
+    record_offset = 0
+    for record in source_text.split(PROOF_EVIDENCE_SEGMENT_SEPARATOR):
+        headers = list(header_pattern.finditer(record))
+        baseline_indent = min(
+            (len(header.group("indent").expandtabs(2)) for header in headers),
+            default=None,
+        )
+        numeric_prefix: tuple[str, ...] = ()
+        current_chain: tuple[str, ...] | None = None
+        next_roman_value = 1
+        roman_sequence_established = False
+        for header_index, header in enumerate(headers):
+            indent = len(header.group("indent").expandtabs(2))
+            if baseline_indent is None or indent != baseline_indent:
+                continue
+            tokens = [
+                match.group("value")
+                for match in coordinate_pattern.finditer(header.group("bundle"))
+            ]
+            if not tokens:
+                continue
+            header_start = record_offset + header.start("bundle")
+            if len(tokens) == 1:
+                token = tokens[0]
+                if token.isdigit():
+                    numeric_prefix = (token,)
+                    current_chain = None
+                    next_roman_value = 1
+                    roman_sequence_established = False
+                    continue
+                roman_value = (
+                    _canonical_roman_value(token)
+                    if re.fullmatch(r"[ivxlcdmIVXLCDM]+", token) is not None
+                    else None
+                )
+                ambiguous_lower_alpha = len(token) == 1 and token.islower()
+                has_roman_successor = False
+                has_direct_alpha_progression = False
+                if ambiguous_lower_alpha and roman_value is not None:
+                    for successor in headers[header_index + 1 :]:
+                        successor_indent = len(successor.group("indent").expandtabs(2))
+                        if successor_indent != baseline_indent:
+                            continue
+                        successor_tokens = [
+                            match.group("value")
+                            for match in coordinate_pattern.finditer(
+                                successor.group("bundle")
+                            )
+                        ]
+                        successor_roman_value = (
+                            _canonical_roman_value(successor_tokens[0])
+                            if len(successor_tokens) == 1
+                            and re.fullmatch(r"[ivxlcdmIVXLCDM]+", successor_tokens[0])
+                            is not None
+                            else None
+                        )
+                        has_roman_successor = successor_roman_value == roman_value + 1
+                        owner_alpha_index = next(
+                            (
+                                index
+                                for index, coordinate in enumerate(current_chain or ())
+                                if len(coordinate) == 1 and coordinate.islower()
+                            ),
+                            None,
+                        )
+                        owner_alpha = (
+                            current_chain[owner_alpha_index]
+                            if current_chain is not None
+                            and owner_alpha_index is not None
+                            else None
+                        )
+                        successor_alpha_index = next(
+                            (
+                                index
+                                for index, coordinate in enumerate(successor_tokens)
+                                if not coordinate.isdigit()
+                            ),
+                            None,
+                        )
+                        successor_alpha = (
+                            successor_tokens[successor_alpha_index]
+                            if successor_alpha_index is not None
+                            else None
+                        )
+                        successor_owner_prefix = (
+                            tuple(successor_tokens[:successor_alpha_index])
+                            if successor_alpha_index is not None
+                            else ()
+                        )
+                        successor_suffix = (
+                            successor_tokens[successor_alpha_index + 1 :]
+                            if successor_alpha_index is not None
+                            else []
+                        )
+                        successor_roman_suffix = (
+                            successor_suffix[-1]
+                            if successor_suffix
+                            and re.fullmatch(r"[ivxlcdmIVXLCDM]+", successor_suffix[-1])
+                            is not None
+                            else None
+                        )
+                        successor_numeric_suffix = (
+                            successor_suffix[:-1]
+                            if successor_roman_suffix is not None
+                            else successor_suffix
+                        )
+                        has_direct_alpha_progression = (
+                            owner_alpha is not None
+                            and successor_alpha is not None
+                            and len(successor_alpha) == 1
+                            and successor_alpha.islower()
+                            and (
+                                not successor_owner_prefix
+                                or successor_owner_prefix
+                                == current_chain[:owner_alpha_index]
+                            )
+                            and all(
+                                coordinate.isdigit()
+                                for coordinate in successor_numeric_suffix
+                            )
+                            and ord(token) == ord(owner_alpha) + 1
+                            and ord(successor_alpha) == ord(token) + 1
+                        )
+                        break
+                if (
+                    current_chain is not None
+                    and roman_value == next_roman_value
+                    and not has_direct_alpha_progression
+                    and (
+                        not ambiguous_lower_alpha
+                        or roman_sequence_established
+                        or has_roman_successor
+                    )
+                ):
+                    marker = _canonical_roman_marker(roman_value)
+                    occurrences.append((current_chain, marker, header_start))
+                    next_roman_value = roman_value + 1
+                    roman_sequence_established = True
+                    continue
+                if len(token) == 1 and token.islower() and numeric_prefix:
+                    current_chain = (*numeric_prefix, token)
+                    next_roman_value = 1
+                    roman_sequence_established = False
+                else:
+                    current_chain = None
+                    next_roman_value = 1
+                    roman_sequence_established = False
+                continue
+
+            alpha_index = next(
+                (index for index, token in enumerate(tokens) if not token.isdigit()),
+                None,
+            )
+            if alpha_index is None:
+                numeric_prefix = tuple(tokens)
+                current_chain = None
+                next_roman_value = 1
+                roman_sequence_established = False
+                continue
+            alpha = tokens[alpha_index]
+            explicit_numeric_prefix = tuple(tokens[:alpha_index])
+            owner_prefix = explicit_numeric_prefix or numeric_prefix
+            suffix = tokens[alpha_index + 1 :]
+            roman_token = (
+                suffix[-1]
+                if suffix
+                and re.fullmatch(r"[ivxlcdmIVXLCDM]+", suffix[-1]) is not None
+                and all(token.isdigit() for token in suffix[:-1])
+                else None
+            )
+            numeric_suffix = suffix[:-1] if roman_token is not None else suffix
+            if (
+                not owner_prefix
+                or len(alpha) != 1
+                or not alpha.islower()
+                or not all(token.isdigit() for token in numeric_suffix)
+            ):
+                current_chain = None
+                next_roman_value = 1
+                roman_sequence_established = False
+                continue
+            numeric_prefix = owner_prefix
+            current_chain = (*owner_prefix, alpha, *numeric_suffix)
+            next_roman_value = 1
+            roman_sequence_established = False
+            if roman_token is None:
+                continue
+            roman_value = _canonical_roman_value(roman_token)
+            if roman_value is None:
+                current_chain = None
+                roman_sequence_established = False
+                continue
+            marker = _canonical_roman_marker(roman_value)
+            occurrences.append((current_chain, marker, header_start))
+            next_roman_value = roman_value + 1
+            roman_sequence_established = True
+        record_offset += len(record) + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+    return occurrences
 
 
 def _source_text_is_exact_evidence_scalar(
@@ -1672,12 +1901,21 @@ def _source_roman_evidence_chain(
                 if not coordinate.isdigit()
             ]
             if len(alpha_indexes) != 1:
-                return None
+                break
             alpha = ancestry[alpha_indexes[0]]
             if len(alpha) != 1 or not alpha.islower():
-                return None
+                break
             return ancestry
         stack.append((indent, header.group("marker")))
+    flattened_chains = {
+        chain
+        for chain, _, header_start in _source_flattened_roman_coordinate_occurrences(
+            source_text
+        )
+        if header_start == evidence_match.start()
+    }
+    if len(flattened_chains) == 1:
+        return next(iter(flattened_chains))
     return None
 
 

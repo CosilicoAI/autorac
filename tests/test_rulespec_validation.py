@@ -6217,7 +6217,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1673"')
+        .startswith('__version__ = "0.2.1674"')
     )
 
 
@@ -6449,13 +6449,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1673"
+    assert encoder_package["version"] == "0.2.1674"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1673"
+    assert project["project"]["version"] == "0.2.1674"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1673"')
+        .startswith('__version__ = "0.2.1674"')
     )
 
 
@@ -6717,13 +6717,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1673"
+    assert encoder_package["version"] == "0.2.1674"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1673"
+    assert project["project"]["version"] == "0.2.1674"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1673"')
+        .startswith('__version__ = "0.2.1674"')
     )
 
 
@@ -16777,7 +16777,12 @@ rules:
     )
 
 
-def _proof_scope_fixture(*, rule_source: str, excerpt: str) -> str:
+def _proof_scope_fixture(
+    *,
+    rule_source: str,
+    excerpt: str,
+    citation_path: str = "us-nj/statute/54a:4-7",
+) -> str:
     return f"""format: rulespec/v1
 rules:
   - name: credit_before_proration
@@ -16790,7 +16795,7 @@ rules:
           - path: versions[0].formula
             kind: formula
             source:
-              corpus_citation_path: us-nj/statute/54a:4-7
+              corpus_citation_path: {citation_path}
               excerpt: {excerpt!r}
     versions:
       - effective_from: '2026-01-01'
@@ -18082,6 +18087,409 @@ def test_rulespec_proof_validator_allows_declared_roman_members(
 
     assert result.passed is True
     assert result.issues == []
+
+
+_FLAT_MS_CITATION_PATH = "us-ms/statute/27-7-5"
+_FLAT_MS_COMPOUND_ROMAN_SOURCE = """(1) (a) The tax applies at these rates:
+
+(i) The first band applies.
+
+(ii) The second band applies.
+
+(iii) The third band applies.
+
+(b) (i) For calendar year 2023 and all calendar years thereafter, there shall be no tax levied under subparagraph (ii) of paragraph (a) of this subsection; and
+
+(ii) For calendar year 2024 and all calendar years thereafter, the tax imposed under subparagraph (iii) of paragraph (a) of this subsection shall be at the following rates:
+
+(2) The next subsection applies.
+"""
+
+
+def test_rulespec_proof_validator_allows_flat_compound_alpha_roman_excerpt():
+    excerpt = (
+        "(b) (i) For calendar year 2023 and all calendar years thereafter, "
+        "there shall be no tax levied under subparagraph (ii) of paragraph "
+        "(a) of this subsection; and"
+    )
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(a)(ii), (1)(b)(i)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={
+            _FLAT_MS_CITATION_PATH: _FLAT_MS_COMPOUND_ROMAN_SOURCE,
+        },
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_flat_roman_continuation():
+    excerpt = (
+        "(ii) For calendar year 2024 and all calendar years thereafter, the "
+        "tax imposed under subparagraph (iii) of paragraph (a) of this "
+        "subsection shall be at the following rates:"
+    )
+    content = _proof_scope_fixture(
+        rule_source=("Miss. Code section 27-7-5(1)(a)(i)-(iii), (1)(b)(i)-(ii)"),
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={
+            _FLAT_MS_CITATION_PATH: _FLAT_MS_COMPOUND_ROMAN_SOURCE,
+        },
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_flat_roman_under_wrong_alpha_parent():
+    excerpt = "(ii) Wrong Roman child under alpha parent a."
+    source_text = f"""(1) (a) Parent a.
+
+(i) First Roman child under parent a.
+
+{excerpt}
+
+(b) (i) First Roman child under parent b.
+
+(ii) Correct Roman child under parent b.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_flat_roman_under_wrong_numeric_parent():
+    excerpt = "(ii) Wrong Roman child under numeric parent three."
+    source_text = f"""(3) (a) Parent three alpha a.
+
+(b) (i) First Roman child under parent three alpha b.
+
+{excerpt}
+
+(4) (a) Parent four alpha a.
+
+(b) (i) First Roman child under parent four alpha b.
+
+(ii) Correct Roman child under parent four alpha b.
+
+(5) Numeric peer five.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_duplicate_flat_roman_chain():
+    excerpt = "(ii) Wrong first occurrence under parent b."
+    source_text = f"""(1) (a) Parent a.
+
+(b) (i) First sequence under parent b.
+
+{excerpt}
+
+(b) (i) Repeated sequence under parent b.
+
+(ii) Correct second occurrence under parent b.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_resets_flat_roman_owner_between_records():
+    excerpt = "(ii) Orphan Roman continuation in record two."
+    source_text = (
+        "(1) (a) Parent a.\n\n(b) (i) Parent b first Roman child."
+        + PROOF_EVIDENCE_SEGMENT_SEPARATOR
+        + excerpt
+    )
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_resets_flat_roman_owner_at_numeric_peer():
+    excerpt = "(ii) Orphan Roman continuation under numeric peer two."
+    source_text = f"""(1) (a) Parent a.
+
+(b) (i) Parent b first Roman child.
+
+(2) Numeric peer two.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_descending_flat_roman_continuation():
+    excerpt = "(i) Descending Roman continuation under parent b."
+    source_text = f"""(1) (a) Parent a.
+
+(b) (ii) Second Roman child appears first.
+
+{excerpt}
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(b)(i)-(ii)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_flat_direct_alpha_i_as_roman_child():
+    excerpt = "(i) Direct alphabetic sibling i."
+    source_text = f"""(1) (h) Direct alphabetic sibling h.
+
+{excerpt}
+
+(j) Direct alphabetic sibling j.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(h)(i)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_flat_roman_alpha_i_collision():
+    excerpt = "(i) Claimed Roman child under alphabetic parent a."
+    source_text = f"""(1) (a) Direct alphabetic sibling a.
+
+{excerpt}
+
+(i) Direct alphabetic sibling i.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(a)(i)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_terminal_single_letter_flat_roman():
+    excerpt = "(v) Terminal fifth Roman child under alphabetic parent a."
+    source_text = f"""(1) (a) Alphabetic parent a.
+
+(i) First Roman child.
+
+(ii) Second Roman child.
+
+(iii) Third Roman child.
+
+(iv) Fourth Roman child.
+
+{excerpt}
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(a)(v)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_established_roman_to_alpha_progression():
+    excerpt = "(v) Direct alphabetic sibling v."
+    source_text = f"""(1) (u) Direct alphabetic sibling u.
+
+(i) First Roman child under alphabetic parent u.
+
+(ii) Second Roman child under alphabetic parent u.
+
+(iii) Third Roman child under alphabetic parent u.
+
+(iv) Fourth Roman child under alphabetic parent u.
+
+{excerpt}
+
+(w) Direct alphabetic sibling w.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(u)(v)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_roman_to_compound_alpha_progression():
+    excerpt = "(v) Direct alphabetic sibling v."
+    source_text = f"""(1) (u) Direct alphabetic sibling u.
+
+(i) First Roman child under alphabetic parent u.
+
+(ii) Second Roman child under alphabetic parent u.
+
+(iii) Third Roman child under alphabetic parent u.
+
+(iv) Fourth Roman child under alphabetic parent u.
+
+{excerpt}
+
+(w) (i) Direct alphabetic sibling w with its first Roman child.
+
+(ii) Second Roman child under alphabetic parent w.
+
+(2) Numeric peer two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(1)(u)(v)",
+        excerpt=excerpt,
+        citation_path=_FLAT_MS_CITATION_PATH,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={_FLAT_MS_CITATION_PATH: source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
 
 
 @pytest.mark.parametrize(
