@@ -21363,14 +21363,11 @@ rules:
         )
         assert any(
             atom.get("path") == "versions[1].formula"
-            and atom.get("import", {}).get("output")
-            == "household_credit_scalar_limit"
+            and atom.get("import", {}).get("output") == "household_credit_scalar_limit"
             for atom in derived["metadata"]["proof"]["atoms"]
         )
 
-    def test_embedded_scalar_literal_repair_rejects_incompatible_reuse(
-        self, tmp_path
-    ):
+    def test_embedded_scalar_literal_repair_rejects_incompatible_reuse(self, tmp_path):
         output_root = tmp_path / "out"
         rules_file = output_root / "runner" / "policies" / "credit.yaml"
         rules_file.parent.mkdir(parents=True)

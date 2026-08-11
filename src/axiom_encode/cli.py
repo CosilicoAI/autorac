@@ -33488,9 +33488,7 @@ def _proof_source_citation_paths(
         if isinstance(atom, dict)
         and (path is None or atom.get("path") == path)
         and isinstance(atom.get("source"), dict)
-        and isinstance(
-            citation_path := atom["source"].get("corpus_citation_path"), str
-        )
+        and isinstance(citation_path := atom["source"].get("corpus_citation_path"), str)
         and citation_path.strip()
     }
 
@@ -33540,7 +33538,9 @@ def _replace_exact_stripped_formula_line(
         return formula
     lines = formula.splitlines(keepends=True)
     matching_indices = [
-        index for index, line in enumerate(lines) if line.strip() == normalized_expression
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == normalized_expression
     ]
     if len(matching_indices) != 1:
         return formula
@@ -33578,11 +33578,7 @@ def _embedded_scalar_parameter_rule(
         "kind": "parameter",
         "dtype": dtype,
         "source": source_rule.get("source"),
-        "metadata": {
-            "proof": {
-                "atoms": [source_atom]
-            }
-        },
+        "metadata": {"proof": {"atoms": [source_atom]}},
         "versions": [parameter_version],
     }
     if not parameter_rule["source"]:
