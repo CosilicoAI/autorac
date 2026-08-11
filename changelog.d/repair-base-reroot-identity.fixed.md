@@ -1,0 +1,1 @@
+Permit protected repair-candidate replay across a RuleSpec history re-root only when the target RuleSpec, companion tests, and uniquely resolved ownership manifest retain exact blob identities, including the canonical manifest-path relocation.

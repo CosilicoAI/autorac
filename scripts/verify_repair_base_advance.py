@@ -19,11 +19,59 @@ def _git(
     repository: Path, *arguments: str, check: bool = True
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repository), *arguments],
+        ["git", "--no-replace-objects", "-C", str(repository), *arguments],
         check=check,
         capture_output=True,
         text=True,
     )
+
+
+def _blob_identity(repository: Path, commit: str, path: PurePosixPath) -> str | None:
+    """Return one tracked blob identity without reading checkout-controlled bytes."""
+
+    result = _git(
+        repository,
+        "rev-parse",
+        "--verify",
+        f"{commit}:{path.as_posix()}",
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    identity = result.stdout.strip()
+    if re.fullmatch(r"[0-9a-f]{40,64}", identity) is None:
+        raise RuntimeError("repair replay target returned an invalid blob identity")
+    object_type = _git(repository, "cat-file", "-t", identity).stdout.strip()
+    if object_type != "blob":
+        raise ValueError("repair replay target identity is not a tracked blob")
+    return identity
+
+
+def _unique_manifest_identity(
+    repository: Path,
+    commit: str,
+    manifest_paths: tuple[PurePosixPath, ...],
+    *,
+    label: str,
+) -> str:
+    """Resolve one legacy or canonical manifest path, rejecting ambiguity."""
+
+    identities = tuple(
+        identity
+        for path in manifest_paths
+        if (identity := _blob_identity(repository, commit, path)) is not None
+    )
+    if not identities:
+        raise ValueError(
+            f"repair replay target identity is missing at its {label} RuleSpec base: "
+            "ownership manifest"
+        )
+    if len(identities) != 1:
+        raise ValueError(
+            f"repair replay target identity is ambiguous at its {label} RuleSpec "
+            "base: ownership manifest"
+        )
+    return identities[0]
 
 
 def verify_base_advance(
@@ -63,17 +111,6 @@ def verify_base_advance(
     ).stdout.strip()
     if source_commit != source_ref:
         raise ValueError("repair source RuleSpec ref does not identify its commit")
-    ancestor = _git(
-        repository,
-        "merge-base",
-        "--is-ancestor",
-        source_ref,
-        current_ref,
-        check=False,
-    )
-    if ancestor.returncode != 0:
-        raise ValueError("repair source RuleSpec ref is not an ancestor of current")
-
     repository_path = (
         PurePosixPath(rulespec_path)
         if rulespec_path is not None
@@ -94,43 +131,53 @@ def verify_base_advance(
     ):
         raise ValueError("repair repository RuleSpec path is not canonical")
     test_path = path.with_suffix(".test.yaml")
-    manifest_path = (
+    legacy_manifest_path = (
         PurePosixPath(".axiom", "encoding-manifests") / repository_path
+    ).with_suffix(".json")
+    canonical_manifest_path = (
+        PurePosixPath(".axiom", "encoding-manifests") / path
     ).with_suffix(".json")
     tracked_paths = (
         repository_path.as_posix(),
         PurePosixPath(repository_path.parts[0], test_path).as_posix(),
-        manifest_path.as_posix(),
     )
     for tracked_path in tracked_paths:
-        exists_at_source = _git(
-            repository,
-            "cat-file",
-            "-e",
-            f"{source_ref}:{tracked_path}",
-            check=False,
-        )
-        if exists_at_source.returncode != 0:
+        path_identity = PurePosixPath(tracked_path)
+        source_identity = _blob_identity(repository, source_ref, path_identity)
+        if source_identity is None:
             raise ValueError(
                 "repair replay target identity is missing at its source RuleSpec "
                 f"base: {tracked_path}"
             )
-    unchanged = _git(
-        repository,
-        "diff",
-        "--quiet",
-        source_ref,
-        current_ref,
-        "--",
-        *tracked_paths,
-        check=False,
+        current_identity = _blob_identity(repository, current_ref, path_identity)
+        if current_identity is None:
+            raise ValueError(
+                "repair replay target identity is missing at its current RuleSpec "
+                f"base: {tracked_path}"
+            )
+        if source_identity != current_identity:
+            raise ValueError(
+                "repair replay target identity changed after its source RuleSpec base"
+            )
+    manifest_paths = tuple(
+        dict.fromkeys((legacy_manifest_path, canonical_manifest_path))
     )
-    if unchanged.returncode == 1:
+    source_manifest_identity = _unique_manifest_identity(
+        repository,
+        source_ref,
+        manifest_paths,
+        label="source",
+    )
+    current_manifest_identity = _unique_manifest_identity(
+        repository,
+        current_ref,
+        manifest_paths,
+        label="current",
+    )
+    if source_manifest_identity != current_manifest_identity:
         raise ValueError(
             "repair replay target identity changed after its source RuleSpec base"
         )
-    if unchanged.returncode != 0:
-        raise RuntimeError("could not compare repair replay target identity")
 
 
 def _parser() -> argparse.ArgumentParser:
