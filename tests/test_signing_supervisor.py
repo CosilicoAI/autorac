@@ -2216,9 +2216,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert source_bundle_step["env"]["EXISTING_SIGNED_IMPORTS_JSON"] == (
         "${{ inputs.existing_signed_imports_json }}"
     )
-    assert source_bundle_step["env"]["REPAIR_RUN_ID"] == (
-        "${{ inputs.repair_run_id }}"
-    )
+    assert source_bundle_step["env"]["REPAIR_RUN_ID"] == ("${{ inputs.repair_run_id }}")
     assert "split-atomic-source-input" in source_bundle_command
     assert 'parse-source-bundle "$source_bundle_json"' in source_bundle_command
     assert 'primary_required_test_cases_json="$(jq -cer' in source_bundle_command
