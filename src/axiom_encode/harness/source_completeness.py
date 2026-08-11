@@ -268,6 +268,48 @@ _NUMBER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>\d+[a-z]?)\.)[ \t]+",
     flags=re.IGNORECASE,
 )
+_INLINE_DOTTED_NUMBER_MARKER = re.compile(
+    r"(?<![A-Za-z0-9.])(?P<marker>(?P<label>[1-9]\d{0,2})\.)[ \t]+"
+)
+_INLINE_DOTTED_LIST_MINIMUM_LENGTH = 3
+_INLINE_DOTTED_LIST_MATCH_LIMIT = 256
+_INLINE_DOTTED_LIST_CHAPEAU_LIMIT = 512
+_INLINE_DOTTED_LIST_STRUCTURAL_CHAPEAU = re.compile(
+    r"^\s*(?:(?:(?:all|each)\s+of\s+the|the)\s+)?following\s+(?:tax\s+)?"
+    r"(?:allowances?|benefits?|conditions?|credits?|deductions?|eligibility|"
+    r"exceptions?|exemptions?|qualifications?|requirements?)\b"
+    r"(?:\s*,\s*(?:when|where|if)\s+applicable\s*,|"
+    r"\s+(?:when|where|if)\s+applicable)?\s+"
+    r"(?:appl(?:y|ies)|(?:shall|must|may)\s+(?:apply|hold|be\s+"
+    r"(?:allowed|available|claimed|required|satisfied|met))|"
+    r"(?:are|is)\s+(?:allowed|available|required|satisfied|met)|"
+    r"(?:shall|must)(?:\s*,\s*(?:when|where|if)\s+applicable\s*,)?\s+"
+    r"be\s+deducted(?:\s+from\s+the\s+result\s+obtained\s+under\s+"
+    r"subsection\s+\(\d+[a-z]?\)\s+of\s+this\s+section\s+to\s+arrive\s+at\s+"
+    r"the\s+annual\s+tax)?)"
+    r"(?:\s+(?:(?:only\s+)?when|if)\s+(?:"
+    r"no\s+(?:[a-z][a-z'-]*\s+){0,5}"
+    r"(?:income|earnings?|wages?|benefits?|credits?|deductions?|allowances?|"
+    r"exemptions?)\s+(?:(?:is|are|was|were)|(?:has|have|had)\s+been)\s+"
+    r"(?:reported|received|earned|available|claimed|allowed|paid|provided)|"
+    r"(?:[a-z][a-z'-]*\s+){0,5}"
+    r"(?:income|earnings?|wages?|benefits?|credits?|deductions?|allowances?|"
+    r"exemptions?)\s+(?:is|are|was|were)\s+not\s+"
+    r"(?:reported|received|earned|available|claimed|allowed|paid|provided)|"
+    r"(?:the\s+)?(?:applicant|claimant|dependent|household|individual|person|"
+    r"recipient|spouse|taxpayer|taxpayer(?:'s|’s)\s+spouse)\s+"
+    r"(?:(?:is|are|was|were)\s+not\s+(?:"
+    r"(?:(?:an?|the)\s+)?(?:(?:another\s+)?taxpayer(?:'s|’s)\s+)?"
+    r"(?:dependent|eligible|qualified|blind|disabled|married|resident)|"
+    r"the\s+dependent\s+of\s+another\s+taxpayer)|"
+    r"(?:has|have|had)\s+no\s+(?:[a-z][a-z'-]*\s+){0,5}"
+    r"(?:income|earnings?|wages?|benefits?|credits?|deductions?|allowances?|"
+    r"exemptions?)|"
+    r"(?:is|are|was|were)\s+"
+    r"(?:dependent|eligible|qualified|blind|disabled|married|resident))"
+    r"))?\s*:\s*$",
+    flags=re.IGNORECASE,
+)
 _LETTER_MARKER = re.compile(
     r"(?m)^[ \t]*(?P<marker>(?P<label>[a-z]{1,2})\))[ \t]+",
     flags=re.IGNORECASE,
@@ -12667,6 +12709,166 @@ def _source_proposition_bounds(text: str, start: int, end: int) -> tuple[int, in
     )
 
 
+def _flattened_inline_dotted_marker_has_item_boundary(
+    source_text: str,
+    *,
+    start: int,
+    container_start: int,
+) -> bool:
+    """Require list punctuation or a physical-line boundary before a marker."""
+
+    line_start = source_text.rfind("\n", container_start, start) + 1
+    if not source_text[line_start:start].strip():
+        return True
+    prefix = source_text[max(container_start, start - 64) : start]
+    return (
+        re.search(
+            r"(?:[:;.!?]\s*(?:(?:and|or)\s+)?)$",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _flattened_inline_dotted_list_has_structural_chapeau(
+    source_text: str,
+    *,
+    start: int,
+    parent: SourceStructureBranch,
+) -> bool:
+    """Require the entire bounded parent prefix to be an operative chapeau."""
+
+    if (
+        start <= parent.start
+        or start - parent.start > _INLINE_DOTTED_LIST_CHAPEAU_LIMIT
+    ):
+        return False
+    prefix = source_text[parent.start : start]
+    chapeau_candidates = [prefix]
+
+    label = parent.label.strip()
+    if label:
+        label_match = re.match(
+            rf"^\s*{re.escape(label)}\s*",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        if label_match is not None:
+            chapeau_candidates.append(prefix[label_match.end() :])
+
+    if parent.path:
+        path_pattern = r"\s*".join(
+            rf"\(\s*{re.escape(part)}\s*\)" for part in parent.path
+        )
+        path_match = re.match(
+            rf"^\s*{path_pattern}\s*",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+        if path_match is not None:
+            chapeau_candidates.append(prefix[path_match.end() :])
+
+    return any(
+        _INLINE_DOTTED_LIST_STRUCTURAL_CHAPEAU.fullmatch(candidate) is not None
+        for candidate in chapeau_candidates
+    )
+
+
+def _flattened_inline_dotted_list_ownership(
+    source_text: str,
+    *,
+    parent: SourceStructureBranch,
+) -> tuple[tuple[SourceStructureBranch, ...], bool]:
+    """Recover proof-only children from a proven flattened dotted list.
+
+    Corpus extraction can flatten ``1.`` through ``N.`` children onto one
+    physical line even when their parenthesized parent remains recognizable.
+    Keep these virtual branches local to proof ownership: they disambiguate an
+    explicit leaf citation without expanding the source-completeness surface.
+    The boolean result marks multiple plausible lists or an over-budget scan.
+    """
+
+    if not parent.path:
+        return (), False
+    matches = tuple(
+        itertools.islice(
+            (
+                match
+                for match in _INLINE_DOTTED_NUMBER_MARKER.finditer(
+                    source_text,
+                    parent.start,
+                    parent.end,
+                )
+                if _flattened_inline_dotted_marker_has_item_boundary(
+                    source_text,
+                    start=match.start(),
+                    container_start=parent.start,
+                )
+            ),
+            _INLINE_DOTTED_LIST_MATCH_LIMIT + 1,
+        )
+    )
+    if len(matches) > _INLINE_DOTTED_LIST_MATCH_LIMIT:
+        return (), True
+
+    candidate_sequence_count = 0
+    qualified_sequence: tuple[re.Match[str], ...] | None = None
+    match_index = 0
+    while match_index < len(matches):
+        if int(matches[match_index].group("label")) != 1:
+            match_index += 1
+            continue
+        has_structural_chapeau = _flattened_inline_dotted_list_has_structural_chapeau(
+            source_text,
+            start=matches[match_index].start(),
+            parent=parent,
+        )
+        sequence = [matches[match_index]]
+        expected = 2
+        next_index = match_index + 1
+        while next_index < len(matches):
+            label = int(matches[next_index].group("label"))
+            if label != expected:
+                break
+            sequence.append(matches[next_index])
+            expected += 1
+            next_index += 1
+        if len(sequence) < _INLINE_DOTTED_LIST_MINIMUM_LENGTH:
+            match_index += 1
+            continue
+        candidate_sequence_count += 1
+        if has_structural_chapeau:
+            qualified_sequence = tuple(sequence)
+        if candidate_sequence_count > 1 and qualified_sequence is not None:
+            return (), True
+        match_index = next_index
+    if qualified_sequence is None:
+        return (), False
+
+    branches: list[SourceStructureBranch] = []
+    sequence = qualified_sequence
+    next_index = matches.index(sequence[-1]) + 1
+    sequence_end = (
+        matches[next_index].start() if next_index < len(matches) else parent.end
+    )
+    for index, match in enumerate(sequence):
+        start = match.start()
+        end = sequence[index + 1].start() if index + 1 < len(sequence) else sequence_end
+        label = match.group("label").lower()
+        branches.append(
+            SourceStructureBranch(
+                (*parent.path, label),
+                "number",
+                match.group("marker"),
+                source_text[start:end].strip(),
+                start,
+                end,
+            )
+        )
+    return tuple(branches), False
+
+
 def _source_condition_clauses_owned_by_excerpt(
     excerpt: str,
     *,
@@ -12687,15 +12889,60 @@ def _source_condition_clauses_owned_by_excerpt(
     matches = tuple(pattern.finditer(source_text))
     if not matches:
         return (), False
+    virtual_branches: dict[tuple[tuple[str, ...], str, int], SourceStructureBranch] = {}
+    ambiguous_inline_ownership = False
+    inline_ownership_by_parent: dict[
+        tuple[tuple[str, ...], str, int],
+        tuple[tuple[SourceStructureBranch, ...], bool],
+    ] = {}
+    for match in matches:
+        containing_parents = sorted(
+            (
+                branch
+                for branch in branches
+                if branch.path
+                and branch.start <= match.start()
+                and match.end() <= branch.end
+            ),
+            key=lambda branch: (-len(branch.path), branch.end - branch.start),
+        )
+        for parent in containing_parents:
+            parent_key = (parent.path, parent.kind, parent.start)
+            ownership = inline_ownership_by_parent.get(parent_key)
+            if ownership is None:
+                ownership = _flattened_inline_dotted_list_ownership(
+                    source_text,
+                    parent=parent,
+                )
+                inline_ownership_by_parent[parent_key] = ownership
+            owned_branches, ambiguous = ownership
+            if ambiguous:
+                ambiguous_inline_ownership = True
+                break
+            if not any(
+                branch.start <= match.start() and match.end() <= branch.end
+                for branch in owned_branches
+            ):
+                continue
+            virtual_branches.update(
+                {
+                    (branch.path, branch.kind, branch.start): branch
+                    for branch in owned_branches
+                }
+            )
+            break
+    ownership_branches = (*branches, *virtual_branches.values())
     cited_paths = _rule_cited_source_paths(
         rule,
-        branches=branches,
+        branches=ownership_branches,
         corpus_citation_path=corpus_citation_path,
     )
 
     def containing_branch(start: int, end: int) -> SourceStructureBranch | None:
         candidates = [
-            branch for branch in branches if branch.start <= start and end <= branch.end
+            branch
+            for branch in ownership_branches
+            if branch.start <= start and end <= branch.end
         ]
         return max(
             candidates,
@@ -12743,7 +12990,10 @@ def _source_condition_clauses_owned_by_excerpt(
         clauses[key]
         for key in sorted(clauses, key=lambda item: (item[1], item[2], item[0]))
     )
-    return ordered, citation_mismatch or len(ordered) != 1
+    return (
+        ordered,
+        citation_mismatch or ambiguous_inline_ownership or len(ordered) != 1,
+    )
 
 
 def _effective_formula_version_intervals(
