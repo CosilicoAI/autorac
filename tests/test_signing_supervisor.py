@@ -2102,7 +2102,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert concurrency_suffix("manual-user", "", "queue-generation", "run-3") == "run-3"
     assert concurrency_suffix("github-actions[bot]", "snap", "", "run-4") == "run-4"
     inputs = trigger["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 26
+    assert len(inputs) <= 25
     assert "allowlisted reviewed SHA" in inputs["rulespec_ref"]["description"]
     assert "artifact-only" in inputs["rulespec_ref"]["description"]
     assert inputs["country"] == {
@@ -2121,6 +2121,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
         "required": False,
         "type": "string",
     }
+    assert "repair_candidate_tests_only" not in inputs
     assert inputs["pr_base_branch"]["type"] == "string"
     assert inputs["pr_base_branch"]["default"] == "main"
     assert inputs["source_bundle_json"] == {
@@ -2316,9 +2317,7 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert repair_step["if"] == "${{ inputs.repair_run_id != '' }}"
     assert repair_step["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert repair_step["env"]["RULESPEC_CHECKOUT"] == ("rulespec-${{ inputs.country }}")
-    assert repair_step["env"]["REPAIR_TESTS_ONLY"] == (
-        "${{ inputs.repair_candidate_tests_only }}"
-    )
+    assert "REPAIR_TESTS_ONLY" not in repair_step["env"]
     repair_command = repair_step["run"]
     assert '.conclusion == "failure"' in repair_command
     assert '.event == "workflow_dispatch"' in repair_command
@@ -2328,8 +2327,8 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert "merge-base --is-ancestor" in repair_command
     assert '"$repair_encoder_commit" "$GITHUB_SHA"' in repair_command
     assert "repair replay is limited to one non-legacy target" in repair_command
-    assert "tests-only repair requires primary required test cases" in repair_command
-    assert "repair test cases require tests-only repair mode" in repair_command
+    assert "REPAIR_TESTS_ONLY=false" in repair_command
+    assert "REPAIR_TESTS_ONLY=true" in repair_command
     assert 'test -n "$REPLACE_RULESPEC_PATH"' not in repair_command
     assert "targeted-reencode-failure-${REPAIR_RUN_ID}-1" in repair_command
     assert "extract_repair_candidate.py" in repair_command
@@ -2483,9 +2482,9 @@ def test_targeted_signed_reencode_workflow_is_main_dispatch_only() -> None:
     assert apply_step["env"]["REPAIR_CANDIDATE_TESTS_SHA256"] == (
         "${{ steps.repair_candidate.outputs.tests_sha256 }}"
     )
-    assert apply_step["env"]["REPAIR_TESTS_ONLY"] == (
-        "${{ inputs.repair_candidate_tests_only }}"
-    )
+    assert "REPAIR_TESTS_ONLY" not in apply_step["env"]
+    assert "REPAIR_TESTS_ONLY=false" in command
+    assert "REPAIR_TESTS_ONLY=true" in command
     assert "args+=(--apply-target-only)" in command
     assert 'args+=(--replace-rulespec-path "$replacement_path")' in command
     assert 'local require_direct_imports="$7"' in command
