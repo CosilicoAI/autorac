@@ -35,7 +35,10 @@ from axiom_encode import __version__ as AXIOM_ENCODE_TEST_VERSION
 from axiom_encode.cli import (
     _APPLY_TRANSACTION_SCHEMA,
     _APPLY_VALIDATION_SNAPSHOT_ATTR,
+    _IMMUTABLE_RULESPEC_SHA256_ATTR,
+    _PRESERVED_COMPANION_TESTS_ATTR,
     _REPLACEMENT_OVERLAY_SCOPE_ATTR,
+    _REQUIRED_TEST_CASE_CONTRACTS_ATTR,
     APPLIED_ENCODING_MANIFEST_SCHEMA,
     APPLIED_ENCODING_MODEL_TOOL,
     APPLIED_ENCODING_OFFICIAL_REPOSITORY,
@@ -86,6 +89,7 @@ from axiom_encode.cli import (
     _grounded_formula_literal_for_scalar_expression,
     _has_zero_output_test,
     _hoist_nested_test_tables,
+    _immutable_planned_rulespec_digest_issue,
     _import_base_to_repo_file,
     _infer_missing_input_default,
     _inline_medicaid_magi_income_helpers,
@@ -198,6 +202,7 @@ from axiom_encode.cli import (
     _stamp_generated_source_attestation_for_apply,
     _stamp_matching_supplemental_source_attestations,
     _suppress_rulespec_ancestor_targets_for_subsection_overlay,
+    _tests_only_companion_preservation_issue,
     _translate_rulespec_engine_envelope_error,
     _try_repair_generated_aca_36b_b_premium_assistance_compat_for_apply,
     _try_repair_generated_admin_agency_aggregate_entities_for_apply,
@@ -919,6 +924,65 @@ def _rebind_test_eval_suite_report_payload(payload: dict, tmp_path: Path) -> Non
     unsigned_evidence = dict(payload["evidence"])
     unsigned_evidence.pop("sha256", None)
     payload["evidence"]["sha256"] = _eval_suite_json_sha256(unsigned_evidence)
+
+
+def test_planned_apply_preserves_tests_only_rulespec_digest():
+    original = b"format: rulespec/v1\nrules: []\n"
+    relative = Path("regulation/7/273/4.yaml")
+    result = SimpleNamespace()
+    setattr(
+        result,
+        _IMMUTABLE_RULESPEC_SHA256_ATTR,
+        hashlib.sha256(original).hexdigest(),
+    )
+
+    assert (
+        _immutable_planned_rulespec_digest_issue(
+            result,
+            {relative: original},
+            relative,
+        )
+        is None
+    )
+    assert "planned hash-bound RuleSpec" in str(
+        _immutable_planned_rulespec_digest_issue(
+            result,
+            {relative: b"format: rulespec/v1\nrules: [changed]\n"},
+            relative,
+        )
+    )
+
+
+def test_final_apply_rechecks_tests_only_companion_contract(tmp_path):
+    original = (
+        "- name: existing\n  period: 2025-06\n  input: {}\n"
+        "  output:\n    result: holds\n"
+    )
+    contract = {
+        "name": "required",
+        "period": "2025-06",
+        "input": {"fact": True},
+        "required_output": {"required_result": "holds"},
+    }
+    result = SimpleNamespace()
+    setattr(result, _PRESERVED_COMPANION_TESTS_ATTR, original)
+    setattr(result, _REQUIRED_TEST_CASE_CONTRACTS_ATTR, (contract,))
+    test_file = tmp_path / "4.test.yaml"
+    test_file.write_text(
+        original + "- name: required\n  period: 2025-06\n"
+        "  input:\n    fact: true\n"
+        "  output:\n    required_result: holds\n"
+    )
+
+    assert _tests_only_companion_preservation_issue(result, test_file) is None
+
+    test_file.write_text(
+        test_file.read_text() + "- name: unsigned\n  period: 2025-06\n  input: {}\n"
+        "  output:\n    result: holds\n"
+    )
+    assert "outside the bound contract" in str(
+        _tests_only_companion_preservation_issue(result, test_file)
+    )
 
 
 @pytest.mark.parametrize("oracle", ["none", "policyengine"])
@@ -13026,6 +13090,9 @@ class TestCmdEncode:
         args.repair_candidate_tests_sha256 = overrides.get(
             "repair_candidate_tests_sha256", None
         )
+        args.repair_candidate_tests_only = overrides.get(
+            "repair_candidate_tests_only", False
+        )
         args.policyengine_rule_hint = overrides.get("policyengine_rule_hint", None)
         args.db = overrides.get("db", tmp_path / "encodings.db")
         args.sync = overrides.get("sync", True)
@@ -14409,6 +14476,92 @@ rules:
         assert "preserved-rule" in candidate.rulespec
         assert candidate.tests is not None
         assert "preserved-companion" in candidate.tests
+
+    def test_encode_tests_only_repair_requires_bound_apply_contract(self, tmp_path):
+        import axiom_encode.cli as cli_module
+
+        candidate = cli_module.ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\nrules: []\n",
+            tests="[]\n",
+        )
+        test_case = cli_module._RequiredTestCaseContract(
+            name="required",
+            period={
+                "period_kind": "custom",
+                "name": "month",
+                "start": "2025-06-01",
+                "end": "2025-06-30",
+            },
+            input={"fact": True},
+            required_output={"result": "holds"},
+        )
+        contract = cli_module._DeferredOutputReviewContract(
+            citation="us/regulation/7/273/4",
+            rulespec_path="us/regulations/7/273/4.yaml",
+            required_deferred_outputs=(),
+            required_test_cases=(test_case,),
+        )
+        args = SimpleNamespace(
+            repair_candidate_tests_only=True,
+            review_contract_json=contract,
+            repair_candidate_path=Path("regulations/7/273/4.yaml"),
+            replace_rulespec_path=Path("us/regulations/7/273/4.yaml"),
+            citation="us/regulation/7/273/4",
+            apply=True,
+        )
+
+        cli_module._validate_tests_only_repair_contract(args, candidate)
+
+        args.repair_candidate_path = Path("us/regulations/7/273/4.yaml")
+        cli_module._validate_tests_only_repair_contract(args, candidate)
+
+        args.repair_candidate_path = Path("us-ny/regulations/7/273/4.yaml")
+        with pytest.raises(ValueError, match="replacement path mismatch"):
+            cli_module._validate_tests_only_repair_contract(args, candidate)
+        args.repair_candidate_path = Path("regulations/7/273/4.yaml")
+
+        args.replace_legacy_rulespec_path = Path("us/regulations/7/273/4-old.yaml")
+        with pytest.raises(ValueError, match="cannot perform a legacy migration"):
+            cli_module._validate_tests_only_repair_contract(args, candidate)
+        args.replace_legacy_rulespec_path = None
+
+        args.legacy_exact_dependent_rulespec_path = [
+            Path("us/regulations/7/273/4-dependent.yaml")
+        ]
+        with pytest.raises(ValueError, match="cannot perform a legacy migration"):
+            cli_module._validate_tests_only_repair_contract(args, candidate)
+        args.legacy_exact_dependent_rulespec_path = []
+
+        args.apply = False
+        with pytest.raises(ValueError, match="requires encode --apply"):
+            cli_module._validate_tests_only_repair_contract(args, candidate)
+
+    def test_encode_tests_only_retry_keeps_cross_run_candidate(self):
+        import axiom_encode.cli as cli_module
+
+        initial = cli_module.ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\n# immutable\nrules: []\n",
+            tests="[]\n",
+        )
+        rejected = cli_module.ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\n# rewritten\nrules: []\n",
+            tests="[]\n",
+        )
+        failed_attempt = cli_module._FailedEncodeAttempt(
+            result=SimpleNamespace(metrics=SimpleNamespace()),
+            error="missing required witness",
+            candidate=rejected,
+            validation_issues=("missing required witness",),
+        )
+
+        feedback, candidate = cli_module._encode_validation_retry_context(
+            [failed_attempt],
+            initial_retry_candidate=initial,
+            preserve_initial_candidate=True,
+        )
+
+        assert feedback == ("missing required witness",)
+        assert candidate is initial
 
     def test_encode_replaces_cross_run_candidate_after_in_run_rejection(self, tmp_path):
         candidate_root = tmp_path / "preserved-candidate"
