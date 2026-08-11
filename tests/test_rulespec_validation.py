@@ -35,6 +35,7 @@ from axiom_encode.harness.policyengine_runtime import (
     PolicyEngineRuntimeError,
 )
 from axiom_encode.harness.proof_validator import (
+    _rule_source_numeric_parent_alpha_scope,
     _source_top_level_marker_for_numeric_parent,
     find_rulespec_proof_issues,
     validate_rulespec_proofs,
@@ -17202,6 +17203,1959 @@ rules:
     assert result.passed is False
     assert any(
         "outside the rule's declared subsection scope" in issue and "(b)" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "-",
+        "\u2010",
+        "\u2011",
+        "\u2012",
+        "\u2013",
+        "\u2014",
+        "\u2015",
+        "\u2212",
+        "\uff0d",
+        " \u2013 ",
+    ],
+)
+def test_rule_source_scope_expands_bounded_alphabetic_ranges(separator: str):
+    assert _rule_source_numeric_parent_alpha_scope(
+        f"Miss. Code section 27-7-5(4)(a){separator}(e)"
+    ) == {"4": frozenset("abcde")}
+
+
+def test_rule_source_scope_treats_direct_roman_letters_as_alphabetic_range():
+    assert _rule_source_numeric_parent_alpha_scope(
+        "Miss. Code section 27-7-5(4)(c)-(d)"
+    ) == {"4": frozenset("cd")}
+
+
+def test_rule_source_scope_carries_numeric_parent_across_alpha_comma_shorthand():
+    assert _rule_source_numeric_parent_alpha_scope(
+        "Miss. Code section 27-7-5(2)(c), (d), (4)(a)-(e)"
+    ) == {"2": frozenset("cd"), "4": frozenset("abcde")}
+
+
+def test_rule_source_scope_uses_textually_rightmost_parent_for_shorthand():
+    assert _rule_source_numeric_parent_alpha_scope(
+        "Miss. Code section 27-7-5(2)(c); (4)(a), (b)"
+    ) == {"2": frozenset("c"), "4": frozenset("ab")}
+
+
+def test_rule_source_scope_invalidates_shorthand_after_unhandled_coordinate():
+    scope = _rule_source_numeric_parent_alpha_scope(
+        "Miss. Code section 27-7-5(2)(c); 42 CFR 1(a)(1)(i)-(v), (d)"
+    )
+
+    assert scope["2"] == frozenset("c")
+    assert "d" not in scope["2"]
+
+
+def test_rule_source_scope_keeps_singleton_before_parenthetical_annotation():
+    assert _rule_source_numeric_parent_alpha_scope(
+        "Miss. Code section 27-7-5(4)(a) (effective July 1)"
+    ) == {"4": frozenset("a")}
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)(1)",
+        "Miss. Code section 27-7-5(4)(a)(1)-(3)",
+        "Miss. Code section 27-7-5(4)(a)(1), (2)",
+    ],
+)
+def test_rule_source_scope_does_not_flatten_deeper_numeric_coordinates(
+    rule_source: str,
+):
+    assert _rule_source_numeric_parent_alpha_scope(rule_source) == {}
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)(ii)",
+        "Miss. Code section 27-7-5(4)(a)(ii)-(iv)",
+        "Miss. Code section 27-7-5(4)(a)(IV)",
+        "Miss. Code section 27-7-5(4)(a)(Ii)",
+        "42 CFR 435.552(e)(2)(i)-(ii)",
+        "Miss. Code section 27-7-5(4)(a)(1)(ii)",
+    ],
+)
+def test_rule_source_scope_does_not_flatten_deeper_roman_coordinates(
+    rule_source: str,
+):
+    assert _rule_source_numeric_parent_alpha_scope(rule_source) == {}
+
+
+@pytest.mark.parametrize("separator", ["-", "\u2011", " \u2013 "])
+@pytest.mark.parametrize("marker", ["b", "c", "d"])
+def test_rulespec_proof_validator_allows_interior_alphabetic_range_excerpt(
+    separator: str,
+    marker: str,
+):
+    excerpt = f"({marker}) The tax shall be prorated between calendar-year rates."
+    content = _proof_scope_fixture(
+        rule_source=f"Miss. Code section 27-7-5(4)(a){separator}(e)",
+        excerpt=excerpt,
+    )
+    child_blocks = [
+        excerpt
+        if child == marker
+        else f"({child}) Declared fiscal-year step {child}."
+        for child in "abcde"
+    ]
+    child_blocks.insert(
+        2,
+        (
+            "  (1) Nested numbered detail one.\n\n"
+            "  (2) Nested numbered detail two.\n\n"
+            "  (5) Nested numbered detail five."
+        ),
+    )
+    source_text = (
+        "(4) The fiscal-year calculation is determined by:\n\n"
+        + "\n\n".join(child_blocks)
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+@pytest.mark.parametrize(
+    "malformed_range",
+    [
+        "(a)/(e)",
+        "(a),(e)",
+        "(a):(e)",
+        "(a)+(e)",
+        "(a)\N{PLUS-MINUS SIGN}(e)",
+        "(a)--(e)",
+        "(a) to (e)",
+        "(a) through (e)",
+        "a-(e)",
+        "(A)-(e)",
+        "(a)-(E)",
+    ],
+)
+def test_rule_source_scope_does_not_expand_malformed_alphabetic_ranges(
+    malformed_range: str,
+):
+    scope = _rule_source_numeric_parent_alpha_scope(
+        f"Miss. Code section 27-7-5(4){malformed_range}"
+    )
+
+    assert "c" not in {child for children in scope.values() for child in children}
+
+
+def test_rulespec_proof_validator_rejects_alphabetic_range_under_wrong_parent():
+    excerpt = "(c) Wrong paragraph fiscal-year step."
+    source_text = f"""(3) An unrelated paragraph provides:
+
+(a) Unrelated first step.
+
+(b) Unrelated second step.
+
+  (4) A nested numbered item under paragraph (b).
+
+{excerpt}
+
+(4) The declared paragraph provides:
+
+(a) Declared first step.
+
+(b) Declared second step.
+
+(c) Correct paragraph fiscal-year step.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_ambiguous_duplicate_parent_range():
+    excerpt = "(c) Wrong nested paragraph step."
+    source_text = f"""(3) An unrelated outer paragraph provides:
+
+(a) Outer first child.
+
+(b) Outer second child with a nested paragraph:
+
+  (4) The nested paragraph provides:
+
+    (a) Nested first child.
+
+    (b) Nested second child.
+
+    {excerpt}
+
+    (d) Nested fourth child.
+
+    (e) Nested fifth child.
+
+(4) The real outer paragraph provides:
+
+(a) Real first child.
+
+(b) Real second child.
+
+(c) Real third child.
+
+(d) Real fourth child.
+
+(e) Real fifth child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_deeper_expected_alpha_child():
+    excerpt = "(b) Wrong deeper child."
+    source_text = f"""(4) The paragraph provides:
+
+(a) Direct first child with nested content:
+
+  {excerpt}
+
+(b) Correct direct second child.
+
+(c) Correct direct third child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_sole_nested_numeric_parent():
+    excerpt = "(c) Wrong nested third child."
+    source_text = f"""(3) The outer paragraph provides:
+
+(b) An outer child contains a nested paragraph:
+
+  (4) The nested paragraph provides:
+
+    (a) Nested first child.
+
+    (b) Nested second child.
+
+    {excerpt}
+
+    (d) Nested fourth child.
+
+    (e) Nested fifth child.
+
+(5) The next outer paragraph.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_nested_parent_without_numeric_peers():
+    excerpt = "(c) Wrong shallower child."
+    source_text = f"""(b) A shallower structural block.
+
+  (4) A nested numeric paragraph.
+
+(a) Wrong shallower first child.
+
+(b) Wrong shallower second child.
+
+{excerpt}
+
+(d) Wrong shallower fourth child.
+
+(e) Wrong shallower fifth child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("outer_parent", ["2", "3"])
+def test_rulespec_proof_validator_rejects_flat_nested_numeric_parent(
+    outer_parent: str,
+):
+    excerpt = "(c) Wrong flat nested third child."
+    source_text = f"""({outer_parent}) The outer paragraph provides:
+
+(a) Outer first child.
+
+(b) Outer second child with a nested paragraph:
+
+(4) The nested paragraph provides:
+
+(a) Nested first child.
+
+(b) Nested second child.
+
+{excerpt}
+
+(d) Nested fourth child.
+
+(e) Nested fifth child.
+
+(5) The next outer paragraph.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_flat_nested_owned_numeric_parent():
+    excerpt = "(c) Wrong nested owned-parent child."
+    source_text = f"""(2) The cited outer paragraph provides:
+
+(a) Outer first child.
+
+(b) Outer second child with a nested paragraph:
+
+(4) The nested paragraph provides:
+
+(a) Nested first child.
+
+(b) Nested second child.
+
+{excerpt}
+
+(d) Nested fourth child.
+
+(e) Nested fifth child.
+
+(5) The next outer paragraph.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(2)(b), (4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_outer_range_across_nested_roman_list():
+    excerpt = "(c) Correct outer paragraph step."
+    source_text = f"""(4) The outer paragraph provides:
+
+  (a) First outer child with nested items:
+
+    (1) A nested numeric item provides:
+
+      (i) A nested Roman item.
+
+  (b) Second outer child.
+
+  {excerpt}
+
+  (d) Fourth outer child.
+
+  (e) Fifth outer child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_independently_cited_mixed_marker():
+    excerpt = "(c) Explicitly cited paragraph two child."
+    source_text = f"""(2) A separately cited paragraph provides:
+
+(a) First child.
+
+(b) Second child.
+
+{excerpt}
+
+(4) The ranged paragraph provides:
+
+(a) Ranged first child.
+
+(b) Ranged second child.
+
+(c) Ranged third child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(2)(c), (4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_wrong_parent_in_mixed_marker_scope():
+    excerpt = "(c) Wrong paragraph nine child."
+    source_text = f"""(2) A separately cited paragraph provides:
+
+(a) First child.
+
+(b) Second child.
+
+(c) Correct paragraph two child.
+
+(9) An undeclared paragraph provides:
+
+(a) Wrong first child.
+
+(b) Wrong second child.
+
+{excerpt}
+
+(4) The ranged paragraph provides:
+
+(a) Ranged first child.
+
+(b) Ranged second child.
+
+(c) Ranged third child.
+
+(d) Ranged fourth child.
+
+(e) Ranged fifth child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(2)(c), (4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_wrong_parent_alpha_comma_shorthand():
+    excerpt = "(d) Wrong paragraph nine child."
+    source_text = f"""(2) The explicitly cited paragraph provides:
+
+(a) First child.
+
+(b) Second child.
+
+(c) Correct third child.
+
+(d) Correct fourth child.
+
+(9) An undeclared paragraph provides:
+
+(a) Wrong first child.
+
+(b) Wrong second child.
+
+(c) Wrong third child.
+
+{excerpt}
+
+(4) The ranged paragraph provides:
+
+(a) Ranged first child.
+
+(b) Ranged second child.
+
+(c) Ranged third child.
+
+(d) Ranged fourth child.
+
+(e) Ranged fifth child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(2)(c), (d), (4)(a)-(e)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_uses_rightmost_parent_for_alpha_shorthand():
+    excerpt = "(b) Wrong paragraph two child."
+    source_text = f"""(2) Paragraph two provides:
+
+(a) Paragraph two first child.
+
+{excerpt}
+
+(c) Paragraph two third child.
+
+(4) Paragraph four provides:
+
+(a) Correct paragraph four first child.
+
+(b) Correct paragraph four second child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(2)(c); (4)(a), (b)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_owns_annotated_direct_singleton():
+    excerpt = "(a) Wrong paragraph three child."
+    source_text = f"""(4) Cited paragraph.
+
+(a) Correct paragraph four child.
+
+(3) Uncited paragraph.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a) (effective July 1)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_shorthand_after_unhandled_coordinate():
+    excerpt = "(d) Wrong stale-parent child."
+    source_text = f"""(2) Paragraph two provides:
+
+(a) First child.
+
+(b) Second child.
+
+(c) Third child.
+
+{excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source=(
+            "Miss. Code section 27-7-5(2)(c); "
+            "42 CFR 1(a)(1)(i)-(v), (d)"
+        ),
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_parent_ambiguous_across_evidence_records():
+    excerpt = "(c) Unique current third child."
+    current_record = f"""(4) Current paragraph.
+(a) Current first child.
+(b) Current second child.
+{excerpt}
+"""
+    history_record = """(4) Historical paragraph.
+(a) Historical first child.
+(b) Historical second child.
+(c) Historical third child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={
+            "us-nj/statute/54a:4-7": (
+                current_record
+                + PROOF_EVIDENCE_SEGMENT_SEPARATOR
+                + history_record
+            )
+        },
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_preserves_same_segment_numeric_restriction():
+    excerpt = "(99) An undeclared numeric child."
+    content = _proof_scope_fixture(
+        rule_source=(
+            "Miss. Code section 27-7-5(4)(a)-(e); "
+            "42 CFR 1(f)(1)-(3)"
+        ),
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)(1)",
+        "Miss. Code section 27-7-5(4)(a)(1)-(3)",
+        "Miss. Code section 27-7-5(4)(a)(1), (2)",
+    ],
+)
+def test_rulespec_proof_validator_preserves_deeper_numeric_restriction(
+    rule_source: str,
+):
+    excerpt = "(99) An undeclared numeric child."
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)(ii)",
+        "Miss. Code section 27-7-5(4)(a)(ii)-(iv)",
+        "Miss. Code section 27-7-5(4)(a)(IV)",
+        "42 CFR 435.552(e)(2)(i)-(ii)",
+        "Miss. Code section 27-7-5(4)(a)(1)(ii)",
+    ],
+)
+def test_rulespec_proof_validator_rejects_broad_deeper_roman_parent_excerpt(
+    rule_source: str,
+):
+    parent = "e" if "552(e)" in rule_source else "a"
+    excerpt = f"({parent}) Broad parent evidence does not prove the Roman child."
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule_source", "excerpt"),
+    [
+        ("Miss. Code section 27-7-5(4)(a)(ii)", "(iii) Wrong Roman sibling."),
+        (
+            "Miss. Code section 27-7-5(4)(a)(ii)-(iv)",
+            "(vi) Outside the Roman range.",
+        ),
+        ("Miss. Code section 27-7-5(4)(a)(IV)", "(V) Wrong uppercase sibling."),
+        ("42 CFR 435.552(e)(2)(i)-(ii)", "(iii) Outside the nested range."),
+    ],
+)
+def test_rulespec_proof_validator_fails_closed_for_deeper_roman_evidence(
+    rule_source: str,
+    excerpt: str,
+):
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_preserves_numeric_scope_beside_deeper_roman():
+    excerpt = "(99) An undeclared numeric child."
+    content = _proof_scope_fixture(
+        rule_source=(
+            "Miss. Code section 27-7-5(4)(a)(ii); "
+            "42 CFR 1(f)(1)-(3)"
+        ),
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_independently_broad_roman_parent():
+    excerpt = "(a) Independently broad section two evidence."
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(a)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_roman_parent_narrowed_elsewhere():
+    excerpt = "(a) Broad parent evidence is not independently cited."
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(a)(1)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule_source", "excerpt"),
+    [
+        ("section 1(a)(ii)-(iv)", "(iii) Declared interior Roman child."),
+        ("section 1(a)(IV)", "(IV) Declared uppercase Roman child."),
+    ],
+)
+def test_rulespec_proof_validator_allows_declared_roman_members(
+    rule_source: str,
+    excerpt: str,
+):
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "section 1(a)(iv)-(ii)",
+        "section 1(a)(ii)/(iv)",
+        "section 1(a)(iiii)",
+        "section 1(a)(i)-(cc)",
+    ],
+)
+def test_rulespec_proof_validator_fails_closed_for_invalid_roman_scope(
+    rule_source: str,
+):
+    excerpt = "(a) Invalid Roman scope cannot become a broad parent."
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_roman_marker_under_wrong_alpha_parent():
+    excerpt = "(iii) Wrong third child under parent a."
+    source_text = f"""(a) Parent a.
+  (ii) Correct second child under parent a.
+  {excerpt}
+(b) Parent b.
+  (iii) Correct third child under parent b.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii); section 1(b)(iii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_roman_marker_under_wrong_numeric_chain():
+    excerpt = "(i) Wrong first Roman child under numeric child one."
+    source_text = f"""(e) Parent e.
+  (1) Numeric child one.
+    {excerpt}
+  (2) Numeric child two.
+    (i) Correct first Roman child under numeric child two.
+    (ii) Correct second Roman child under numeric child two.
+"""
+    content = _proof_scope_fixture(
+        rule_source="42 CFR 435.552(e)(2)(i)-(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_roman_marker_under_exact_numeric_chain():
+    excerpt = "(ii) Correct second Roman child under numeric child two."
+    source_text = f"""(e) Parent e.
+  (1) Numeric child one.
+    (ii) Wrong second Roman child under numeric child one.
+  (2) Numeric child two.
+    {excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="42 CFR 435.552(e)(2)(i)-(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_roman_descendant_of_broad_parent():
+    excerpt = "(iii) Descendant admitted by independently broad parent a."
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(a)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_roman_descendant_of_numeric_owned_alpha():
+    excerpt = "(iii) Descendant admitted by broad paragraph four child a."
+    source_text = f"""(3) Narrow outer paragraph three.
+  (a) Narrow alpha child a.
+    (ii) Cited Roman child two.
+(4) Broad outer paragraph four.
+  (a) Broad alpha child a.
+    {excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(3)(a)(ii), (4)(a)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_roman_descendant_of_narrow_numeric_alpha():
+    excerpt = "(iii) Undeclared descendant under narrow paragraph three child a."
+    source_text = f"""(3) Narrow outer paragraph three.
+  (a) Narrow alpha child a.
+    {excerpt}
+(4) Broad outer paragraph four.
+  (a) Broad alpha child a.
+    (iii) Permitted descendant under broad paragraph four child a.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(3)(a)(ii), (4)(a)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule_source", "source_text"),
+    [
+        (
+            "section 1(b)(ii), section 2(a)",
+            """(a) Broad alpha parent a.
+  (1) Intervening numeric child one.
+    (iii) Deep descendant of broad alpha parent a.
+""",
+        ),
+        (
+            "Miss. Code section 27-7-5(3)(b)(ii), (4)(a)",
+            """(4) Broad numeric parent four.
+  (a) Broad alpha child a.
+    (1) Intervening numeric child one.
+      (iii) Deep descendant of broad paragraph four child a.
+""",
+        ),
+        (
+            "Miss. Code section 27-7-5(3)(b)(ii), (4)(a)(1)",
+            """(4) Numeric parent four.
+  (a) Alpha child a.
+    (1) Broad inner numeric child one.
+      (iii) Descendant of broad inner numeric child one.
+""",
+        ),
+        (
+            "section (3)(b)(ii), section (2)(4)(a)",
+            """(2) Outer numeric parent two.
+  (4) Inner numeric parent four.
+    (a) Broad alpha child a.
+      (iii) Descendant of deep broad alpha child a.
+""",
+        ),
+    ],
+)
+def test_rulespec_proof_validator_allows_unique_broad_chain_prefix(
+    rule_source: str,
+    source_text: str,
+):
+    excerpt = next(
+        line.strip() for line in source_text.splitlines() if "(iii)" in line
+    )
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_does_not_broaden_before_deeper_alpha_child():
+    excerpt = "(iii) Undeclared Roman sibling above narrow alpha child b."
+    source_text = f"""(4) Numeric parent four.
+  (a) Alpha child a.
+    (1) Numeric child one.
+      {excerpt}
+      (b) Narrow ordinary alpha child b.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section (3)(c)(ii), section (4)(a)(1)(b)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "section (3)(a)(ii), section (4)(a), section (5)(a)",
+        "section (3)(a)(ii), section (4)(a)(1), section (4)(a)(2)",
+    ],
+)
+def test_rulespec_proof_validator_rejects_exact_scalar_with_ambiguous_broad_chains(
+    rule_source: str,
+):
+    excerpt = "(iii) Exact scalar with more than one possible broad owner."
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "broad_source",
+    [
+        "section (a)(1)-(3)",
+        "section (a)(1), (2)",
+    ],
+)
+def test_rulespec_proof_validator_allows_roman_descendant_of_broad_numeric_member(
+    broad_source: str,
+):
+    excerpt = "(iii) Descendant of cited numeric child two."
+    source_text = f"""(a) Alpha parent a.
+  (2) Cited numeric child two.
+    {excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source=f"section (b)(ii), {broad_source}",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+@pytest.mark.parametrize(
+    ("broad_source", "child"),
+    [
+        ("section (a)(3)-(1)", "3"),
+        ("section (a)(3)/(1)", "3"),
+        ("section (a)(3)–(1)", "3"),
+        ("section (a)(1)-(202)", "1"),
+    ],
+)
+def test_rulespec_proof_validator_fails_closed_for_invalid_broad_numeric_range(
+    broad_source: str,
+    child: str,
+):
+    excerpt = "(iii) Descendant of an invalid numeric range."
+    source_text = f"""(a) Alpha parent a.
+  ({child}) Invalidly ranged numeric child.
+    {excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source=f"section (b)(ii), {broad_source}",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("broad_source", "source_text"),
+    [
+        (
+            "section (a)/(c)",
+            """(a) Invalid slash-range start.
+  (iii) Descendant of invalid slash-range start.
+""",
+        ),
+        (
+            "section (c)-(a)",
+            """(c) Invalid descending-range start.
+  (iii) Descendant of invalid descending-range start.
+""",
+        ),
+        (
+            "section (4)(a)/(c)",
+            """(4) Numeric parent four.
+  (a) Invalid owned slash-range start.
+    (iii) Descendant of invalid owned slash-range start.
+""",
+        ),
+        (
+            "section (4)(c)-(a)",
+            """(4) Numeric parent four.
+  (c) Invalid owned descending-range start.
+    (iii) Descendant of invalid owned descending-range start.
+""",
+        ),
+    ],
+)
+def test_rulespec_proof_validator_fails_closed_for_invalid_broad_alpha_range(
+    broad_source: str,
+    source_text: str,
+):
+    excerpt = next(
+        line.strip() for line in source_text.splitlines() if "(iii)" in line
+    )
+    content = _proof_scope_fixture(
+        rule_source=f"section (b)(ii), {broad_source}",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("broad_source", "source_text"),
+    [
+        (
+            "section (4)(a)/(3)(b)",
+            """(4) Invalid left numeric parent four.
+  (a) Invalid left alpha child a.
+    (iii) Descendant of invalid compound slash left side.
+""",
+        ),
+        (
+            "section (4)(a)(1)/(3)(b)",
+            """(4) Invalid left numeric parent four.
+  (a) Invalid left alpha child a.
+    (1) Invalid left numeric child one.
+      (iii) Descendant of invalid deep compound slash left side.
+""",
+        ),
+        (
+            "section (4)(a)(1)-(3)(b)",
+            """(3) Invalid compound dash suffix numeric parent three.
+  (b) Invalid compound dash suffix alpha child b.
+    (iii) Descendant of invalid compound dash suffix.
+""",
+        ),
+    ],
+)
+def test_rulespec_proof_validator_fails_closed_for_compound_range_suffix(
+    broad_source: str,
+    source_text: str,
+):
+    excerpt = next(
+        line.strip() for line in source_text.splitlines() if "(iii)" in line
+    )
+    content = _proof_scope_fixture(
+        rule_source=f"section (c)(ii), {broad_source}",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("broad_source", "source_text"),
+    [
+        (
+            "section (4)(a)(ii)/(3)(b)",
+            """(3) Invalid suffix numeric parent three.
+  (b) Invalid suffix alpha child b.
+    (iii) Descendant of suffix after a narrow left side.
+""",
+        ),
+        (
+            "section (a)/(b)/(c)",
+            """(c) Invalid chained slash suffix c.
+  (iii) Descendant of invalid chained slash suffix.
+""",
+        ),
+        (
+            "section (c)-(a)-(b)",
+            """(b) Invalid chained descending suffix b.
+  (iii) Descendant of invalid chained descending suffix.
+""",
+        ),
+        (
+            "section (4)(a)/(3)(b)/(2)(c)",
+            """(2) Invalid final compound numeric parent two.
+  (c) Invalid final compound alpha child c.
+    (iii) Descendant of invalid final compound suffix.
+""",
+        ),
+    ],
+)
+def test_rulespec_proof_validator_suppresses_connected_invalid_range_groups(
+    broad_source: str,
+    source_text: str,
+):
+    excerpt = next(
+        line.strip() for line in source_text.splitlines() if "(iii)" in line
+    )
+    content = _proof_scope_fixture(
+        rule_source=f"section (d)(ii), {broad_source}",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "broad_source",
+    [
+        "section (b)(ii), (d)",
+        "section (a)/(c), (d); section (b)(ii)",
+    ],
+)
+def test_rulespec_proof_validator_suppresses_unowned_comma_alpha_group(
+    broad_source: str,
+):
+    excerpt = "(iii) Descendant of unowned comma alpha group d."
+    source_text = f"""(d) Unowned comma alpha group d.
+  {excerpt}
+"""
+    content = _proof_scope_fixture(rule_source=broad_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_fails_closed_for_huge_numeric_range_endpoint():
+    excerpt = "(iii) Descendant of a malformed huge numeric range."
+    huge_endpoint = "9" * 4301
+    content = _proof_scope_fixture(
+        rule_source=f"section (b)(ii), section (a)(1)-({huge_endpoint})",
+        excerpt=excerpt,
+    )
+    source_text = f"""(a) Alpha parent a.
+  (1) Numeric range start one.
+    {excerpt}
+"""
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "section (4)(a)(ii)/(3)(b)",
+        "section (4)(a)/(3)(b)",
+        "section (4)(a)(1)(b)/(3)(c)",
+    ],
+)
+def test_rulespec_proof_validator_rejects_direct_alpha_compound_suffix(
+    rule_source: str,
+):
+    marker = "c" if rule_source.endswith("(c)") else "b"
+    excerpt = f"({marker}) Invalid direct alpha compound suffix."
+    source_text = """(3) Numeric parent three.
+(a) Alpha child a.
+(b) Invalid direct alpha compound suffix.
+(c) Invalid direct alpha compound suffix.
+"""
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_authoritative_pair_beside_invalid_suffix():
+    excerpt = "(b) Correct valid paragraph five child b."
+    source_text = f"""(5) Valid numeric parent five.
+  {excerpt}
+"""
+    content = _proof_scope_fixture(
+        rule_source="section (4)(a)/(3)(b); section (5)(b)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_direct_broad_alpha_beside_invalid_suffix():
+    excerpt = "(b) Correct independently broad alpha child b."
+    content = _proof_scope_fixture(
+        rule_source="section (4)(a)/(3)(b); section 6(b)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        """(5) Numeric parent five.
+  (b) First duplicate child b.
+  (b) Second duplicate child b.
+""",
+        """(5) First numeric parent five.
+  (b) First duplicate child b.
+(5) Second numeric parent five.
+  (b) Second duplicate child b.
+""",
+    ],
+)
+def test_rulespec_proof_validator_rejects_duplicate_numeric_alpha_coordinate(
+    source_text: str,
+):
+    excerpt = "(b) First duplicate child b."
+    content = _proof_scope_fixture(rule_source="section (5)(b)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_allows_owned_h_before_nested_roman_i():
+    excerpt = "(h) Valid direct child h."
+    source_text = f"""(5) Numeric parent five.
+  {excerpt}
+    (1) Nested numeric child one.
+      (i) Nested Roman child i.
+"""
+    content = _proof_scope_fixture(rule_source="section (5)(h)", excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_allows_unrelated_broad_roman_letter_parent():
+    excerpt = "(c) Independently broad parent c."
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(c)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_nested_roman_matching_broad_alpha():
+    excerpt = "(i) Wrong nested Roman child under parent a."
+    source_text = f"""(a) Narrow Roman parent a.
+  {excerpt}
+(i) Correct independently broad alpha parent i.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_numeric_nested_roman_as_broad_alpha():
+    excerpt = "(i) Wrong nested Roman child under numeric parent four."
+    source_text = f"""(4) Numeric parent four.
+  {excerpt}
+(i) Correct independently broad alpha parent i.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_flat_numeric_roman_as_broad_alpha():
+    excerpt = "(i) Wrong flat nested Roman child under numeric parent four."
+    source_text = f"""(4) Numeric parent four with a nested Roman item:
+{excerpt}
+(5) Next numeric parent.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_wrong_outer_numeric_roman_owner():
+    excerpt = "(ii) Wrong Roman child under outer paragraph three."
+    source_text = f"""(3) Outer paragraph three.
+  (a) Alpha parent a.
+    (1) Inner numeric child one.
+      {excerpt}
+(4) Outer paragraph four.
+  (a) Alpha parent a.
+    (1) Inner numeric child one.
+      (ii) Correct Roman child under outer paragraph four.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_duplicate_flat_roman_alpha_role():
+    excerpt = "(i) Wrong flat Roman child under parent a."
+    source_text = f"""(a) Narrow Roman parent a.
+{excerpt}
+(i) Correct independently broad alpha parent i.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(i)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_keeps_authorized_lowercase_roman_role():
+    excerpt = "(i) Correct Roman child under parent a."
+    source_text = f"""(a) Parent a.
+  {excerpt}
+(i) Parent i.
+  (ii) Correct Roman child under parent i.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(i); section 2(i)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_roman_chain_repeated_across_records():
+    excerpt = "(ii) Wrong historical Roman child."
+    historical = f"""(4) Historical outer paragraph.
+  (a) Historical alpha parent.
+    (1) Historical numeric child.
+      {excerpt}
+"""
+    current = """(4) Current outer paragraph.
+  (a) Current alpha parent.
+    (1) Current numeric child.
+      (ii) Correct current Roman child.
+"""
+    source_text = historical + PROOF_EVIDENCE_SEGMENT_SEPARATOR + current
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_roman_chain_repeated_in_one_record():
+    excerpt = "(ii) Wrong first Roman child."
+    source_text = f"""(4) First outer paragraph copy.
+  (a) First alpha parent copy.
+    (1) First numeric child copy.
+      {excerpt}
+(4) Second outer paragraph copy.
+  (a) Second alpha parent copy.
+    (1) Second numeric child copy.
+      (ii) Correct second Roman child.
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)(1)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_broad_roman_descendant_repeated():
+    excerpt = "(iii) Wrong historical descendant of broad parent a."
+    historical = f"""(a) Historical broad parent a.
+  {excerpt}
+"""
+    current = """(a) Current broad parent a.
+  (iii) Correct current descendant of broad parent a.
+"""
+    source_text = historical + PROOF_EVIDENCE_SEGMENT_SEPARATOR + current
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii), section 2(a)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_broad_parent_leak_across_roman_parents():
+    excerpt = "(iv) Wrong Roman child under narrow parent a."
+    source_text = f"""(a) Narrow parent a.
+  {excerpt}
+(b) Independently broad parent b.
+  (iv) Permitted Roman child under parent b.
+"""
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(ii); section 2(b)(iii), section 3(b)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_rejects_roman_ancestry_from_prior_record():
+    excerpt = "(ii) Orphan Roman child in a separate evidence record."
+    source_text = (
+        "(a) Parent in record one.\n"
+        "  (2) Numeric child in record one."
+        + PROOF_EVIDENCE_SEGMENT_SEPARATOR
+        + f"  {excerpt}\n"
+    )
+    content = _proof_scope_fixture(
+        rule_source="section 1(a)(2)(ii)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("marker", ["c", "d"])
+def test_rulespec_proof_validator_allows_direct_roman_letter_alpha_range(
+    marker: str,
+):
+    excerpt = f"({marker}) Direct alphabetic child {marker}."
+    source_text = "(4) The paragraph provides:\n\n" + "\n\n".join(
+        excerpt if child == marker else f"({child}) Alphabetic child {child}."
+        for child in "abcd"
+    )
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(c)-(d)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is True
+    assert result.issues == []
+
+
+def test_rulespec_proof_validator_rejects_ambiguous_expected_nested_roman():
+    excerpt = "(i) Wrong nested Roman child."
+    outer_prefix = "\n\n".join(
+        f"({child}) Outer alphabetic child {child}." for child in "abcdefgh"
+    )
+    outer_suffix = "\n\n".join(
+        f"({child}) Outer alphabetic child {child}." for child in "ijklm"
+    )
+    source_text = f"""(4) The paragraph provides:
+
+{outer_prefix}
+
+  (1) A nested numeric child provides:
+
+    {excerpt}
+
+{outer_suffix}
+"""
+    content = _proof_scope_fixture(
+        rule_source="Miss. Code section 27-7-5(4)(a)-(m)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+def test_rulespec_proof_validator_does_not_expand_nested_roman_range():
+    excerpt = "(m) An unrelated nested Roman item."
+    source_text = "(a) Parent.\n\n(1) Child:\n\n" + "\n\n".join(
+        excerpt if marker == "m" else f"({marker}) Nested item {marker}."
+        for marker in "abcdefghijklm"
+    )
+    content = _proof_scope_fixture(
+        rule_source="42 CFR 1(a)(1)(i)-(v)",
+        excerpt=excerpt,
+    )
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": source_text},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)-(e)",
+        "Miss. Code section 27-7-5(4)(e)-(a)",
+        "Miss. Code section 27-7-5(4)(a)/(e)",
+    ],
+)
+def test_rulespec_proof_validator_keeps_alphabetic_ranges_fail_closed(
+    rule_source: str,
+):
+    excerpt = "(f) A different fiscal-year rule applies."
+    if "(e)-(a)" in rule_source or "(a)/(e)" in rule_source:
+        excerpt = "(c) An undeclared interior rule applies."
+    content = _proof_scope_fixture(rule_source=rule_source, excerpt=excerpt)
+
+    result = validate_rulespec_proofs(
+        content,
+        source_texts={"us-nj/statute/54a:4-7": excerpt},
+    )
+
+    assert result.passed is False
+    assert any(
+        "outside the rule's declared subsection scope" in issue
         for issue in result.issues
     )
 

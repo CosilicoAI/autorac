@@ -11777,6 +11777,521 @@ def test_declared_subsection_source_keeps_corpus_evidence_segments_separate():
     )
 
 
+def test_declared_subsection_source_expands_alphabetic_range():
+    source_text = """(4) The declared paragraph.
+(a) First declared block.
+(b) Second declared block.
+  (1) Nested declared detail one.
+  (2) Nested declared detail two.
+  (5) Nested declared detail five.
+(c) Interior declared block.
+
+(5) Another unrelated paragraph.
+(a) Later wrong first block.
+(b) Later wrong second block.
+(c) Later wrong interior block.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is not None
+    assert "(a) First declared block." in scoped
+    assert "(b) Second declared block." in scoped
+    assert "(c) Interior declared block." in scoped
+    assert "(1) Nested declared detail one." in scoped
+    assert "(2) Nested declared detail two." in scoped
+    assert "(5) Nested declared detail five." in scoped
+    assert "Later wrong first block." not in scoped
+    assert "Later wrong second block." not in scoped
+    assert "Later wrong interior block." not in scoped
+
+
+def test_declared_subsection_source_rejects_flat_duplicate_parent_ambiguity():
+    source_text = """(3) Outer paragraph.
+(b) Outer child with nested paragraph.
+  (4) Nested paragraph.
+    (a) Nested first child.
+    (b) Nested second child.
+    (c) Nested third child.
+(4) Real paragraph.
+(a) Real first child.
+(b) Real second child.
+(c) Real third child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_keeps_outer_range_across_nested_roman_list():
+    source_text = """(4) Outer paragraph.
+  (a) First outer child with nested items.
+    (1) Nested numeric item.
+      (i) Nested Roman item.
+  (b) Second outer child.
+  (c) Third outer child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is not None
+    assert "(a) First outer child with nested items." in scoped
+    assert "(i) Nested Roman item." in scoped
+    assert "(b) Second outer child." in scoped
+    assert "(c) Third outer child." in scoped
+
+
+def test_declared_subsection_source_keeps_mixed_numeric_parent_ownership():
+    source_text = """(2) Explicit paragraph.
+(a) Explicit first child.
+(b) Explicit second child.
+(c) Correct explicit third child.
+(9) Undeclared paragraph.
+(a) Wrong first child.
+(b) Wrong second child.
+(c) Wrong third child.
+(4) Ranged paragraph.
+(a) Ranged first child.
+(b) Ranged second child.
+(c) Ranged third child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(2)(c), (4)(a)-(c)",
+    )
+
+    assert scoped is not None
+    assert "Correct explicit third child." in scoped
+    assert "Wrong third child." not in scoped
+
+
+def test_declared_subsection_source_rejects_ambiguous_expected_nested_roman():
+    outer_prefix = "\n".join(
+        f"({child}) Outer child {child}." for child in "abcdefgh"
+    )
+    outer_suffix = "\n".join(
+        f"({child}) Outer child {child}." for child in "ijklm"
+    )
+    source_text = f"""(4) Outer paragraph.
+{outer_prefix}
+  (1) Nested numeric child.
+    (i) Wrong nested Roman child.
+{outer_suffix}
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(m)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_deeper_expected_alpha_child():
+    source_text = """(4) Outer paragraph.
+(a) Direct first child.
+  (b) Wrong deeper second child.
+(b) Correct direct second child.
+(c) Correct direct third child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_sole_nested_numeric_parent():
+    source_text = """(3) Outer paragraph.
+(b) Outer child with nested paragraph.
+  (4) Nested paragraph.
+    (a) Nested first child.
+    (b) Nested second child.
+    (c) Nested third child.
+(5) Next outer paragraph.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_nested_parent_without_numeric_peers():
+    source_text = """(b) Shallower structural block.
+  (4) Nested numeric paragraph.
+(a) Wrong shallower first child.
+(b) Wrong shallower second child.
+(c) Wrong shallower third child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
+@pytest.mark.parametrize("outer_parent", ["2", "3"])
+def test_declared_subsection_source_rejects_flat_nested_numeric_parent(
+    outer_parent: str,
+):
+    source_text = f"""({outer_parent}) Outer paragraph.
+(a) Outer first child.
+(b) Outer second child with nested paragraph.
+(4) Nested paragraph.
+(a) Nested first child.
+(b) Nested second child.
+(c) Nested third child.
+(5) Next outer paragraph.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_flat_nested_owned_numeric_parent():
+    source_text = """(2) Cited outer paragraph.
+(a) Outer first child.
+(b) Outer second child with nested paragraph.
+(4) Nested paragraph.
+(a) Nested first child.
+(b) Nested second child.
+(c) Wrong nested third child.
+(5) Next outer paragraph.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(2)(b), (4)(a)-(c)",
+    )
+
+    assert scoped is not None
+    assert "Outer second child with nested paragraph." in scoped
+    assert "Wrong nested third child." not in scoped
+
+
+def test_declared_subsection_source_owns_annotated_direct_singleton():
+    source_text = """(4) Cited paragraph.
+(a) Correct paragraph four child.
+(3) Uncited paragraph.
+(a) Wrong paragraph three child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a) (effective July 1)",
+    )
+
+    assert scoped is not None
+    assert "Correct paragraph four child." in scoped
+    assert "Wrong paragraph three child." not in scoped
+
+
+def test_declared_subsection_source_keeps_alpha_comma_shorthand_parent():
+    source_text = """(2) Explicit paragraph.
+(a) Explicit first child.
+(b) Explicit second child.
+(c) Correct explicit third child.
+(d) Correct explicit fourth child.
+(9) Undeclared paragraph.
+(a) Wrong first child.
+(b) Wrong second child.
+(c) Wrong third child.
+(d) Wrong fourth child.
+(4) Ranged paragraph.
+(a) Ranged first child.
+(b) Ranged second child.
+(c) Ranged third child.
+(d) Ranged fourth child.
+(e) Ranged fifth child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(2)(c), (d), (4)(a)-(e)",
+    )
+
+    assert scoped is not None
+    assert "Correct explicit third child." in scoped
+    assert "Correct explicit fourth child." in scoped
+    assert "Wrong third child." not in scoped
+    assert "Wrong fourth child." not in scoped
+
+
+def test_declared_subsection_source_uses_rightmost_parent_for_alpha_shorthand():
+    source_text = """(2) Paragraph two.
+(a) Paragraph two first child.
+(b) Wrong paragraph two second child.
+(c) Paragraph two third child.
+(4) Paragraph four.
+(a) Correct paragraph four first child.
+(b) Correct paragraph four second child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(2)(c); (4)(a), (b)",
+    )
+
+    assert scoped is not None
+    assert "Paragraph two third child." in scoped
+    assert "Wrong paragraph two second child." not in scoped
+
+
+def test_declared_subsection_source_rejects_shorthand_after_unhandled_coordinate():
+    source_text = """(2) Paragraph two.
+(a) First child.
+(b) Second child.
+(c) Correct third child.
+(d) Wrong stale-parent fourth child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source=(
+            "Miss. Code section 27-7-5(2)(c); "
+            "42 CFR 1(a)(1)(i)-(v), (d)"
+        ),
+    )
+
+    assert scoped is not None
+    assert "Correct third child." in scoped
+    assert "Wrong stale-parent fourth child." not in scoped
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "Miss. Code section 27-7-5(4)(a)(ii)",
+        "Miss. Code section 27-7-5(4)(a)(ii)-(iv)",
+        "Miss. Code section 27-7-5(4)(a)(IV)",
+        "Miss. Code section 27-7-5(4)(a)(Ii)",
+        "42 CFR 435.552(e)(2)(i)-(ii)",
+        "Miss. Code section 27-7-5(4)(a)(1)(ii)",
+    ],
+)
+def test_declared_subsection_source_rejects_broad_deeper_roman_parent(
+    rule_source: str,
+):
+    source_text = """(4) Cited paragraph.
+(a) Broad parent block.
+(ii) Narrow Roman child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source=rule_source,
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_roman_parent_narrowed_elsewhere():
+    source_text = """(a) Broad parent block.
+(1) Narrow numeric child.
+(ii) Narrow Roman child.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section 1(a)(ii), section 2(a)(1)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_excludes_nested_roman_matching_broad_alpha():
+    source_text = """(a) Narrow Roman parent a.
+  (i) Wrong nested Roman child under parent a.
+(i) Correct independently broad alpha parent i.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section 1(a)(ii), section 2(i)",
+    )
+
+    assert scoped is not None
+    assert "Wrong nested Roman child" not in scoped
+    assert "Correct independently broad alpha parent" in scoped
+
+
+def test_declared_subsection_source_excludes_numeric_nested_roman_as_broad_alpha():
+    source_text = """(4) Numeric parent four.
+  (i) Wrong nested Roman child under numeric parent four.
+(i) Correct independently broad alpha parent i.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section 1(a)(ii), section 2(i)",
+    )
+
+    assert scoped is not None
+    assert "Wrong nested Roman child" not in scoped
+    assert "Correct independently broad alpha parent" in scoped
+
+
+def test_declared_subsection_source_excludes_flat_numeric_roman_as_broad_alpha():
+    source_text = """(4) Numeric parent four with a nested Roman item:
+(i) Wrong flat nested Roman child under numeric parent four.
+(5) Next numeric parent.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section 1(a)(ii), section 2(i)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_duplicate_flat_roman_alpha_role():
+    source_text = """(a) Narrow Roman parent a.
+(i) Wrong flat Roman child under parent a.
+(i) Correct independently broad alpha parent i.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section 1(a)(ii), section 2(i)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_direct_alpha_compound_suffix():
+    source_text = """(3) Numeric parent three.
+(a) Alpha child a.
+(b) Invalid direct alpha compound suffix.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section (4)(a)(ii)/(3)(b)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_allows_valid_pair_beside_invalid_suffix():
+    source_text = """(5) Valid numeric parent five.
+  (b) Correct valid paragraph five child b.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section (4)(a)(ii)/(3)(b); section (5)(b)",
+    )
+
+    assert scoped is not None
+    assert "Correct valid paragraph five child b." in scoped
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        """(5) Numeric parent five.
+  (b) First duplicate child b.
+  (b) Second duplicate child b.
+""",
+        """(5) First numeric parent five.
+  (b) First duplicate child b.
+(5) Second numeric parent five.
+  (b) Second duplicate child b.
+""",
+    ],
+)
+def test_declared_subsection_source_rejects_duplicate_numeric_alpha_coordinate(
+    source_text: str,
+):
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section (5)(b)",
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_allows_owned_h_before_nested_roman_i():
+    source_text = """(5) Numeric parent five.
+  (h) Valid direct child h.
+    (1) Nested numeric child one.
+      (i) Nested Roman child i.
+"""
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="section (5)(h)",
+    )
+
+    assert scoped is not None
+    assert "Valid direct child h." in scoped
+    assert "Nested Roman child i." in scoped
+
+
+@pytest.mark.parametrize(
+    "rule_source",
+    [
+        "section 1(a)(iv)-(ii)",
+        "section 1(a)(ii)/(iv)",
+        "section 1(a)(iiii)",
+        "section 1(a)(i)-(cc)",
+    ],
+)
+def test_declared_subsection_source_fails_closed_for_invalid_roman_scope(
+    rule_source: str,
+):
+    scoped = _declared_rule_subsection_source_text(
+        "(a) Invalid Roman scope cannot select this broad parent.",
+        rule_source=rule_source,
+    )
+
+    assert scoped is None
+
+
+def test_declared_subsection_source_rejects_parent_ambiguous_across_records():
+    source_text = (
+        "(4) Current paragraph.\n"
+        "(a) Current first child.\n"
+        "(b) Current second child.\n"
+        "(c) Unique current third child.\n"
+        + PROOF_EVIDENCE_SEGMENT_SEPARATOR
+        + "(4) Historical paragraph.\n"
+        "(a) Historical first child.\n"
+        "(b) Historical second child.\n"
+        "(c) Historical third child.\n"
+    )
+
+    scoped = _declared_rule_subsection_source_text(
+        source_text,
+        rule_source="Miss. Code section 27-7-5(4)(a)-(c)",
+    )
+
+    assert scoped is None
+
+
 def test_protected_source_excerpt_rejects_repeated_coordinates():
     excerpt = "The amount is 25 Euro."
 

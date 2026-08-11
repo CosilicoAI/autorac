@@ -212,11 +212,16 @@ from .harness.policyengine_runtime import (
     PolicyEngineRuntimeError,
 )
 from .harness.proof_validator import (
+    _UNRESOLVED_NUMERIC_ALPHA_PARENT,
     MONEY_UNITS,
     MoneyAtomRatchet,
     ProofValidationResult,
+    _rule_source_broad_structural_chains,
+    _rule_source_deeper_roman_scope,
+    _rule_source_numeric_parent_alpha_scope,
     _rule_source_subsection_scope,
     _source_contains_proof_evidence,
+    _source_numeric_parent_alpha_range_blocks,
     emit_money_atom_ratchet,
     evaluate_money_atoms,
     find_noncanonical_corpus_citation_path_issues,
@@ -38518,13 +38523,57 @@ def _declared_rule_subsection_source_text(
     if not isinstance(rule_source, str):
         return None
     scope = _rule_source_subsection_scope(rule_source)
-    if not scope:
+    deeper_roman_parents = {
+        next(coordinate for coordinate in chain if not coordinate.isdigit())
+        for chain in _rule_source_deeper_roman_scope(rule_source)
+    }
+    scope = {
+        parent: children
+        for parent, children in scope.items()
+        if parent not in deeper_roman_parents or children is None
+    }
+    numeric_parent_alpha_scope = _rule_source_numeric_parent_alpha_scope(rule_source)
+    unresolved_alpha_markers = numeric_parent_alpha_scope.get(
+        _UNRESOLVED_NUMERIC_ALPHA_PARENT,
+        frozenset(),
+    )
+    authoritative_alpha_parents = {
+        next(coordinate for coordinate in chain if not coordinate.isdigit())
+        for chain in _rule_source_broad_structural_chains(rule_source)
+    }
+    scope = {
+        parent: children
+        for parent, children in scope.items()
+        if parent not in unresolved_alpha_markers
+        or parent in authoritative_alpha_parents
+    }
+    resolved_numeric_parent_alpha_scope = {
+        parent: children
+        for parent, children in numeric_parent_alpha_scope.items()
+        if parent != _UNRESOLVED_NUMERIC_ALPHA_PARENT
+    }
+    if not scope and not resolved_numeric_parent_alpha_scope:
         return None
-    selected_segments = [
-        selected
-        for segment in split_proof_evidence_text(source_text)
-        if (selected := _declared_rule_subsection_source_segment(segment, scope))
-    ]
+    evidence_segments = split_proof_evidence_text(source_text)
+    numeric_selected_segments = (
+        _declared_rule_numeric_parent_alpha_source_segments(
+            source_text,
+            resolved_numeric_parent_alpha_scope,
+        )
+        if resolved_numeric_parent_alpha_scope
+        else {}
+    )
+    selected_segments = []
+    for segment_index, segment in enumerate(evidence_segments):
+        selected_parts = []
+        if scope and (
+            selected := _declared_rule_subsection_source_segment(segment, scope)
+        ):
+            selected_parts.append(selected)
+        if selected := numeric_selected_segments.get(segment_index):
+            selected_parts.append(selected)
+        if selected_parts:
+            selected_segments.append("\n\n".join(selected_parts))
     return PROOF_EVIDENCE_SEGMENT_SEPARATOR.join(selected_segments) or None
 
 
@@ -38534,7 +38583,67 @@ def _declared_rule_subsection_source_segment(
 ) -> str | None:
     """Select subsection blocks without joining distinct evidence records."""
 
-    markers = list(re.finditer(r"(?m)^[ \t]*\((?P<marker>[a-z])\)[ \t]+", source))
+    markers = list(
+        re.finditer(
+            r"(?m)^(?P<indent>[ \t]*)\((?P<marker>[a-z])\)[ \t]+",
+            source,
+        )
+    )
+    if markers:
+        structural_markers = list(
+            re.finditer(
+                r"(?m)^(?P<indent>[ \t]*)"
+                r"\((?P<marker>\d+|[ivxlcdmIVXLCDM]{2,}|[IVXLCDM]|[a-z])\)"
+                r"[ \t]+",
+                source,
+            )
+        )
+        direct_indent = min(
+            len(match.group("indent").expandtabs(2))
+            for match in structural_markers
+        )
+        markers = [
+            match
+            for match in markers
+            if len(match.group("indent").expandtabs(2)) == direct_indent
+        ]
+        if len(markers) > 1:
+            ordered_markers = []
+            expected = markers[0].group("marker")
+            previous_marker = None
+            for match in markers:
+                if match.group("marker") != expected:
+                    if previous_marker is None or not any(
+                        previous_marker.start() < structural.start() < match.start()
+                        and len(structural.group("indent").expandtabs(2))
+                        > direct_indent
+                        for structural in structural_markers
+                    ):
+                        break
+                    expected = match.group("marker")
+                ordered_markers.append(match)
+                expected = chr(ord(expected) + 1)
+                previous_marker = match
+            markers = ordered_markers
+        markers = [
+            match
+            for match in markers
+            if not (
+                prior_numerics := [
+                    structural
+                    for structural in structural_markers
+                    if structural.start() < match.start()
+                    and structural.group("marker").isdigit()
+                    and len(structural.group("indent").expandtabs(2))
+                    == direct_indent
+                ]
+            )
+            or any(
+                prior_numerics[-1].start() < structural.start() < match.start()
+                and len(structural.group("indent").expandtabs(2)) > direct_indent
+                for structural in structural_markers
+            )
+        ]
     blocks: list[str] = []
     for index, marker in enumerate(markers):
         top = marker.group("marker")
@@ -38564,6 +38673,26 @@ def _declared_rule_subsection_source_segment(
         elif not child_markers:
             blocks.append(block)
     return "\n\n".join(blocks) or None
+
+
+def _declared_rule_numeric_parent_alpha_source_segments(
+    source: str,
+    scope: dict[str, frozenset[str]],
+) -> dict[int, str]:
+    """Select parent-owned alpha children without joining evidence records."""
+    blocks = _source_numeric_parent_alpha_range_blocks(source, scope)
+    selected: dict[int, list[str]] = {}
+    offset = 0
+    for segment_index, segment in enumerate(split_proof_evidence_text(source)):
+        segment_end = offset + len(segment)
+        for _, _, start, end in blocks:
+            if offset <= start < segment_end and end <= segment_end:
+                selected.setdefault(segment_index, []).append(source[start:end])
+        offset = segment_end + len(PROOF_EVIDENCE_SEGMENT_SEPARATOR)
+    return {
+        segment_index: "\n\n".join(children)
+        for segment_index, children in selected.items()
+    }
 
 
 def _install_generated_yaml_payload(rules_file: Path, payload: dict) -> bool:
