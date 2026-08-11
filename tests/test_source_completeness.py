@@ -116,6 +116,22 @@ no Kentucky gross income and is not the dependent of another taxpayer;
 separate return is made by the taxpayer and if the taxpayer's spouse is blind,
 and has no Kentucky gross income and is not the dependent of another taxpayer.
 """
+KY_FLATTENED_SPOUSE_CREDIT_SOURCE = (
+    "(1) First subsection.\n(2) Second subsection.\n"
+    "(3) (A) The following tax credits, when applicable, shall be deducted from "
+    "the result obtained under subsection (2) of this section to arrive at the "
+    "annual tax: 1. First credit; 2. Second credit; 3. Third credit; "
+    "4. A taxpayer age credit; 5. An additional forty dollars ($40) credit for "
+    "the taxpayer's spouse if a separate return is made by the taxpayer and if "
+    "the taxpayer's spouse has attained the age of sixty-five before the close "
+    "of the taxable year, and has no Kentucky gross income and is not the "
+    "dependent of another taxpayer;\n6. A taxpayer blindness credit; "
+    "7. An additional forty dollars ($40) credit for the taxpayer's spouse if a "
+    "separate return is made by the taxpayer and if the taxpayer's spouse is "
+    "blind, and has no Kentucky gross income and is not the dependent of another "
+    "taxpayer; and 8. A National Guard credit. (b) Other credits.\n"
+    "(4) Fourth subsection.\n(5) Fifth subsection.\n(6) Sixth subsection."
+)
 KY_CITATION_PATH = "us-ky/statute/krs/141.020/document-1"
 
 
@@ -421,6 +437,580 @@ def test_accepts_decomposed_facts_for_same_source_spouse_credit_gates():
     )
 
     assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_flattened_inline_dotted_items_disambiguate_spouse_credit_proof():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+    branches = recognize_source_structure(KY_FLATTENED_SPOUSE_CREDIT_SOURCE)
+    age_rule = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    age_excerpt = age_rule["metadata"]["proof"]["atoms"][0]["source"]["excerpt"]
+    age_clauses, age_ambiguous = (
+        completeness_module._source_condition_clauses_owned_by_excerpt(
+            age_excerpt,
+            rule=age_rule,
+            source_text=KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+            branches=branches,
+            corpus_citation_path=KY_CITATION_PATH,
+        )
+    )
+    blindness_rule = age_rule | {"source": "KRS 141.020(3)(a)7."}
+    blindness_clauses, blindness_ambiguous = (
+        completeness_module._source_condition_clauses_owned_by_excerpt(
+            age_excerpt,
+            rule=blindness_rule,
+            source_text=KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+            branches=branches,
+            corpus_citation_path=KY_CITATION_PATH,
+        )
+    )
+
+    assert not age_ambiguous
+    assert [clause.branch_path for clause in age_clauses] == [("3", "a", "5")]
+    assert not blindness_ambiguous
+    assert [clause.branch_path for clause in blindness_clauses] == [("3", "a", "7")]
+
+
+def test_flattened_inline_dotted_items_keep_wrong_leaf_gate_fail_closed():
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    age_rule = next(
+        rule for rule in payload["rules"] if rule["name"] == "spouse_age_credit"
+    )
+    age_rule["source"] = "KRS 141.020(3)(a)7."
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_age_credit",
+        "spouse_has_attained_age_sixty_five",
+    )
+
+
+def test_unproven_inline_dotted_items_keep_repeated_proof_ambiguous():
+    source = " ".join(
+        line.strip() for line in KY_SPOUSE_CREDIT_SOURCE.splitlines() if line.strip()
+    )
+    result = _analyze(
+        yaml.safe_dump(_ky_spouse_credit_payload(decomposed=True), sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_age_credit")
+
+
+@pytest.mark.parametrize(
+    "mutate_payload",
+    (
+        lambda payload: next(
+            rule
+            for rule in payload["rules"]
+            if rule["name"] == "spouse_age_credit_applies"
+        )["versions"][0].update({"effective_to": "2025-12-31"}),
+        lambda payload: next(
+            rule
+            for rule in payload["rules"]
+            if rule["name"] == "spouse_age_credit_applies"
+        )["versions"][0].update(
+            {
+                "formula": (
+                    "taxpayer_files_separate_return "
+                    "and spouse_has_attained_age_sixty_five "
+                    "and spouse_has_no_kentucky_gross_income"
+                )
+            }
+        ),
+    ),
+)
+def test_flattened_inline_dotted_items_do_not_bypass_helper_integrity(
+    mutate_payload,
+):
+    payload = _ky_spouse_credit_payload(decomposed=True)
+    mutate_payload(payload)
+
+    result = _analyze(
+        yaml.safe_dump(payload, sort_keys=False),
+        KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_age_credit")
+
+
+def test_flattened_inline_dotted_items_still_reject_opaque_gate():
+    result = _analyze(
+        yaml.safe_dump(_ky_spouse_credit_payload(decomposed=False), sort_keys=False),
+        KY_FLATTENED_SPOUSE_CREDIT_SOURCE,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(
+        result,
+        "source-explicit-conditions",
+        "spouse_age_credit_conditions_hold",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "(3) (a) Values include KRS 141.019 and KRS 141.023. Rates are "
+            "3.5% and 5.8%. The amount is $3,000. History: Amended 2025 Ky. "
+            "Acts ch. 1, sec. 1. See subparagraphs 2. and 3. and paragraph 4."
+        ),
+        "(3) (a) Credits follow: 1. First credit; 2. Second credit.",
+        "(3) (a) Credits follow: 1. First credit; 3. Third credit; 4. Fourth.",
+        "(3) (a) See subparagraphs: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following summary is illustrative: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following historical rates are listed: 1. First; 2. Second; 3. Third.",
+        "(3) (a) History: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following rates are: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following references are: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following examples are: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following summaries are: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following credit examples are illustrative: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following credit illustration is provided: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following percentages shall apply: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following effective dates are provided: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following citations are provided: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following sentences are included for convenience: 1. First; 2. Second; 3. Third.",
+        "(3) (a) The following discussion shall govern interpretation: 1. First; 2. Second; 3. Third.",
+    ),
+)
+def test_unproven_inline_dotted_markers_do_not_create_proof_owners(source: str):
+    parent = completeness_module.SourceStructureBranch(
+        ("3", "a"),
+        "letter",
+        "(a)",
+        source,
+        0,
+        len(source),
+    )
+
+    assert completeness_module._flattened_inline_dotted_list_ownership(
+        source,
+        parent=parent,
+    ) == ((), False)
+
+
+@pytest.mark.parametrize(
+    "chapeau",
+    (
+        "The following credits apply",
+        "The following credits apply when no Kentucky gross income is reported",
+        "The following credits apply only when no Kentucky gross income is reported",
+        "The following credits apply if spouse is not another taxpayer's dependent",
+        "The following credits apply when the claimant is not a dependent",
+        "The following credits apply when spouse is not the dependent of another taxpayer",
+        "The following credits apply when claimant has no Kentucky gross income",
+        "The following credits apply if no Kentucky gross income has been reported",
+        "The following credits if applicable shall apply",
+        "The following credits, if applicable, shall apply",
+        "The following credits must be deducted",
+        "Each of the following credits applies",
+        "All of the following credits apply",
+        "The following credits when applicable shall be deducted",
+        "The following credits, where applicable, shall be deducted",
+        "The following credits shall, when applicable, be deducted",
+        "The following credits apply if Kentucky gross income is not reported",
+        "The following credits apply if the claimant is eligible",
+    ),
+)
+def test_operational_apply_chapeau_creates_inline_dotted_owners(chapeau: str):
+    source = f"(3) (a) {chapeau}: 1. First credit; 2. Second credit; 3. Third credit."
+    parent = completeness_module.SourceStructureBranch(
+        ("3", "a"),
+        "letter",
+        "(a)",
+        source,
+        0,
+        len(source),
+    )
+
+    owned_branches, ownership_ambiguous = (
+        completeness_module._flattened_inline_dotted_list_ownership(
+            source,
+            parent=parent,
+        )
+    )
+
+    assert [branch.path for branch in owned_branches] == [
+        ("3", "a", "1"),
+        ("3", "a", "2"),
+        ("3", "a", "3"),
+    ]
+    assert not ownership_ambiguous
+
+
+@pytest.mark.parametrize(
+    ("marker", "normalized_path"),
+    (("A", ("a", "1", "a")), ("I", ("a", "1", "i"))),
+)
+def test_uppercase_parent_path_creates_inline_dotted_owners(
+    marker: str,
+    normalized_path: tuple[str, ...],
+):
+    source = (
+        f"(a) (1) ({marker}) The following credits apply: "
+        "1. First credit; 2. Second credit; 3. Third credit."
+    )
+    parent = completeness_module.SourceStructureBranch(
+        normalized_path,
+        "letter",
+        f"({marker.lower()})",
+        source,
+        0,
+        len(source),
+    )
+
+    owned_branches, ownership_ambiguous = (
+        completeness_module._flattened_inline_dotted_list_ownership(
+            source,
+            parent=parent,
+        )
+    )
+
+    assert [branch.path for branch in owned_branches] == [
+        (*normalized_path, "1"),
+        (*normalized_path, "2"),
+        (*normalized_path, "3"),
+    ]
+    assert not ownership_ambiguous
+
+
+def test_sibling_inline_lists_use_deepest_relevant_parent():
+    source = (
+        "(3) (a) The following deductions shall apply: 1. An age credit if the claimant "
+        "is sixty-five; 2. A blindness credit; 3. A dependent credit. "
+        "(b) The following deductions shall apply: 1. A business credit; "
+        "2. An investment credit; 3. A research credit."
+    )
+    paragraph_start = 0
+    paragraph_end = len(source)
+    paragraph_b_start = source.index("(b)")
+    branches = (
+        completeness_module.SourceStructureBranch(
+            (), "document", "", source, paragraph_start, paragraph_end
+        ),
+        completeness_module.SourceStructureBranch(
+            ("3",), "paragraph", "(3)", source, paragraph_start, paragraph_end
+        ),
+        completeness_module.SourceStructureBranch(
+            ("3", "a"),
+            "letter",
+            "(a)",
+            source[:paragraph_b_start],
+            paragraph_start,
+            paragraph_b_start,
+        ),
+        completeness_module.SourceStructureBranch(
+            ("3", "b"),
+            "letter",
+            "(b)",
+            source[paragraph_b_start:],
+            paragraph_b_start,
+            paragraph_end,
+        ),
+    )
+    excerpt = "An age credit if the claimant is sixty-five"
+    rule = _ky_derived_rule(
+        "claimant_age_credit",
+        source="KRS 141.020(3)(a)1.",
+        dtype="Judgment",
+        formula="claimant_is_sixty_five",
+        excerpt=excerpt,
+    )
+
+    clauses, clause_ambiguous = (
+        completeness_module._source_condition_clauses_owned_by_excerpt(
+            excerpt,
+            rule=rule,
+            source_text=source,
+            branches=branches,
+            corpus_citation_path=KY_CITATION_PATH,
+        )
+    )
+
+    assert [clause.branch_path for clause in clauses] == [("3", "a", "1")]
+    assert not clause_ambiguous
+
+
+def test_deeper_unrelated_inline_list_does_not_suppress_ancestor_ambiguity():
+    source = (
+        "(3) (a) The following credits shall apply: 1. Outer first; "
+        "2. Outer second; 3. Outer third; 4. Outer fourth; 5. Outer fifth; "
+        "6. The following conditions must hold: 1. Nested first; "
+        "2. Nested second; 3. Nested third; 7. TARGET condition; 8. Outer eighth."
+    )
+    item_six_start = source.index("6. The following")
+    outer_parent = completeness_module.SourceStructureBranch(
+        ("3", "a"), "letter", "(a)", source, 0, len(source)
+    )
+    overbroad_item_six = completeness_module.SourceStructureBranch(
+        ("3", "a", "6"),
+        "number",
+        "6.",
+        source[item_six_start:],
+        item_six_start,
+        len(source),
+    )
+    excerpt = "TARGET condition"
+    rule = _ky_derived_rule(
+        "target_condition",
+        source="KRS 141.020(3)(a)7.",
+        dtype="Judgment",
+        formula="target_condition_applies",
+        excerpt=excerpt,
+    )
+
+    nested_branches, nested_ambiguous = (
+        completeness_module._flattened_inline_dotted_list_ownership(
+            source,
+            parent=overbroad_item_six,
+        )
+    )
+    clauses, clause_ambiguous = (
+        completeness_module._source_condition_clauses_owned_by_excerpt(
+            excerpt,
+            rule=rule,
+            source_text=source,
+            branches=(outer_parent, overbroad_item_six),
+            corpus_citation_path=KY_CITATION_PATH,
+        )
+    )
+
+    target_start = source.index(excerpt)
+    assert nested_branches
+    assert not nested_ambiguous
+    assert not any(
+        branch.start <= target_start < branch.end for branch in nested_branches
+    )
+    assert [clause.branch_path for clause in clauses] == [("3", "a", "6")]
+    assert clause_ambiguous
+
+
+@pytest.mark.parametrize(
+    "chapeau",
+    (
+        "The following credits are nonoperative commentary",
+        "The following credits shall be discussed",
+        "The following credits are included for explanatory purposes",
+        "The following credit commencement days shall apply",
+        "The following credit ratios shall apply",
+        "The following credit authorities shall apply",
+        "The following credits shall not apply",
+        "The following credits shall apply hypothetically",
+        "The following credits are allowed only for explanatory purposes",
+        "The following credits are available as nonbinding guidance",
+        "The following credits may apply in a fictional scenario",
+        "The following credits shall be deducted according to a mock calculation",
+        "For commentary purposes, the following credits shall be allowed",
+        "For explanatory purposes, the following credits shall be allowed",
+        "For educational purposes, the following credits shall be allowed",
+        "For hypothetical purposes, the following credits shall apply",
+        "For testing, the following credits shall apply",
+        "As a demonstration, the following credits shall apply",
+        "In this sample, the following credits shall apply",
+        "No following credits shall apply",
+        "None of the following credits shall apply",
+        "Neither of the following credits shall apply",
+        "The following credits apply when discussed hypothetically",
+        "The following credits apply when used for testing",
+        "The following credits apply when presented as a demonstration",
+        "The following credits apply if supplied as a sample",
+        "Example. The following credits apply",
+        "History. The following credits apply",
+        "For illustration. The following credits apply",
+        "Nonbinding guidance. The following credits apply",
+        "Mock calculation only. The following credits apply",
+        "Prior sentences are explanatory; The following credits apply",
+        "Example: The following credits apply",
+        "For testing: The following credits apply",
+        "Hypothetical: The following credits apply",
+        "Nonbinding guidance: The following credits apply",
+        "Sample calculation: The following credits apply",
+        "Ex. The following credits apply",
+        "Re. The following credits apply",
+        "Id. The following credits apply",
+        "No. The following credits apply",
+        "Civil. The following credits apply",
+        "Mild. The following credits apply",
+        "e.g. The following credits apply",
+        "cf. The following credits apply",
+        "ex. The following credits apply",
+        "N.B. The following credits apply",
+        "i.e. The following credits apply",
+        "(eg) The following credits apply",
+        "(ex) The following credits apply",
+        "(cf) The following credits apply",
+    ),
+)
+def test_nonoperative_chapeaux_keep_repeated_proof_acceptance_ambiguous(chapeau: str):
+    source = KY_FLATTENED_SPOUSE_CREDIT_SOURCE.replace(
+        (
+            "The following tax credits, when applicable, shall be deducted from "
+            "the result obtained under subsection (2) of this section to arrive at "
+            "the annual tax"
+        ),
+        chapeau,
+    )
+    result = _analyze(
+        yaml.safe_dump(_ky_spouse_credit_payload(decomposed=True), sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert _has_issue(result, "source-explicit-conditions", "spouse_age_credit")
+
+
+@pytest.mark.parametrize(
+    "chapeau",
+    (
+        "The following credits apply only when no Kentucky gross income is reported",
+        "The following credits apply if spouse is not the dependent of another taxpayer",
+        "The following credits if applicable shall apply",
+        "The following credits must be deducted",
+        "Each of the following credits applies",
+        "All of the following credits apply",
+        "The following credits when applicable shall be deducted",
+        "The following credits, where applicable, shall be deducted",
+        "The following credits shall, when applicable, be deducted",
+    ),
+)
+def test_factual_conditional_chapeaux_preserve_repeated_proof_acceptance(
+    chapeau: str,
+):
+    source = KY_FLATTENED_SPOUSE_CREDIT_SOURCE.replace(
+        (
+            "The following tax credits, when applicable, shall be deducted from "
+            "the result obtained under subsection (2) of this section to arrive at "
+            "the annual tax"
+        ),
+        chapeau,
+    )
+    result = _analyze(
+        yaml.safe_dump(_ky_spouse_credit_payload(decomposed=True), sort_keys=False),
+        source,
+        corpus_citation_path=KY_CITATION_PATH,
+        test_cases=[],
+        extract_numeric_occurrences=EN_NUMERIC_OCCURRENCE_EXTRACTOR,
+        extract_numeric_grounding_occurrences=(
+            EN_NUMERIC_GROUNDING_OCCURRENCE_EXTRACTOR
+        ),
+    )
+
+    assert not _has_issue(result, "source-explicit-conditions")
+
+
+def test_nested_inline_dotted_run_keeps_wrong_leaf_ownership_ambiguous():
+    source = (
+        "(3) (a) The following credits shall apply: 1. Outer first; "
+        "2. Outer second; 3. Outer third; 4. Nested rules. The following "
+        "conditions must hold: 1. Nested first if employed and insured; "
+        "2. Nested second; 3. Nested third; 5. Outer fifth."
+    )
+    parent = completeness_module.SourceStructureBranch(
+        ("3", "a"),
+        "letter",
+        "(a)",
+        source,
+        0,
+        len(source),
+    )
+    nested_excerpt = "Nested first if employed and insured"
+    rule = _ky_derived_rule(
+        "nested_first_condition",
+        source="KRS 141.020(3)(a)1.",
+        dtype="Judgment",
+        formula="claimant_is_employed and claimant_is_insured",
+        excerpt=nested_excerpt,
+    )
+
+    owned_branches, ownership_ambiguous = (
+        completeness_module._flattened_inline_dotted_list_ownership(
+            source,
+            parent=parent,
+        )
+    )
+    clauses, clause_ambiguous = (
+        completeness_module._source_condition_clauses_owned_by_excerpt(
+            nested_excerpt,
+            rule=rule,
+            source_text=source,
+            branches=(parent,),
+            corpus_citation_path=KY_CITATION_PATH,
+        )
+    )
+
+    assert owned_branches == ()
+    assert ownership_ambiguous
+    assert [clause.branch_path for clause in clauses] == [("3", "a")]
+    assert clause_ambiguous
+
+
+def test_inline_dotted_owner_scan_fails_closed_at_match_budget():
+    source = "(3) (a) The following conditions shall apply: " + "; ".join(
+        f"1. Repeated item {index}" for index in range(257)
+    )
+    parent = completeness_module.SourceStructureBranch(
+        ("3", "a"),
+        "letter",
+        "(a)",
+        source,
+        0,
+        len(source),
+    )
+
+    assert completeness_module._flattened_inline_dotted_list_ownership(
+        source,
+        parent=parent,
+    ) == ((), True)
 
 
 @pytest.mark.parametrize(
