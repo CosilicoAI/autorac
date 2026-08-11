@@ -7729,11 +7729,6 @@ def _reason_names_missing_same_act_dependency(
         )
     if not exact_current_branch:
         return False
-    reason_matches = _same_act_section_dependencies(
-        reason,
-        authenticated_same_act_aliases=authenticated_same_act_aliases,
-    )
-    reason_sections = {section.lower() for section, _start, _end in reason_matches}
     source_sections = {
         match.group("section").lower()
         for match in _SAME_ACT_SECTION_DEPENDENCY.finditer(source_scope_text)
@@ -7743,14 +7738,21 @@ def _reason_names_missing_same_act_dependency(
             flags=re.IGNORECASE,
         )
     }
+    reason_matches = _same_act_section_dependencies(
+        reason,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
+    )
+    reason_sections = {section.lower() for section, _start, _end in reason_matches}
     matching_sections = reason_sections.intersection(source_sections)
     if not matching_sections:
         return False
     clauses = tuple(re.finditer(r"[^.;\n]+", reason))
+    seen_sections: set[str] = set()
     for dependency_section, dependency_start, _dependency_end in reason_matches:
         identity = dependency_section.lower()
-        if identity not in matching_sections:
+        if identity not in matching_sections or identity in seen_sections:
             continue
+        seen_sections.add(identity)
         clause_index = next(
             (
                 index
@@ -7762,16 +7764,16 @@ def _reason_names_missing_same_act_dependency(
         if clause_index is None:
             continue
         section = re.escape(dependency_section)
-        for clause in clauses[clause_index : clause_index + 2]:
-            clause_text = clause.group(0)
-            if not re.search(rf"\bsection\s+{section}\b", clause_text, re.IGNORECASE):
-                continue
-            if _same_act_clause_names_missing_dependency(
-                clause_text,
-                section=section,
-                authenticated_same_act_aliases=authenticated_same_act_aliases,
-            ):
-                return True
+        # Keep the authenticated reference clause in view while checking the
+        # next missing-state claim and any immediately following reversal.
+        clause_end = clauses[min(clause_index + 2, len(clauses) - 1)].end()
+        clause_text = reason[clauses[clause_index].start() : clause_end]
+        if _same_act_clause_names_missing_dependency(
+            clause_text,
+            section=section,
+            authenticated_same_act_aliases=authenticated_same_act_aliases,
+        ):
+            return True
     return False
 
 
@@ -7800,7 +7802,57 @@ def _same_act_section_dependencies(
             (match.group("section"), match.start(), match.end())
             for match in pattern.finditer(text)
         )
-    return tuple(dict.fromkeys(matches))
+        authenticated_year = re.match(r"(?P<year>\d{4})\b", normalized_alias)
+        if authenticated_year:
+            # A year-only "the 2025 act" reference is meaningful only in the
+            # context of a provenance-authenticated current-row act alias. It
+            # is never accepted without that metadata-bound alias.
+            year_pattern = re.compile(
+                r"\bsection\s+(?P<section>\d+[a-z]?)\s+of\s+(?:the\s+)?"
+                + re.escape(authenticated_year.group("year"))
+                + r"\s+act\b",
+                flags=re.IGNORECASE,
+            )
+            matches.extend(
+                (match.group("section"), match.start(), match.end())
+                for match in year_pattern.finditer(text)
+            )
+    return tuple(sorted(dict.fromkeys(matches), key=lambda match: (match[1], match[2])))
+
+
+_SAME_ACT_DEPENDENCY_OBJECT = (
+    r"(?:(?:the|that|those)\s+)?(?:(?:exact|external|legal|operative|same-act|"
+    r"source-(?:bound|stated)|runtime)\s+){0,3}"
+    r"(?:(?:displacement|dependency|implementation|rate)\s+){0,2}"
+    r"(?:capabilit(?:y|ies)|conditions?|dependenc(?:y|ies)|requirements?)"
+    r"(?:\s+(?:needed|required)\s+to\s+"
+    r"(?:apply|compute|determine|encode|implement|resolve)\s+"
+    r"(?:(?:the|that)\s+)?(?:controlling\s+)?"
+    r"(?:amount|conditions?|effect|rate|result|rule))?"
+)
+_SAME_ACT_EXECUTABLE_OBJECT = (
+    r"executable\s+(?:(?:exact|same-act|source-bound|rulespec)\s+){0,2}"
+    r"(?:capabilit(?:y|ies)|exports?|implementations?|outputs?|rules?)"
+)
+
+
+def _same_act_identity_pattern(
+    authenticated_same_act_aliases: Sequence[str],
+) -> str:
+    """Build canonical and provenance-authenticated current-act identities."""
+
+    identities = [r"(?:this|the)\s+act"]
+    for alias in dict.fromkeys(authenticated_same_act_aliases):
+        normalized_alias = " ".join(str(alias).split())
+        if not normalized_alias:
+            continue
+        identities.append(re.escape(normalized_alias))
+        authenticated_year = re.match(r"(?P<year>\d{4})\b", normalized_alias)
+        if authenticated_year:
+            identities.append(
+                rf"(?:the\s+)?{re.escape(authenticated_year.group('year'))}\s+act"
+            )
+    return rf"(?:{'|'.join(identities)})"
 
 
 def _same_act_clause_names_missing_dependency(
@@ -7809,14 +7861,9 @@ def _same_act_clause_names_missing_dependency(
     section: str,
     authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
-    alias_alternatives = "|".join(
-        re.escape(" ".join(str(alias).split()))
-        for alias in dict.fromkeys(authenticated_same_act_aliases)
-        if " ".join(str(alias).split())
+    act_identity = _same_act_identity_pattern(
+        authenticated_same_act_aliases,
     )
-    act_identity = r"(?:this|the)\s+act"
-    if alias_alternatives:
-        act_identity = rf"(?:{act_identity}|{alias_alternatives})"
     reference = rf"\bsection\s+{section}(?:\s+of\s+{act_identity})?\b"
     direct_state = (
         r"\s*(?:,\s*)?(?:(?:which|that)\s+|whose\s+(?:text|body)\s+)?"
@@ -7828,10 +7875,30 @@ def _same_act_clause_names_missing_dependency(
         clause_text,
         direct_match,
         section=section,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
+    ):
+        return True
+    named_object_state = re.search(
+        reference + rf"(?P<object>\s+{_SAME_ACT_DEPENDENCY_OBJECT})\s+"
+        r"(?:is|are|remains)\s+"
+        r"(?:missing|unavailable|not\s+(?:available|encoded|implemented|supplied))\b",
+        clause_text,
+        flags=re.IGNORECASE,
+    )
+    if (
+        named_object_state
+        and not _ADVERSATIVE_LANGUAGE.search(named_object_state.group("object"))
+        and not _same_act_dependency_state_is_reversed(
+            clause_text,
+            named_object_state,
+            section=section,
+            authenticated_same_act_aliases=authenticated_same_act_aliases,
+        )
     ):
         return True
     no_executable_for_section = (
-        r"\bno\s+executable\b[^,;]{0,100}\b(?:for|from|under)\s+(?:the\s+)?" + reference
+        rf"\bno\s+{_SAME_ACT_EXECUTABLE_OBJECT}\b[^,;.\n]{{0,100}}"
+        r"\b(?:for|from|under)\s+(?:the\s+)?" + reference
     )
     no_executable_match = re.search(
         no_executable_for_section,
@@ -7842,6 +7909,7 @@ def _same_act_clause_names_missing_dependency(
         clause_text,
         no_executable_match,
         section=section,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     ):
         return True
     same_act_text_state = re.search(
@@ -7857,6 +7925,7 @@ def _same_act_clause_names_missing_dependency(
         clause_text,
         same_act_text_state,
         section=section,
+        authenticated_same_act_aliases=authenticated_same_act_aliases,
     ):
         return True
     dependency_bridge = (
@@ -7871,6 +7940,7 @@ def _same_act_clause_names_missing_dependency(
             clause_text,
             bridge_match,
             section=section,
+            authenticated_same_act_aliases=authenticated_same_act_aliases,
         )
     )
 
@@ -7880,12 +7950,11 @@ def _same_act_dependency_state_is_reversed(
     dependency_match: re.Match[str],
     *,
     section: str,
+    authenticated_same_act_aliases: Sequence[str] = (),
 ) -> bool:
     """Reject bounded negation or a coordinated reversal of this dependency."""
 
-    prefix = clause_text[
-        max(0, dependency_match.start() - 80) : dependency_match.start()
-    ]
+    prefix = clause_text[: dependency_match.start()]
     if re.search(
         r"\b(?:"
         r"(?:it\s+is\s+)?(?:false|untrue|not\s+true)\s+that"
@@ -7897,25 +7966,111 @@ def _same_act_dependency_state_is_reversed(
         flags=re.IGNORECASE,
     ):
         return True
+    act_identity = _same_act_identity_pattern(authenticated_same_act_aliases)
+    same_section_identity = (
+        rf"(?:(?:that|the)\s+|(?:the\s+)?same[- ]act\s+)?section\s+{section}"
+        rf"(?:\s+of\s+{act_identity})?"
+    )
+    same_section_subject = (
+        same_section_identity + rf"(?:\s*,?\s*(?:whose\s+)?(?:body|text|"
+        rf"{_SAME_ACT_DEPENDENCY_OBJECT}))?"
+    )
+    state_link = r"(?:(?:is|are|remains)|(?:has|have)\s+been)"
+    positive_state = (
+        state_link + r"\s+(?:(?:actually|fully|in\s+fact)\s+)?"
+        r"(?:accessible|available|encoded|implemented|present|provided|supplied)\b"
+        r"(?:\s+in\s+full)?"
+    )
+    no_executable_claim = bool(
+        re.match(r"\s*no\s+executable\b", dependency_match.group(0), re.IGNORECASE)
+    )
+    executable_subject = (
+        rf"(?:(?:a|an|the|that|this)\s+)?{_SAME_ACT_EXECUTABLE_OBJECT}"
+        rf"(?:\s+(?:for|from|under)\s+(?:the\s+)?{same_section_identity})?"
+        r"(?!\s+(?:for|from|under)\b)"
+    )
+    possessive_executable_subject = (
+        rf"(?:its|{same_section_identity}'s|(?:the|that)\s+section's)\s+"
+        rf"{_SAME_ACT_EXECUTABLE_OBJECT}"
+    )
+    prior_positive_subject = (
+        executable_subject if no_executable_claim else same_section_subject
+    )
+    if re.search(
+        rf"\b{prior_positive_subject}\s*,?\s*(?:which\s+)?{positive_state}",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    implementation_state = (
+        state_link + r"\s+(?:(?:actually|fully|in\s+fact)\s+)?"
+        r"(?:encoded|implemented)\b"
+    )
+    if no_executable_claim and re.search(
+        rf"\b{same_section_identity}\s+{implementation_state}",
+        prefix,
+        flags=re.IGNORECASE,
+    ):
+        return True
     suffix = clause_text[dependency_match.end() :]
     reversal_subject = (
-        rf"(?:it|that\s+section|the\s+section|"
-        rf"section\s+{section}(?:\s+of\s+(?:this|the)\s+act)?|"
-        r"an?\s+executable\s+(?:output|rule))"
+        rf"(?:it|they|{executable_subject}|{possessive_executable_subject})"
     )
+    if not no_executable_claim:
+        reversal_subject = (
+            rf"(?:it|they|that\s+section|the\s+section|{same_section_subject}|"
+            rf"{executable_subject}|{possessive_executable_subject})"
+        )
     reversal_state = (
-        r"(?:is|remains)\s+(?:(?:actually|fully|in\s+fact)\s+)?"
-        r"(?:available|encoded|implemented|"
-        r"supplied|not\s+(?:missing|required|unavailable))|"
+        state_link + r"\s+(?:(?:actually|fully|in\s+fact)\s+)?"
+        r"(?:accessible|available|encoded|implemented|present|provided|supplied|"
+        r"not\s+(?:missing|required|unavailable))|"
         r"(?:is\s+)?not\s+required|(?:does\s+)?exists?"
     )
-    return bool(
-        re.search(
-            rf"\b(?:although|but|however|nevertheless|nonetheless|though|yet)\b"
-            rf"[^.;\n]{{0,100}}?\b{reversal_subject}\s+{reversal_state}\b",
+    explicit_reversal = re.search(
+        rf"\b(?:although|but|however|nevertheless|nonetheless|though|yet|and)\b"
+        rf"[^.;\n]{{0,100}}?\b{reversal_subject}\s+{reversal_state}\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    section_implementation_reversal = None
+    executable_existence_reversal = None
+    if no_executable_claim:
+        reversal_boundary = (
+            r"(?:\b(?:although|but|however|nevertheless|nonetheless|though|yet|and)\b"
+            r"[^.;\n]{0,100}?|[.;]\s*)"
+        )
+        section_implementation_reversal = re.search(
+            rf"{reversal_boundary}\b{same_section_identity}\s+"
+            rf"{implementation_state}\b",
             suffix,
             flags=re.IGNORECASE,
         )
+        executable_existence_reversal = re.search(
+            rf"{reversal_boundary}\b(?:there\s+(?:is|are)\s+{executable_subject}|"
+            rf"{same_section_identity}\s+(?:has|have)\s+{executable_subject})\b",
+            suffix,
+            flags=re.IGNORECASE,
+        )
+    elliptical_reversal = re.match(
+        rf"\s*[^.;\n]{{0,100}}?\b"
+        rf"(?:although|but|however|nevertheless|nonetheless|though|yet|and)\b"
+        rf"\s+(?:(?:it|they)\s+)?{reversal_state}\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    adjacent_clause_reversal = re.match(
+        rf"\s*[^.;\n]{{0,100}}?[.;]\s*"
+        rf"{reversal_subject}\s+{reversal_state}\b",
+        suffix,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        explicit_reversal
+        or section_implementation_reversal
+        or executable_existence_reversal
+        or elliptical_reversal
+        or adjacent_clause_reversal
     )
 
 

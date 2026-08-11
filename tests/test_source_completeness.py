@@ -13442,6 +13442,509 @@ def test_same_act_section_dependency_accepts_truthful_missing_text_possessive():
     )
 
 
+def test_same_act_section_dependency_accepts_bound_not_supplied_object():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act, and that Section 2 legal dependency is not "
+        "supplied in the available context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_accepts_authenticated_year_act_alias():
+    reason = (
+        "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to Section 2 "
+        "of the 2025 act; the operative Section 2 displacement conditions needed "
+        "to determine the controlling rate are not supplied in the available "
+        "legal context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+        authenticated_same_act_aliases=("2025 House Bill 1",),
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+        authenticated_same_act_aliases=("2024 House Bill 1",),
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to Section 2 "
+            "of the 2025 act legal dependency is supplied; Section 2 of this act "
+            "legal dependency is not supplied."
+        ),
+        (
+            "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to Section 2 "
+            "of 2025 House Bill 1 legal dependency is supplied; Section 2 of this "
+            "act legal dependency is not supplied."
+        ),
+        (
+            "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the rate subject to Section 2 "
+            "of the 2025 act, which is available; Section 2 of this act legal "
+            "dependency is not supplied."
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_authenticated_alias_reversal(
+    reason: str,
+):
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+        authenticated_same_act_aliases=("2025 House Bill 1",),
+    )
+
+
+def test_same_act_section_dependency_accepts_authenticated_year_direct_state():
+    reason = (
+        "us-ms/statute/27-7-5(1)(b)(ii)(7) cannot be encoded because Section 2 "
+        "of the 2025 act is unavailable."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+    kwargs = {
+        "corpus_citation_path": "us-ms/statute/27-7-5",
+        "path": ("1", "b", "ii", "7"),
+    }
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        authenticated_same_act_aliases=("2025 House Bill 1",),
+        **kwargs,
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        **kwargs,
+    )
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        authenticated_same_act_aliases=("2024 House Bill 1",),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    (
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, but the taxpayer income input is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 3 of this act, and that Section 3 legal dependency is not "
+            "supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied, but it is actually supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied and is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied; it is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and the taxpayer income input is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act because the taxpayer income input is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, whose taxpayer income input is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and an unrelated runtime capability is unavailable."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and its conditions for taxpayer income input "
+            "are not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied in the available context and is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied in the available context; it is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied in the available context. It is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, which is available; Section 2 legal "
+            "dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "although the same-act Section 2 text is available."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act. That Section 2 is supplied in full. Section 2 "
+            "legal dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, which is fully supplied, and Section 2 legal "
+            "dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied in the currently available context, and is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, and that Section 2 legal dependency is not "
+            "supplied anywhere relevant, and is supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act legal dependency is supplied; Section 2 legal "
+            "dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, whose legal dependency is supplied; Section 2 "
+            "legal dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "but Section 2 legal dependency is supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "although that Section 2 legal dependency is supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, which is accessible; Section 2 legal dependency "
+            "is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, which is present; Section 2 legal dependency is "
+            "not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "but Section 2 legal dependency is accessible."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "but Section 2 legal dependency is present."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependency is not supplied, "
+            "but Section 2 legal dependency is provided."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act. Those Section 2 legal dependencies are supplied "
+            "in full. Section 2 legal dependencies are not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependencies are not supplied, "
+            "but they are supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependencies are not supplied; "
+            "they are supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act and Section 2 legal dependencies are not supplied, "
+            "but Section 2 legal dependencies are supplied in full."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act legal dependency is supplied; Section 2 of this "
+            "act legal dependency is not supplied."
+        ),
+        (
+            "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+            "Section 2 of this act, which is available; Section 2 of this act legal "
+            "dependency is not supplied."
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_unbound_not_supplied_object(
+    reason: str,
+):
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_accepts_plural_bound_not_supplied_object():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act, and those Section 2 legal dependencies are not "
+        "supplied in the available context."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_same_act_section_dependency_accepts_missing_executable_with_available_text():
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act, whose text is available; no executable output is "
+        "available for Section 2 of this act."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize("separator", (". ", "; "))
+def test_same_act_section_dependency_rejects_missing_executable_then_implemented(
+    separator: str,
+):
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act. No executable output is available for Section 2 "
+        f"of this act{separator}Section 2 is implemented."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    "reversal",
+    (
+        "An executable rule for Section 2 is available.",
+        "Section 2 has been implemented.",
+        "The executable output for Section 2 is available.",
+        "That executable output for Section 2 is available.",
+        "This executable output for Section 2 is available.",
+        "Its executable output is available.",
+        "Section 2's executable output is available.",
+        "The section's executable output is available.",
+        "There is an executable output for Section 2.",
+        "Section 2 has an executable output.",
+    ),
+)
+def test_same_act_section_dependency_rejects_missing_executable_exact_inverse(
+    reversal: str,
+):
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act. No executable output is available for Section 2 "
+        f"of this act. {reversal}"
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing", "separator", "reversal"),
+    (
+        (
+            "No executable output is available for Section 2 of this act",
+            ". ",
+            "Executable output for Section 2 is available",
+        ),
+        (
+            "No executable outputs are available for Section 2 of this act",
+            ". ",
+            "Executable outputs for Section 2 are available",
+        ),
+        (
+            "No executable rule is available for Section 2 of this act",
+            "; ",
+            "executable rule under Section 2 has been provided",
+        ),
+        (
+            "No executable capability is available for Section 2 of this act",
+            ". ",
+            "Executable capability for Section 2 is available",
+        ),
+        (
+            "No executable RuleSpec export is available for Section 2 of this act",
+            ". ",
+            "Executable RuleSpec export for Section 2 has been provided",
+        ),
+        (
+            "No executable implementation is available for Section 2 of this act",
+            "; ",
+            "executable implementation under Section 2 is present",
+        ),
+    ),
+)
+def test_same_act_section_dependency_rejects_article_plural_executable_inverse(
+    missing: str,
+    separator: str,
+    reversal: str,
+):
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        f"Section 2 of this act. {missing}{separator}{reversal}."
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+@pytest.mark.parametrize(
+    "unrelated_availability",
+    (
+        "There is an executable output for Section 3.",
+        "There is an executable output for the federal rule.",
+        "Section 2 has an executable output for Section 3.",
+    ),
+)
+def test_same_act_section_dependency_keeps_unrelated_executable_availability(
+    unrelated_availability: str,
+):
+    reason = (
+        "Miss. Code section 27-7-5(1)(b)(ii)(7) makes the rate subject to "
+        "Section 2 of this act. No executable output is available for Section 2 "
+        f"of this act. {unrelated_availability}"
+    )
+    source = (
+        "For calendar year 2030 and later, except as otherwise provided in "
+        "Section 2 of this act, the rate shall be three percent (3%)."
+    )
+
+    assert completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="us-ms/statute/27-7-5",
+        path=("1", "b", "ii", "7"),
+    )
+
+
+def test_external_dependency_rejects_unrelated_not_supplied_input():
+    reason = "The household income input is not supplied, under Section 26."
+    source = "The tax is computed under Section 26."
+
+    assert not completeness_module._reason_dependency_is_source_bound(
+        reason,
+        source,
+        corpus_citation_path="de/statute/estg/32a/6",
+        path=("1",),
+    )
+
+
 def test_same_act_section_dependency_accepts_authenticated_bill_alias():
     reason = (
         "us-ms/statute/27-7-5(1)(b)(ii)(7) makes the 2030 rate subject to "
