@@ -373,7 +373,6 @@ jobs:
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
         run: |
           set -euo pipefail
-          REPAIR_TESTS_ONLY=false
           atomic_source_payload="$(
             python \
               axiom-encode/scripts/prepare_signed_backfill.py \
@@ -385,10 +384,16 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          repair_tests_only=false
           if jq -e 'type == "array" and length > 0' \
             <<< "$primary_required_test_cases_json" > /dev/null; then
-            REPAIR_TESTS_ONLY=true
+            repair_tests_only=true
+          elif ! jq -e 'type == "array" and length == 0' \
+            <<< "$primary_required_test_cases_json" > /dev/null; then
+            echo "primary required test cases must be a JSON array" >&2
+            exit 1
           fi
+          echo "tests_only=$repair_tests_only" >> "$GITHUB_OUTPUT"
           if [[ ! "$REPAIR_RUN_ID" =~ ^[0-9]+$ ]] || \
              [ "$REPAIR_RUN_ID" = "$GITHUB_RUN_ID" ]; then
             echo "repair_run_id must identify a different decimal workflow run" >&2
@@ -563,7 +568,6 @@ jobs:
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
         run: |
           set -euo pipefail
-          REPAIR_TESTS_ONLY=false
           atomic_source_payload="$(
             axiom-encode/.venv/bin/python \
               axiom-encode/scripts/prepare_signed_backfill.py \
@@ -575,14 +579,6 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
-          if jq -e 'type == "array" and length > 0' \
-            <<< "$primary_required_test_cases_json" > /dev/null; then
-            REPAIR_TESTS_ONLY=true
-          fi
-          if [ "$REPAIR_TESTS_ONLY" = "true" ] && [ -z "$REPAIR_RUN_ID" ]; then
-            echo "tests-only repair requires repair_run_id" >&2
-            exit 1
-          fi
           source_bundle_args=(
             axiom-encode/.venv/bin/python
             axiom-encode/scripts/prepare_signed_backfill.py
@@ -1036,6 +1032,7 @@ jobs:
           REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
           REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
           REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
+          REPAIR_TESTS_ONLY: ${{ steps.repair_candidate.outputs.tests_only }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -1051,7 +1048,7 @@ jobs:
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
           set -euo pipefail
-          REPAIR_TESTS_ONLY=false
+          : "${REPAIR_TESTS_ONLY:=false}"
           : "${QUEUE_ID:=}"
           : "${REPLACE_RULESPEC_PATH:=}"
           : "${REPLACE_LEGACY_RULESPEC_PATH:=}"
@@ -1340,10 +1337,6 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
-          if jq -e 'type == "array" and length > 0' \
-            <<< "$primary_required_test_cases_json" > /dev/null; then
-            REPAIR_TESTS_ONLY=true
-          fi
           source_bundle_args=(
             "$workflow_python" "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
