@@ -38,11 +38,6 @@ on:
         description: Prior failed protected run whose final candidate is replayed as untrusted repair context
         required: false
         type: string
-      repair_candidate_tests_only:
-        description: Preserve the repair candidate RuleSpec byte-for-byte and expand only its companion tests under a v2 contract
-        required: false
-        default: false
-        type: boolean
       source_bundle_json:
         description: JSON citation array, canonical_refresh_bundle object, or atomic-source-transaction/v2 envelope for an independent refresh transaction
         required: false
@@ -369,7 +364,6 @@ jobs:
           LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           QUEUE_ID: ${{ inputs.queue_id }}
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
-          REPAIR_TESTS_ONLY: ${{ inputs.repair_candidate_tests_only }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
@@ -379,7 +373,7 @@ jobs:
           SECOND_LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.second_legacy_exact_dependent_rulespec_path }}
         run: |
           set -euo pipefail
-          : "${REPAIR_TESTS_ONLY:=false}"
+          REPAIR_TESTS_ONLY=false
           atomic_source_payload="$(
             python \
               axiom-encode/scripts/prepare_signed_backfill.py \
@@ -391,18 +385,9 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
-          if [ "$REPAIR_TESTS_ONLY" = "true" ]; then
-            jq -e 'type == "array" and length > 0' \
-              <<< "$primary_required_test_cases_json" > /dev/null || {
-                echo "tests-only repair requires primary required test cases" >&2
-                exit 1
-              }
-          else
-            jq -e 'type == "array" and length == 0' \
-              <<< "$primary_required_test_cases_json" > /dev/null || {
-                echo "repair test cases require tests-only repair mode" >&2
-                exit 1
-              }
+          if jq -e 'type == "array" and length > 0' \
+            <<< "$primary_required_test_cases_json" > /dev/null; then
+            REPAIR_TESTS_ONLY=true
           fi
           if [[ ! "$REPAIR_RUN_ID" =~ ^[0-9]+$ ]] || \
              [ "$REPAIR_RUN_ID" = "$GITHUB_RUN_ID" ]; then
@@ -571,7 +556,6 @@ jobs:
           LEGACY_RETAINED_SUCCESSOR_RULESPEC_PATHS_JSON: ${{ inputs.legacy_retained_successor_rulespec_paths_json }}
           QUEUE_ID: ${{ inputs.queue_id }}
           REPAIR_RUN_ID: ${{ inputs.repair_run_id }}
-          REPAIR_TESTS_ONLY: ${{ inputs.repair_candidate_tests_only }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           RULESPEC_CHECKOUT: rulespec-${{ inputs.country }}
@@ -579,7 +563,7 @@ jobs:
           SECOND_DEPENDENT_CITATION: ${{ inputs.second_dependent_citation }}
         run: |
           set -euo pipefail
-          : "${REPAIR_TESTS_ONLY:=false}"
+          REPAIR_TESTS_ONLY=false
           atomic_source_payload="$(
             axiom-encode/.venv/bin/python \
               axiom-encode/scripts/prepare_signed_backfill.py \
@@ -591,6 +575,10 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          if jq -e 'type == "array" and length > 0' \
+            <<< "$primary_required_test_cases_json" > /dev/null; then
+            REPAIR_TESTS_ONLY=true
+          fi
           if [ "$REPAIR_TESTS_ONLY" = "true" ] && [ -z "$REPAIR_RUN_ID" ]; then
             echo "tests-only repair requires repair_run_id" >&2
             exit 1
@@ -1048,7 +1036,6 @@ jobs:
           REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
           REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
           REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
-          REPAIR_TESTS_ONLY: ${{ inputs.repair_candidate_tests_only }}
           REPLACE_RULESPEC_PATH: ${{ inputs.replace_rulespec_path }}
           REPLACE_LEGACY_RULESPEC_PATH: ${{ inputs.replace_legacy_rulespec_path }}
           LEGACY_EXACT_DEPENDENT_RULESPEC_PATH: ${{ inputs.legacy_exact_dependent_rulespec_path }}
@@ -1064,7 +1051,7 @@ jobs:
           RULESPEC_REF: ${{ inputs.rulespec_ref }}
         run: |
           set -euo pipefail
-          : "${REPAIR_TESTS_ONLY:=false}"
+          REPAIR_TESTS_ONLY=false
           : "${QUEUE_ID:=}"
           : "${REPLACE_RULESPEC_PATH:=}"
           : "${REPLACE_LEGACY_RULESPEC_PATH:=}"
@@ -1353,6 +1340,10 @@ jobs:
             <<< "$atomic_source_payload")"
           primary_required_test_cases_json="$(jq -cer \
             '.primary_required_test_cases' <<< "$atomic_source_payload")"
+          if jq -e 'type == "array" and length > 0' \
+            <<< "$primary_required_test_cases_json" > /dev/null; then
+            REPAIR_TESTS_ONLY=true
+          fi
           source_bundle_args=(
             "$workflow_python" "$backfill_helper" parse-source-bundle
             "$source_bundle_json" --primary-citation "$CITATION"
