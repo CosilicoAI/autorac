@@ -718,6 +718,7 @@ def _workspace_prompt_for_source_unit(
     *,
     required_import_targets: tuple[str, ...] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    repair_candidate_tests_only: bool = False,
 ):
     workspace = prepare_eval_workspace(
         citation=source_unit.requested,
@@ -741,6 +742,7 @@ def _workspace_prompt_for_source_unit(
         runner_backend="openai",
         required_import_targets=required_import_targets,
         validation_retry_candidate=validation_retry_candidate,
+        repair_candidate_tests_only=repair_candidate_tests_only,
     )
     return workspace, prompt
 
@@ -789,6 +791,35 @@ def test_workspace_prompt_embeds_latest_retry_candidate_as_untrusted_edit_contex
     assert str(tmp_path) not in prompt
 
 
+def test_tests_only_prompt_preserves_cases_wrapper(tmp_path):
+    release = _write_test_corpus_release(
+        tmp_path,
+        [
+            {
+                "citation_path": "dk/statute/benefit/section-1",
+                "body": "The benefit is ten percent of the qualifying amount.",
+            }
+        ],
+    )
+    source_unit = resolve_corpus_source_unit("dk/statute/benefit/section-1", release)
+    candidate = ValidationRetryCandidate(
+        rulespec="format: rulespec/v1\nrules: []\n",
+        tests="cases:\n  - name: existing\n    period: 2026-01\n"
+        "    input: {}\n    output:\n      result: holds\n",
+    )
+
+    _workspace, prompt = _workspace_prompt_for_source_unit(
+        tmp_path,
+        source_unit,
+        validation_retry_candidate=candidate,
+        repair_candidate_tests_only=True,
+    )
+
+    assert "mapping with exactly one `cases` test-case list" in prompt
+    assert "must preserve its top-level `cases:` mapping" in prompt
+    assert "must be a YAML list beginning" not in prompt
+
+
 def test_retry_candidate_formatter_requires_fresh_content_digest():
     candidate = ValidationRetryCandidate(
         rulespec="format: rulespec/v1\nrules: []\n",
@@ -816,14 +847,15 @@ def test_retry_candidate_formatter_explicitly_handles_missing_tests():
     assert "complete replacement RuleSpec and companion test files" in section
 
 
-def test_run_model_eval_appends_retry_candidate_after_existing_public_parameters():
+def test_run_model_eval_appends_repair_parameters_after_existing_public_parameters():
     parameters = list(inspect.signature(run_model_eval).parameters)
 
-    assert parameters[-4:] == [
+    assert parameters[-5:] == [
         "required_import_targets",
         "legacy_replacement",
         "replacement_overlay_scope",
         "validation_retry_candidate",
+        "repair_candidate_tests_only",
     ]
 
 
@@ -2140,6 +2172,40 @@ def test_model_eval_passes_single_target_output_override(tmp_path):
     assert mock_run.call_args.kwargs["target_relative_output"] == target
     assert mock_run.call_args.kwargs["legacy_replacement"] is legacy_replacement
     assert mock_run.call_args.kwargs["replacement_overlay_scope"] is True
+
+
+def test_model_eval_tests_only_repair_forces_companion_test_prompting(tmp_path):
+    corpus_release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "authoritative source",
+        citation_path="us/regulation/7/273/4",
+    )
+    candidate = ValidationRetryCandidate(
+        "format: rulespec/v1\nrules: []\n",
+        "- name: existing\n  period: 2025-06\n  input: {}\n  output: {}\n",
+    )
+    with (
+        patch(
+            "axiom_encode.harness.evals.resolve_corpus_source_unit",
+            return_value=source_unit,
+        ),
+        patch(
+            "axiom_encode.harness.evals._run_single_eval",
+            return_value=Mock(name="result"),
+        ) as mock_run,
+    ):
+        run_model_eval(
+            citations=["us/regulation/7/273/4"],
+            runner_specs=["openai:model-a"],
+            output_root=tmp_path / "out",
+            policy_path=tmp_path / "rulespec-us" / "us",
+            runtime_axiom_rules_path=tmp_path / "engine",
+            corpus_release=corpus_release,
+            validation_retry_candidate=candidate,
+            repair_candidate_tests_only=True,
+        )
+
+    assert mock_run.call_args.kwargs["include_tests"] is True
 
 
 def test_model_eval_rejects_replacement_scope_without_target_override(tmp_path):
@@ -8195,6 +8261,30 @@ rules: []
             for call in mock_repair.call_args_list
         )
 
+    def test_generated_eval_can_disable_post_materialization_repairs(self, tmp_path):
+        metrics = SimpleNamespace(ci_issues=["repairable"])
+        with (
+            patch(
+                "axiom_encode.harness.evals.evaluate_artifact",
+                return_value=metrics,
+            ) as mock_evaluate,
+            patch(
+                "axiom_encode.harness.evals._apply_generated_eval_repairs"
+            ) as mock_repair,
+        ):
+            result = _evaluate_generated_artifact_with_repairs(
+                rulespec_file=tmp_path / "artifact.yaml",
+                policy_repo_root=tmp_path / "rulespec-us",
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                source_text="Source body",
+                local_corpus_release=object(),
+                allow_artifact_repairs=False,
+            )
+
+        assert result is metrics
+        mock_evaluate.assert_called_once()
+        mock_repair.assert_not_called()
+
     def test_generated_eval_reanchors_same_and_amendment_document_proofs(
         self, capsys, tmp_path
     ):
@@ -11548,6 +11638,223 @@ class TestGeneratedBundleCleaning:
 
         assert wrote is False
         assert not output_file.exists()
+
+    def test_materialize_tests_only_repair_preserves_rulespec_and_expands_tests(
+        self, tmp_path
+    ):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        rulespec = "format: rulespec/v1\nrules: []\n"
+        original_tests = (
+            "- name: existing\n"
+            "  period: 2025-06\n"
+            "  input:\n    fact: true\n"
+            "  output:\n    result: holds\n"
+        )
+        candidate = ValidationRetryCandidate(rulespec, original_tests)
+        required_contract = {
+            "name": "required-witness",
+            "period": "2025-06",
+            "input": {"other_fact": True},
+            "required_output": {"other_result": "holds"},
+        }
+        response = (
+            "=== FILE: 4.test.yaml ===\n"
+            + original_tests
+            + "- name: required-witness\n"
+            "  period: 2025-06\n"
+            "  input:\n    other_fact: true\n"
+            "  output:\n    other_result: holds\n"
+        )
+        materialized: set[Path] = set()
+
+        wrote = _materialize_eval_artifact(
+            response,
+            output_file,
+            artifact_root=tmp_path,
+            materialized_paths=materialized,
+            repair_candidate=candidate,
+            required_test_case_contracts=(required_contract,),
+        )
+
+        assert wrote is True
+        assert output_file.read_text() == rulespec
+        assert "required-witness" in output_file.with_suffix(".test.yaml").read_text()
+        assert materialized == {output_file, output_file.with_suffix(".test.yaml")}
+
+    def test_materialize_tests_only_repair_preserves_cases_wrapper(self, tmp_path):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        rulespec = "format: rulespec/v1\nrules: []\n"
+        original_tests = (
+            "cases:\n"
+            "  - name: existing\n"
+            "    period: 2025-06\n"
+            "    input: {}\n"
+            "    output:\n      result: holds\n"
+        )
+        candidate = ValidationRetryCandidate(rulespec, original_tests)
+        contract = {
+            "name": "required",
+            "period": "2025-06",
+            "input": {},
+            "required_output": {"other_result": "holds"},
+        }
+        response = (
+            "=== FILE: 4.test.yaml ===\n" + original_tests + "  - name: required\n"
+            "    period: 2025-06\n"
+            "    input: {}\n"
+            "    output:\n      other_result: holds\n"
+        )
+
+        wrote = _materialize_eval_artifact(
+            response,
+            output_file,
+            artifact_root=tmp_path,
+            repair_candidate=candidate,
+            required_test_case_contracts=(contract,),
+        )
+
+        assert wrote is True
+        assert yaml.safe_load(output_file.with_suffix(".test.yaml").read_text()) == {
+            "cases": [
+                {
+                    "name": "existing",
+                    "period": "2025-06",
+                    "input": {},
+                    "output": {"result": "holds"},
+                },
+                {
+                    "name": "required",
+                    "period": "2025-06",
+                    "input": {},
+                    "output": {"other_result": "holds"},
+                },
+            ]
+        }
+
+    def test_materialize_tests_only_repair_allows_helper_output_assertions(
+        self, tmp_path
+    ):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        candidate = ValidationRetryCandidate(
+            "format: rulespec/v1\nrules: []\n",
+            "- name: existing\n  period: 2025-06\n  input: {}\n"
+            "  output:\n    result: holds\n",
+        )
+        contract = {
+            "name": "required",
+            "period": "2025-06",
+            "input": {"fact": True},
+            "required_output": {"required_result": "holds"},
+        }
+        response = (
+            "=== FILE: 4.test.yaml ===\n"
+            + candidate.tests
+            + "- name: required\n  period: 2025-06\n"
+            "  input:\n    fact: true\n"
+            "  output:\n    required_result: holds\n    reached_helper: true\n"
+        )
+
+        assert _materialize_eval_artifact(
+            response,
+            output_file,
+            artifact_root=tmp_path,
+            repair_candidate=candidate,
+            required_test_case_contracts=(contract,),
+        )
+
+    @pytest.mark.parametrize(
+        "proposed_tests",
+        [
+            "- name: replacement\n  period: 2025-06\n  input: {}\n  output: {}\n",
+            "- name: existing\n  period: 2025-07\n  input:\n    fact: true\n  output:\n    result: holds\n",
+            "- name: existing\n  period: 2025-06\n  input:\n    fact: false\n  output:\n    result: holds\n",
+            "- name: existing\n  period: 2025-06\n  input:\n    fact: true\n  output:\n    result: not_holds\n",
+        ],
+    )
+    def test_materialize_tests_only_repair_rejects_test_weakening(
+        self, tmp_path, proposed_tests
+    ):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        candidate = ValidationRetryCandidate(
+            "format: rulespec/v1\nrules: []\n",
+            "- name: existing\n"
+            "  period: 2025-06\n"
+            "  input:\n    fact: true\n"
+            "  output:\n    result: holds\n",
+        )
+
+        wrote = _materialize_eval_artifact(
+            f"=== FILE: 4.test.yaml ===\n{proposed_tests}",
+            output_file,
+            artifact_root=tmp_path,
+            repair_candidate=candidate,
+        )
+
+        assert wrote is False
+        assert not output_file.exists()
+
+    def test_materialize_tests_only_repair_rejects_emitted_rulespec(self, tmp_path):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        candidate = ValidationRetryCandidate(
+            "format: rulespec/v1\nrules: []\n",
+            "- name: existing\n  period: 2025-06\n  input: {}\n  output: {}\n",
+        )
+        response = (
+            "=== FILE: 4.yaml ===\nformat: rulespec/v1\nrules: []\n"
+            "=== FILE: 4.test.yaml ===\n" + candidate.tests
+        )
+
+        wrote = _materialize_eval_artifact(
+            response,
+            output_file,
+            artifact_root=tmp_path,
+            repair_candidate=candidate,
+        )
+
+        assert wrote is False
+        assert not output_file.exists()
+
+    def test_materialize_tests_only_repair_rejects_type_changes_and_unsigned_cases(
+        self, tmp_path
+    ):
+        output_file = tmp_path / "regulation/7/273/4.yaml"
+        candidate = ValidationRetryCandidate(
+            "format: rulespec/v1\nrules: []\n",
+            "- name: existing\n"
+            "  period: 2025-06\n"
+            "  input:\n    fact: true\n"
+            "  output:\n    result: holds\n",
+        )
+        contract = {
+            "name": "required",
+            "period": "2025-06",
+            "input": {"required_fact": True},
+            "required_output": {"required_result": "holds"},
+        }
+        type_changed = (
+            "=== FILE: 4.test.yaml ===\n"
+            "- name: existing\n  period: 2025-06\n"
+            "  input:\n    fact: 1\n  output:\n    result: holds\n"
+        )
+        unsigned_case = (
+            "=== FILE: 4.test.yaml ===\n"
+            + candidate.tests
+            + "- name: unsigned\n  period: 2025-06\n"
+            "  input: {}\n  output:\n    result: holds\n"
+        )
+
+        for response in (type_changed, unsigned_case):
+            assert (
+                _materialize_eval_artifact(
+                    response,
+                    output_file,
+                    artifact_root=tmp_path,
+                    repair_candidate=candidate,
+                    required_test_case_contracts=(contract,),
+                )
+                is False
+            )
+            assert not output_file.exists()
 
     def test_materialize_eval_artifact_repairs_single_file_conjoined_excerpts(
         self, tmp_path

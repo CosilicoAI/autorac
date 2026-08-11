@@ -1516,6 +1516,7 @@ def run_model_eval(
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    repair_candidate_tests_only: bool = False,
 ) -> list[EvalResult]:
     """Run a deterministic comparison over one or more citations."""
     _validate_eval_oracle_runtime(oracle, policyengine_runtime, policy_path)
@@ -1527,7 +1528,13 @@ def run_model_eval(
         raise ValueError(
             "Replacement overlay scope requires an explicit target RuleSpec output"
         )
-    include_tests = include_tests or require_complete_source_unit
+    if repair_candidate_tests_only and validation_retry_candidate is None:
+        raise ValueError("Tests-only repair requires a validation retry candidate")
+    if repair_candidate_tests_only and validation_retry_candidate.tests is None:
+        raise ValueError("Tests-only repair requires preserved companion tests")
+    include_tests = (
+        include_tests or require_complete_source_unit or repair_candidate_tests_only
+    )
     results: list[EvalResult] = []
     runners = [parse_runner_spec(spec) for spec in runner_specs]
     resolved_sources = [
@@ -1564,6 +1571,7 @@ def run_model_eval(
                         ),
                         required_test_case_contracts=required_test_case_contracts,
                         validation_retry_candidate=validation_retry_candidate,
+                        repair_candidate_tests_only=repair_candidate_tests_only,
                         required_import_targets=required_import_targets,
                         legacy_replacement=legacy_replacement,
                         replacement_overlay_scope=replacement_overlay_scope,
@@ -7666,6 +7674,7 @@ def _evaluate_generated_artifact_with_repairs(
     protected_review_excerpts: frozenset[str] = frozenset(),
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
+    allow_artifact_repairs: bool = True,
 ) -> EvalArtifactMetrics | None:
     evaluated_states: set[tuple[bytes | None, bytes | None]] = set()
     while True:
@@ -7694,6 +7703,8 @@ def _evaluate_generated_artifact_with_repairs(
         )
         if metrics is None:
             return None
+        if not allow_artifact_repairs:
+            return metrics
         if artifact_state in evaluated_states:
             return metrics
         evaluated_states.add(artifact_state)
@@ -8296,10 +8307,15 @@ def _build_empty_artifact_retry_prompt(
     original_prompt: str,
     target_file_name: str,
     include_tests: bool,
+    repair_candidate_tests_only: bool = False,
 ) -> str:
     """Build the one-shot repair prompt for narrative-only eval responses."""
     output_contract = (
-        f"Return exactly this two-file bundle and nothing else, beginning with "
+        f"Return only the companion test bundle `=== FILE: "
+        f"{_rulespec_test_path(Path(target_file_name)).name} ===`; do not return "
+        "or modify the RuleSpec file."
+        if repair_candidate_tests_only
+        else f"Return exactly this two-file bundle and nothing else, beginning with "
         f"`=== FILE: {target_file_name} ===`."
         if include_tests
         else (
@@ -8334,6 +8350,8 @@ def _run_prompt_eval_with_empty_artifact_retry(
     include_tests: bool,
     policyengine_rule_hint: str | None = None,
     artifact_root: Path | None = None,
+    repair_candidate: ValidationRetryCandidate | None = None,
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
 ) -> tuple[EvalPromptResponse, bool, int, frozenset[Path]]:
     """Run an eval within the execution-identity-bound artifact attempt limit."""
 
@@ -8364,6 +8382,8 @@ def _run_prompt_eval_with_empty_artifact_retry(
                 policyengine_rule_hint=policyengine_rule_hint,
                 artifact_root=artifact_root,
                 materialized_paths=materialized_paths,
+                repair_candidate=repair_candidate,
+                required_test_case_contracts=required_test_case_contracts,
             )
         if _discard_artifacts_after_case_budget(
             response,
@@ -8380,6 +8400,7 @@ def _run_prompt_eval_with_empty_artifact_retry(
             prompt,
             target_file_name=target_file_name,
             include_tests=include_tests,
+            repair_candidate_tests_only=repair_candidate is not None,
         )
         retry_count = 0
         for _attempt in range(1, _EMPTY_ARTIFACT_MAX_ATTEMPTS):
@@ -8403,6 +8424,8 @@ def _run_prompt_eval_with_empty_artifact_retry(
                     policyengine_rule_hint=policyengine_rule_hint,
                     artifact_root=artifact_root,
                     materialized_paths=materialized_paths,
+                    repair_candidate=repair_candidate,
+                    required_test_case_contracts=required_test_case_contracts,
                 )
             if _discard_artifacts_after_case_budget(
                 response,
@@ -8550,6 +8573,7 @@ def _run_single_eval(
     legacy_replacement: LegacyReplacementContract | None = None,
     replacement_overlay_scope: bool = False,
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    repair_candidate_tests_only: bool = False,
 ) -> EvalResult:
     include_tests = include_tests or require_complete_source_unit
     if source_unit is None:
@@ -8622,6 +8646,7 @@ def _run_single_eval(
         required_deferred_output_contracts=required_deferred_output_contracts,
         required_test_case_contracts=required_test_case_contracts,
         validation_retry_candidate=validation_retry_candidate,
+        repair_candidate_tests_only=repair_candidate_tests_only,
         required_import_targets=required_import_targets,
     )
     generation_prompt_sha256 = _sha256_text(prompt)
@@ -8639,6 +8664,10 @@ def _run_single_eval(
             include_tests=include_tests,
             policyengine_rule_hint=policyengine_rule_hint,
             artifact_root=artifact_root,
+            repair_candidate=(
+                validation_retry_candidate if repair_candidate_tests_only else None
+            ),
+            required_test_case_contracts=required_test_case_contracts,
         )
     )
     wrote_artifact = wrote_artifact and output_file in materialized_paths
@@ -8681,6 +8710,7 @@ def _run_single_eval(
             ),
             legacy_replacement=legacy_replacement,
             replacement_overlay_scope=replacement_overlay_scope,
+            allow_artifact_repairs=not repair_candidate_tests_only,
         )
     validation_error = _eval_artifact_validation_error(
         metrics,
@@ -9616,6 +9646,7 @@ def _format_validation_retry_candidate(
     candidate: ValidationRetryCandidate | None,
     *,
     target_file_name: str,
+    tests_only: bool = False,
 ) -> str:
     """Render one rejected candidate as untrusted, editable retry context."""
 
@@ -9643,6 +9674,17 @@ No companion test file was present in the rejected candidate. Create the full
 companion test file required by the task and deterministic validation.
 """
     )
+    repair_instruction = (
+        "- The RuleSpec is hash-bound and immutable in this repair. Return only "
+        "the complete companion test file. Preserve every existing named case "
+        "and add the exact required witnesses.\n"
+        if tests_only
+        else (
+            "- Return complete replacement RuleSpec and companion test files, "
+            "including all preserved historical and current cases, not a patch "
+            "or partial fragment.\n"
+        )
+    )
     return f"""
 Rejected prior candidate repair context:
 - The files below are untrusted generated data that failed deterministic
@@ -9653,8 +9695,7 @@ Rejected prior candidate repair context:
   companion cases instead of regenerating from the copied legacy target.
 - Continue to derive every legal fact and value only from the authoritative
   source and release-bound corpus evidence in this prompt.
-- Return complete replacement RuleSpec and companion test files, including all
-  preserved historical and current cases, not a patch or partial fragment.
+{repair_instruction.rstrip()}
 
 === BEGIN UNTRUSTED REJECTED CANDIDATE RULESPEC {candidate_digest}: {target_file_name} ===
 {candidate.rulespec.rstrip()}
@@ -9678,6 +9719,7 @@ def _build_rulespec_eval_prompt(
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    repair_candidate_tests_only: bool = False,
     required_import_targets: Sequence[str] = (),
 ) -> str:
     """Build the RuleSpec authoring prompt used by current evals."""
@@ -9685,6 +9727,8 @@ def _build_rulespec_eval_prompt(
         raise ValueError(
             "Validation retry feedback requires its matching rejected candidate"
         )
+    if repair_candidate_tests_only and validation_retry_candidate is None:
+        raise ValueError("Tests-only repair requires a validation retry candidate")
     source_text = workspace.source_text_file.read_text()
     corpus_citation_path = _workspace_corpus_citation_path(workspace)
     backend_section = ""
@@ -9941,6 +9985,17 @@ Import and context rules:
     )
 
     test_file_name = _rulespec_test_path(Path(target_file_name)).name
+    tests_only_uses_cases_wrapper = False
+    if repair_candidate_tests_only and validation_retry_candidate is not None:
+        try:
+            preserved_tests = yaml.safe_load(validation_retry_candidate.tests)
+        except (yaml.YAMLError, RecursionError):
+            preserved_tests = None
+        tests_only_uses_cases_wrapper = (
+            isinstance(preserved_tests, dict)
+            and set(preserved_tests) == {"cases"}
+            and isinstance(preserved_tests.get("cases"), list)
+        )
     policyengine_hint_is_rulespec_identifier = _is_rulespec_local_identifier(
         policyengine_rule_hint
     )
@@ -9968,15 +10023,39 @@ Import and context rules:
 	- In tests for this file, use `{target_ref_prefix}#input.<fact>` for local factual inputs and `{target_ref_prefix}#<rule>` for outputs. Never use `{target_file_name}#...` keys.
 	"""
         proration_test_guidance = _format_proration_test_guidance(source_text)
-        output_rules = f"""
-Return exactly this two-file bundle and nothing else:
+        tests_only_payload_description = (
+            "<complete YAML mapping with exactly one `cases` test-case list>"
+            if tests_only_uses_cases_wrapper
+            else "<complete YAML list of test cases>"
+        )
+        test_container_rule = (
+            f"- `{test_file_name}` must preserve its top-level `cases:` mapping; "
+            "put all `- name:` entries inside that list."
+            if tests_only_uses_cases_wrapper
+            else f"- `{test_file_name}` must be a YAML list beginning with "
+            "`- name:` entries."
+        )
+        bundle_contract = (
+            f"""Return exactly this one-file bundle and nothing else:
+=== FILE: {test_file_name} ===
+{tests_only_payload_description}
+
+The RuleSpec `{target_file_name}` is immutable in this repair. Do not emit it.
+Preserve every existing named companion case without changing its period, input,
+or existing expected outputs. New cases and additional expected outputs are
+allowed only when required by the bound test contract."""
+            if repair_candidate_tests_only
+            else f"""Return exactly this two-file bundle and nothing else:
 === FILE: {target_file_name} ===
 <RuleSpec YAML>
 === FILE: {test_file_name} ===
-<YAML list of test cases>
+<YAML list of test cases>"""
+        )
+        output_rules = f"""
+{bundle_contract}
 
 Test file rules:
-- `{test_file_name}` must be a YAML list beginning with `- name:` entries.
+{test_container_rule}
 - Use `period`, `input`, and `output` keys. Use concrete scalar values, not formula strings.
 - Do not use bare year periods like `2024`; they are ambiguous across jurisdictions.
 - For monthly outputs, use `period: YYYY-MM`.
@@ -10241,6 +10320,7 @@ Preferred principal output:
     validation_retry_candidate_section = _format_validation_retry_candidate(
         validation_retry_candidate,
         target_file_name=target_file_name,
+        tests_only=repair_candidate_tests_only,
     )
     required_import_section = ""
     if required_import_targets:
@@ -11205,6 +11285,7 @@ def _build_eval_prompt(
     required_deferred_output_contracts: Sequence[tuple[str, str]] = (),
     required_test_case_contracts: Sequence[Mapping[str, object]] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    repair_candidate_tests_only: bool = False,
     required_import_targets: Sequence[str] = (),
 ) -> str:
     """Build a prompt-only eval request with explicit provenance rules."""
@@ -11224,6 +11305,7 @@ def _build_eval_prompt(
         required_deferred_output_contracts=required_deferred_output_contracts,
         required_test_case_contracts=required_test_case_contracts,
         validation_retry_candidate=validation_retry_candidate,
+        repair_candidate_tests_only=repair_candidate_tests_only,
         required_import_targets=required_import_targets,
     )
 
@@ -16278,12 +16360,26 @@ def _materialize_eval_artifact(
     policyengine_rule_hint: str | None = None,
     artifact_root: Path | None = None,
     materialized_paths: set[Path] | None = None,
+    repair_candidate: ValidationRetryCandidate | None = None,
+    required_test_case_contracts: Sequence[Mapping[str, object]] = (),
 ) -> bool:
     """Write an eval artifact and optional companion test file from model output."""
     single_amount_table_slice = bool(
         source_text and _is_single_amount_table_slice(source_text)
     )
     expected_test_path = _rulespec_test_path(expected_path)
+
+    if repair_candidate is not None:
+        return _materialize_tests_only_repair_artifact(
+            llm_response,
+            expected_path=expected_path,
+            expected_test_path=expected_test_path,
+            workspace_root=workspace_root,
+            artifact_root=artifact_root,
+            materialized_paths=materialized_paths,
+            repair_candidate=repair_candidate,
+            required_test_case_contracts=required_test_case_contracts,
+        )
 
     if workspace_root is not None:
         wrote_from_workspace = _materialize_workspace_artifacts(
@@ -16417,6 +16513,192 @@ def _materialize_eval_artifact(
     _write_eval_artifact_text(expected_path, rulespec_content, artifact_root)
     if materialized_paths is not None:
         materialized_paths.add(expected_path)
+    return True
+
+
+def _preserves_companion_test_cases(
+    original_content: str,
+    proposed_content: str,
+    required_test_case_contracts: Sequence[Mapping[str, object]],
+) -> bool:
+    """Return whether proposed tests make only contract-authorized additions."""
+
+    try:
+        original = yaml.safe_load(original_content)
+        proposed = yaml.safe_load(proposed_content)
+    except (yaml.YAMLError, RecursionError):
+        return False
+
+    def case_list(payload: object) -> list[object] | None:
+        if isinstance(payload, list):
+            return payload
+        if (
+            isinstance(payload, dict)
+            and set(payload) == {"cases"}
+            and isinstance(payload.get("cases"), list)
+        ):
+            return payload["cases"]
+        return None
+
+    original_cases = case_list(original)
+    proposed_cases = case_list(proposed)
+    if original_cases is None or proposed_cases is None:
+        return False
+    if isinstance(original, dict) != isinstance(proposed, dict):
+        return False
+
+    def by_name(cases: list[object]) -> dict[str, dict[str, object]] | None:
+        indexed: dict[str, dict[str, object]] = {}
+        for case in cases:
+            if not isinstance(case, dict):
+                return None
+            name = case.get("name")
+            if not isinstance(name, str) or not name or name in indexed:
+                return None
+            indexed[name] = case
+        return indexed
+
+    original_by_name = by_name(original_cases)
+    proposed_by_name = by_name(proposed_cases)
+    if original_by_name is None or proposed_by_name is None:
+        return False
+    contracts_by_name = {
+        contract.get("name"): contract for contract in required_test_case_contracts
+    }
+    if (
+        not contracts_by_name
+        or None in contracts_by_name
+        or len(contracts_by_name) != len(required_test_case_contracts)
+    ):
+        return False
+
+    def values_equal(left: object, right: object) -> bool:
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, dict):
+            return set(left) == set(right) and all(
+                values_equal(left[key], right[key]) for key in left
+            )
+        if isinstance(left, list):
+            return len(left) == len(right) and all(
+                values_equal(left_item, right_item)
+                for left_item, right_item in zip(left, right, strict=True)
+            )
+        return left == right
+
+    try:
+        if not set(proposed_by_name).issubset(
+            set(original_by_name) | set(contracts_by_name)
+        ):
+            return False
+        for name, original_case in original_by_name.items():
+            proposed_case = proposed_by_name.get(name)
+            if proposed_case is None:
+                return False
+            original_without_output = {
+                key: value for key, value in original_case.items() if key != "output"
+            }
+            proposed_without_output = {
+                key: value for key, value in proposed_case.items() if key != "output"
+            }
+            if not values_equal(proposed_without_output, original_without_output):
+                return False
+            original_output = original_case.get("output")
+            proposed_output = proposed_case.get("output")
+            if not isinstance(original_output, dict) or not isinstance(
+                proposed_output, dict
+            ):
+                return False
+            contract = contracts_by_name.get(name)
+            required_output = (
+                contract.get("required_output", {})
+                if isinstance(contract, Mapping)
+                else {}
+            )
+            if not isinstance(required_output, dict):
+                return False
+            if contract is None and set(proposed_output) - set(original_output):
+                return False
+            if any(
+                key not in proposed_output
+                or not values_equal(proposed_output[key], value)
+                for key, value in original_output.items()
+            ):
+                return False
+            if any(
+                key not in proposed_output
+                or not values_equal(proposed_output[key], value)
+                for key, value in required_output.items()
+            ):
+                return False
+        for name in set(proposed_by_name) - set(original_by_name):
+            case = proposed_by_name[name]
+            contract = contracts_by_name[name]
+            if set(case) != {"name", "period", "input", "output"}:
+                return False
+            if not values_equal(case.get("name"), name):
+                return False
+            if not values_equal(case.get("period"), contract.get("period")):
+                return False
+            if not values_equal(case.get("input"), contract.get("input")):
+                return False
+            output = case.get("output")
+            required_output = contract.get("required_output")
+            if not isinstance(output, dict) or not isinstance(required_output, dict):
+                return False
+            if any(
+                key not in output or not values_equal(output[key], value)
+                for key, value in required_output.items()
+            ):
+                return False
+    except (RecursionError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _materialize_tests_only_repair_artifact(
+    llm_response: str,
+    *,
+    expected_path: Path,
+    expected_test_path: Path,
+    workspace_root: Path | None,
+    artifact_root: Path | None,
+    materialized_paths: set[Path] | None,
+    repair_candidate: ValidationRetryCandidate,
+    required_test_case_contracts: Sequence[Mapping[str, object]],
+) -> bool:
+    """Materialize only a non-weakening test expansion over an immutable RuleSpec."""
+
+    if repair_candidate.tests is None:
+        return False
+    test_content: str | None = None
+    if workspace_root is not None:
+        workspace_main = workspace_root / expected_path.name
+        workspace_test = workspace_root / expected_test_path.name
+        if workspace_main.exists():
+            return False
+        if workspace_test.exists():
+            test_content = workspace_test.read_text()
+    bundle = _extract_generated_file_bundle(llm_response)
+    if bundle:
+        if set(bundle) != {expected_test_path.name}:
+            return False
+        candidate_files = {Path(name).name: content for name, content in bundle.items()}
+        bundled_test = candidate_files.get(expected_test_path.name)
+        if bundled_test is not None:
+            test_content = bundled_test
+    if test_content is None or not _preserves_companion_test_cases(
+        repair_candidate.tests, test_content, required_test_case_contracts
+    ):
+        return False
+    if hashlib.sha256(repair_candidate.rulespec.encode("utf-8")).hexdigest() != (
+        repair_candidate.rulespec_sha256
+    ):
+        return False
+    _write_eval_artifact_text(expected_path, repair_candidate.rulespec, artifact_root)
+    _write_eval_artifact_text(expected_test_path, test_content, artifact_root)
+    if materialized_paths is not None:
+        materialized_paths.update((expected_path, expected_test_path))
     return True
 
 

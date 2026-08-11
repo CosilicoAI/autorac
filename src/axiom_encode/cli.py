@@ -187,6 +187,7 @@ from .harness.evals import (
     _git_checkout_execution_identity,
     _load_eval_suite_resume_state,
     _open_secure_eval_parent,
+    _preserves_companion_test_cases,
     _render_eval_result_verdict_evidence,
     _resolve_eval_output_path,
     _rulespec_root_execution_identity,
@@ -2759,6 +2760,15 @@ def main():
     encode_parser.add_argument(
         "--repair-candidate-tests-sha256",
         help="Expected SHA-256 of the preserved repair candidate companion tests",
+    )
+    encode_parser.add_argument(
+        "--repair-candidate-tests-only",
+        action="store_true",
+        help=(
+            "Keep the hash-bound repair candidate RuleSpec immutable and permit "
+            "only a non-weakening companion-test expansion required by a v2 "
+            "review contract"
+        ),
     )
     encode_parser.add_argument(
         "--policyengine-rule-hint",
@@ -26173,6 +26183,58 @@ def _load_initial_validation_retry_candidate(
     )
 
 
+def _validate_tests_only_repair_contract(
+    args: Any,
+    candidate: ValidationRetryCandidate | None,
+) -> None:
+    """Fail closed unless tests-only repair is fully identity and contract bound."""
+
+    if getattr(args, "repair_candidate_tests_only", False) is not True:
+        return
+    contract = getattr(args, "review_contract_json", None)
+    candidate_path = getattr(args, "repair_candidate_path", None)
+    replacement_path = getattr(args, "replace_rulespec_path", None)
+    if candidate is None or candidate.tests is None:
+        raise ValueError("tests-only repair requires a complete repair candidate")
+    if getattr(args, "apply", False) is not True:
+        raise ValueError("tests-only repair requires encode --apply")
+    legacy_options = (
+        getattr(args, "replace_legacy_rulespec_path", None),
+        *tuple(getattr(args, "legacy_dependent_rulespec_path", ()) or ()),
+        *tuple(getattr(args, "legacy_exact_dependent_rulespec_path", ()) or ()),
+        *tuple(getattr(args, "legacy_retained_successor_rulespec_path", ()) or ()),
+    )
+    if any(option is not None for option in legacy_options):
+        raise ValueError("tests-only repair cannot perform a legacy migration")
+    if contract is None or not contract.required_test_cases:
+        raise ValueError(
+            "tests-only repair requires a nonempty v2 required-test-case contract"
+        )
+    if contract.required_deferred_outputs:
+        raise ValueError("tests-only repair cannot include deferred-output contracts")
+    if contract.citation != str(args.citation):
+        raise ValueError("tests-only repair contract citation mismatch")
+    normalized_replacement_path = (
+        Path(replacement_path).as_posix() if replacement_path is not None else None
+    )
+    if contract.rulespec_path != normalized_replacement_path:
+        raise ValueError("tests-only repair contract path mismatch")
+    replacement_parts = Path(normalized_replacement_path).parts
+    candidate_parts = Path(candidate_path).parts
+    if candidate_parts[0] in RULESPEC_ATOMIC_MODULE_ROOTS:
+        candidate_module_parts = candidate_parts
+    elif (
+        len(candidate_parts) >= 2
+        and candidate_parts[0] == replacement_parts[0]
+        and candidate_parts[1] in RULESPEC_ATOMIC_MODULE_ROOTS
+    ):
+        candidate_module_parts = candidate_parts[1:]
+    else:
+        candidate_module_parts = ()
+    if candidate_module_parts != replacement_parts[1:]:
+        raise ValueError("tests-only repair replacement path mismatch")
+
+
 def _latest_validation_retry_candidate(
     prior_attempts: Sequence[_FailedEncodeAttempt],
 ) -> ValidationRetryCandidate | None:
@@ -26362,11 +26424,18 @@ def _encode_validation_retry_context(
     prior_attempts: Sequence[_FailedEncodeAttempt],
     *,
     initial_retry_candidate: ValidationRetryCandidate | None,
+    preserve_initial_candidate: bool = False,
 ) -> tuple[tuple[str, ...], ValidationRetryCandidate | None]:
     """Bind validator feedback to the exact candidate that produced it."""
 
     if not prior_attempts:
         return (), initial_retry_candidate
+    if preserve_initial_candidate:
+        if initial_retry_candidate is None:
+            raise RuntimeError("Preserved validation retry candidate is unavailable")
+        return _encode_validation_retry_feedback(
+            prior_attempts
+        ), initial_retry_candidate
     candidate = _latest_validation_retry_candidate(prior_attempts)
     if candidate is None:
         raise RuntimeError(
@@ -26391,6 +26460,62 @@ class _EncodeReplacementTarget(NamedTuple):
 
 _LEGACY_REPLACEMENT_ATTR = "_axiom_legacy_replacement_contract"
 _REPLACEMENT_OVERLAY_SCOPE_ATTR = "_axiom_replacement_overlay_scope"
+_IMMUTABLE_RULESPEC_SHA256_ATTR = "_axiom_immutable_rulespec_sha256"
+_PRESERVED_COMPANION_TESTS_ATTR = "_axiom_preserved_companion_tests"
+_REQUIRED_TEST_CASE_CONTRACTS_ATTR = "_axiom_required_test_case_contracts"
+
+
+def _immutable_rulespec_digest_issue(result: Any, output_file: Path) -> str | None:
+    """Return an issue when a constrained repair's RuleSpec bytes changed."""
+
+    expected = vars(result).get(_IMMUTABLE_RULESPEC_SHA256_ATTR)
+    if expected is None:
+        return None
+    try:
+        actual = _sha256_file(output_file)
+    except OSError:
+        return "Tests-only repair could not verify immutable RuleSpec bytes"
+    if actual != expected:
+        return "Tests-only repair changed the hash-bound RuleSpec bytes"
+    return None
+
+
+def _immutable_planned_rulespec_digest_issue(
+    result: Any,
+    planned: Mapping[Path, bytes],
+    relative_output: Path,
+) -> str | None:
+    """Return an issue when planned apply bytes replace an immutable RuleSpec."""
+
+    expected = vars(result).get(_IMMUTABLE_RULESPEC_SHA256_ATTR)
+    if expected is None:
+        return None
+    primary = planned.get(_canonical_apply_relative_path(relative_output))
+    if primary is None or hashlib.sha256(primary).hexdigest() != expected:
+        return "Tests-only repair changed the planned hash-bound RuleSpec bytes"
+    return None
+
+
+def _tests_only_companion_preservation_issue(
+    result: Any,
+    test_file: Path,
+) -> str | None:
+    """Return an issue when apply-time repairs escape the signed test contract."""
+
+    attributes = vars(result)
+    original = attributes.get(_PRESERVED_COMPANION_TESTS_ATTR)
+    contracts = attributes.get(_REQUIRED_TEST_CASE_CONTRACTS_ATTR)
+    if original is None and contracts is None:
+        return None
+    if not isinstance(original, str) or not isinstance(contracts, tuple):
+        return "Tests-only repair companion preservation state is malformed"
+    try:
+        proposed = test_file.read_text()
+    except (OSError, UnicodeError):
+        return "Tests-only repair could not verify the final companion tests"
+    if not _preserves_companion_test_cases(original, proposed, contracts):
+        return "Tests-only repair changed companion tests outside the bound contract"
+    return None
 
 
 def _resolve_required_import_rulespec_paths(
@@ -28644,6 +28769,7 @@ def _run_encode_attempts_with_retries(
 ):
     """Bounded validator-retry loop for one encode invocation."""
     initial_retry_candidate = _load_initial_validation_retry_candidate(args)
+    _validate_tests_only_repair_contract(args, initial_retry_candidate)
     failed_attempts: tuple[_FailedEncodeAttempt, ...] = ()
     current_model = config.initial_model
 
@@ -28906,6 +29032,9 @@ def _run_encode_attempt(
         _encode_validation_retry_context(
             prior_attempts,
             initial_retry_candidate=initial_retry_candidate,
+            preserve_initial_candidate=(
+                getattr(args, "repair_candidate_tests_only", False) is True
+            ),
         )
     )
     results = run_model_eval(
@@ -28932,6 +29061,9 @@ def _run_encode_attempt(
         ),
         validation_retry_feedback=validation_retry_feedback,
         validation_retry_candidate=validation_retry_candidate,
+        repair_candidate_tests_only=(
+            getattr(args, "repair_candidate_tests_only", False) is True
+        ),
         required_deferred_output_contracts=(
             deferred_output_review_contract.required_deferred_outputs
             if deferred_output_review_contract is not None
@@ -28960,6 +29092,33 @@ def _run_encode_attempt(
     )
 
     result = results[0]
+    if getattr(args, "repair_candidate_tests_only", False) is True:
+        assert initial_retry_candidate is not None
+        assert initial_retry_candidate.tests is not None
+        setattr(
+            result,
+            _IMMUTABLE_RULESPEC_SHA256_ATTR,
+            initial_retry_candidate.rulespec_sha256,
+        )
+        setattr(
+            result,
+            _PRESERVED_COMPANION_TESTS_ATTR,
+            initial_retry_candidate.tests,
+        )
+        assert deferred_output_review_contract is not None
+        setattr(
+            result,
+            _REQUIRED_TEST_CASE_CONTRACTS_ATTR,
+            tuple(
+                {
+                    "name": contract.name,
+                    "period": contract.period,
+                    "input": contract.input,
+                    "required_output": contract.required_output,
+                }
+                for contract in deferred_output_review_contract.required_test_cases
+            ),
+        )
     setattr(
         result,
         _LEGACY_REPLACEMENT_ATTR,
@@ -52492,13 +52651,25 @@ def _apply_generated_encoding_result(
             "Cannot apply supplemental source-verifying RuleSpec(s): "
             + "; ".join(supplemental_source_issues)
         )
+    immutable_issue = _immutable_rulespec_digest_issue(result, output_file)
+    if immutable_issue is not None:
+        raise RuntimeError(immutable_issue)
     _stamp_generated_source_attestation_for_apply(result, output_file)
+    immutable_issue = _immutable_rulespec_digest_issue(result, output_file)
+    if immutable_issue is not None:
+        raise RuntimeError(immutable_issue)
 
     _enforce_canonical_concept_registry(
         candidate_files=[output_file, _rulespec_test_path(output_file)],
         relative_output=relative_output,
         policy_repo_path=policy_repo_path,
     )
+    companion_issue = _tests_only_companion_preservation_issue(
+        result,
+        _rulespec_test_path(output_file),
+    )
+    if companion_issue is not None:
+        raise RuntimeError(companion_issue)
 
     local_corpus_release = load_rulespec_local_corpus_release(
         content_root,
@@ -52521,6 +52692,13 @@ def _apply_generated_encoding_result(
         relative_output=relative_output,
         supplemental_files=supplemental_files,
     )
+    immutable_issue = _immutable_planned_rulespec_digest_issue(
+        result,
+        planned,
+        relative_output,
+    )
+    if immutable_issue is not None:
+        raise RuntimeError(immutable_issue)
     _require_planned_apply_bytes_match_validation_snapshot(
         result,
         planned,
@@ -53336,6 +53514,9 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         )
     except RuntimeError as exc:
         return False, [str(exc)], {}
+    immutable_issue = _immutable_rulespec_digest_issue(result, output_file)
+    if immutable_issue is not None:
+        return False, [immutable_issue], {}
     try:
         _stamp_generated_source_attestation_for_apply(result, output_file)
         source_metadata = _generated_result_source_metadata(result)
@@ -53344,6 +53525,9 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
         if detail.startswith(_GENERATED_RULESPEC_NONRETRYABLE_PREFIXES):
             return False, [detail], {}
         return False, [f"{relative_output}: {detail}"], {}
+    immutable_issue = _immutable_rulespec_digest_issue(result, output_file)
+    if immutable_issue is not None:
+        return False, [immutable_issue], {}
 
     generated_content = output_file.read_text()
     output_test = _rulespec_test_path(output_file)
