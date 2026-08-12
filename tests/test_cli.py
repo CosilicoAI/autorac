@@ -7684,6 +7684,9 @@ rules:
         rules_file.parent.mkdir(parents=True)
         rules_file.write_text(
             """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-fl/manual/example
 rules:
   - name: benefit
     kind: derived
@@ -20829,6 +20832,7 @@ rules:
         parameter = payload["rules"][1]
         assert parameter["name"] == "snap_standard_deduction_max_household_size"
         assert parameter["kind"] == "parameter"
+        assert parameter["dtype"] == "Count"
         assert parameter["versions"][0]["formula"] == "6"
         derived = payload["rules"][2]
         assert (
@@ -20850,6 +20854,7 @@ rules:
   kind: derived
   entity: Household
   dtype: Money
+  unit: USD
   period: Month
   source: Appendix A-1, Maximum Benefit Effective October 1, 2025
   metadata:
@@ -20873,8 +20878,10 @@ rules:
             policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-fl"),
             issues=[
                 "Embedded scalar literal: maximum_food_assistance_benefit line 10 "
-                "embeds 10 in `assistance_group_size <= 10`; extract the value "
-                "to its own named numeric concept or indexed table/grid value"
+                "embeds 10 in `if assistance_group_size <= 10: "
+                "maximum_food_assistance_benefit_table[assistance_group_size] else: "
+                "maximum_food_assistance_benefit_table[10]`; extract the value to "
+                "its own named numeric concept or indexed table/grid value"
             ],
         )
 
@@ -20882,6 +20889,8 @@ rules:
         payload = yaml.safe_load(rules_file.read_text())
         parameter = payload["rules"][0]
         assert parameter["name"] == "maximum_food_assistance_benefit_scalar_limit"
+        assert parameter["dtype"] == "Count"
+        assert "unit" not in parameter
         atom = parameter["metadata"]["proof"]["atoms"][0]
         assert atom["source"]["corpus_citation_path"] == "us-fl/manual/example"
         assert "Maximum Benefit Effective" in atom["source"]["excerpt"]
@@ -20901,6 +20910,8 @@ rules:
             f"""format: rulespec/v1
 module:
   summary: Tennessee SNAP standards.
+  source_verification:
+    corpus_citation_path: us-tn/regulation/1240-01/04/27/block-1
 rules:
 - name: snap_gross_income_standard_for_household
   kind: derived
@@ -20950,6 +20961,8 @@ rules:
             f"""format: rulespec/v1
 module:
   summary: Arizona CCAP income chart.
+  source_verification:
+    corpus_citation_path: us-az/policies/des/ccap/chart
 rules:
 - name: child_care_assistance_fee_level
   kind: derived
@@ -20970,7 +20983,7 @@ rules:
             policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-az"),
             issues=[
                 "Embedded scalar literal: child_care_assistance_fee_level "
-                "line 10 embeds 4 in `4`; extract the value to its own named "
+                f"line 10 embeds 4 in `{formula}`; extract the value to its own named "
                 "numeric concept or indexed table/grid value"
             ],
         )
@@ -21031,6 +21044,7 @@ rules:
         payload = yaml.safe_load(rules_file.read_text())
         parameter = payload["rules"][0]
         assert parameter["name"] == "applicable_income_limitation_rate_scalar_limit"
+        assert parameter["dtype"] == "Rate"
         assert parameter["versions"][0]["formula"] == "1.333333"
         assert (
             parameter["metadata"]["proof"]["atoms"][0]["source"]["excerpt"]
@@ -21088,10 +21102,21 @@ rules:
         )
         rules_file.write_text(
             f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-tn/regulation/1240-01/04/27/block-1
 rules:
 - name: snap_gross_income_standard_for_household_scalar_limit
   kind: parameter
   dtype: Count
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: us-tn/regulation/1240-01/04/27/block-1
+          excerpt: Household size 10
   versions:
   - effective_from: '0001-01-01'
     formula: '10'
@@ -21123,7 +21148,7 @@ rules:
             policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-tn"),
             issues=[
                 "Embedded scalar literal: snap_gross_income_standard_for_household "
-                "line 10 embeds 10 in `snap_gross_income_standard[10]`; "
+                f"line 10 embeds 10 in `{formula}`; "
                 "extract the value to its own named numeric concept or indexed "
                 "table/grid value"
             ],
@@ -21147,6 +21172,383 @@ rules:
             == 3
         )
         assert len(derived["metadata"]["proof"]["atoms"]) == 1
+
+    def test_embedded_scalar_literal_repair_infers_money_for_output_leaf(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: taxpayer_senior_additional_credit
+  kind: derived
+  entity: Person
+  dtype: Money
+  unit: USD
+  source: KRS 141.020(3)(a)4
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if taxpayer_is_senior: 40 else: 0'
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+        from axiom_encode.harness.validator_pipeline import ValidatorPipeline
+
+        pipeline = ValidatorPipeline(
+            tmp_path,
+            tmp_path,
+            local_corpus_release=None,
+            enable_oracles=False,
+        )
+        issues = pipeline._check_embedded_scalar_literals(rules_file)
+        assert any(
+            "embeds 40 in `if taxpayer_is_senior: 40 else: 0`" in issue
+            for issue in issues
+        )
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=issues,
+        )
+
+        assert repaired == ["taxpayer_senior_additional_credit_scalar_limit"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter = payload["rules"][0]
+        assert parameter["dtype"] == "Money"
+        assert parameter["unit"] == "USD"
+        assert parameter["versions"][0]["formula"] == "40"
+
+    def test_embedded_scalar_literal_repair_declines_ambiguous_multiplier(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "tax.yaml"
+        rules_file.parent.mkdir(parents=True)
+        original = """format: rulespec/v1
+rules:
+- name: income_tax
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  versions:
+  - effective_from: '2026-01-01'
+    formula: taxable_income * 0.01
+"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: income_tax line 9 embeds 0.01 in "
+                "`taxable_income * 0.01`; extract the value to its own named "
+                "numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
+    def test_embedded_scalar_literal_repair_declines_mixed_roles(self, tmp_path):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        original = """format: rulespec/v1
+rules:
+- name: household_credit
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if household_size <= 40: 40 else: 0'
+"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: household_credit line 9 embeds 40 in "
+                "`if household_size <= 40: 40 else: 0`; extract the value to its "
+                "own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
+    def test_embedded_scalar_literal_repair_scopes_later_version(self, tmp_path):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: household_credit
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: us-ky/statute/krs/141.020/document-1
+          excerpt: 2025 multiplier 40
+      - path: versions[1].formula
+        kind: formula
+        source:
+          corpus_citation_path: us-ky/statute/krs/141.020/document-1
+          excerpt: 2026 credit 40 dollars
+  versions:
+  - effective_from: 2025-01-01
+    effective_to: 2025-12-31
+    formula: taxable_income * 40
+  - effective_from: 2026-01-01
+    effective_to: 2026-12-31
+    formula: 'if eligible: 40 else: 0'
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: household_credit line 13 embeds 40 in "
+                "`if eligible: 40 else: 0`; extract the value to its own named "
+                "numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["household_credit_scalar_limit"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter, derived = payload["rules"]
+        assert parameter["dtype"] == "Money"
+        assert parameter["unit"] == "USD"
+        assert parameter["versions"] == [
+            {
+                "effective_from": "2026-01-01",
+                "effective_to": "2026-12-31",
+                "formula": "40",
+            }
+        ]
+        assert (
+            parameter["metadata"]["proof"]["atoms"][0]["source"]["excerpt"]
+            == "2026 credit 40 dollars"
+        )
+        assert derived["versions"][0]["formula"] == "taxable_income * 40"
+        assert (
+            derived["versions"][1]["formula"]
+            == "if eligible: household_credit_scalar_limit else: 0"
+        )
+        assert any(
+            atom.get("path") == "versions[1].formula"
+            and atom.get("import", {}).get("output") == "household_credit_scalar_limit"
+            for atom in derived["metadata"]["proof"]["atoms"]
+        )
+
+    def test_embedded_scalar_literal_repair_rejects_incompatible_reuse(self, tmp_path):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: household_credit_scalar_limit
+  kind: parameter
+  dtype: Count
+  versions:
+  - effective_from: '2025-01-01'
+    effective_to: '2025-12-31'
+    formula: '40'
+  - effective_from: '2026-01-01'
+    formula: '50'
+- name: household_credit
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if eligible: 40 else: 0'
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: household_credit line 19 embeds 40 in "
+                "`if eligible: 40 else: 0`; extract the value to its own named "
+                "numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["household_credit_scalar_limit_2"]
+        payload = yaml.safe_load(rules_file.read_text())
+        old_parameter, new_parameter, derived = payload["rules"]
+        assert old_parameter["dtype"] == "Count"
+        assert new_parameter["dtype"] == "Money"
+        assert new_parameter["unit"] == "USD"
+        assert new_parameter["versions"] == [
+            {"effective_from": "2026-01-01", "formula": "40"}
+        ]
+        assert (
+            derived["versions"][0]["formula"]
+            == "if eligible: household_credit_scalar_limit_2 else: 0"
+        )
+
+    def test_embedded_scalar_literal_repair_replaces_exact_multiline_leaf(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: fee_level_credit
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  versions:
+  - effective_from: '2026-01-01'
+    formula: |-
+      if fee_level_40_applies:
+        40
+      else:
+        0
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+        from axiom_encode.harness.validator_pipeline import ValidatorPipeline
+
+        pipeline = ValidatorPipeline(
+            tmp_path,
+            tmp_path,
+            local_corpus_release=None,
+            enable_oracles=False,
+        )
+        issues = pipeline._check_embedded_scalar_literals(rules_file)
+        assert any("embeds 40 in `40`" in issue for issue in issues)
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=issues,
+        )
+
+        assert repaired == ["fee_level_credit_scalar_limit"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter, derived = payload["rules"]
+        assert parameter["dtype"] == "Money"
+        formula = derived["versions"][0]["formula"]
+        assert "fee_level_40_applies" in formula
+        assert "fee_level_credit_scalar_limit_applies" not in formula
+        assert "\n  fee_level_credit_scalar_limit\n" in formula
+
+    def test_embedded_scalar_literal_repair_rejects_unrelated_provenance_reuse(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "credit.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+rules:
+- name: household_credit_scalar_limit
+  kind: parameter
+  dtype: Money
+  unit: USD
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: parameter
+        source:
+          corpus_citation_path: us-ky/statute/krs/141.020/document-1
+          excerpt: Kentucky 30 dollars in 2025
+      - path: versions[1].formula
+        kind: parameter
+        source:
+          corpus_citation_path: us-xx/statute/unrelated
+          excerpt: unrelated 40 dollars
+  versions:
+  - effective_from: '2025-01-01'
+    effective_to: '2025-12-31'
+    formula: '30'
+  - effective_from: '2026-01-01'
+    formula: '40'
+- name: household_credit
+  kind: derived
+  entity: TaxUnit
+  dtype: Money
+  unit: USD
+  metadata:
+    proof:
+      atoms:
+      - path: versions[0].formula
+        kind: formula
+        source:
+          corpus_citation_path: us-ky/statute/krs/141.020/document-1
+          excerpt: Kentucky credit 40 dollars
+      - path: versions[0].formula
+        kind: import
+        import:
+          target: us-ky:policies/credit#household_credit_scalar_limit
+          output: household_credit_scalar_limit
+          hash: sha256:local
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if eligible: 40 else: 0'
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        original = rules_file.read_text()
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: household_credit line 32 embeds 40 in "
+                "`if eligible: 40 else: 0`; extract the value to its own named "
+                "numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
 
     def test_bare_snapunit_entity_repair_scopes_assistance_group_to_household(
         self, tmp_path

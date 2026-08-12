@@ -33200,24 +33200,11 @@ def _extract_embedded_scalar_literal_record(
             _grounded_formula_literal_for_scalar_expression(rule, expression) or literal
         )
         replace_expression = parameter_formula != literal
-        existing_parameter_name = _existing_embedded_scalar_parameter_name(
-            rules,
-            base_name=parameter_name,
-            literal=parameter_formula,
-        )
-        insert_parameter = existing_parameter_name is None
-        if existing_parameter_name is not None:
-            parameter_name = existing_parameter_name
-        else:
-            parameter_name = _unique_generated_rule_name(
-                parameter_name,
-                existing_names,
-            )
         versions = rule.get("versions")
         if not isinstance(versions, list) or not versions:
             return None
-        changed = False
-        for version in versions:
+        matching_versions: list[tuple[int, dict[str, Any], str]] = []
+        for version_index, version in enumerate(versions):
             if not isinstance(version, dict):
                 continue
             formula = version.get("formula")
@@ -33237,20 +33224,89 @@ def _extract_embedded_scalar_literal_record(
                     parameter_name=parameter_name,
                 )
             if replacement != formula:
-                version["formula"] = replacement
-                changed = True
-        if not changed:
+                matching_versions.append((version_index, version, replacement))
+        if len(matching_versions) != 1:
             return None
+        target_version_index, target_version, replacement = matching_versions[0]
+        target_formula = str(target_version.get("formula") or "")
+        parameter_dtype = _embedded_scalar_parameter_dtype(
+            rule,
+            literal=literal,
+            expression=expression,
+            target_formula=target_formula,
+        )
+        if parameter_dtype is None:
+            return None
+        parameter_unit = _embedded_scalar_parameter_unit(
+            rule,
+            dtype=parameter_dtype,
+        )
+        existing_parameter_name = _existing_embedded_scalar_parameter_name(
+            rules,
+            base_name=parameter_name,
+            literal=parameter_formula,
+            dtype=parameter_dtype,
+            unit=parameter_unit,
+            target_version=target_version,
+            target_rule=rule,
+            target_version_index=target_version_index,
+            expected_target=f"{target_anchor}#{parameter_name}",
+            target_corpus_citation_path=corpus_citation_path,
+        )
+        insert_parameter = existing_parameter_name is None
+        if existing_parameter_name is not None:
+            parameter_name = existing_parameter_name
+        else:
+            if parameter_name in existing_names and _rule_has_formula_import(
+                rule,
+                path=f"versions[{target_version_index}].formula",
+                target=f"{target_anchor}#{parameter_name}",
+                output=parameter_name,
+            ):
+                return None
+            parameter_name = _unique_generated_rule_name(
+                parameter_name,
+                existing_names,
+            )
+        parameter_source_atom: dict[str, Any] | None = None
+        if insert_parameter:
+            parameter_source_atom = _source_atom_for_embedded_scalar_parameter(
+                rule,
+                literal=parameter_formula,
+                source_version_index=target_version_index,
+                corpus_citation_path=corpus_citation_path,
+            )
+            if parameter_source_atom is None:
+                return None
+            if replace_expression:
+                replacement = _replace_embedded_scalar_expression(
+                    target_formula,
+                    expression=expression,
+                    parameter_name=parameter_name,
+                )
+            else:
+                replacement = _replace_embedded_scalar_literal(
+                    target_formula,
+                    literal=literal,
+                    expression=expression,
+                    parameter_name=parameter_name,
+                )
+        target_version["formula"] = replacement
         _add_formula_proof_import(
             rule,
             target=f"{target_anchor}#{parameter_name}",
             output=parameter_name,
+            path=f"versions[{target_version_index}].formula",
         )
         if insert_parameter:
             parameter_rule = _embedded_scalar_parameter_rule(
                 rule,
                 name=parameter_name,
                 literal=parameter_formula,
+                dtype=parameter_dtype,
+                unit=parameter_unit,
+                source_version=target_version,
+                source_atom=parameter_source_atom,
                 corpus_citation_path=corpus_citation_path,
             )
             rules.insert(index, parameter_rule)
@@ -33335,6 +33391,13 @@ def _existing_embedded_scalar_parameter_name(
     *,
     base_name: str,
     literal: str,
+    dtype: str,
+    unit: str | None,
+    target_version: dict[str, Any],
+    target_rule: dict[str, Any],
+    target_version_index: int,
+    expected_target: str,
+    target_corpus_citation_path: str | None,
 ) -> str | None:
     for rule in rules:
         if not isinstance(rule, dict):
@@ -33343,16 +33406,91 @@ def _existing_embedded_scalar_parameter_name(
             continue
         if str(rule.get("kind") or "").strip().lower() != "parameter":
             return None
+        if str(rule.get("dtype") or "").strip() != dtype:
+            return None
+        existing_unit = str(rule.get("unit") or "").strip() or None
+        if existing_unit != unit:
+            return None
+        target_path = f"versions[{target_version_index}].formula"
+        if not _rule_has_formula_import(
+            target_rule,
+            path=target_path,
+            target=expected_target,
+            output=base_name,
+        ):
+            return None
         versions = rule.get("versions")
         if not isinstance(versions, list):
             return None
-        for version in versions:
-            if not isinstance(version, dict):
-                continue
-            formula = version.get("formula")
-            if str(formula).strip() == literal:
-                return base_name
+        matching_version_indices = [
+            version_index
+            for version_index, version in enumerate(versions)
+            if isinstance(version, dict)
+            and str(version.get("formula")).strip() == literal
+            and _normalized_rulespec_date(version.get("effective_from"))
+            == _normalized_rulespec_date(target_version.get("effective_from"))
+            and _normalized_rulespec_date(version.get("effective_to"))
+            == _normalized_rulespec_date(target_version.get("effective_to"))
+        ]
+        if len(matching_version_indices) != 1:
+            return None
+        parameter_source_paths = _proof_source_citation_paths(
+            rule,
+            path=f"versions[{matching_version_indices[0]}].formula",
+        )
+        if not parameter_source_paths:
+            return None
+        target_source_paths = _proof_source_citation_paths(
+            target_rule,
+            path=target_path,
+        )
+        if not target_source_paths:
+            if not target_corpus_citation_path:
+                return None
+            target_source_paths = {target_corpus_citation_path.strip()}
+        if parameter_source_paths.isdisjoint(target_source_paths):
+            return None
+        return base_name
     return None
+
+
+def _rule_has_formula_import(
+    rule: dict[str, Any],
+    *,
+    path: str,
+    target: str,
+    output: str,
+) -> bool:
+    proof = rule.get("metadata", {}).get("proof")
+    atoms = proof.get("atoms") if isinstance(proof, dict) else None
+    return isinstance(atoms, list) and any(
+        isinstance(atom, dict)
+        and atom.get("path") == path
+        and isinstance(atom.get("import"), dict)
+        and atom["import"].get("target") == target
+        and atom["import"].get("output") == output
+        for atom in atoms
+    )
+
+
+def _proof_source_citation_paths(
+    rule: dict[str, Any],
+    *,
+    path: str | None = None,
+) -> set[str]:
+    proof = rule.get("metadata", {}).get("proof")
+    atoms = proof.get("atoms") if isinstance(proof, dict) else None
+    if not isinstance(atoms, list):
+        return set()
+    return {
+        citation_path.strip()
+        for atom in atoms
+        if isinstance(atom, dict)
+        and (path is None or atom.get("path") == path)
+        and isinstance(atom.get("source"), dict)
+        and isinstance(citation_path := atom["source"].get("corpus_citation_path"), str)
+        and citation_path.strip()
+    }
 
 
 def _replace_embedded_scalar_literal(
@@ -33367,16 +33505,12 @@ def _replace_embedded_scalar_literal(
         parameter_name,
         expression,
     )
-    if (
-        expression.strip() != literal
-        and expression_replacement != expression
-        and expression in formula
-    ):
-        formula = formula.replace(expression, expression_replacement, 1)
-    return re.sub(
-        rf"(?<![A-Za-z0-9_.]){re.escape(literal)}(?![A-Za-z0-9_.])",
-        parameter_name,
+    if expression_replacement == expression:
+        return formula
+    return _replace_exact_stripped_formula_line(
         formula,
+        expression=expression,
+        replacement=expression_replacement,
     )
 
 
@@ -33386,9 +33520,36 @@ def _replace_embedded_scalar_expression(
     expression: str,
     parameter_name: str,
 ) -> str:
-    if expression.strip() and expression in formula:
-        return formula.replace(expression, parameter_name)
-    return formula
+    return _replace_exact_stripped_formula_line(
+        formula,
+        expression=expression,
+        replacement=parameter_name,
+    )
+
+
+def _replace_exact_stripped_formula_line(
+    formula: str,
+    *,
+    expression: str,
+    replacement: str,
+) -> str:
+    normalized_expression = expression.strip()
+    if not normalized_expression:
+        return formula
+    lines = formula.splitlines(keepends=True)
+    matching_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == normalized_expression
+    ]
+    if len(matching_indices) != 1:
+        return formula
+    index = matching_indices[0]
+    line = lines[index]
+    leading = len(line) - len(line.lstrip())
+    trailing = len(line.rstrip())
+    lines[index] = f"{line[:leading]}{replacement}{line[trailing:]}"
+    return "".join(lines)
 
 
 def _embedded_scalar_parameter_rule(
@@ -33396,58 +33557,158 @@ def _embedded_scalar_parameter_rule(
     *,
     name: str,
     literal: str,
+    dtype: str,
+    unit: str | None,
+    source_version: dict[str, Any],
+    source_atom: dict[str, Any],
     corpus_citation_path: str | None = None,
 ) -> dict[str, Any]:
-    first_effective_from = "0001-01-01"
-    versions = source_rule.get("versions")
-    if isinstance(versions, list):
-        for version in versions:
-            if not isinstance(version, dict):
-                continue
-            effective_from = version.get("effective_from")
-            if isinstance(effective_from, str) and effective_from.strip():
-                first_effective_from = effective_from.strip()
-                break
+    effective_from = (
+        _normalized_rulespec_date(source_version.get("effective_from")) or "0001-01-01"
+    )
+    parameter_version: dict[str, Any] = {
+        "effective_from": effective_from,
+        "formula": literal,
+    }
+    effective_to = _normalized_rulespec_date(source_version.get("effective_to"))
+    if effective_to is not None:
+        parameter_version["effective_to"] = effective_to
     parameter_rule: dict[str, Any] = {
         "name": name,
         "kind": "parameter",
-        "dtype": "Count",
+        "dtype": dtype,
         "source": source_rule.get("source"),
-        "metadata": {
-            "proof": {
-                "atoms": [
-                    _source_atom_for_embedded_scalar_parameter(
-                        source_rule,
-                        literal=literal,
-                        corpus_citation_path=corpus_citation_path,
-                    )
-                ]
-            }
-        },
-        "versions": [
-            {
-                "effective_from": first_effective_from,
-                "formula": literal,
-            }
-        ],
+        "metadata": {"proof": {"atoms": [source_atom]}},
+        "versions": [parameter_version],
     }
     if not parameter_rule["source"]:
         parameter_rule.pop("source", None)
+    if unit is not None:
+        parameter_rule["unit"] = unit
     return parameter_rule
+
+
+def _normalized_rulespec_date(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _embedded_scalar_parameter_dtype(
+    source_rule: dict[str, Any],
+    *,
+    literal: str,
+    expression: str,
+    target_formula: str,
+) -> str | None:
+    """Infer only scalar types that the formula shape determines safely."""
+    normalized_expression = expression.strip()
+    source_dtype = str(source_rule.get("dtype") or "").strip()
+    numeric_dtypes = {"Count", "Decimal", "Integer", "Money", "Rate"}
+
+    if source_dtype not in numeric_dtypes:
+        return None
+
+    literal_pattern = rf"(?<![A-Za-z0-9_.]){re.escape(literal)}(?![A-Za-z0-9_.])"
+    occurrences = [match.span() for match in re.finditer(literal_pattern, expression)]
+    if not occurrences:
+        return None
+
+    count_patterns = (
+        rf"\[\s*(?P<literal>{literal_pattern})\s*\]",
+        rf"\b[A-Za-z_][A-Za-z0-9_]*(?:count|number|size)\b\s*"
+        rf"(?:<=|<|>=|>|\+|-)\s*(?P<literal>{literal_pattern})",
+        rf"(?P<literal>{literal_pattern})\s*(?:<=|<|>=|>|\+|-)\s*"
+        rf"[A-Za-z_][A-Za-z0-9_]*(?:count|number|size)\b",
+        rf"\b(?:min|max)\s*\([^,]*(?:count|number|size)\b\s*,\s*"
+        rf"(?P<literal>{literal_pattern})\s*\)",
+    )
+    count_spans = {
+        match.span("literal")
+        for pattern in count_patterns
+        for match in re.finditer(pattern, expression, flags=re.IGNORECASE)
+    }
+    output_pattern = (
+        rf"(?:^|:|\belse\b)\s*(?P<literal>{literal_pattern})"
+        rf"(?=\s*(?:\belse\b|$))"
+    )
+    output_spans = {
+        match.span("literal")
+        for match in re.finditer(output_pattern, expression, flags=re.IGNORECASE)
+    }
+    if (
+        normalized_expression == literal
+        and target_formula.strip() != normalized_expression
+        and not _standalone_conditional_leaf_line(target_formula, literal)
+    ):
+        output_spans = set()
+
+    inferred: set[str] = set()
+    for span in occurrences:
+        occurrence_types: set[str] = set()
+        if span in count_spans:
+            occurrence_types.add("Count")
+        if span in output_spans:
+            occurrence_types.add(source_dtype)
+        if (
+            normalized_expression == literal
+            and target_formula.strip() == normalized_expression
+        ) or (
+            _simple_fraction_expression_value(normalized_expression) is not None
+            and target_formula.strip() == normalized_expression
+        ):
+            occurrence_types.add(source_dtype)
+        if len(occurrence_types) != 1:
+            return None
+        inferred.update(occurrence_types)
+    return next(iter(inferred)) if len(inferred) == 1 else None
+
+
+def _standalone_conditional_leaf_line(formula: str, literal: str) -> bool:
+    stripped_lines = [line.strip() for line in formula.splitlines() if line.strip()]
+    matching_indices = [
+        index for index, line in enumerate(stripped_lines) if line == literal
+    ]
+    return (
+        len(matching_indices) == 1
+        and matching_indices[0] > 0
+        and stripped_lines[matching_indices[0] - 1].endswith(":")
+    )
+
+
+def _embedded_scalar_parameter_unit(
+    source_rule: dict[str, Any],
+    *,
+    dtype: str,
+) -> str | None:
+    if dtype != str(source_rule.get("dtype") or "").strip():
+        return None
+    unit = source_rule.get("unit")
+    if isinstance(unit, str) and unit.strip():
+        return unit.strip()
+    return None
 
 
 def _source_atom_for_embedded_scalar_parameter(
     source_rule: dict[str, Any],
     *,
     literal: str,
+    source_version_index: int,
     corpus_citation_path: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     proof = source_rule.get("metadata", {}).get("proof")
     atoms = proof.get("atoms") if isinstance(proof, dict) else None
     fallback_source: dict[str, Any] | None = None
+    source_path = f"versions[{source_version_index}].formula"
     if isinstance(atoms, list):
         for atom in atoms:
             if not isinstance(atom, dict):
+                continue
+            if atom.get("path") != source_path:
                 continue
             source = atom.get("source")
             if not isinstance(source, dict):
@@ -33477,10 +33738,7 @@ def _source_atom_for_embedded_scalar_parameter(
             "kind": "parameter",
             "source": source,
         }
-    return {
-        "path": "versions[0].formula",
-        "kind": "parameter",
-    }
+    return None
 
 
 def _add_formula_proof_import(
@@ -33488,6 +33746,7 @@ def _add_formula_proof_import(
     *,
     target: str,
     output: str,
+    path: str = "versions[0].formula",
 ) -> None:
     metadata = rule.setdefault("metadata", {})
     if not isinstance(metadata, dict):
@@ -33505,12 +33764,13 @@ def _add_formula_proof_import(
         isinstance(atom, dict)
         and isinstance(atom.get("import"), dict)
         and atom["import"].get("target") == target
+        and atom.get("path") == path
         for atom in atoms
     ):
         return
     atoms.append(
         {
-            "path": "versions[0].formula",
+            "path": path,
             "kind": "import",
             "import": {
                 "target": target,
