@@ -707,3 +707,57 @@ def test_systemic_discrepancy_fails_without_per_row_accusations(
     assert "systemic audit discrepancy" in report["errors"][0]
     assert all(r.get("unverified_discrepancy") for r in report["results"])
     assert not any("error" in r for r in report["results"])
+
+
+def test_partition_rechecks_all_discrepancies_in_isolation(
+    monkeypatch, capsys, tmp_path
+):
+    import json as _json
+
+    monkeypatch.setenv(cli._WAIVER_AUDIT_WORKERS_ENV, "1")
+    fp_good = "sha256:" + "a" * 64
+    fp_bad = "sha256:" + "b" * 64
+    count = 40
+    root = tmp_path / "rulespec-us"
+    (root / "us/statutes").mkdir(parents=True)
+    states = {}
+    for index in range(count):
+        rel = f"us/statutes/m{index:03d}.yaml"
+        (root / rel).write_text("format: rulespec/v1\n")
+        states[rel] = {"active": fp_good}
+    (root / "known-validation-gaps.yaml").write_text(_ledger_for(states, tmp_path))
+    base = tmp_path / "base.yaml"
+    base.write_text(_ledger_for(states, tmp_path))
+    changed = tmp_path / "changed.txt"
+    changed.write_text("")
+
+    def fake_parallel(modules, **kwargs):
+        return [
+            {"path": str(m), "passed": False, "fingerprint": fp_bad, "outcome": {}}
+            for m in modules
+        ]
+
+    serial_calls = []
+
+    def fake_serial(modules, **kwargs):
+        serial_calls.append([str(module) for module in modules])
+        return [
+            {"path": str(m), "passed": False, "fingerprint": fp_good, "outcome": {}}
+            for m in modules
+        ]
+
+    args = _audit_args(tmp_path, root, tmp_path / "c", tmp_path / "e", base, changed)
+    args.json = True
+    args.partition_key = "us"
+    args.partition_keys_json = '["us"]'
+    with (
+        patch.object(
+            cli, "_fingerprint_validation_waiver_modules_parallel", fake_parallel
+        ),
+        patch.object(cli, "_fingerprint_validation_waiver_modules", fake_serial),
+    ):
+        code = cli._cmd_validation_waivers_audit(args)
+    report = _json.loads(capsys.readouterr().out)
+    assert code == 0 and report["success"] is True
+    assert serial_calls == [[f"us/statutes/m{index:03d}.yaml" for index in range(count)]]
+    assert all(row.get("isolated_recheck") for row in report["results"])
