@@ -4455,7 +4455,16 @@ def _cmd_validation_waivers_audit(args) -> int:
     # also blow the hosted-runner window, so fail with one explicit
     # systemic error instead of per-row accusations that isolation never
     # confirmed.
-    recheck_budget = max(16, -(-len(executed_by_path) // 100))
+    # A matrix partition is already a bounded slice of the full ledger, so
+    # isolating every discrepancy cannot recreate the multi-thousand-module
+    # serial timeout this cutoff protects against. Preserve the strict budget
+    # for unpartitioned audits, but require exact isolated evidence for every
+    # accusation in a partitioned audit.
+    recheck_budget = (
+        len(executed_by_path)
+        if partition is not None
+        else max(16, -(-len(executed_by_path) // 100))
+    )
     systemic_discrepancy = len(discrepant) > recheck_budget
     if discrepant and not systemic_discrepancy:
         rechecked = _fingerprint_validation_waiver_modules(
