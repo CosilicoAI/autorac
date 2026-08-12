@@ -759,5 +759,7 @@ def test_partition_rechecks_all_discrepancies_in_isolation(
         code = cli._cmd_validation_waivers_audit(args)
     report = _json.loads(capsys.readouterr().out)
     assert code == 0 and report["success"] is True
-    assert serial_calls == [[f"us/statutes/m{index:03d}.yaml" for index in range(count)]]
+    assert serial_calls == [
+        [f"us/statutes/m{index:03d}.yaml" for index in range(count)]
+    ]
     assert all(row.get("isolated_recheck") for row in report["results"])
