@@ -1693,6 +1693,17 @@ def main():
         help="File containing one repository-relative changed path per line",
     )
     validation_waivers_audit_parser.add_argument(
+        "--partition-key",
+        help="This audit job's key in --partition-keys-json",
+    )
+    validation_waivers_audit_parser.add_argument(
+        "--partition-keys-json",
+        help=(
+            "JSON array of every audit job key; the sorted waiver set is "
+            "distributed exactly once across these keys"
+        ),
+    )
+    validation_waivers_audit_parser.add_argument(
         "--axiom-rules-engine-path",
         dest="axiom_rules_path",
         type=Path,
@@ -4285,6 +4296,41 @@ def _cmd_validation_waivers_active_paths(args) -> int:
     return 0
 
 
+def _validation_waiver_audit_partition(
+    classified: Sequence[tuple[str, str]],
+    *,
+    partition_key: str,
+    partition_keys_json: str,
+) -> tuple[list[tuple[str, str]], int, int]:
+    """Select one deterministic, exhaustive partition of waiver paths."""
+    try:
+        raw_partition_keys = json.loads(partition_keys_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("--partition-keys-json must be valid JSON") from exc
+    if (
+        not isinstance(raw_partition_keys, list)
+        or not raw_partition_keys
+        or any(not isinstance(key, str) or not key for key in raw_partition_keys)
+    ):
+        raise ValueError(
+            "--partition-keys-json must be a non-empty JSON array of strings"
+        )
+    partition_keys = sorted(raw_partition_keys)
+    if len(set(partition_keys)) != len(partition_keys):
+        raise ValueError("--partition-keys-json must not contain duplicate keys")
+    if partition_key not in partition_keys:
+        raise ValueError(
+            "--partition-key must occur exactly once in --partition-keys-json"
+        )
+    partition_index = partition_keys.index(partition_key)
+    selected = [
+        item
+        for index, item in enumerate(classified)
+        if index % len(partition_keys) == partition_index
+    ]
+    return selected, partition_index, len(partition_keys)
+
+
 def _cmd_validation_waivers_audit(args) -> int:
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -4335,6 +4381,30 @@ def _cmd_validation_waivers_audit(args) -> int:
     for path in removed_active_paths:
         classified.setdefault(path, "removed")
     classified = dict(sorted(classified.items()))
+
+    partition_key = getattr(args, "partition_key", None)
+    partition_keys_json = getattr(args, "partition_keys_json", None)
+    if (partition_key is None) != (partition_keys_json is None):
+        raise ValueError(
+            "--partition-key and --partition-keys-json must be provided together"
+        )
+    partition: dict[str, Any] | None = None
+    if partition_key is not None:
+        all_classified = list(classified.items())
+        selected, partition_index, partition_count = (
+            _validation_waiver_audit_partition(
+                all_classified,
+                partition_key=partition_key,
+                partition_keys_json=partition_keys_json,
+            )
+        )
+        classified = dict(selected)
+        partition = {
+            "key": partition_key,
+            "index": partition_index,
+            "count": partition_count,
+            "total_paths": len(all_classified),
+        }
 
     deleted_removed: set[str] = set()
     missing_required: set[str] = set()
@@ -4484,6 +4554,8 @@ def _cmd_validation_waivers_audit(args) -> int:
         "results": results,
         "errors": errors,
     }
+    if partition is not None:
+        report["partition"] = partition
     _print_validation_waiver_audit_report(report, as_json=args.json)
     return 0 if report["success"] else 1
 

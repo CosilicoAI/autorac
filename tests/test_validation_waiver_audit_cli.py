@@ -862,6 +862,39 @@ def test_audit_requires_protected_base_and_changed_paths(tmp_path: Path):
         cli._cmd_validation_waivers_audit(args)
 
 
+def test_audit_cli_registers_partition_pair(tmp_path: Path):
+    with (
+        patch(
+            "sys.argv",
+            [
+                "axiom-encode",
+                "validation-waivers",
+                "audit",
+                "--root",
+                str(tmp_path),
+                "--corpus-path",
+                str(tmp_path),
+                "--protected-base",
+                str(tmp_path / "base.yaml"),
+                "--changed-paths",
+                str(tmp_path / "changed.txt"),
+                "--axiom-rules-engine-path",
+                str(tmp_path),
+                "--partition-key",
+                "us-ak",
+                "--partition-keys-json",
+                '["us", "us-ak"]',
+            ],
+        ),
+        patch.object(cli, "cmd_validation_waivers") as command,
+    ):
+        cli.main()
+
+    args = command.call_args.args[0]
+    assert args.partition_key == "us-ak"
+    assert args.partition_keys_json == '["us", "us-ak"]'
+
+
 @pytest.mark.parametrize(
     "argv",
     [
