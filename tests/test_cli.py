@@ -21258,6 +21258,541 @@ rules:
         assert repaired == []
         assert rules_file.read_text() == original
 
+    @pytest.mark.parametrize(
+        ("input_dtype", "input_unit", "literal", "expected_dtype", "expected_unit"),
+        [
+            ("Rate", None, "0.80", "Rate", None),
+            ("Money", "USD", "500", "Money", "USD"),
+        ],
+    )
+    def test_embedded_scalar_literal_repair_infers_simple_comparison_operand_type(
+        self,
+        tmp_path,
+        input_dtype,
+        input_unit,
+        literal,
+        expected_dtype,
+        expected_unit,
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        unit = f"\n  unit: {input_unit}" if input_unit else ""
+        rules_file.write_text(
+            f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: threshold_is_met
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  source: KRS 141.020
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if comparison_value >= {literal}: holds else: not_holds'
+inputs:
+- name: comparison_value
+  entity: TaxUnit
+  dtype: {input_dtype}{unit}
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+        expression = f"if comparison_value >= {literal}: holds else: not_holds"
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: threshold_is_met line 10 "
+                f"embeds {literal} in `{expression}`; extract the value to its "
+                "own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["comparison_value_floor"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter, derived = payload["rules"]
+        assert parameter["dtype"] == expected_dtype
+        assert parameter.get("unit") == expected_unit
+        assert parameter["versions"][0]["formula"] == literal
+        assert derived["dtype"] == "Judgment"
+        assert (
+            derived["versions"][0]["formula"]
+            == "if comparison_value >= comparison_value_floor: holds else: not_holds"
+        )
+
+    def test_embedded_scalar_literal_repair_infers_local_rule_comparison_type(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: local_rate
+  kind: parameter
+  dtype: Rate
+  versions:
+  - effective_from: '2026-01-01'
+    formula: '0.75'
+- name: higher_band_applies
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if 0.80 <= local_rate: holds else: not_holds'
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: higher_band_applies line 14 embeds 0.80 "
+                "in `if 0.80 <= local_rate: holds else: not_holds`; extract the "
+                "value to its own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["local_rate_floor"]
+        payload = yaml.safe_load(rules_file.read_text())
+        assert payload["rules"][1]["dtype"] == "Rate"
+
+    @pytest.mark.parametrize(
+        ("rule_name", "rule_dtype", "expression", "extra_inputs"),
+        [
+            (
+                "discount_amount",
+                "Money",
+                "if discount_rate >= 0.80: max(discount_amount, 0) else: 0",
+                """- name: discount_amount
+  dtype: Money
+  unit: USD
+""",
+            ),
+            (
+                "discount_size_category",
+                "Count",
+                "if discount_rate >= 0.80: min(household_size, 8) else: 0",
+                """- name: household_size
+  dtype: Count
+""",
+            ),
+        ],
+    )
+    def test_embedded_scalar_literal_repair_comparison_name_precedes_unrelated_bounds(
+        self,
+        tmp_path,
+        rule_name,
+        rule_dtype,
+        expression,
+        extra_inputs,
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: {rule_name}
+  kind: derived
+  entity: TaxUnit
+  dtype: {rule_dtype}
+  versions:
+  - effective_from: '2026-01-01'
+    formula: '{expression}'
+inputs:
+- name: discount_rate
+  dtype: Rate
+{extra_inputs}"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                f"Embedded scalar literal: {rule_name} line 10 embeds 0.80 in "
+                f"`{expression}`; extract the value to its own named numeric "
+                "concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["discount_rate_floor"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter, derived = payload["rules"]
+        assert parameter["name"] == "discount_rate_floor"
+        assert parameter["dtype"] == "Rate"
+        assert derived["versions"][0]["formula"] == expression.replace(
+            "0.80", "discount_rate_floor"
+        )
+
+    def test_embedded_scalar_literal_repair_replaces_repeated_same_type_comparisons(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        rules_file.write_text(
+            """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: either_rate_is_high
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if rate_value >= 0.80 or rate_value >= 0.80: holds else: not_holds'
+inputs:
+- name: rate_value
+  dtype: Rate
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+        expression = (
+            "if rate_value >= 0.80 or rate_value >= 0.80: holds else: not_holds"
+        )
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: either_rate_is_high line 10 embeds 0.80 "
+                f"in `{expression}`; extract the value to its own named numeric "
+                "concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == ["rate_value_floor"]
+        payload = yaml.safe_load(rules_file.read_text())
+        parameter, derived = payload["rules"]
+        assert parameter["dtype"] == "Rate"
+        assert derived["versions"][0]["formula"].count("rate_value_floor") == 2
+
+    def test_embedded_scalar_literal_repair_extracts_comparison_band(self, tmp_path):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        expression = (
+            "if later_margin_share_value >= 0.80 "
+            "and later_margin_share_value <= 0.99: holds else: not_holds"
+        )
+        rules_file.write_text(
+            f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: later_band_applies
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  source: KRS 141.020(2)(c)5.b
+  versions:
+  - effective_from: '2027-07-01'
+    formula: '{expression}'
+inputs:
+- name: later_margin_share_value
+  entity: TaxUnit
+  dtype: Rate
+"""
+        )
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: later_band_applies line 10 embeds 0.80 "
+                f"in `{expression}`; extract the value to its own named numeric "
+                "concept or indexed table/grid value"
+            ],
+        )
+        repaired_expression = expression.replace(
+            "0.80",
+            "later_margin_share_value_floor",
+        )
+        repaired += _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: later_band_applies line 10 embeds 0.99 "
+                f"in `{repaired_expression}`; extract the value to its own named "
+                "numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == [
+            "later_margin_share_value_floor",
+            "later_margin_share_value_ceiling",
+        ]
+        payload = yaml.safe_load(rules_file.read_text())
+        by_name = {rule["name"]: rule for rule in payload["rules"]}
+        assert by_name["later_margin_share_value_floor"]["dtype"] == "Rate"
+        assert by_name["later_margin_share_value_ceiling"]["dtype"] == "Rate"
+        assert by_name["later_band_applies"]["versions"][0]["formula"] == (
+            "if later_margin_share_value >= later_margin_share_value_floor "
+            "and later_margin_share_value <= later_margin_share_value_ceiling: "
+            "holds else: not_holds"
+        )
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "",
+            """inputs:
+- name: comparison_value
+  dtype: Rate
+- name: comparison_value
+  dtype: Rate
+""",
+            """inputs:
+- name: comparison_value
+  dtype: Rate
+- name: comparison_value
+  dtype: Count
+""",
+        ],
+    )
+    def test_embedded_scalar_literal_repair_declines_nonunique_comparison_operand(
+        self, tmp_path, declaration
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        original = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: threshold_is_met
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if comparison_value >= 0.80: holds else: not_holds'
+{declaration}"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: threshold_is_met line 10 embeds 0.80 "
+                "in `if comparison_value >= 0.80: holds else: not_holds`; extract "
+                "the value to its own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
+    def test_embedded_scalar_literal_repair_declines_mixed_comparison_signatures(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        original = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: threshold_is_met
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if rate_value >= 5 and count_value >= 5: holds else: not_holds'
+inputs:
+- name: rate_value
+  dtype: Rate
+- name: count_value
+  dtype: Count
+"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: threshold_is_met line 10 embeds 5 in "
+                "`if rate_value >= 5 and count_value >= 5: holds else: not_holds`; "
+                "extract the value to its own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
+    @pytest.mark.parametrize("operand_name", ["discount", "rate_count"])
+    def test_embedded_scalar_literal_repair_declines_count_heuristic_conflict(
+        self, tmp_path, operand_name
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        expression = f"if {operand_name} >= 0.80: holds else: not_holds"
+        original = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: threshold_is_met
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: '{expression}'
+inputs:
+- name: {operand_name}
+  dtype: Rate
+"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: threshold_is_met line 10 embeds 0.80 "
+                f"in `{expression}`; extract the value to its own named numeric "
+                "concept or indexed table/grid value"
+            ],
+        )
+
+        if operand_name == "discount":
+            assert repaired == ["discount_floor"]
+            payload = yaml.safe_load(rules_file.read_text())
+            assert payload["rules"][0]["dtype"] == "Rate"
+        else:
+            assert repaired == []
+            assert rules_file.read_text() == original
+
+    @pytest.mark.parametrize(
+        ("expression", "declaration"),
+        [
+            (
+                "if annual_income + adjustment >= 500: holds else: not_holds",
+                """inputs:
+- name: annual_income
+  dtype: Money
+  unit: USD
+- name: adjustment
+  dtype: Money
+  unit: USD
+""",
+            ),
+            (
+                "if imported_rate >= 0.80: holds else: not_holds",
+                "imports:\n- us-xx:policies/rates\n",
+            ),
+        ],
+    )
+    def test_embedded_scalar_literal_repair_declines_unresolved_comparison_operand(
+        self, tmp_path, expression, declaration
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        literal = "500" if "500" in expression else "0.80"
+        original = f"""format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: threshold_is_met
+  kind: derived
+  entity: TaxUnit
+  dtype: Judgment
+  versions:
+  - effective_from: '2026-01-01'
+    formula: '{expression}'
+{declaration}"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: threshold_is_met line 10 "
+                f"embeds {literal} in `{expression}`; extract the value to its "
+                "own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
+    def test_embedded_scalar_literal_repair_declines_comparison_and_output_roles(
+        self, tmp_path
+    ):
+        output_root = tmp_path / "out"
+        rules_file = output_root / "runner" / "policies" / "threshold.yaml"
+        rules_file.parent.mkdir(parents=True)
+        original = """format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: us-ky/statute/krs/141.020/document-1
+rules:
+- name: selected_rate
+  kind: derived
+  entity: TaxUnit
+  dtype: Rate
+  versions:
+  - effective_from: '2026-01-01'
+    formula: 'if comparison_rate >= 0.80: 0.80 else: 0'
+inputs:
+- name: comparison_rate
+  dtype: Rate
+"""
+        rules_file.write_text(original)
+        result = SimpleNamespace(output_file=rules_file, runner="runner")
+
+        repaired = _try_repair_generated_embedded_scalar_literals_for_apply(
+            result,
+            output_root=output_root,
+            policy_repo_path=_canonical_rulespec_content_root(tmp_path, "us-ky"),
+            issues=[
+                "Embedded scalar literal: selected_rate line 10 embeds 0.80 in "
+                "`if comparison_rate >= 0.80: 0.80 else: 0`; extract the value "
+                "to its own named numeric concept or indexed table/grid value"
+            ],
+        )
+
+        assert repaired == []
+        assert rules_file.read_text() == original
+
     def test_embedded_scalar_literal_repair_declines_mixed_roles(self, tmp_path):
         output_root = tmp_path / "out"
         rules_file = output_root / "runner" / "policies" / "credit.yaml"

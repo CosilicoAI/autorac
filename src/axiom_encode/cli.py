@@ -32179,6 +32179,7 @@ def _try_repair_generated_embedded_scalar_literals_for_apply(
     rules = payload.get("rules")
     if not isinstance(rules, list):
         return []
+    symbol_signatures = _local_numeric_symbol_signatures(payload)
     source_path = _rulespec_module_source_path(payload)
 
     target_anchor = _relative_output_to_anchor(
@@ -32196,6 +32197,7 @@ def _try_repair_generated_embedded_scalar_literals_for_apply(
             target_anchor=target_anchor,
             existing_names=existing_names,
             corpus_citation_path=source_path,
+            symbol_signatures=symbol_signatures,
         )
         if changed:
             repaired.append(changed)
@@ -33184,6 +33186,7 @@ def _extract_embedded_scalar_literal_record(
     target_anchor: str,
     existing_names: set[str],
     corpus_citation_path: str | None = None,
+    symbol_signatures: dict[str, tuple[str, str | None] | None] | None = None,
 ) -> str | None:
     rule_name = record["rule"]
     literal = record["literal"]
@@ -33193,7 +33196,12 @@ def _extract_embedded_scalar_literal_record(
             continue
         if str(rule.get("name") or "").strip() != rule_name:
             continue
-        parameter_name = _embedded_scalar_parameter_name(rule_name, expression)
+        parameter_name = _embedded_scalar_parameter_name(
+            rule_name,
+            expression,
+            literal=literal,
+            symbol_signatures=symbol_signatures or {},
+        )
         if not parameter_name:
             return None
         parameter_formula = (
@@ -33229,18 +33237,16 @@ def _extract_embedded_scalar_literal_record(
             return None
         target_version_index, target_version, replacement = matching_versions[0]
         target_formula = str(target_version.get("formula") or "")
-        parameter_dtype = _embedded_scalar_parameter_dtype(
+        parameter_signature = _embedded_scalar_parameter_signature(
             rule,
             literal=literal,
             expression=expression,
             target_formula=target_formula,
+            symbol_signatures=symbol_signatures or {},
         )
-        if parameter_dtype is None:
+        if parameter_signature is None:
             return None
-        parameter_unit = _embedded_scalar_parameter_unit(
-            rule,
-            dtype=parameter_dtype,
-        )
+        parameter_dtype, parameter_unit = parameter_signature
         existing_parameter_name = _existing_embedded_scalar_parameter_name(
             rules,
             base_name=parameter_name,
@@ -33378,12 +33384,67 @@ def _format_grounded_scalar_formula_literal(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
-def _embedded_scalar_parameter_name(rule_name: str, expression: str) -> str | None:
+def _embedded_scalar_parameter_name(
+    rule_name: str,
+    expression: str,
+    *,
+    literal: str | None = None,
+    symbol_signatures: dict[str, tuple[str, str | None] | None] | None = None,
+) -> str | None:
+    if literal is not None and symbol_signatures:
+        comparison_records = _embedded_scalar_comparison_records(
+            expression,
+            literal=literal,
+        )
+        comparison_name = _embedded_scalar_comparison_parameter_name(
+            expression,
+            literal=literal,
+            symbol_signatures=symbol_signatures,
+        )
+        if any(
+            identifier in symbol_signatures
+            for _, identifier, _, _ in comparison_records
+        ):
+            return comparison_name
     if re.search(r"\bmin\s*\(", expression) and rule_name.endswith("_size_category"):
         return f"{rule_name.removesuffix('_size_category')}_max_household_size"
     if re.search(r"\bmax\s*\(", expression):
         return f"{rule_name}_floor"
     return f"{rule_name}_scalar_limit"
+
+
+def _embedded_scalar_comparison_parameter_name(
+    expression: str,
+    *,
+    literal: str,
+    symbol_signatures: dict[str, tuple[str, str | None] | None],
+) -> str | None:
+    records = _embedded_scalar_comparison_records(expression, literal=literal)
+    if not records:
+        return None
+    names: set[str] = set()
+    right_suffix = {
+        ">=": "floor",
+        ">": "lower_threshold",
+        "<=": "ceiling",
+        "<": "upper_threshold",
+        "==": "threshold",
+    }
+    left_suffix = {
+        "<=": "floor",
+        "<": "lower_threshold",
+        ">=": "ceiling",
+        ">": "upper_threshold",
+        "==": "threshold",
+    }
+    for _, identifier, operator, literal_is_left in records:
+        if symbol_signatures.get(identifier) is None:
+            return None
+        suffix = (left_suffix if literal_is_left else right_suffix).get(operator)
+        if suffix is None:
+            return None
+        names.add(f"{identifier}_{suffix}")
+    return next(iter(names)) if len(names) == 1 else None
 
 
 def _existing_embedded_scalar_parameter_name(
@@ -33598,33 +33659,109 @@ def _normalized_rulespec_date(value: Any) -> str | None:
     return None
 
 
-def _embedded_scalar_parameter_dtype(
+_RULESPEC_NUMERIC_DTYPES = {"Count", "Decimal", "Integer", "Money", "Rate"}
+
+
+def _local_numeric_symbol_signatures(
+    payload: dict[str, Any],
+) -> dict[str, tuple[str, str | None] | None]:
+    """Return numeric signatures only for uniquely declared local symbols."""
+    declaration_counts: dict[str, int] = {}
+    numeric_declarations: dict[str, tuple[str, str | None]] = {}
+    for section in ("inputs", "rules"):
+        items = payload.get(section)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            dtype = str(item.get("dtype") or "").strip()
+            if not name:
+                continue
+            declaration_counts[name] = declaration_counts.get(name, 0) + 1
+            if dtype not in _RULESPEC_NUMERIC_DTYPES:
+                continue
+            unit = str(item.get("unit") or "").strip() or None
+            numeric_declarations[name] = (dtype, unit)
+    return {
+        name: numeric_declarations.get(name) if count == 1 else None
+        for name, count in declaration_counts.items()
+    }
+
+
+def _embedded_scalar_comparison_records(
+    expression: str,
+    *,
+    literal: str,
+) -> list[tuple[tuple[int, int], str, str, bool]]:
+    literal_pattern = rf"(?<![A-Za-z0-9_.]){re.escape(literal)}(?![A-Za-z0-9_.])"
+    identifier_pattern = r"[A-Za-z_][A-Za-z0-9_]*"
+    comparison_boundary = r"(?=\s*(?::|$|\band\b|\bor\b|\)))"
+    patterns = (
+        (
+            rf"(?:^|\b(?:if|and|or)\s+|\(\s*)"
+            rf"(?P<identifier>{identifier_pattern})\s*"
+            rf"(?P<operator><=|>=|==|!=|<|>)\s*"
+            rf"(?P<literal>{literal_pattern}){comparison_boundary}",
+            False,
+        ),
+        (
+            rf"(?:^|\b(?:if|and|or)\s+|\(\s*)"
+            rf"(?P<literal>{literal_pattern})\s*"
+            rf"(?P<operator><=|>=|==|!=|<|>)\s*"
+            rf"(?P<identifier>{identifier_pattern}){comparison_boundary}",
+            True,
+        ),
+    )
+    records: list[tuple[tuple[int, int], str, str, bool]] = []
+    for pattern, literal_is_left in patterns:
+        records.extend(
+            (
+                match.span("literal"),
+                match.group("identifier"),
+                match.group("operator"),
+                literal_is_left,
+            )
+            for match in re.finditer(pattern, expression, flags=re.IGNORECASE)
+        )
+    return records
+
+
+def _embedded_scalar_parameter_signature(
     source_rule: dict[str, Any],
     *,
     literal: str,
     expression: str,
     target_formula: str,
-) -> str | None:
+    symbol_signatures: dict[str, tuple[str, str | None] | None],
+) -> tuple[str, str | None] | None:
     """Infer only scalar types that the formula shape determines safely."""
     normalized_expression = expression.strip()
     source_dtype = str(source_rule.get("dtype") or "").strip()
-    numeric_dtypes = {"Count", "Decimal", "Integer", "Money", "Rate"}
-
-    if source_dtype not in numeric_dtypes:
-        return None
+    source_unit = str(source_rule.get("unit") or "").strip() or None
+    source_signature = (
+        (source_dtype, source_unit)
+        if source_dtype in _RULESPEC_NUMERIC_DTYPES
+        else None
+    )
 
     literal_pattern = rf"(?<![A-Za-z0-9_.]){re.escape(literal)}(?![A-Za-z0-9_.])"
     occurrences = [match.span() for match in re.finditer(literal_pattern, expression)]
     if not occurrences:
         return None
 
+    count_identifier_pattern = (
+        r"(?<![A-Za-z0-9_])"
+        r"(?:[A-Za-z_][A-Za-z0-9_]*_)?(?:count|number|size)\b"
+    )
     count_patterns = (
         rf"\[\s*(?P<literal>{literal_pattern})\s*\]",
-        rf"\b[A-Za-z_][A-Za-z0-9_]*(?:count|number|size)\b\s*"
+        rf"{count_identifier_pattern}\s*"
         rf"(?:<=|<|>=|>|\+|-)\s*(?P<literal>{literal_pattern})",
         rf"(?P<literal>{literal_pattern})\s*(?:<=|<|>=|>|\+|-)\s*"
-        rf"[A-Za-z_][A-Za-z0-9_]*(?:count|number|size)\b",
-        rf"\b(?:min|max)\s*\([^,]*(?:count|number|size)\b\s*,\s*"
+        rf"{count_identifier_pattern}",
+        rf"\b(?:min|max)\s*\([^,]*{count_identifier_pattern}\s*,\s*"
         rf"(?P<literal>{literal_pattern})\s*\)",
     )
     count_spans = {
@@ -33632,6 +33769,16 @@ def _embedded_scalar_parameter_dtype(
         for pattern in count_patterns
         for match in re.finditer(pattern, expression, flags=re.IGNORECASE)
     }
+    comparison_signatures: dict[tuple[int, int], set[tuple[str, str | None]]] = {}
+    comparison_records = _embedded_scalar_comparison_records(
+        expression,
+        literal=literal,
+    )
+    comparison_spans = {span for span, _, _, _ in comparison_records}
+    for span, identifier, _, _ in comparison_records:
+        signature = symbol_signatures.get(identifier)
+        if signature is not None:
+            comparison_signatures.setdefault(span, set()).add(signature)
     output_pattern = (
         rf"(?:^|:|\belse\b)\s*(?P<literal>{literal_pattern})"
         rf"(?=\s*(?:\belse\b|$))"
@@ -33647,25 +33794,48 @@ def _embedded_scalar_parameter_dtype(
     ):
         output_spans = set()
 
-    inferred: set[str] = set()
+    inferred: set[tuple[str, str | None]] = set()
+    inferred_roles: set[str] = set()
+    whole_formula_role = (
+        normalized_expression == literal
+        and target_formula.strip() == normalized_expression
+    ) or (
+        _simple_fraction_expression_value(normalized_expression) is not None
+        and target_formula.strip() == normalized_expression
+    )
     for span in occurrences:
-        occurrence_types: set[str] = set()
-        if span in count_spans:
-            occurrence_types.add("Count")
-        if span in output_spans:
-            occurrence_types.add(source_dtype)
+        occurrence_signatures: set[tuple[str, str | None]] = set()
+        comparison_signature_set = comparison_signatures.get(span, set())
         if (
-            normalized_expression == literal
-            and target_formula.strip() == normalized_expression
-        ) or (
-            _simple_fraction_expression_value(normalized_expression) is not None
-            and target_formula.strip() == normalized_expression
+            span in comparison_spans
+            and not comparison_signature_set
+            and source_signature is None
         ):
-            occurrence_types.add(source_dtype)
-        if len(occurrence_types) != 1:
             return None
-        inferred.update(occurrence_types)
-    return next(iter(inferred)) if len(inferred) == 1 else None
+        if span in count_spans:
+            occurrence_signatures.add(("Count", None))
+            inferred_roles.add("comparison" if comparison_signature_set else "count")
+        if span in output_spans and not whole_formula_role:
+            if source_signature is None:
+                return None
+            occurrence_signatures.add(source_signature)
+            inferred_roles.add("output")
+        if comparison_signature_set:
+            occurrence_signatures.update(comparison_signature_set)
+            inferred_roles.add("comparison")
+        if whole_formula_role:
+            if source_signature is None:
+                return None
+            occurrence_signatures.add(source_signature)
+            inferred_roles.add("whole_formula")
+        if len(occurrence_signatures) != 1:
+            return None
+        inferred.update(occurrence_signatures)
+    return (
+        next(iter(inferred))
+        if len(inferred) == 1 and len(inferred_roles) == 1
+        else None
+    )
 
 
 def _standalone_conditional_leaf_line(formula: str, literal: str) -> bool:
@@ -33678,19 +33848,6 @@ def _standalone_conditional_leaf_line(formula: str, literal: str) -> bool:
         and matching_indices[0] > 0
         and stripped_lines[matching_indices[0] - 1].endswith(":")
     )
-
-
-def _embedded_scalar_parameter_unit(
-    source_rule: dict[str, Any],
-    *,
-    dtype: str,
-) -> str | None:
-    if dtype != str(source_rule.get("dtype") or "").strip():
-        return None
-    unit = source_rule.get("unit")
-    if isinstance(unit, str) and unit.strip():
-        return unit.strip()
-    return None
 
 
 def _source_atom_for_embedded_scalar_parameter(
