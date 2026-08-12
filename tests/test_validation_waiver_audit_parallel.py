@@ -86,6 +86,73 @@ def test_worker_count_rejects_invalid_env(monkeypatch, raw):
         cli._waiver_audit_worker_count(100)
 
 
+def test_audit_partitions_are_exhaustive_disjoint_and_order_independent():
+    classified = [(f"us/{index:03d}.yaml", "active") for index in range(17)]
+    keys = '["us-ca", "us-ak", "us"]'
+    partitions = [
+        cli._validation_waiver_audit_partition(
+            classified,
+            partition_key=key,
+            partition_keys_json=keys,
+        )[0]
+        for key in ("us", "us-ak", "us-ca")
+    ]
+    flattened = [item for partition in partitions for item in partition]
+    assert sorted(flattened) == classified
+    assert len(flattened) == len(set(flattened))
+    assert (
+        cli._validation_waiver_audit_partition(
+            classified,
+            partition_key="us-ak",
+            partition_keys_json='["us", "us-ca", "us-ak"]',
+        )[0]
+        == partitions[1]
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "keys", "message"),
+    [
+        ("us", "not-json", "valid JSON"),
+        ("us", "[]", "non-empty JSON array"),
+        ("us", '["us", "us"]', "duplicate"),
+        ("us", '["us-ak"]', "occur exactly once"),
+    ],
+)
+def test_audit_partition_rejects_ambiguous_manifests(key, keys, message):
+    with pytest.raises(ValueError, match=message):
+        cli._validation_waiver_audit_partition(
+            [("us/a.yaml", "active")],
+            partition_key=key,
+            partition_keys_json=keys,
+        )
+
+
+@pytest.mark.parametrize(
+    ("partition_key", "partition_keys_json"),
+    [("us", None), (None, '["us"]')],
+)
+def test_audit_rejects_incomplete_partition_arguments(
+    monkeypatch, tmp_path, partition_key, partition_keys_json
+):
+    import yaml as _yaml
+
+    root = tmp_path / "rulespec-us"
+    root.mkdir()
+    ledger = {"validate_failures": {}}
+    (root / "known-validation-gaps.yaml").write_text(_yaml.safe_dump(ledger))
+    base = tmp_path / "base.yaml"
+    base.write_text(_yaml.safe_dump(ledger))
+    changed = tmp_path / "changed.txt"
+    changed.write_text("")
+    args = _audit_args(tmp_path, root, tmp_path / "c", tmp_path / "e", base, changed)
+    args.partition_key = partition_key
+    args.partition_keys_json = partition_keys_json
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        cli._cmd_validation_waivers_audit(args)
+
+
 def test_single_worker_delegates_to_serial(monkeypatch):
     monkeypatch.setenv(cli._WAIVER_AUDIT_WORKERS_ENV, "1")
     sentinel = [{"path": "us/a.yaml", "passed": False, "fingerprint": "f"}]
