@@ -4391,12 +4391,10 @@ def _cmd_validation_waivers_audit(args) -> int:
     partition: dict[str, Any] | None = None
     if partition_key is not None:
         all_classified = list(classified.items())
-        selected, partition_index, partition_count = (
-            _validation_waiver_audit_partition(
-                all_classified,
-                partition_key=partition_key,
-                partition_keys_json=partition_keys_json,
-            )
+        selected, partition_index, partition_count = _validation_waiver_audit_partition(
+            all_classified,
+            partition_key=partition_key,
+            partition_keys_json=partition_keys_json,
         )
         classified = dict(selected)
         partition = {

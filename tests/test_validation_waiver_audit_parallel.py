@@ -100,11 +100,14 @@ def test_audit_partitions_are_exhaustive_disjoint_and_order_independent():
     flattened = [item for partition in partitions for item in partition]
     assert sorted(flattened) == classified
     assert len(flattened) == len(set(flattened))
-    assert cli._validation_waiver_audit_partition(
-        classified,
-        partition_key="us-ak",
-        partition_keys_json='["us", "us-ca", "us-ak"]',
-    )[0] == partitions[1]
+    assert (
+        cli._validation_waiver_audit_partition(
+            classified,
+            partition_key="us-ak",
+            partition_keys_json='["us", "us-ca", "us-ak"]',
+        )[0]
+        == partitions[1]
+    )
 
 
 @pytest.mark.parametrize(
