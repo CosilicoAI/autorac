@@ -22570,7 +22570,9 @@ def test_retry_feedback_appends_after_static_prompt_prefix(tmp_path):
         tmp_path,
         source_unit,
         validation_retry_candidate=candidate,
-        validation_retry_feedback=("ci: [complete-source-unit:structure] branch missing",),
+        validation_retry_feedback=(
+            "ci: [complete-source-unit:structure] branch missing",
+        ),
     )
 
     feedback_at = retry_attempt.index("Deterministic validation feedback")
