@@ -25,6 +25,7 @@ class ModelPricing:
     output_per_million: float
     cache_read_per_million: float = 0.0
     cache_create_per_million: float = 0.0
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,9 @@ def _load_pricing_rates(path: Path = _PRICING_RATES_PATH) -> PricingRates:
             output_per_million=float(rates.get("output_per_million", 0.0)),
             cache_read_per_million=float(rates.get("cache_read_per_million", 0.0)),
             cache_create_per_million=float(rates.get("cache_create_per_million", 0.0)),
+            max_input_tokens=(
+                int(rates["max_input_tokens"]) if "max_input_tokens" in rates else None
+            ),
         )
 
     return PricingRates(
@@ -89,6 +93,10 @@ def get_model_pricing(model: str) -> ModelPricing | None:
     normalized = (model or "").strip()
     if not normalized:
         return None
+    if normalized == "gpt-5.6":
+        # The unsuffixed API alias routes to the Sol model. Keep this exact so
+        # unrelated siblings such as gpt-5.6-luna cannot inherit Sol pricing.
+        normalized = "gpt-5.6-sol"
 
     if normalized in _MODEL_PRICING:
         return _MODEL_PRICING[normalized]
@@ -118,6 +126,13 @@ def estimate_usage_cost_breakdown(
 
     pricing = get_model_pricing(model)
     if pricing is None:
+        return None
+    if (
+        pricing.max_input_tokens is not None
+        and usage.input_tokens > pricing.max_input_tokens
+    ):
+        # The configured rate is intentionally bounded to its published context
+        # tier. Unknown longer-context rates must not be silently underestimated.
         return None
 
     non_cached_input_tokens = max(

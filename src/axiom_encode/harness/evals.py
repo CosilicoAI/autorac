@@ -14689,10 +14689,10 @@ def _openai_prompt_input(
 ) -> tuple[str | list[dict[str, object]], str, bool]:
     """Build a quality-equivalent Responses input and its stable cache prefix."""
 
-    if not _openai_model_supports_explicit_prompt_cache(model):
-        return prompt, prompt, False
-
     prefix, suffix = _openai_prompt_cache_parts(prompt)
+    if not _openai_model_supports_explicit_prompt_cache(model):
+        return prompt, prefix, False
+
     content: list[dict[str, object]] = [
         {
             "type": "input_text",
@@ -14743,6 +14743,9 @@ def _run_openai_prompt_eval(
     }
     if explicit_prompt_cache:
         body["prompt_cache_options"] = {"mode": "explicit"}
+        # Keep cost estimates and billing on the published Standard tier instead
+        # of inheriting a potentially higher-priced project default.
+        body["service_tier"] = "default"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

@@ -14802,6 +14802,7 @@ class TestOpenAIEvalRequest:
         }
         if explicit_cache:
             expected_body["prompt_cache_options"] = {"mode": "explicit"}
+            expected_body["service_tier"] = "default"
         assert mock_post.call_args.kwargs["body"] == expected_body
         assert response.trace["request_body"] == expected_body
         assert response.error is None
@@ -22677,3 +22678,37 @@ def test_older_openai_models_keep_the_original_single_string_prompt():
     assert request_input == prompt
     assert stable_prefix == prompt
     assert explicit is False
+
+
+def test_older_openai_models_reuse_stable_prefix_key_across_retries(tmp_path):
+    _release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "The benefit is ten percent of the qualifying amount.",
+        citation_path="dk/statute/benefit/section-1",
+    )
+    _, first_attempt = _workspace_prompt_for_source_unit(tmp_path, source_unit)
+    _, retry_attempt = _workspace_prompt_for_source_unit(
+        tmp_path,
+        source_unit,
+        validation_retry_candidate=ValidationRetryCandidate(
+            rulespec="format: rulespec/v1\nrules: []\n"
+        ),
+        validation_retry_feedback=("ci: branch missing",),
+    )
+
+    first_input, first_prefix, first_explicit = evals_module._openai_prompt_input(
+        "gpt-5.4",
+        first_attempt,
+    )
+    retry_input, retry_prefix, retry_explicit = evals_module._openai_prompt_input(
+        "gpt-5.4",
+        retry_attempt,
+    )
+
+    assert first_input is first_attempt
+    assert retry_input is retry_attempt
+    assert first_explicit is retry_explicit is False
+    assert first_prefix == retry_prefix
+    assert evals_module._openai_prompt_cache_key(
+        "gpt-5.4", first_prefix
+    ) == evals_module._openai_prompt_cache_key("gpt-5.4", retry_prefix)
