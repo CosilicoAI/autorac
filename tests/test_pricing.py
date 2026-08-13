@@ -37,6 +37,11 @@ def test_known_models_resolve_via_public_api():
     extended = get_model_pricing("claude-opus-4-6-some-variant")
     assert extended is not None
 
+    terra = get_model_pricing("gpt-5.6-terra")
+    sol = get_model_pricing("gpt-5.6-sol")
+    assert terra == ModelPricing(2.0, 12.0, 0.20, 2.50)
+    assert sol == ModelPricing(5.0, 30.0, 0.50, 6.25)
+
 
 def test_load_pricing_rates_is_reparseable():
     # _load_pricing_rates bypasses the cache, so calling twice must still work

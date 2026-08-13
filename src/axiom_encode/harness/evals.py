@@ -325,6 +325,8 @@ _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
 _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS = 16384
 _OPENAI_EXTENDED_PROMPT_MAX_OUTPUT_TOKENS = 32768
 _OPENAI_EXTENDED_OUTPUT_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
+_OPENAI_EXPLICIT_PROMPT_CACHE_MODEL_PREFIXES = ("gpt-5.6",)
+_OPENAI_PROMPT_CACHE_SCHEMA = "rulespec-authoring-v1"
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -10431,7 +10433,7 @@ Complete-source-unit mode is enabled for this request:
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 
-    return f"""You are participating in an encoding eval for {citation}.
+    stable_prefix = f"""You are participating in an encoding eval for {citation}.
 
 Author the output in Axiom RuleSpec YAML.
 Do not narrate your plan or describe what you will do before emitting the artifact.
@@ -11249,10 +11251,16 @@ rules:
         formula: snap_member_eligible
 ```
 
+"""
+    dynamic_suffix = f"""\
 {validation_retry_feedback_section}{validation_retry_candidate_section}
 {output_rules}
 Do not respond with summaries, markdown prose, or file-write confirmations.
 """
+    return _PromptWithCacheBoundary(
+        stable_prefix + dynamic_suffix,
+        cache_prefix_length=len(stable_prefix),
+    )
 
 
 def _workspace_corpus_citation_path(workspace: EvalWorkspace) -> str | None:
@@ -14622,15 +14630,79 @@ def _openai_prompt_max_output_tokens(model: str) -> int:
     return _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS
 
 
-def _openai_prompt_cache_key(prompt: str) -> str:
-    """Stable cache-routing key for one prompt family.
+def _openai_model_supports_explicit_prompt_cache(model: str) -> bool:
+    """Return whether the model supports GPT-5.6 prompt-cache breakpoints."""
 
-    Hashes the prompt head (static instructions + citation + source),
-    which is identical across retry attempts and redispatches of the
-    same citation, so their requests land where the cache entry lives.
+    return any(
+        model == prefix or model.startswith(f"{prefix}-")
+        for prefix in _OPENAI_EXPLICIT_PROMPT_CACHE_MODEL_PREFIXES
+    )
+
+
+class _PromptWithCacheBoundary(str):
+    """A model-visible prompt carrying non-textual cache-boundary metadata."""
+
+    cache_prefix_length: int
+
+    def __new__(
+        cls,
+        value: str,
+        *,
+        cache_prefix_length: int,
+    ) -> _PromptWithCacheBoundary:
+        instance = super().__new__(cls, value)
+        instance.cache_prefix_length = cache_prefix_length
+        return instance
+
+
+def _openai_prompt_cache_parts(prompt: str) -> tuple[str, str]:
+    """Split a RuleSpec prompt at its stable-prefix boundary.
+
+    The returned strings always reassemble to the original prompt byte-for-byte.
+    Initial and validation-retry prompts split at the same boundary: immediately
+    before retry-only feedback/candidate data, or before the output contract when
+    that retry-only suffix is absent.
     """
-    digest = hashlib.sha256(prompt[:4096].encode("utf-8")).hexdigest()
-    return f"axiom-encode-{digest[:32]}"
+
+    split_at = getattr(prompt, "cache_prefix_length", len(prompt))
+    if isinstance(split_at, bool) or not isinstance(split_at, int):
+        raise ValueError("OpenAI prompt cache boundary must be an integer")
+    if not 0 < split_at <= len(prompt):
+        raise ValueError("OpenAI prompt cache boundary is outside the prompt")
+    prefix, suffix = prompt[:split_at], prompt[split_at:]
+    if not prefix or prefix + suffix != prompt:
+        raise ValueError("OpenAI prompt cache split must preserve the complete prompt")
+    return prefix, suffix
+
+
+def _openai_prompt_cache_key(model: str, stable_prefix: str) -> str:
+    """Return a model- and schema-bound key for one exact prompt prefix."""
+
+    digest = hashlib.sha256(stable_prefix.encode("utf-8")).hexdigest()
+    identity = f"{_OPENAI_PROMPT_CACHE_SCHEMA}:{model}:{digest}"
+    return f"axiom-encode-{hashlib.sha256(identity.encode()).hexdigest()[:32]}"
+
+
+def _openai_prompt_input(
+    model: str,
+    prompt: str,
+) -> tuple[str | list[dict[str, object]], str, bool]:
+    """Build a quality-equivalent Responses input and its stable cache prefix."""
+
+    if not _openai_model_supports_explicit_prompt_cache(model):
+        return prompt, prompt, False
+
+    prefix, suffix = _openai_prompt_cache_parts(prompt)
+    content: list[dict[str, object]] = [
+        {
+            "type": "input_text",
+            "text": prefix,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
+    ]
+    if suffix:
+        content.append({"type": "input_text", "text": suffix})
+    return [{"type": "message", "role": "user", "content": content}], prefix, True
 
 
 def _run_openai_prompt_eval(
@@ -14652,22 +14724,25 @@ def _run_openai_prompt_eval(
             error="OPENAI_API_KEY is not set",
         )
 
-    body = {
+    prompt_input, stable_prefix, explicit_prompt_cache = _openai_prompt_input(
+        runner.model,
+        prompt,
+    )
+    body: dict[str, object] = {
         "model": runner.model,
-        "input": prompt,
+        "input": prompt_input,
         "max_output_tokens": _openai_prompt_max_output_tokens(runner.model),
         "reasoning": {
             "effort": "low",
             "summary": "auto",
         },
-        # Route retries and redispatches of the same prompt family to the
-        # same cache shard: without a key, near-identical ~70K-token
-        # prompts were rewritten at full price on every attempt
-        # (cached_tokens=0 across the board — see #1491). The key hashes
-        # the prompt head, which is byte-stable across attempts now that
-        # per-attempt retry feedback is appended at the tail.
-        "prompt_cache_key": _openai_prompt_cache_key(prompt),
+        # Bind routing to the exact reusable prefix, model, and prompt schema.
+        # GPT-5.6 receives an explicit breakpoint so retry-only content after
+        # that prefix cannot invalidate the cache or incur cache-write charges.
+        "prompt_cache_key": _openai_prompt_cache_key(runner.model, stable_prefix),
     }
+    if explicit_prompt_cache:
+        body["prompt_cache_options"] = {"mode": "explicit"}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -14773,6 +14848,7 @@ def _run_openai_prompt_eval(
         input_tokens=int(usage.get("input_tokens", 0) or 0),
         output_tokens=int(usage.get("output_tokens", 0) or 0),
         cache_read_tokens=int(input_details.get("cached_tokens", 0) or 0),
+        cache_creation_tokens=int(input_details.get("cache_write_tokens", 0) or 0),
     )
     tokens.reasoning_output_tokens = int(
         ((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0)

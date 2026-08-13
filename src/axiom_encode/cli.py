@@ -29237,7 +29237,7 @@ def _run_encode_attempt(
         f"  {success_label}={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
     )
     print(
-        f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} reasoning_out={result.reasoning_output_tokens}"
+        f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"
     )
     print(f"  retrieved_files={len(result.retrieved_files)}")
     if result.unexpected_accesses:
@@ -58747,7 +58747,7 @@ def cmd_eval(args):
             f"  success={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
         )
         print(
-            f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} reasoning_out={result.reasoning_output_tokens}"
+            f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"
         )
         if getattr(result, "retry_count", 0):
             print(f"  retry_count={result.retry_count}")
@@ -58831,7 +58831,7 @@ def cmd_eval_source(args):
             f"  success={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
         )
         print(
-            f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} reasoning_out={result.reasoning_output_tokens}"
+            f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"
         )
         print(f"  retrieved_files={len(result.retrieved_files)}")
         if result.unexpected_accesses:

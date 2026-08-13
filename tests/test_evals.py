@@ -14757,8 +14757,8 @@ rules:
 
 class TestOpenAIEvalRequest:
     @pytest.mark.parametrize(
-        ("model", "expected_max_output_tokens"),
-        [("gpt-5.6-sol", 32768), ("gpt-4o", 16384)],
+        ("model", "expected_max_output_tokens", "explicit_cache"),
+        [("gpt-5.6-sol", 32768, True), ("gpt-4o", 16384, False)],
         ids=["extended-gpt-5", "compatible-fallback"],
     )
     def test_openai_prompt_eval_requests_full_rulespec_output_budget(
@@ -14766,6 +14766,7 @@ class TestOpenAIEvalRequest:
         monkeypatch,
         model,
         expected_max_output_tokens,
+        explicit_cache,
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         ok_response = Mock(status_code=200, headers={}, text="")
@@ -14784,18 +14785,58 @@ class TestOpenAIEvalRequest:
                 "encode the complete provision",
             )
 
+        prompt = "encode the complete provision"
+        prompt_input, stable_prefix, _ = evals_module._openai_prompt_input(
+            model,
+            prompt,
+        )
         expected_body = {
             "model": model,
-            "input": "encode the complete provision",
+            "input": prompt_input,
             "max_output_tokens": expected_max_output_tokens,
             "reasoning": {"effort": "low", "summary": "auto"},
             "prompt_cache_key": evals_module._openai_prompt_cache_key(
-                "encode the complete provision"
+                model,
+                stable_prefix,
             ),
         }
+        if explicit_cache:
+            expected_body["prompt_cache_options"] = {"mode": "explicit"}
         assert mock_post.call_args.kwargs["body"] == expected_body
         assert response.trace["request_body"] == expected_body
         assert response.error is None
+
+    def test_openai_prompt_eval_records_cache_reads_and_writes(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        ok_response = Mock(status_code=200, headers={}, text="")
+        ok_response.json.return_value = {
+            "output_text": "format: rulespec/v1\nrules: []\n",
+            "usage": {
+                "input_tokens": 4096,
+                "output_tokens": 100,
+                "input_tokens_details": {
+                    "cached_tokens": 3072,
+                    "cache_write_tokens": 1024,
+                },
+            },
+        }
+
+        with patch(
+            "axiom_encode.harness.evals._post_openai_eval_request",
+            return_value=ok_response,
+        ):
+            response = evals_module._run_openai_prompt_eval(
+                parse_runner_spec("openai:gpt-5.6-terra"),
+                SimpleNamespace(),
+                "stable prompt",
+            )
+
+        assert response.tokens is not None
+        assert response.tokens.cache_read_tokens == 3072
+        assert response.tokens.cache_creation_tokens == 1024
 
     def test_post_openai_eval_request_retries_transient_status(self):
         error_response = Mock()
@@ -22553,10 +22594,10 @@ def test_persisted_revalidation_admits_unvalidated_rows_without_reviewer_calls()
 def test_retry_feedback_appends_after_static_prompt_prefix(tmp_path):
     """#1491: per-attempt material must extend, not split, the cacheable prefix.
 
-    The first attempt's prompt must be a byte-identical prefix boundary for
-    the retry attempt: everything before the retry-feedback section is shared,
-    and the feedback lands after the static instruction tail (next to the
-    rejected candidate it describes).
+    The explicit stable-prefix segment must be byte-identical between the first
+    and retry attempts. Feedback lands after the static instruction tail, next
+    to the rejected candidate it describes, while each complete model-visible
+    prompt remains unchanged by request segmentation.
     """
     _release, source_unit = _write_test_source_unit(
         tmp_path,
@@ -22575,23 +22616,64 @@ def test_retry_feedback_appends_after_static_prompt_prefix(tmp_path):
         ),
     )
 
-    feedback_at = retry_attempt.index("Deterministic validation feedback")
-    # The shared prefix covers the entire static instruction body — the
-    # feedback may only extend the prompt near its tail.
-    assert retry_attempt[:feedback_at].startswith(first_attempt[: feedback_at - 200])
-    assert "RuleSpec requirements:" in retry_attempt[:feedback_at]
-    # Feedback introduces the candidate below it, so it must precede the
-    # candidate block and follow the static requirements.
-    assert feedback_at < retry_attempt.index("BEGIN UNTRUSTED REJECTED CANDIDATE")
+    first_prefix, first_suffix = evals_module._openai_prompt_cache_parts(first_attempt)
+    retry_prefix, retry_suffix = evals_module._openai_prompt_cache_parts(retry_attempt)
+
+    # Cache segmentation never changes the model-visible prompt text.
+    assert first_prefix + first_suffix == first_attempt
+    assert retry_prefix + retry_suffix == retry_attempt
+    # Initial and retry calls write/read the exact same reusable prefix.
+    assert retry_prefix == first_prefix
+    assert len(first_prefix) > 100_000
+    assert "RuleSpec requirements:" in first_prefix
+    assert "Deterministic validation feedback" not in retry_prefix
+    assert retry_suffix.startswith("\nDeterministic validation feedback")
+    assert retry_suffix.index("Deterministic validation feedback") < retry_suffix.index(
+        "BEGIN UNTRUSTED REJECTED CANDIDATE"
+    )
+    assert "Return exactly this two-file bundle" in first_suffix
+    assert "Return exactly this two-file bundle" in retry_suffix
+
+    first_input, _, first_explicit = evals_module._openai_prompt_input(
+        "gpt-5.6-terra",
+        first_attempt,
+    )
+    retry_input, _, retry_explicit = evals_module._openai_prompt_input(
+        "gpt-5.6-terra",
+        retry_attempt,
+    )
+    assert first_explicit is retry_explicit is True
+
+    def rendered_text(request_input):
+        return "".join(item["text"] for item in request_input[0]["content"])
+
+    assert rendered_text(first_input) == first_attempt
+    assert rendered_text(retry_input) == retry_attempt
+    assert first_input[0]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"
+    }
+    assert retry_input[0]["content"][0]["prompt_cache_breakpoint"] == {
+        "mode": "explicit"
+    }
 
 
 def test_openai_prompt_cache_key_is_stable_per_prompt_family():
-    key = evals_module._openai_prompt_cache_key("prompt head " * 500)
-    assert key == evals_module._openai_prompt_cache_key("prompt head " * 500)
+    prefix = "prompt head " * 500
+    key = evals_module._openai_prompt_cache_key("gpt-5.6-terra", prefix)
+    assert key == evals_module._openai_prompt_cache_key("gpt-5.6-terra", prefix)
     assert key.startswith("axiom-encode-")
-    assert key != evals_module._openai_prompt_cache_key("other citation " * 500)
-    # Tail differences beyond the hashed head do not change routing.
-    base = "x" * 4096
-    assert evals_module._openai_prompt_cache_key(
-        base + "attempt-1 feedback"
-    ) == evals_module._openai_prompt_cache_key(base + "attempt-2 feedback")
+    assert key != evals_module._openai_prompt_cache_key(
+        "gpt-5.6-terra", "other citation " * 500
+    )
+    assert key != evals_module._openai_prompt_cache_key("gpt-5.6-sol", prefix)
+
+
+def test_older_openai_models_keep_the_original_single_string_prompt():
+    prompt = "unchanged model-visible prompt"
+    request_input, stable_prefix, explicit = evals_module._openai_prompt_input(
+        "gpt-5.4",
+        prompt,
+    )
+    assert request_input == prompt
+    assert stable_prefix == prompt
+    assert explicit is False
