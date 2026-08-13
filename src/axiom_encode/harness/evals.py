@@ -10447,7 +10447,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{required_test_case_contract_section}{validation_retry_feedback_section}{required_import_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{required_test_case_contract_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -11249,7 +11249,7 @@ rules:
         formula: snap_member_eligible
 ```
 
-{validation_retry_candidate_section}
+{validation_retry_feedback_section}{validation_retry_candidate_section}
 {output_rules}
 Do not respond with summaries, markdown prose, or file-write confirmations.
 """
@@ -14622,6 +14622,17 @@ def _openai_prompt_max_output_tokens(model: str) -> int:
     return _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS
 
 
+def _openai_prompt_cache_key(prompt: str) -> str:
+    """Stable cache-routing key for one prompt family.
+
+    Hashes the prompt head (static instructions + citation + source),
+    which is identical across retry attempts and redispatches of the
+    same citation, so their requests land where the cache entry lives.
+    """
+    digest = hashlib.sha256(prompt[:4096].encode("utf-8")).hexdigest()
+    return f"axiom-encode-{digest[:32]}"
+
+
 def _run_openai_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
@@ -14649,6 +14660,13 @@ def _run_openai_prompt_eval(
             "effort": "low",
             "summary": "auto",
         },
+        # Route retries and redispatches of the same prompt family to the
+        # same cache shard: without a key, near-identical ~70K-token
+        # prompts were rewritten at full price on every attempt
+        # (cached_tokens=0 across the board — see #1491). The key hashes
+        # the prompt head, which is byte-stable across attempts now that
+        # per-attempt retry feedback is appended at the tail.
+        "prompt_cache_key": _openai_prompt_cache_key(prompt),
     }
     headers = {
         "Authorization": f"Bearer {api_key}",

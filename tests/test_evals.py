@@ -718,6 +718,7 @@ def _workspace_prompt_for_source_unit(
     *,
     required_import_targets: tuple[str, ...] = (),
     validation_retry_candidate: ValidationRetryCandidate | None = None,
+    validation_retry_feedback: tuple[str, ...] = (),
     repair_candidate_tests_only: bool = False,
 ):
     workspace = prepare_eval_workspace(
@@ -742,6 +743,7 @@ def _workspace_prompt_for_source_unit(
         runner_backend="openai",
         required_import_targets=required_import_targets,
         validation_retry_candidate=validation_retry_candidate,
+        validation_retry_feedback=validation_retry_feedback,
         repair_candidate_tests_only=repair_candidate_tests_only,
     )
     return workspace, prompt
@@ -14787,6 +14789,9 @@ class TestOpenAIEvalRequest:
             "input": "encode the complete provision",
             "max_output_tokens": expected_max_output_tokens,
             "reasoning": {"effort": "low", "summary": "auto"},
+            "prompt_cache_key": evals_module._openai_prompt_cache_key(
+                "encode the complete provision"
+            ),
         }
         assert mock_post.call_args.kwargs["body"] == expected_body
         assert response.trace["request_body"] == expected_body
@@ -22543,3 +22548,48 @@ def test_persisted_revalidation_admits_unvalidated_rows_without_reviewer_calls()
         None, None, output_file="", success=False, error="encode failed"
     )
     evaluate_mock.assert_not_called()
+
+
+def test_retry_feedback_appends_after_static_prompt_prefix(tmp_path):
+    """#1491: per-attempt material must extend, not split, the cacheable prefix.
+
+    The first attempt's prompt must be a byte-identical prefix boundary for
+    the retry attempt: everything before the retry-feedback section is shared,
+    and the feedback lands after the static instruction tail (next to the
+    rejected candidate it describes).
+    """
+    _release, source_unit = _write_test_source_unit(
+        tmp_path,
+        "The benefit is ten percent of the qualifying amount.",
+        citation_path="dk/statute/benefit/section-1",
+    )
+
+    _, first_attempt = _workspace_prompt_for_source_unit(tmp_path, source_unit)
+    candidate = ValidationRetryCandidate(rulespec="format: rulespec/v1\nrules: []\n")
+    _, retry_attempt = _workspace_prompt_for_source_unit(
+        tmp_path,
+        source_unit,
+        validation_retry_candidate=candidate,
+        validation_retry_feedback=("ci: [complete-source-unit:structure] branch missing",),
+    )
+
+    feedback_at = retry_attempt.index("Deterministic validation feedback")
+    # The shared prefix covers the entire static instruction body — the
+    # feedback may only extend the prompt near its tail.
+    assert retry_attempt[:feedback_at].startswith(first_attempt[: feedback_at - 200])
+    assert "RuleSpec requirements:" in retry_attempt[:feedback_at]
+    # Feedback introduces the candidate below it, so it must precede the
+    # candidate block and follow the static requirements.
+    assert feedback_at < retry_attempt.index("BEGIN UNTRUSTED REJECTED CANDIDATE")
+
+
+def test_openai_prompt_cache_key_is_stable_per_prompt_family():
+    key = evals_module._openai_prompt_cache_key("prompt head " * 500)
+    assert key == evals_module._openai_prompt_cache_key("prompt head " * 500)
+    assert key.startswith("axiom-encode-")
+    assert key != evals_module._openai_prompt_cache_key("other citation " * 500)
+    # Tail differences beyond the hashed head do not change routing.
+    base = "x" * 4096
+    assert evals_module._openai_prompt_cache_key(
+        base + "attempt-1 feedback"
+    ) == evals_module._openai_prompt_cache_key(base + "attempt-2 feedback")
