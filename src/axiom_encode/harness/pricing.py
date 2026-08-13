@@ -102,7 +102,9 @@ def get_model_pricing(model: str) -> ModelPricing | None:
         return _MODEL_PRICING[normalized]
 
     for prefix, pricing in _MODEL_PRICING.items():
-        if normalized.startswith(prefix):
+        # Require a variant boundary so lexical siblings such as
+        # gpt-5.6-solstice cannot inherit gpt-5.6-sol pricing.
+        if normalized == prefix or normalized.startswith(f"{prefix}-"):
             return pricing
 
     return None
@@ -119,8 +121,15 @@ def estimate_usage_cost_usd(model: str, usage: TokenUsage | None) -> float | Non
 def estimate_usage_cost_breakdown(
     model: str,
     usage: TokenUsage | None,
+    *,
+    enforce_context_tier: bool = True,
 ) -> UsageCostBreakdown | None:
-    """Estimate a detailed cost breakdown for a usage bundle."""
+    """Estimate a detailed cost breakdown for a usage bundle.
+
+    ``enforce_context_tier`` only makes sense for single-request usage; pass
+    ``False`` when ``usage`` aggregates several requests, where the summed
+    input count says nothing about any one request's context tier.
+    """
     if usage is None:
         return None
 
@@ -128,7 +137,8 @@ def estimate_usage_cost_breakdown(
     if pricing is None:
         return None
     if (
-        pricing.max_input_tokens is not None
+        enforce_context_tier
+        and pricing.max_input_tokens is not None
         and usage.input_tokens > pricing.max_input_tokens
     ):
         # The configured rate is intentionally bounded to its published context

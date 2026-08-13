@@ -6384,6 +6384,30 @@ def test_empty_artifact_retry_prompt_uses_minimal_source_scope_protocol():
     assert "Return exactly this two-file bundle" in retry_prompt
 
 
+def test_empty_artifact_retry_prompt_preserves_cache_boundary():
+    stable_prefix = "Stable source, context, and schema sections.\n"
+    dynamic_suffix = "Output rules.\n"
+    original_prompt = evals_module._PromptWithCacheBoundary(
+        stable_prefix + dynamic_suffix,
+        cache_prefix_length=len(stable_prefix),
+    )
+
+    retry_prompt = _build_empty_artifact_retry_prompt(
+        original_prompt,
+        target_file_name="sample.yaml",
+        include_tests=True,
+    )
+
+    assert retry_prompt.startswith(str(original_prompt))
+    retry_prefix, retry_suffix = evals_module._openai_prompt_cache_parts(retry_prompt)
+    assert retry_prefix == stable_prefix
+    assert "previous response did not contain a RuleSpec artifact" in retry_suffix
+    assert "Return exactly this two-file bundle" in retry_suffix
+    assert evals_module._openai_prompt_cache_key(
+        "gpt-5.6-terra", retry_prefix
+    ) == evals_module._openai_prompt_cache_key("gpt-5.6-terra", stable_prefix)
+
+
 def test_empty_artifact_runtime_uses_bound_max_attempts(monkeypatch, tmp_path):
     monkeypatch.setattr(evals_module, "_EMPTY_ARTIFACT_MAX_ATTEMPTS", 1)
     response = EvalPromptResponse(text="", duration_ms=1)

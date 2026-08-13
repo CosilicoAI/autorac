@@ -8336,15 +8336,31 @@ def _build_empty_artifact_retry_prompt(
             "with `format: rulespec/v1`."
         )
     )
-    trimmed_prompt = _strip_source_scope_protocol(original_prompt)
-    return f"""The previous response did not contain a RuleSpec artifact, so the harness could not parse or write `{target_file_name}`.
+    retry_directive = f"""The previous response did not contain a RuleSpec artifact, so the harness could not parse or write `{target_file_name}`.
 
 Emit the artifact now.
 - Do not narrate your plan.
 - Do not explain what you will do.
 - Do not include markdown prose, analysis, or file-write confirmations.
 - {output_contract}
-
+"""
+    cache_prefix_length = getattr(original_prompt, "cache_prefix_length", None)
+    if (
+        isinstance(cache_prefix_length, int)
+        and not isinstance(cache_prefix_length, bool)
+        and 0 < cache_prefix_length <= len(original_prompt)
+    ):
+        # Keep the original prompt byte-identical (boundary included) so the
+        # retry reuses the prompt cache written by the first attempt; every
+        # retry-only instruction lives after the stable prefix. That rules out
+        # the source-scope trim used below — mutating the prefix would forfeit
+        # the cached tokens the retry exists to reuse.
+        return _PromptWithCacheBoundary(
+            f"{original_prompt}\n{retry_directive}",
+            cache_prefix_length=cache_prefix_length,
+        )
+    trimmed_prompt = _strip_source_scope_protocol(original_prompt)
+    return f"""{retry_directive}
 Use the same source, context, schema, and validation constraints from the original task below.
 
 === BEGIN ORIGINAL TASK ===
@@ -14680,18 +14696,14 @@ def _openai_prompt_cache_parts(prompt: str) -> tuple[str, str]:
         raise ValueError("OpenAI prompt cache boundary must be an integer")
     if not 0 < split_at <= len(prompt):
         raise ValueError("OpenAI prompt cache boundary is outside the prompt")
-    prefix, suffix = prompt[:split_at], prompt[split_at:]
-    if not prefix or prefix + suffix != prompt:
-        raise ValueError("OpenAI prompt cache split must preserve the complete prompt")
-    return prefix, suffix
+    return prompt[:split_at], prompt[split_at:]
 
 
 def _openai_prompt_cache_key(model: str, stable_prefix: str) -> str:
     """Return a model- and schema-bound key for one exact prompt prefix."""
 
-    digest = hashlib.sha256(stable_prefix.encode("utf-8")).hexdigest()
-    identity = f"{_OPENAI_PROMPT_CACHE_SCHEMA}:{model}:{digest}"
-    return f"axiom-encode-{hashlib.sha256(identity.encode()).hexdigest()[:32]}"
+    identity = f"{_OPENAI_PROMPT_CACHE_SCHEMA}:{model}:{_sha256_text(stable_prefix)}"
+    return f"axiom-encode-{_sha256_text(identity)[:32]}"
 
 
 def _openai_prompt_input(
