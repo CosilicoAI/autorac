@@ -58256,14 +58256,24 @@ def _log_eval_session(
     def _sum_attempt_field(field: str) -> int:
         return sum(int(getattr(attempt, field, 0) or 0) for attempt in attempts)
 
-    attempt_costs = [
-        float(cost)
-        for attempt in attempts
-        if isinstance(
-            (cost := getattr(attempt, "estimated_cost_usd", None)), (int, float)
-        )
-        and not isinstance(cost, bool)
-    ]
+    attempt_costs: list[float] = []
+    estimated_cost_complete = True
+    for attempt in attempts:
+        cost = getattr(attempt, "estimated_cost_usd", None)
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            attempt_costs.append(float(cost))
+            continue
+        if any(
+            int(getattr(attempt, field, 0) or 0) > 0
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+                "reasoning_output_tokens",
+            )
+        ):
+            estimated_cost_complete = False
 
     session = db.start_session(
         model=str(getattr(result, "model", "") or ""),
@@ -58299,7 +58309,11 @@ def _log_eval_session(
         "standalone_validation_success": bool(getattr(result, "success", False)),
         "duration_ms": _sum_attempt_field("duration_ms"),
         "generation_attempt_count": len(attempts),
-        "estimated_cost_usd": sum(attempt_costs) if attempt_costs else None,
+        "estimated_cost_usd": (
+            sum(attempt_costs)
+            if estimated_cost_complete and attempt_costs
+            else None
+        ),
         "input_tokens": _sum_attempt_field("input_tokens"),
         "output_tokens": _sum_attempt_field("output_tokens"),
         "cache_read_tokens": _sum_attempt_field("cache_read_tokens"),

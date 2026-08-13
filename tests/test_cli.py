@@ -100,6 +100,7 @@ from axiom_encode.cli import (
     _legacy_replacement_pending_paths,
     _load_verified_applied_encoding_manifest_payload,
     _local_factual_input_names_from_rules_content,
+    _log_eval_session,
     _looks_like_absolute_rulespec_output_target,
     _manifest_census,
     _manifest_coverage_by_file,
@@ -13138,6 +13139,39 @@ class TestCmdEncode:
         result.context_manifest_file = str(context_root / "context.json")
         self._write_result_context(result, context_root)
         return result
+
+    def test_eval_session_cost_propagates_unknown_priced_attempt(self):
+        initial = self._make_eval_result(False)
+        initial.input_tokens = 272000
+        initial.estimated_cost_usd = 0.5452
+        retry = self._make_eval_result(True)
+        retry.input_tokens = 272001
+        retry.estimated_cost_usd = None
+        db = MagicMock()
+        db.start_session.return_value = SimpleNamespace(id="session-id")
+        run = SimpleNamespace(
+            id="run-id",
+            session_id="encode-run-id",
+            citation=retry.citation,
+        )
+
+        _log_eval_session(
+            db,
+            retry,
+            run,
+            log_issue=False,
+            attempt_results=[initial, retry],
+        )
+
+        result_event = next(
+            event
+            for event in db.log_event.call_args_list
+            if event.args[1] == "encode_result"
+        )
+        result_summary = json.loads(result_event.kwargs["content"])
+        assert result_summary["generation_attempt_count"] == 2
+        assert result_summary["input_tokens"] == 544001
+        assert result_summary["estimated_cost_usd"] is None
 
     def _write_result_context(self, result, tmp_path: Path) -> None:
         source = tmp_path / "source.txt"
