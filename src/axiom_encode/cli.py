@@ -29234,7 +29234,8 @@ def _run_encode_attempt(
     apply_requested = getattr(args, "apply", False) is True
     success_label = "standalone_success" if apply_requested else "success"
     print(
-        f"  {success_label}={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
+        f"  {success_label}={result.success} duration_ms={result.duration_ms} "
+        f"cost_est={_format_estimated_cost_usd(result.estimated_cost_usd)}"
     )
     print(
         f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"
@@ -58274,6 +58275,9 @@ def _log_eval_session(
             )
         ):
             estimated_cost_complete = False
+    aggregate_estimated_cost = (
+        sum(attempt_costs) if estimated_cost_complete and attempt_costs else None
+    )
 
     session = db.start_session(
         model=str(getattr(result, "model", "") or ""),
@@ -58288,6 +58292,7 @@ def _log_eval_session(
         output_tokens=_sum_attempt_field("output_tokens"),
         cache_read_tokens=_sum_attempt_field("cache_read_tokens"),
         cache_creation_tokens=_sum_attempt_field("cache_creation_tokens"),
+        estimated_cost_usd=aggregate_estimated_cost,
     )
     db.log_event(
         session.id,
@@ -58309,11 +58314,7 @@ def _log_eval_session(
         "standalone_validation_success": bool(getattr(result, "success", False)),
         "duration_ms": _sum_attempt_field("duration_ms"),
         "generation_attempt_count": len(attempts),
-        "estimated_cost_usd": (
-            sum(attempt_costs)
-            if estimated_cost_complete and attempt_costs
-            else None
-        ),
+        "estimated_cost_usd": aggregate_estimated_cost,
         "input_tokens": _sum_attempt_field("input_tokens"),
         "output_tokens": _sum_attempt_field("output_tokens"),
         "cache_read_tokens": _sum_attempt_field("cache_read_tokens"),
@@ -58654,6 +58655,12 @@ def _review_results_from_eval_metrics(metrics) -> ReviewResults | None:
     )
 
 
+def _format_estimated_cost_usd(value: float | None) -> str:
+    """Render an estimate without turning unknown cost into numeric zero."""
+
+    return "unknown" if value is None else f"${value:.4f}"
+
+
 def _print_eval_metrics(result) -> None:
     """Print human-readable eval metrics when present."""
     if not result.metrics:
@@ -58758,7 +58765,8 @@ def cmd_eval(args):
     for result in results:
         print(f"{result.citation} [{result.runner}]")
         print(
-            f"  success={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
+            f"  success={result.success} duration_ms={result.duration_ms} "
+            f"cost_est={_format_estimated_cost_usd(result.estimated_cost_usd)}"
         )
         print(
             f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"
@@ -58842,7 +58850,8 @@ def cmd_eval_source(args):
     for result in results:
         print(f"{result.citation} [{result.runner}]")
         print(
-            f"  success={result.success} duration_ms={result.duration_ms} cost_est=${result.estimated_cost_usd or 0:.4f}"
+            f"  success={result.success} duration_ms={result.duration_ms} "
+            f"cost_est={_format_estimated_cost_usd(result.estimated_cost_usd)}"
         )
         print(
             f"  tokens in={result.input_tokens} out={result.output_tokens} cache_read={result.cache_read_tokens} cache_write={result.cache_creation_tokens} reasoning_out={result.reasoning_output_tokens}"

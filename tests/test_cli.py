@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -84,6 +85,7 @@ from axiom_encode.cli import (
     _expected_proof_import_hash,
     _factual_input_appears_numeric,
     _find_rulespec_dependents,
+    _format_estimated_cost_usd,
     _generated_result_source_metadata,
     _git_changed_files,
     _grounded_formula_literal_for_scalar_expression,
@@ -13140,15 +13142,15 @@ class TestCmdEncode:
         self._write_result_context(result, context_root)
         return result
 
-    def test_eval_session_cost_propagates_unknown_priced_attempt(self):
+    def test_eval_session_cost_propagates_unknown_priced_attempt(self, tmp_path):
         initial = self._make_eval_result(False)
         initial.input_tokens = 272000
         initial.estimated_cost_usd = 0.5452
         retry = self._make_eval_result(True)
         retry.input_tokens = 272001
         retry.estimated_cost_usd = None
-        db = MagicMock()
-        db.start_session.return_value = SimpleNamespace(id="session-id")
+        db_path = tmp_path / "encodings.db"
+        db = EncodingDB(db_path)
         run = SimpleNamespace(
             id="run-id",
             session_id="encode-run-id",
@@ -13165,13 +13167,26 @@ class TestCmdEncode:
 
         result_event = next(
             event
-            for event in db.log_event.call_args_list
-            if event.args[1] == "encode_result"
+            for event in db.get_session_events(run.session_id)
+            if event.event_type == "encode_result"
         )
-        result_summary = json.loads(result_event.kwargs["content"])
+        result_summary = json.loads(result_event.content)
         assert result_summary["generation_attempt_count"] == 2
         assert result_summary["input_tokens"] == 544001
         assert result_summary["estimated_cost_usd"] is None
+        with sqlite3.connect(db_path) as conn:
+            persisted = conn.execute(
+                "SELECT input_tokens, estimated_cost_usd FROM sessions WHERE id = ?",
+                (run.session_id,),
+            ).fetchone()
+        assert persisted == (544001, None)
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(None, "unknown"), (0.0, "$0.0000"), (0.5452, "$0.5452")],
+    )
+    def test_estimated_cost_display_preserves_unknown_and_zero(self, value, expected):
+        assert _format_estimated_cost_usd(value) == expected
 
     def _write_result_context(self, result, tmp_path: Path) -> None:
         source = tmp_path / "source.txt"
