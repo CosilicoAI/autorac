@@ -1656,6 +1656,19 @@ def _sum_optional_float(left: float | None, right: float | None) -> float | None
     return (left or 0.0) + (right or 0.0)
 
 
+def _sum_estimated_cost(
+    left: EvalPromptResponse,
+    right: EvalPromptResponse,
+) -> float | None:
+    """Aggregate estimates without converting priced usage gaps into zero cost."""
+
+    if (left.tokens is not None and left.estimated_cost_usd is None) or (
+        right.tokens is not None and right.estimated_cost_usd is None
+    ):
+        return None
+    return _sum_optional_float(left.estimated_cost_usd, right.estimated_cost_usd)
+
+
 def _sum_token_usage(
     left: TokenUsage | None,
     right: TokenUsage | None,
@@ -2409,9 +2422,7 @@ def _combine_retry_response(
         text=retry.text,
         duration_ms=initial.duration_ms + retry.duration_ms,
         tokens=_sum_token_usage(initial.tokens, retry.tokens),
-        estimated_cost_usd=_sum_optional_float(
-            initial.estimated_cost_usd, retry.estimated_cost_usd
-        ),
+        estimated_cost_usd=_sum_estimated_cost(initial, retry),
         actual_cost_usd=_sum_optional_float(
             initial.actual_cost_usd, retry.actual_cost_usd
         ),

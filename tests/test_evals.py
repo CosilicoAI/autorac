@@ -6892,6 +6892,27 @@ def test_retry_timeout_history_before_http_error_is_not_terminal_timeout():
     }
 
 
+def test_retry_cost_aggregation_propagates_unknown_priced_usage():
+    initial = EvalPromptResponse(
+        text="",
+        duration_ms=10,
+        tokens=TokenUsage(input_tokens=272000, output_tokens=100),
+        estimated_cost_usd=0.5452,
+    )
+    retry = EvalPromptResponse(
+        text="",
+        duration_ms=20,
+        tokens=TokenUsage(input_tokens=272001, output_tokens=100),
+        estimated_cost_usd=None,
+    )
+
+    combined = evals_module._combine_retry_response(initial, retry, "retry")
+
+    assert combined.tokens is not None
+    assert combined.tokens.input_tokens == 544001
+    assert combined.estimated_cost_usd is None
+
+
 def test_result_binding_rejects_failed_row_without_failure_kind():
     payload = _fake_eval_result("openai-gpt-5.4", "sample").to_dict()
     payload["success"] = False
