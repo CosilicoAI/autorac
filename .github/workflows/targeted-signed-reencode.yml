@@ -120,11 +120,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  encode:
-    name: Queue protected signed RuleSpec re-encode
+  # Cost damper (axiom-encode#1495): blocks ad hoc re-dispatches of a
+  # citation that keeps failing, before the protected environment consumes
+  # an approval and before any model call. Ad hoc dispatches only — queue
+  # runs skip it entirely so the guard can never stall a tranche, and the
+  # queue machinery owns its own retry policy. Runs unprotected on purpose:
+  # it reads public run history with the read-scoped token and signs
+  # nothing. Tunables are repository variables, not inputs — the dispatch
+  # input list sits at GitHub's hard cap of 25 (pinned by
+  # tests/test_signing_supervisor.py).
+  attempt_budget:
+    name: Enforce failed-attempt budget
     if: >-
       ${{
         github.event_name == 'workflow_dispatch'
+        && github.ref == 'refs/heads/main'
+        && inputs.queue_id == ''
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout axiom-encode
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: axiom-encode
+          persist-credentials: false
+
+      - name: Enforce failed-attempt budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CITATION: ${{ inputs.citation }}
+          QUEUE_ID: ${{ inputs.queue_id }}
+          ATTEMPT_BUDGET: ${{ vars.ATTEMPT_BUDGET }}
+          ATTEMPT_BUDGET_OVERRIDE: ${{ vars.ATTEMPT_BUDGET_OVERRIDE }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/axiom-encode/scripts/enforce_attempt_budget.py"
+
+  encode:
+    name: Queue protected signed RuleSpec re-encode
+    needs: attempt_budget
+    # !cancelled() disables the implicit success() gate so a skipped
+    # attempt_budget (queue dispatch) still admits encode; an explicit
+    # failure (budget exhausted) or infrastructure failure of the guard
+    # job blocks only ad hoc runs, which can always be re-dispatched.
+    if: >-
+      ${{
+        !cancelled()
+        && (
+          needs.attempt_budget.result == 'success'
+          || needs.attempt_budget.result == 'skipped'
+        )
+        && github.event_name == 'workflow_dispatch'
         && github.ref == 'refs/heads/main'
         && (
           inputs.queue_id == ''
@@ -1641,6 +1687,19 @@ jobs:
                 "Compose signed source bundle for ${CITATION}"
             fi
           fi
+
+      - name: Summarize model spend
+        id: run_cost_summary
+        # Telemetry only (axiom-encode#1495): prices this run's recorded
+        # usage so spend is visible per run instead of only on the invoice.
+        # Runs on failure too — failed attempts are the expensive case.
+        if: ${{ !cancelled() && steps.encode_apply.outcome != 'skipped' }}
+        env:
+          TRACES_ROOT: ${{ runner.temp }}/generated
+        run: |
+          python3 "$GITHUB_WORKSPACE/axiom-encode/scripts/summarize_run_cost.py" \
+            --traces-root "$TRACES_ROOT" \
+            --pricing "$GITHUB_WORKSPACE/axiom-encode/src/axiom_encode/harness/pricing_rates.toml"
 
       - name: Verify generated provenance
         id: verify_generated_provenance
