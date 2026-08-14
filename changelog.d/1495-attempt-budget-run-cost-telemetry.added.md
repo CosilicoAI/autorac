@@ -1,0 +1,1 @@
+Block ad hoc CI re-dispatches of a citation after repeated encode failures (failed-attempt budget with repository-variable tunables, skipped entirely for queue dispatches), and summarize each targeted re-encode run's model token spend into the workflow step summary, failures included.
