@@ -742,6 +742,61 @@ class TestSyncAgentSessionsToSupabase:
             mock_client.schema.return_value.table.assert_any_call("sdk_sessions")
             mock_client.schema.return_value.table.assert_any_call("sdk_session_events")
 
+    def test_sync_session_preserves_unknown_estimated_cost(self, tmp_path):
+        db_path = tmp_path / "encodings.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                started_at TEXT,
+                ended_at TEXT,
+                model TEXT,
+                cwd TEXT,
+                event_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE session_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                sequence INTEGER,
+                timestamp TEXT,
+                event_type TEXT,
+                tool_name TEXT,
+                content TEXT,
+                metadata_json TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO sessions VALUES "
+            "('agent-test-unknown', '2024-01-01', '2024-01-01', "
+            "'gpt-5.6-terra', '/tmp', 0, 272001, 1, 0, NULL)"
+        )
+        conn.commit()
+        conn.close()
+
+        mock_client = MagicMock()
+        mock_client.schema.return_value.table.return_value.upsert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "test"}]
+        )
+
+        with patch("axiom_encode.supabase_sync.ENCODINGS_DB", db_path):
+            result = sync_agent_sessions_to_supabase(
+                client=mock_client, include_all=True
+            )
+
+        assert result["synced"] == 1
+        session_payload = (
+            mock_client.schema.return_value.table.return_value.upsert.call_args_list[
+                0
+            ].args[0]
+        )
+        assert session_payload["estimated_cost_usd"] is None
+
     def test_sync_with_session_filter(self, tmp_path):
         db_path = tmp_path / "encodings.db"
         conn = sqlite3.connect(str(db_path))

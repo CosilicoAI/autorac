@@ -463,3 +463,48 @@ def test_reconcile_stale_running_items_marks_ready_orphan_done(tmp_path):
     assert data["event_log"][0]["message"] == (
         "snap_demo was left in `running`, but its output is ready; marked done."
     )
+
+
+def test_build_run_record_marks_unknown_row_costs_as_unknown(tmp_path):
+    module = load_queue_runner_module()
+    item = {"name": "snap_demo", "corpus_source_sha256": "abc123"}
+
+    def record_for(rows):
+        return module.build_run_record(
+            item,
+            reviewer_cli="codex",
+            returncode=0,
+            summary=None,
+            results={"results": rows},
+            archive_path=None,
+            status="done",
+            note="",
+            policy_repo_root=tmp_path / "policy",
+            policyengine_runtime_root=tmp_path / "runtime",
+        )
+
+    known = record_for(
+        [
+            {"estimated_cost_usd": 1.25, "input_tokens": 10},
+            {"estimated_cost_usd": 0.75, "input_tokens": 10},
+        ]
+    )
+    assert known["metrics"]["estimated_cost_usd"] == 2.0
+
+    unknown = record_for(
+        [
+            {"estimated_cost_usd": 1.25, "input_tokens": 10},
+            {"estimated_cost_usd": None, "input_tokens": 10},
+        ]
+    )
+    assert unknown["metrics"]["estimated_cost_usd"] is None
+
+    # A row with no usage at all (e.g. a failed launch) contributes no cost
+    # and does not poison the aggregate.
+    no_usage = record_for(
+        [
+            {"estimated_cost_usd": 1.25, "input_tokens": 10},
+            {"estimated_cost_usd": None},
+        ]
+    )
+    assert no_usage["metrics"]["estimated_cost_usd"] == 1.25

@@ -441,11 +441,12 @@ class EncodingDB:
             "axiom_encode_version",
         ]:
             try:
-                col_type = (
-                    "TEXT DEFAULT ''"
-                    if col == "axiom_encode_version"
-                    else "INTEGER DEFAULT 0"
-                )
+                if col == "axiom_encode_version":
+                    col_type = "TEXT DEFAULT ''"
+                elif col == "estimated_cost_usd":
+                    col_type = "REAL DEFAULT 0"
+                else:
+                    col_type = "INTEGER DEFAULT 0"
                 cursor.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
@@ -1078,17 +1079,11 @@ class EncodingDB:
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        estimated_cost_usd: float | None = None,
     ) -> None:
-        """Update token usage for a session."""
+        """Update token usage and its provider/model-aware cost estimate."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-
-        estimated_cost = TokenUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_creation_tokens=cache_creation_tokens,
-        ).estimated_cost_usd
 
         cursor.execute(
             """
@@ -1107,7 +1102,7 @@ class EncodingDB:
                 cache_read_tokens,
                 cache_creation_tokens,
                 input_tokens + output_tokens,
-                estimated_cost,
+                estimated_cost_usd,
                 session_id,
             ),
         )

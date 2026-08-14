@@ -436,8 +436,16 @@ def _base_llm_attributes(
     if cost_usd is not None:
         attrs["axiom_encode.cost.total_usd"] = cost_usd
 
-    if usage is not None and model:
-        breakdown = estimate_usage_cost_breakdown(model, usage)
+    if usage is not None and model and cost_usd is not None:
+        # ``usage`` here aggregates all attempts in the span, so the
+        # per-request context-tier gate does not apply; per-attempt pricing
+        # (which produced ``cost_usd``) already enforced it. Emitting the
+        # breakdown only when the total is known keeps the two consistent.
+        breakdown = estimate_usage_cost_breakdown(
+            model,
+            usage,
+            enforce_context_tier=False,
+        )
         if breakdown is not None:
             attrs.update(
                 {

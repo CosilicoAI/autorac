@@ -325,6 +325,8 @@ _OPENAI_REQUEST_BACKOFF_SECONDS = (1, 2, 4, 8, 10)
 _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS = 16384
 _OPENAI_EXTENDED_PROMPT_MAX_OUTPUT_TOKENS = 32768
 _OPENAI_EXTENDED_OUTPUT_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
+_OPENAI_EXPLICIT_PROMPT_CACHE_MODEL_PREFIXES = ("gpt-5.6",)
+_OPENAI_PROMPT_CACHE_SCHEMA = "rulespec-authoring-v1"
 EVAL_EXECUTION_IDENTITY_SCHEMA = "axiom-encode/eval-execution-identity/v3"
 _EVAL_CASE_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     "_EVAL_CASE_DEADLINE_MONOTONIC",
@@ -1654,6 +1656,19 @@ def _sum_optional_float(left: float | None, right: float | None) -> float | None
     return (left or 0.0) + (right or 0.0)
 
 
+def _sum_estimated_cost(
+    left: EvalPromptResponse,
+    right: EvalPromptResponse,
+) -> float | None:
+    """Aggregate estimates without converting priced usage gaps into zero cost."""
+
+    if (left.tokens is not None and left.estimated_cost_usd is None) or (
+        right.tokens is not None and right.estimated_cost_usd is None
+    ):
+        return None
+    return _sum_optional_float(left.estimated_cost_usd, right.estimated_cost_usd)
+
+
 def _sum_token_usage(
     left: TokenUsage | None,
     right: TokenUsage | None,
@@ -2407,9 +2422,7 @@ def _combine_retry_response(
         text=retry.text,
         duration_ms=initial.duration_ms + retry.duration_ms,
         tokens=_sum_token_usage(initial.tokens, retry.tokens),
-        estimated_cost_usd=_sum_optional_float(
-            initial.estimated_cost_usd, retry.estimated_cost_usd
-        ),
+        estimated_cost_usd=_sum_estimated_cost(initial, retry),
         actual_cost_usd=_sum_optional_float(
             initial.actual_cost_usd, retry.actual_cost_usd
         ),
@@ -8323,15 +8336,31 @@ def _build_empty_artifact_retry_prompt(
             "with `format: rulespec/v1`."
         )
     )
-    trimmed_prompt = _strip_source_scope_protocol(original_prompt)
-    return f"""The previous response did not contain a RuleSpec artifact, so the harness could not parse or write `{target_file_name}`.
+    retry_directive = f"""The previous response did not contain a RuleSpec artifact, so the harness could not parse or write `{target_file_name}`.
 
 Emit the artifact now.
 - Do not narrate your plan.
 - Do not explain what you will do.
 - Do not include markdown prose, analysis, or file-write confirmations.
 - {output_contract}
-
+"""
+    cache_prefix_length = getattr(original_prompt, "cache_prefix_length", None)
+    if (
+        isinstance(cache_prefix_length, int)
+        and not isinstance(cache_prefix_length, bool)
+        and 0 < cache_prefix_length <= len(original_prompt)
+    ):
+        # Keep the original prompt byte-identical (boundary included) so the
+        # retry reuses the prompt cache written by the first attempt; every
+        # retry-only instruction lives after the stable prefix. That rules out
+        # the source-scope trim used below — mutating the prefix would forfeit
+        # the cached tokens the retry exists to reuse.
+        return _PromptWithCacheBoundary(
+            f"{original_prompt}\n{retry_directive}",
+            cache_prefix_length=cache_prefix_length,
+        )
+    trimmed_prompt = _strip_source_scope_protocol(original_prompt)
+    return f"""{retry_directive}
 Use the same source, context, schema, and validation constraints from the original task below.
 
 === BEGIN ORIGINAL TASK ===
@@ -10431,7 +10460,7 @@ Complete-source-unit mode is enabled for this request:
 - A genuinely scalar-only source unit may remain parameter-only.
 """
 
-    return f"""You are participating in an encoding eval for {citation}.
+    stable_prefix = f"""You are participating in an encoding eval for {citation}.
 
 Author the output in Axiom RuleSpec YAML.
 Do not narrate your plan or describe what you will do before emitting the artifact.
@@ -10447,7 +10476,7 @@ Primary legal authority:
 {legal_authority_instruction}
 {corpus_source_section.rstrip()}
 {inline_source}
-{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{required_test_case_contract_section}{validation_retry_feedback_section}{required_import_section}
+{source_metadata_section}{provision_metadata_section}{amendment_section}{context_section}{missing_cited_source_section}{mandatory_review_findings_section}{required_deferred_output_contract_section}{required_test_case_contract_section}{required_import_section}
 {backend_section}
 {canonical_concept_section}{complete_source_unit_section}
 RuleSpec requirements:
@@ -11249,10 +11278,16 @@ rules:
         formula: snap_member_eligible
 ```
 
-{validation_retry_candidate_section}
+"""
+    dynamic_suffix = f"""\
+{validation_retry_feedback_section}{validation_retry_candidate_section}
 {output_rules}
 Do not respond with summaries, markdown prose, or file-write confirmations.
 """
+    return _PromptWithCacheBoundary(
+        stable_prefix + dynamic_suffix,
+        cache_prefix_length=len(stable_prefix),
+    )
 
 
 def _workspace_corpus_citation_path(workspace: EvalWorkspace) -> str | None:
@@ -14622,6 +14657,77 @@ def _openai_prompt_max_output_tokens(model: str) -> int:
     return _OPENAI_DEFAULT_PROMPT_MAX_OUTPUT_TOKENS
 
 
+def _openai_model_supports_explicit_prompt_cache(model: str) -> bool:
+    """Return whether the model supports GPT-5.6 prompt-cache breakpoints."""
+
+    return any(
+        model == prefix or model.startswith(f"{prefix}-")
+        for prefix in _OPENAI_EXPLICIT_PROMPT_CACHE_MODEL_PREFIXES
+    )
+
+
+class _PromptWithCacheBoundary(str):
+    """A model-visible prompt carrying non-textual cache-boundary metadata."""
+
+    cache_prefix_length: int
+
+    def __new__(
+        cls,
+        value: str,
+        *,
+        cache_prefix_length: int,
+    ) -> _PromptWithCacheBoundary:
+        instance = super().__new__(cls, value)
+        instance.cache_prefix_length = cache_prefix_length
+        return instance
+
+
+def _openai_prompt_cache_parts(prompt: str) -> tuple[str, str]:
+    """Split a RuleSpec prompt at its stable-prefix boundary.
+
+    The returned strings always reassemble to the original prompt byte-for-byte.
+    Initial and validation-retry prompts split at the same boundary: immediately
+    before retry-only feedback/candidate data, or before the output contract when
+    that retry-only suffix is absent.
+    """
+
+    split_at = getattr(prompt, "cache_prefix_length", len(prompt))
+    if isinstance(split_at, bool) or not isinstance(split_at, int):
+        raise ValueError("OpenAI prompt cache boundary must be an integer")
+    if not 0 < split_at <= len(prompt):
+        raise ValueError("OpenAI prompt cache boundary is outside the prompt")
+    return prompt[:split_at], prompt[split_at:]
+
+
+def _openai_prompt_cache_key(model: str, stable_prefix: str) -> str:
+    """Return a model- and schema-bound key for one exact prompt prefix."""
+
+    identity = f"{_OPENAI_PROMPT_CACHE_SCHEMA}:{model}:{_sha256_text(stable_prefix)}"
+    return f"axiom-encode-{_sha256_text(identity)[:32]}"
+
+
+def _openai_prompt_input(
+    model: str,
+    prompt: str,
+) -> tuple[str | list[dict[str, object]], str, bool]:
+    """Build a quality-equivalent Responses input and its stable cache prefix."""
+
+    prefix, suffix = _openai_prompt_cache_parts(prompt)
+    if not _openai_model_supports_explicit_prompt_cache(model):
+        return prompt, prefix, False
+
+    content: list[dict[str, object]] = [
+        {
+            "type": "input_text",
+            "text": prefix,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
+    ]
+    if suffix:
+        content.append({"type": "input_text", "text": suffix})
+    return [{"type": "message", "role": "user", "content": content}], prefix, True
+
+
 def _run_openai_prompt_eval(
     runner: EvalRunnerSpec,
     workspace: EvalWorkspace,
@@ -14641,15 +14747,28 @@ def _run_openai_prompt_eval(
             error="OPENAI_API_KEY is not set",
         )
 
-    body = {
+    prompt_input, stable_prefix, explicit_prompt_cache = _openai_prompt_input(
+        runner.model,
+        prompt,
+    )
+    body: dict[str, object] = {
         "model": runner.model,
-        "input": prompt,
+        "input": prompt_input,
         "max_output_tokens": _openai_prompt_max_output_tokens(runner.model),
         "reasoning": {
             "effort": "low",
             "summary": "auto",
         },
+        # Bind routing to the exact reusable prefix, model, and prompt schema.
+        # GPT-5.6 receives an explicit breakpoint so retry-only content after
+        # that prefix cannot invalidate the cache or incur cache-write charges.
+        "prompt_cache_key": _openai_prompt_cache_key(runner.model, stable_prefix),
     }
+    if explicit_prompt_cache:
+        body["prompt_cache_options"] = {"mode": "explicit"}
+        # Keep cost estimates and billing on the published Standard tier instead
+        # of inheriting a potentially higher-priced project default.
+        body["service_tier"] = "default"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -14755,6 +14874,7 @@ def _run_openai_prompt_eval(
         input_tokens=int(usage.get("input_tokens", 0) or 0),
         output_tokens=int(usage.get("output_tokens", 0) or 0),
         cache_read_tokens=int(input_details.get("cached_tokens", 0) or 0),
+        cache_creation_tokens=int(input_details.get("cache_write_tokens", 0) or 0),
     )
     tokens.reasoning_output_tokens = int(
         ((usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0)

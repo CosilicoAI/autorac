@@ -684,7 +684,11 @@ def sync_agent_sessions_to_supabase(
                 "input_tokens": session["input_tokens"],
                 "output_tokens": session["output_tokens"],
                 "cache_read_tokens": session["cache_read_tokens"],
-                "estimated_cost_usd": float(session["estimated_cost_usd"] or 0),
+                "estimated_cost_usd": (
+                    float(session["estimated_cost_usd"])
+                    if session["estimated_cost_usd"] is not None
+                    else None
+                ),
                 "encoder_version": _row_value(
                     session, "axiom_encode_version", "autorac_version"
                 )

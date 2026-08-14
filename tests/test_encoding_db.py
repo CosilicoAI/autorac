@@ -2,6 +2,7 @@
 Tests for the experiment database.
 """
 
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -602,8 +603,14 @@ class TestUpdateSessionTokens:
             input_tokens=1000,
             output_tokens=500,
             cache_read_tokens=200,
+            estimated_cost_usd=0.0123,
         )
 
         session = experiment_db.get_session("token-test")
         # Session.total_tokens = input_tokens + output_tokens = 1500
         assert session.total_tokens == 1500
+        with sqlite3.connect(experiment_db.db_path) as conn:
+            cost = conn.execute(
+                "SELECT estimated_cost_usd FROM sessions WHERE id = 'token-test'"
+            ).fetchone()[0]
+        assert cost == 0.0123

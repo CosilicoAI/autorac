@@ -149,3 +149,33 @@ def test_base_llm_attributes_include_reasoning_and_cost_breakdown():
     assert attrs["axiom_encode.usage.reasoning_output_tokens"] == 11
     assert attrs["axiom_encode.cost.total_usd"] == 1.23
     assert attrs["axiom_encode.usage.non_cached_input_tokens"] == 40
+
+
+def test_base_llm_attributes_price_aggregated_usage_past_single_request_tier():
+    # Usage summed across attempts may exceed one request's context tier; the
+    # breakdown must still accompany a known total.
+    usage = TokenUsage(input_tokens=300_000, output_tokens=40)
+
+    attrs = _base_llm_attributes(
+        provider="openai",
+        model="gpt-5.6-terra",
+        usage=usage,
+        cost_usd=1.0,
+    )
+
+    assert attrs["axiom_encode.cost.total_usd"] == 1.0
+    assert "axiom_encode.cost.input_usd" in attrs
+
+
+def test_base_llm_attributes_omit_breakdown_when_total_cost_unknown():
+    usage = TokenUsage(input_tokens=100, output_tokens=40)
+
+    attrs = _base_llm_attributes(
+        provider="openai",
+        model="gpt-5.4",
+        usage=usage,
+        cost_usd=None,
+    )
+
+    assert "axiom_encode.cost.total_usd" not in attrs
+    assert "axiom_encode.cost.input_usd" not in attrs

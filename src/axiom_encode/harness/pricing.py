@@ -25,6 +25,7 @@ class ModelPricing:
     output_per_million: float
     cache_read_per_million: float = 0.0
     cache_create_per_million: float = 0.0
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,9 @@ def _load_pricing_rates(path: Path = _PRICING_RATES_PATH) -> PricingRates:
             output_per_million=float(rates.get("output_per_million", 0.0)),
             cache_read_per_million=float(rates.get("cache_read_per_million", 0.0)),
             cache_create_per_million=float(rates.get("cache_create_per_million", 0.0)),
+            max_input_tokens=(
+                int(rates["max_input_tokens"]) if "max_input_tokens" in rates else None
+            ),
         )
 
     return PricingRates(
@@ -89,12 +93,18 @@ def get_model_pricing(model: str) -> ModelPricing | None:
     normalized = (model or "").strip()
     if not normalized:
         return None
+    if normalized == "gpt-5.6":
+        # The unsuffixed API alias routes to the Sol model. Keep this exact so
+        # unrelated siblings such as gpt-5.6-luna cannot inherit Sol pricing.
+        normalized = "gpt-5.6-sol"
 
     if normalized in _MODEL_PRICING:
         return _MODEL_PRICING[normalized]
 
     for prefix, pricing in _MODEL_PRICING.items():
-        if normalized.startswith(prefix):
+        # Require a variant boundary so lexical siblings such as
+        # gpt-5.6-solstice cannot inherit gpt-5.6-sol pricing.
+        if normalized == prefix or normalized.startswith(f"{prefix}-"):
             return pricing
 
     return None
@@ -111,13 +121,28 @@ def estimate_usage_cost_usd(model: str, usage: TokenUsage | None) -> float | Non
 def estimate_usage_cost_breakdown(
     model: str,
     usage: TokenUsage | None,
+    *,
+    enforce_context_tier: bool = True,
 ) -> UsageCostBreakdown | None:
-    """Estimate a detailed cost breakdown for a usage bundle."""
+    """Estimate a detailed cost breakdown for a usage bundle.
+
+    ``enforce_context_tier`` only makes sense for single-request usage; pass
+    ``False`` when ``usage`` aggregates several requests, where the summed
+    input count says nothing about any one request's context tier.
+    """
     if usage is None:
         return None
 
     pricing = get_model_pricing(model)
     if pricing is None:
+        return None
+    if (
+        enforce_context_tier
+        and pricing.max_input_tokens is not None
+        and usage.input_tokens > pricing.max_input_tokens
+    ):
+        # The configured rate is intentionally bounded to its published context
+        # tier. Unknown longer-context rates must not be silently underestimated.
         return None
 
     non_cached_input_tokens = max(

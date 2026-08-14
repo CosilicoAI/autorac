@@ -665,6 +665,7 @@ def build_run_record(
         "reasoning_output_tokens": 0,
     }
     estimated_cost_usd = 0.0
+    estimated_cost_complete = True
     actual_cost_usd: float | None = None
     duration_ms = 0
     issue_counts = {
@@ -677,7 +678,15 @@ def build_run_record(
     for row in result_rows:
         for key in token_fields:
             token_fields[key] += int(row.get(key) or 0)
-        estimated_cost_usd += float(row.get("estimated_cost_usd") or 0.0)
+        row_estimated_cost = row.get("estimated_cost_usd")
+        if isinstance(row_estimated_cost, (int, float)) and not isinstance(
+            row_estimated_cost, bool
+        ):
+            estimated_cost_usd += float(row_estimated_cost)
+        elif any(int(row.get(key) or 0) > 0 for key in token_fields):
+            # The row consumed tokens but its cost is unknown; summing it as
+            # $0 would silently undercount, so mark the aggregate unknown.
+            estimated_cost_complete = False
         if row.get("actual_cost_usd") is not None:
             actual_cost_usd = (actual_cost_usd or 0.0) + float(row["actual_cost_usd"])
         duration_ms += int(row.get("duration_ms") or 0)
@@ -747,7 +756,11 @@ def build_run_record(
             else None,
             "generalist_review_score": metrics.get("generalist_review_score"),
             "policyengine_score": metrics.get("policyengine_score"),
-            "estimated_cost_usd": estimated_cost_usd if result_rows else None,
+            "estimated_cost_usd": (
+                estimated_cost_usd
+                if result_rows and estimated_cost_complete
+                else None
+            ),
             "actual_cost_usd": actual_cost_usd,
             **token_fields,
             **issue_counts,
