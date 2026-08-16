@@ -318,6 +318,7 @@ from axiom_encode.harness.evals import (
     _bind_eval_result_payload,
     _build_eval_suite_manifest_identity,
     _eval_result_from_payload,
+    _render_amendment_document,
     _signed_eval_result_verdict_evidence_payload,
     load_eval_suite_manifest,
     resolve_corpus_source_unit,
@@ -4602,6 +4603,23 @@ class TestCmdEvalSuiteRevalidate:
         trace_file = source_output / "trace.json"
         context_manifest_file = source_output / "context.json"
         trace_file.write_text("{}\n")
+        visible_amendment = CorpusAmendmentDocument(
+            citation_path="us/statute/amendment-visible",
+            title="Visible amendment",
+            expression_date="2026-01-01",
+            metadata={},
+            body="Visible amendment body.",
+            match_tier="structured",
+        )
+        amendment_context_file = source_output / "context/amendment-act-1.txt"
+        amendment_context_file.parent.mkdir()
+        amendment_context_file.write_text(
+            _render_amendment_document(
+                visible_amendment,
+                body=visible_amendment.body,
+            )
+            + "\n"
+        )
         context_manifest_file.write_text(
             json.dumps(
                 {
@@ -19624,6 +19642,16 @@ rules: []
                 "reason": "aggregate_context_limit",
             }
         ]
+        amendment_context_file = manifest_path.parent / "context/amendment-act-1.txt"
+        amendment_context_file.parent.mkdir()
+        visible_amendment = source_unit.amendment_documents[0]
+        amendment_context_file.write_text(
+            _render_amendment_document(
+                visible_amendment,
+                body=visible_amendment.body,
+            )
+            + "\n"
+        )
         manifest_path.write_text(json.dumps(manifest) + "\n")
         result.context_manifest_sha256 = hashlib.sha256(
             manifest_path.read_bytes()
@@ -33467,9 +33495,39 @@ rules: []
         output_file.parent.mkdir(parents=True)
         output_file.write_text("format: rulespec/v1\nrules: []\n")
         result.output_file = str(output_file)
+        original_source_unit = resolve_corpus_source_unit(
+            args.citation,
+            args.corpus_release,
+        )
+        source_unit = CorpusSourceUnit(
+            requested=original_source_unit.requested,
+            citation_path=original_source_unit.citation_path,
+            body=original_source_unit.body,
+            source=original_source_unit.source,
+            source_attestation=original_source_unit.source_attestation,
+            resolved_source=original_source_unit.resolved_source,
+            provision_metadata=original_source_unit.provision_metadata,
+            amendment_documents=(
+                CorpusAmendmentDocument(
+                    citation_path="us/statute/amendment-visible",
+                    title="Visible amendment",
+                    expression_date="2026-01-01",
+                    metadata={},
+                    body="Visible amendment body.",
+                    match_tier="structured",
+                ),
+            ),
+        )
 
         with (
+            patch(
+                "axiom_encode.cli.resolve_corpus_source_unit",
+                return_value=source_unit,
+            ),
             patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._amendment_documents_visible_in_context_manifest"
+            ) as amendment_visibility,
             patch(
                 "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
                 return_value=(True, [], {}),
@@ -33487,6 +33545,7 @@ rules: []
         assert exc_info.value.code == 1
         output = capsys.readouterr().out
         assert "apply=blocked_generation:backend timed out" in output
+        amendment_visibility.assert_not_called()
         mock_overlay.assert_not_called()
         mock_apply.assert_not_called()
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]

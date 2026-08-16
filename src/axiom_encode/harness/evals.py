@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from collections import Counter, defaultdict
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from statistics import mean
@@ -995,15 +995,28 @@ class CorpusAmendmentDocument:
 def _amendment_documents_visible_in_context_manifest(
     amendment_documents: Sequence[CorpusAmendmentDocument],
     manifest_file: Path,
+    *,
+    expected_manifest_sha256: str,
 ) -> tuple[CorpusAmendmentDocument, ...]:
-    """Recover the amendment evidence actually visible to a persisted eval."""
+    """Recover only amendment body text actually visible to a persisted eval."""
 
+    manifest_path = Path(manifest_file)
     try:
-        payload = json.loads(Path(manifest_file).read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        manifest_raw = _corpus_resolver.read_bounded_regular_file(
+            manifest_path.parent,
+            manifest_path,
+            label="eval context manifest",
+            max_bytes=32 * 1024 * 1024,
+        )
+        payload = json.loads(manifest_raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"Eval context manifest is unreadable or malformed: {manifest_file}"
         ) from exc
+    if not re.fullmatch(r"[0-9a-f]{64}", str(expected_manifest_sha256)):
+        raise ValueError("Eval context manifest digest is missing or invalid")
+    if hashlib.sha256(manifest_raw).hexdigest() != expected_manifest_sha256:
+        raise ValueError("Eval context manifest digest does not match the result")
     if not isinstance(payload, dict):
         raise ValueError(f"Eval context manifest must be an object: {manifest_file}")
     context_files = payload.get("context_files", [])
@@ -1055,8 +1068,36 @@ def _amendment_documents_visible_in_context_manifest(
                 "Eval context manifest admits an unknown amendment citation path "
                 f"{citation_path!r}"
             )
+        workspace_path = item.get("workspace_path")
+        if not isinstance(workspace_path, str) or not workspace_path:
+            raise ValueError(
+                "Eval context manifest amendment item lacks workspace_path: "
+                f"{manifest_file}"
+            )
+        context_path = manifest_path.parent / workspace_path
+        try:
+            context_raw = _corpus_resolver.read_bounded_regular_file(
+                manifest_path.parent,
+                context_path,
+                label=f"eval amendment context {citation_path}",
+                max_bytes=128 * 1024,
+            )
+            context_text = context_raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(
+                f"Eval amendment context is unreadable: {context_path}"
+            ) from exc
+        if not context_text.endswith("\n"):
+            raise ValueError(
+                f"Eval amendment context lacks its materialized newline: {context_path}"
+            )
+        visible_body = _visible_amendment_body_from_rendered_text(
+            document,
+            context_text[:-1],
+        )
         seen.add(citation_path)
-        visible.append(document)
+        if visible_body:
+            visible.append(replace(document, body=visible_body))
     return tuple(visible)
 
 
@@ -1708,6 +1749,15 @@ _PROVISION_METADATA_LIMIT = 6_000
 _AMENDMENT_BODY_LIMIT = 12_000
 _INJECTED_CONTEXT_LIMIT = 32_000
 _AMENDMENT_CONTEXT_SEPARATOR = "\n\n"
+_AMENDMENT_BODY_OMITTED_MARKER = (
+    "[body omitted: exceeds 12000-character amendment context cap]"
+)
+_AMENDMENT_BODY_TRUNCATED_MARKER = (
+    "... [amendment body truncated to satisfy aggregate context cap]"
+)
+_AMENDMENT_CONTEXT_TRUNCATED_MARKER = (
+    "... [amendment context truncated at aggregate context cap]"
+)
 _MECHANICAL_METADATA_KEYS = {
     "block_count",
     "content_type",
@@ -2185,13 +2235,58 @@ def _render_amendment_document(
         body = (
             document.body
             if len(document.body) <= _AMENDMENT_BODY_LIMIT
-            else "[body omitted: exceeds 12000-character amendment context cap]"
+            else _AMENDMENT_BODY_OMITTED_MARKER
         )
     return (
         f"Title: {document.title}\n"
         f"Corpus citation path: {document.citation_path}\n"
         f"Expression date: {document.expression_date or 'unknown'}\n"
         f"Metadata:\n{metadata}\n\nBody:\n{body}"
+    )
+
+
+def _visible_amendment_body_from_rendered_text(
+    document: CorpusAmendmentDocument,
+    rendered_text: str,
+) -> str | None:
+    """Authenticate and recover the exact body prefix exposed to the model."""
+
+    full_render = _render_amendment_document(document, body=document.body)
+    if rendered_text == full_render:
+        return document.body
+
+    omitted_render = _render_amendment_document(
+        document,
+        body=_AMENDMENT_BODY_OMITTED_MARKER,
+    )
+    if rendered_text == omitted_render:
+        return None
+
+    body_prefix = _render_amendment_document(document, body="")
+    if not rendered_text.startswith(body_prefix):
+        if rendered_text.endswith(_AMENDMENT_CONTEXT_TRUNCATED_MARKER):
+            return None
+        raise ValueError(
+            "Eval amendment context header does not match discovered corpus document "
+            f"{document.citation_path!r}"
+        )
+    rendered_body = rendered_text[len(body_prefix) :]
+    for marker in (
+        _AMENDMENT_BODY_TRUNCATED_MARKER,
+        _AMENDMENT_CONTEXT_TRUNCATED_MARKER,
+    ):
+        if not rendered_body.endswith(marker):
+            continue
+        visible_prefix = rendered_body[: -len(marker)]
+        if not document.body.startswith(visible_prefix):
+            raise ValueError(
+                "Eval amendment context body does not match discovered corpus document "
+                f"{document.citation_path!r}"
+            )
+        return visible_prefix or None
+    raise ValueError(
+        "Eval amendment context body does not match discovered corpus document "
+        f"{document.citation_path!r}"
     )
 
 
@@ -2223,7 +2318,7 @@ def _render_legacy_name_tier_context(
         }
         for document in amendment_documents[2:]
     )
-    marker = "... [amendment body truncated to satisfy aggregate context cap]"
+    marker = _AMENDMENT_BODY_TRUNCATED_MARKER
     for index in range(len(documents) - 1, -1, -1):
         if overflow <= 0:
             break
@@ -2241,7 +2336,7 @@ def _render_legacy_name_tier_context(
         )
         overflow -= old_length - len(rendered[index])
     if overflow > 0:
-        fallback_marker = "... [amendment context truncated at aggregate context cap]"
+        fallback_marker = _AMENDMENT_CONTEXT_TRUNCATED_MARKER
         for index in range(len(rendered) - 1, -1, -1):
             if overflow <= 0:
                 break
@@ -2279,9 +2374,23 @@ def _render_injected_context(
             provision_metadata,
             amendment_documents,
         )
+        visible_documents = tuple(
+            replace(
+                document,
+                body=(
+                    _visible_amendment_body_from_rendered_text(document, rendered_text)
+                    or ""
+                ),
+            )
+            for document, rendered_text in zip(
+                amendment_documents[:2],
+                amendment_texts,
+                strict=True,
+            )
+        )
         return _RenderedInjectedContext(
             provision_text=provision_text,
-            amendment_documents=tuple(amendment_documents[:2]),
+            amendment_documents=visible_documents,
             amendment_texts=tuple(amendment_texts),
             dropped_amendment_documents=dropped,
         )
@@ -2299,9 +2408,7 @@ def _render_injected_context(
                 body=(
                     document.body
                     if len(document.body) <= _AMENDMENT_BODY_LIMIT
-                    else (
-                        "[body omitted: exceeds 12000-character amendment context cap]"
-                    )
+                    else _AMENDMENT_BODY_OMITTED_MARKER
                 ),
             ),
         )
@@ -2350,7 +2457,16 @@ def _render_injected_context(
         raise AssertionError("Structured amendment context cap was not enforced")
     return _RenderedInjectedContext(
         provision_text=provision_text,
-        amendment_documents=tuple(document for document, _ in retained),
+        amendment_documents=tuple(
+            replace(
+                document,
+                body=(
+                    _visible_amendment_body_from_rendered_text(document, rendered_text)
+                    or ""
+                ),
+            )
+            for document, rendered_text in retained
+        ),
         amendment_texts=tuple(text for _, text in retained),
         dropped_amendment_documents=tuple(dropped),
     )
@@ -4519,6 +4635,7 @@ def _revalidate_persisted_eval_suite_case_results(
                 amendment_documents=_amendment_documents_visible_in_context_manifest(
                     source_unit.amendment_documents,
                     Path(result.context_manifest_file),
+                    expected_manifest_sha256=result.context_manifest_sha256 or "",
                 ),
             )
         fresh_success = bool(

@@ -29075,7 +29075,7 @@ def _run_encode_attempt(
         )
 
     deferred_output_review_contract = getattr(args, "review_contract_json", None)
-    amendment_source_texts: dict[str, str] = {}
+    amendment_source_texts: dict[str, str] | None = None
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -29085,6 +29085,22 @@ def _run_encode_attempt(
         axiom_rules_path: Path,
         validate_dependents: bool = True,
     ) -> tuple[bool, list[str], dict[Path, str]]:
+        nonlocal amendment_source_texts
+        if amendment_source_texts is None:
+            amendment_source_texts = (
+                {
+                    document.citation_path: document.body
+                    for document in _amendment_documents_visible_in_context_manifest(
+                        source_unit.amendment_documents,
+                        Path(result.context_manifest_file),
+                        expected_manifest_sha256=(
+                            result.context_manifest_sha256 or ""
+                        ),
+                    )
+                }
+                if source_unit.amendment_documents
+                else {}
+            )
         return _run_generated_encoding_overlay_validation(
             result,
             output_root=output_root,
@@ -29173,14 +29189,6 @@ def _run_encode_attempt(
     )
 
     result = results[0]
-    if source_unit.amendment_documents:
-        amendment_source_texts = {
-            document.citation_path: document.body
-            for document in _amendment_documents_visible_in_context_manifest(
-                source_unit.amendment_documents,
-                Path(result.context_manifest_file),
-            )
-        }
     if getattr(args, "repair_candidate_tests_only", False) is True:
         assert initial_retry_candidate is not None
         assert initial_retry_candidate.tests is not None
@@ -59987,6 +59995,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             amendment_documents=_amendment_documents_visible_in_context_manifest(
                 source_unit.amendment_documents,
                 Path(result.context_manifest_file),
+                expected_manifest_sha256=result.context_manifest_sha256 or "",
             ),
         )
         validation_error = _eval_artifact_validation_error(
