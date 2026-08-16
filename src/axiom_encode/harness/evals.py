@@ -2151,9 +2151,9 @@ def _discover_amendment_documents(
     # Legal-time-slice encoding needs the complete amendment timeline (including
     # both in-force amendments and forward-dated overlays), so the old two-act
     # cap remains only a false-positive guard for name-tier discovery. The 12k
-    # per-body and 32k aggregate byte caps are the volume bounds for structured
-    # evidence; name matches may fill only the legacy two-document allowance and
-    # can never displace structured context.
+    # per-body character cap and 32k aggregate byte cap are the volume bounds for
+    # structured evidence; name matches may fill only the legacy two-document
+    # allowance and can never displace structured context.
     selected_rows = (
         structured_candidates
         + name_candidates[: max(0, 2 - len(structured_candidates))]
@@ -2298,7 +2298,7 @@ def _render_injected_context(
                 document,
                 body=(
                     document.body
-                    if utf8_size(document.body) <= _AMENDMENT_BODY_LIMIT
+                    if len(document.body) <= _AMENDMENT_BODY_LIMIT
                     else (
                         "[body omitted: exceeds 12000-character amendment context cap]"
                     )

@@ -1286,6 +1286,58 @@ def test_sibling_amendments_are_context_with_bounded_bodies(tmp_path):
     )
 
 
+def test_estg_66_multibyte_amendment_body_remains_visible_in_prompt(tmp_path):
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_sentence = (
+        "In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+        "„255 Euro“ ersetzt."
+    )
+    # The sentence itself contributes nine UTF-8 continuation bytes; the suffix
+    # supplies the remaining 433 needed to reproduce the 12,317-byte document.
+    multibyte_suffix = "ä" * 433
+    ascii_padding = "x" * (
+        11_875 - len(amendment_sentence) - len(multibyte_suffix) - 1
+    )
+    amendment_body = f"{amendment_sentence}\n{ascii_padding}{multibyte_suffix}"
+    amendment = CorpusAmendmentDocument(
+        citation_path=amendment_citation,
+        title="Steuerfortentwicklungsgesetz – SteFeG",
+        expression_date="2024-12-23",
+        metadata={},
+        body=amendment_body,
+        match_tier="structured",
+    )
+    rulespec_root = _canonical_rulespec_content_root(tmp_path, "de")
+
+    workspace = prepare_eval_workspace(
+        citation="de/statute/estg/66",
+        runner=parse_runner_spec("openai:gpt-5.4"),
+        output_root=tmp_path / "out",
+        source_text="Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.",
+        axiom_rules_path=rulespec_root,
+        mode="cold",
+        amendment_documents=(amendment,),
+        extra_context_paths=[],
+    )
+    prompt = _build_eval_prompt(
+        "de/statute/estg/66",
+        "cold",
+        workspace,
+        workspace.context_files,
+        target_file_name="66.yaml",
+        include_tests=True,
+        runner_backend="openai",
+    )
+
+    assert len(amendment_body) == 11_875
+    assert len(amendment_body.encode("utf-8")) == 12_317
+    assert amendment_sentence in prompt
+    assert amendment_citation in prompt
+    assert "body omitted: exceeds 12000-character amendment context cap" not in prompt
+
+
 def test_bkgg_amendment_context_is_proof_evidence_never_an_import_target(tmp_path):
     amendment_citation = (
         "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
