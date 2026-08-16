@@ -29075,6 +29075,7 @@ def _run_encode_attempt(
         )
 
     deferred_output_review_contract = getattr(args, "review_contract_json", None)
+    amendment_source_texts: dict[str, str] = {}
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -29096,6 +29097,7 @@ def _run_encode_attempt(
                 getattr(args, "require_complete_source_unit", False) is True
             ),
             deferred_output_review_contract=deferred_output_review_contract,
+            amendment_source_texts=amendment_source_texts,
         )
 
     skip_reviewers = bool(getattr(args, "skip_reviewers", False))
@@ -29171,6 +29173,14 @@ def _run_encode_attempt(
     )
 
     result = results[0]
+    if source_unit.amendment_documents:
+        amendment_source_texts = {
+            document.citation_path: document.body
+            for document in _amendment_documents_visible_in_context_manifest(
+                source_unit.amendment_documents,
+                Path(result.context_manifest_file),
+            )
+        }
     if getattr(args, "repair_candidate_tests_only", False) is True:
         assert initial_retry_candidate is not None
         assert initial_retry_candidate.tests is not None
@@ -53992,6 +54002,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
     deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Validate generated artifacts in a temporary policy-repo overlay."""
     setattr(result, _APPLY_VALIDATION_SNAPSHOT_ATTR, None)
@@ -54245,6 +54256,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             local_corpus_release=local_corpus_release,
             rulespec_dependency_roots=staged_dependency_roots,
             source_metadata=source_metadata,
+            amendment_source_texts=amendment_source_texts,
             require_complete_source_unit=require_complete_source_unit,
             existing_target_oracle_contract=existing_target_oracle_contract,
         )
@@ -54816,6 +54828,7 @@ def _run_generated_encoding_overlay_validation(
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
     deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Dispatch a release-bound overlay run through the patchable test seam."""
 
@@ -54829,6 +54842,7 @@ def _run_generated_encoding_overlay_validation(
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
         deferred_output_review_contract=deferred_output_review_contract,
+        amendment_source_texts=amendment_source_texts,
     )
 
 
