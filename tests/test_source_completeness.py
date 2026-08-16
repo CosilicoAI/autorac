@@ -32698,6 +32698,147 @@ def test_generic_german_rounding_requires_nearest_rounding_and_fractional_proof(
     assert not complete.issues
 
 
+def test_estg_66_precise_absatz_3_deferral_suppresses_rounding_test_demand():
+    source = """\
+(1) Das Kindergeld beträgt monatlich für jedes Kind 259 Euro.
+(2) Das Kindergeld wird monatlich vom Beginn des Monats an gezahlt, in dem die Anspruchsvoraussetzungen erfüllt sind, bis zum Ende des Monats, in dem die Anspruchsvoraussetzungen wegfallen.
+(3) Werden die Freibeträge für Kinder nach § 31 Satz 1 in Verbindung mit § 32 Absatz 6 Satz 1 angehoben, wird das Kindergeld entsprechend erhöht. Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/66
+  deferred_outputs:
+    - output: de:statutes/estg/66/3#child_benefit_increase
+      reason: >-
+        Cannot be computed until de/statute/estg/32 Absatz 6 Satz 1 and
+        de/statute/estg/31 Satz 1 are available.
+rules:
+  - name: child_benefit_amount
+    kind: parameter
+    source: de/statute/estg/66(1)
+    versions: [{formula: 259}]
+  - name: child_benefit_payable_for_month
+    kind: derived
+    dtype: Judgment
+    source: de/statute/estg/66(2)
+    versions: [{formula: claim_conditions_hold_in_month}]
+"""
+    test_cases = [
+        {
+            "name": "payment month",
+            "period": "2026-01",
+            "input": {"claim_conditions_hold_in_month": True},
+            "output": {
+                "child_benefit_amount": 259,
+                "child_benefit_payable_for_month": "holds",
+            },
+        }
+    ]
+
+    result = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=test_cases,
+    )
+
+    assert not result.issues
+
+
+def test_estg_66_rounding_retry_shows_and_accepts_paired_half_boundary_shape():
+    source = """\
+(3) Werden die Freibeträge für Kinder nach § 31 Satz 1 in Verbindung mit § 32 Absatz 6 Satz 1 angehoben, wird das Kindergeld entsprechend erhöht. Das Kindergeld ist dabei auf volle Euro kaufmännisch zu runden.
+"""
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/66
+inputs:
+  - name: child_benefit_amount_before_increase
+    dtype: Money
+  - name: child_allowance_increase_rate
+    dtype: Rate
+rules:
+  - name: unrounded_child_benefit_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/66(3)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: child_benefit_amount_before_increase * (1 + child_allowance_increase_rate)
+  - name: child_benefit_amount
+    kind: derived
+    dtype: Money
+    source: de/statute/estg/66(3)
+    versions:
+      - effective_from: '2026-01-01'
+        formula: floor(unrounded_child_benefit_amount + 0.5)
+"""
+    integral_only = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=[
+            {
+                "name": "integral increase",
+                "period": "2026",
+                "input": {
+                    "child_benefit_amount_before_increase": 100,
+                    "child_allowance_increase_rate": 0,
+                },
+                "output": {
+                    "unrounded_child_benefit_amount": 100,
+                    "child_benefit_amount": 100,
+                },
+            }
+        ],
+    )
+    rounding_issue = next(
+        issue for issue in integral_only.issues if "rounding rule" in issue
+    )
+    paired = _analyze(
+        content,
+        source,
+        corpus_citation_path="de/statute/estg/66",
+        test_cases=[
+            {
+                "name": "below half",
+                "period": "2026",
+                "input": {
+                    "child_benefit_amount_before_increase": 100,
+                    "child_allowance_increase_rate": 0.0049,
+                },
+                "output": {
+                    "unrounded_child_benefit_amount": 100.49,
+                    "child_benefit_amount": 100,
+                },
+            },
+            {
+                "name": "half up",
+                "period": "2026",
+                "input": {
+                    "child_benefit_amount_before_increase": 100,
+                    "child_allowance_increase_rate": 0.005,
+                },
+                "output": {
+                    "unrounded_child_benefit_amount": 100.5,
+                    "child_benefit_amount": 101,
+                },
+            },
+        ],
+    )
+
+    assert "same-period paired cases" in rounding_issue
+    assert "100.49 -> 100" in rounding_issue
+    assert "100.50 -> 101" in rounding_issue
+    assert "unrounded intermediate" in rounding_issue
+    assert "affected principal output" in rounding_issue
+    assert not paired.issues
+
+
 @pytest.mark.parametrize(
     ("source", "output"),
     [
