@@ -26786,6 +26786,7 @@ class _EncodeAttemptExecution(NamedTuple):
     apply_passed: bool
     logged_run: EncodingRun | None
     validation_issues: tuple[str, ...]
+    validation_retry_issues: tuple[str, ...]
 
 
 class _EncodeReplacementTarget(NamedTuple):
@@ -29157,9 +29158,7 @@ def _run_encode_attempts_with_retries(
                     result=execution.result,
                     error=retry_error,
                     candidate=candidate,
-                    validation_issues=_validation_retry_issue_snapshot(
-                        execution.validation_issues
-                    ),
+                    validation_issues=execution.validation_retry_issues,
                 )
         if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
@@ -29580,12 +29579,19 @@ def _run_encode_attempt(
 
     outcome = _initial_encode_outcome(result, apply_requested=apply_requested)
     apply_passed = False
+    full_validation_issues: tuple[str, ...] = ()
     retry_validation_issues: tuple[str, ...] = ()
     metrics = getattr(result, "metrics", None)
     if metrics is not None:
-        retry_validation_issues = _full_validation_issue_list(
-            getattr(metrics, "compile_issues", ()),
-            getattr(metrics, "ci_issues", ()),
+        compile_issues = getattr(metrics, "compile_issues", ())
+        ci_issues = getattr(metrics, "ci_issues", ())
+        full_validation_issues = _full_validation_issue_list(
+            compile_issues,
+            ci_issues,
+        )
+        retry_validation_issues = _validation_retry_issue_snapshot(
+            compile_issues,
+            ci_issues,
         )
     if apply_requested:
         if not _can_attempt_apply(result):
@@ -29601,6 +29607,7 @@ def _run_encode_attempt(
                 output_root=args.output,
             )
             if yaml_preflight_issue is not None:
+                full_validation_issues = (yaml_preflight_issue,)
                 retry_validation_issues = (yaml_preflight_issue,)
                 outcome["status"] = "apply_blocked_validation"
                 outcome["overlay_validation_success"] = False
@@ -29616,7 +29623,8 @@ def _run_encode_attempt(
                     outcome=outcome,
                     apply_passed=False,
                     logged_run=logged_run,
-                    validation_issues=retry_validation_issues,
+                    validation_issues=full_validation_issues,
+                    validation_retry_issues=retry_validation_issues,
                 )
 
             def _retry_generated_unsafe_formula_output_deferrals() -> list[str]:
@@ -32230,7 +32238,10 @@ def _run_encode_attempt(
                     )
                     outcome["overlay_validation_success"] = bool(can_apply)
             if not can_apply:
-                retry_validation_issues = _full_validation_issue_list(apply_issues)
+                full_validation_issues = _full_validation_issue_list(apply_issues)
+                retry_validation_issues = _validation_retry_issue_snapshot(
+                    apply_issues
+                )
                 detail = (
                     apply_issues[0]
                     if apply_issues
@@ -32321,7 +32332,10 @@ def _run_encode_attempt(
                         apply_issues = required_import_issues
                         outcome["overlay_validation_success"] = False
                 if not can_apply:
-                    retry_validation_issues = _full_validation_issue_list(apply_issues)
+                    full_validation_issues = _full_validation_issue_list(apply_issues)
+                    retry_validation_issues = _validation_retry_issue_snapshot(
+                        apply_issues
+                    )
                     detail = (
                         apply_issues[0]
                         if apply_issues
@@ -32363,7 +32377,8 @@ def _run_encode_attempt(
         outcome=outcome,
         apply_passed=apply_passed,
         logged_run=logged_run,
-        validation_issues=retry_validation_issues,
+        validation_issues=full_validation_issues,
+        validation_retry_issues=retry_validation_issues,
     )
 
 
@@ -55043,7 +55058,6 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 dependents=dependents,
             )
         issues: list[str] = []
-        seen_issues: set[str] = set()
         for validated_file, validation in validations:
             if getattr(validation, "all_passed", False):
                 continue
@@ -55053,16 +55067,39 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     overlay_content_root,
                 )
                 validator_name = getattr(validator_result, "validator_name", "ci")
-                for issue in _bounded_overlay_validator_issues(
+                for issue in _full_overlay_validator_issues(
                     validator_result,
                     relative_file=relative_file,
                     validator_name=validator_name,
                 ):
-                    if issue in seen_issues:
-                        continue
-                    seen_issues.add(issue)
                     issues.append(issue)
         return False, issues, {}
+
+
+def _full_overlay_validator_issues(
+    validator_result: object,
+    *,
+    relative_file: Path,
+    validator_name: str,
+) -> tuple[str, ...]:
+    """Preserve every finite validator diagnostic for durable artifacts."""
+
+    prefix = f"{relative_file}: {validator_name}: "
+    raw_issues = getattr(validator_result, "issues", ())
+    candidates = (
+        raw_issues
+        if isinstance(raw_issues, Sequence) and not isinstance(raw_issues, (str, bytes))
+        else ()
+    )
+    issues = tuple(
+        f"{prefix}{raw_issue}"
+        for raw_issue in candidates
+        if isinstance(raw_issue, str) and raw_issue
+    )
+    if issues:
+        return issues
+    error = getattr(validator_result, "error", None)
+    return (f"{prefix}{error}",) if isinstance(error, str) and error else ()
 
 
 def _bounded_overlay_validator_issues(
