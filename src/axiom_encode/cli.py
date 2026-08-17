@@ -26188,6 +26188,7 @@ def _validation_retry_candidate_location(
         len(module_parts) < 2
         or output_file.suffix != RULESPEC_FILE_SUFFIX
         or output_file.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+        or "\\" in relative_output.as_posix()
         or any(
             part in _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS
             for part in relative_output.parts
@@ -26378,6 +26379,7 @@ def _load_initial_validation_retry_candidate(
     if (
         relative_output.is_absolute()
         or not relative_output.parts
+        or "\\" in relative_output.as_posix()
         or any(part in {"", ".", ".."} for part in relative_output.parts)
     ):
         raise ValueError("encode --repair-candidate-path must be a safe relative path")

@@ -47,6 +47,7 @@ def _canonical_candidate_path(raw_path: object) -> PurePosixPath:
         not raw_path
         or path.is_absolute()
         or path.as_posix() != raw_path
+        or "\\" in raw_path
         or any(part in {"", ".", ".."} for part in path.parts)
         or any(part in PROTECTED_SEGMENTS for part in path.parts)
         or any(
