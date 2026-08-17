@@ -14858,6 +14858,15 @@ rules:
         with pytest.raises(ValueError, match="must not exist"):
             cli_module._resolve_final_rejected_candidate_destination(existing)
 
+        real_parent = tmp_path / "real-parent"
+        real_parent.mkdir()
+        symlinked_parent = tmp_path / "symlinked-parent"
+        symlinked_parent.symlink_to(real_parent, target_is_directory=True)
+        with pytest.raises(ValueError, match="parent must be canonical"):
+            cli_module._resolve_final_rejected_candidate_destination(
+                symlinked_parent / "failed-encode"
+            )
+
     def test_encode_tests_only_repair_requires_bound_apply_contract(self, tmp_path):
         import axiom_encode.cli as cli_module
 
