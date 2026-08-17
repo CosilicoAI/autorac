@@ -45,12 +45,19 @@ def test_verifies_exact_checksum_bound_candidate_directory(tmp_path):
     }
 
 
-def test_rejects_issues_json_sha_mismatch(tmp_path):
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("rulespec_sha256", "RuleSpec SHA-256 mismatch"),
+        ("tests_sha256", "tests SHA-256 mismatch"),
+    ],
+)
+def test_rejects_issues_json_sha_mismatch(tmp_path, field, message):
     root, metadata = _candidate_directory(tmp_path)
-    metadata["rulespec_sha256"] = "0" * 64
+    metadata[field] = "0" * 64
     (root / "issues.json").write_text(json.dumps(metadata) + "\n")
 
-    with pytest.raises(ValueError, match="RuleSpec SHA-256 mismatch"):
+    with pytest.raises(ValueError, match=message):
         verify_candidate_directory(root, citation="de/statute/estg/66")
 
 

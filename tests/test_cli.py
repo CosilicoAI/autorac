@@ -15078,8 +15078,15 @@ rules:
                 )
             )
 
+    @pytest.mark.parametrize(
+        ("mutated_file", "message"),
+        [
+            ("rulespec", "RuleSpec SHA-256 mismatch"),
+            ("tests", "tests SHA-256 mismatch"),
+        ],
+    )
     def test_encode_rejects_mutated_cross_run_candidate_before_model_call(
-        self, tmp_path
+        self, tmp_path, mutated_file, message
     ):
         candidate_root = tmp_path / "preserved-candidate"
         candidate_path = Path("statutes/26/1/j/2.yaml")
@@ -15090,7 +15097,10 @@ rules:
         test_file.write_text("[]\n")
         expected_rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
         expected_tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
-        output_file.write_text("format: rulespec/v1\n# mutated\nrules: []\n")
+        if mutated_file == "rulespec":
+            output_file.write_text("format: rulespec/v1\n# mutated\nrules: []\n")
+        else:
+            test_file.write_text("# mutated\n[]\n")
         args = self._make_args(
             tmp_path,
             repair_candidate_root=candidate_root,
@@ -15100,7 +15110,7 @@ rules:
         )
 
         with patch("axiom_encode.cli.run_model_eval") as model_call:
-            with pytest.raises(ValueError, match="RuleSpec SHA-256 mismatch"):
+            with pytest.raises(ValueError, match=message):
                 cmd_encode(args)
 
         model_call.assert_not_called()
