@@ -26144,6 +26144,7 @@ _FAILED_ENCODE_CANDIDATE_METADATA_FIELDS = {
 }
 _FAILED_ENCODE_CANDIDATE_MAX_ISSUES_BYTES = 512 * 1024
 _FAILED_ENCODE_CANDIDATE_MAX_ISSUES = 4096
+_FAILED_ENCODE_CANDIDATE_EMPTY_TESTS = "[]\n"
 _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS = {
     ".git",
     ".github",
@@ -26279,10 +26280,6 @@ def _emit_final_rejected_candidate(
         _validation_retry_candidate_location(result, output_root=output_root)
     )
     candidate = _capture_validation_retry_candidate(result, output_root=output_root)
-    if candidate.tests is None:
-        raise RuntimeError(
-            "Final validator-rejected candidate has no companion test file"
-        )
     if (
         not isinstance(attempt_count, int)
         or isinstance(attempt_count, bool)
@@ -26304,7 +26301,14 @@ def _emit_final_rejected_candidate(
         )
 
     rulespec_raw = candidate.rulespec.encode("utf-8")
-    tests_raw = candidate.tests.encode("utf-8")
+    # A missing companion is itself a rejected-candidate state. Materialize the
+    # canonical empty case list so the durable repair contract remains an exact
+    # three-file pair while representing that no test cases were generated.
+    tests_raw = (
+        candidate.tests
+        if candidate.tests is not None
+        else _FAILED_ENCODE_CANDIDATE_EMPTY_TESTS
+    ).encode("utf-8")
     if not isinstance(citation, str) or not citation:
         raise ValueError("Final rejected candidate citation is unavailable")
     metadata = {
