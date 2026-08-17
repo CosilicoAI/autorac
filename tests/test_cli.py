@@ -14688,7 +14688,11 @@ rules:
 
     @pytest.mark.parametrize(
         "relative_output",
-        [Path("metrics/result.yaml"), Path("statutes/26/1.test.yaml")],
+        [
+            Path("metrics/result.yaml"),
+            Path("statutes/26/1.test.yaml"),
+            Path(r"statutes/26/foo\bar.yaml"),
+        ],
     )
     def test_final_rejected_candidate_emission_rejects_noncanonical_output(
         self, tmp_path, relative_output
@@ -14890,6 +14894,11 @@ rules:
             (Path("candidate"), None, "must be supplied together"),
             (None, Path("statutes/26/1.yaml"), "must be supplied together"),
             (Path("candidate"), Path("../1.yaml"), "safe relative path"),
+            (
+                Path("candidate"),
+                Path(r"statutes/26/foo\bar.yaml"),
+                "safe relative path",
+            ),
             (Path("candidate"), Path("metrics/1.yaml"), "canonical RuleSpec"),
         ],
     )

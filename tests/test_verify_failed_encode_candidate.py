@@ -61,6 +61,21 @@ def test_rejects_candidate_from_a_slug_collision_with_another_citation(tmp_path)
         verify_candidate_directory(root, citation="de/statute/estg-66")
 
 
+def test_rejects_backslash_in_noncanonical_candidate_path(tmp_path):
+    root, metadata = _candidate_directory(tmp_path)
+    rulespec = root / str(metadata["path"])
+    tests = rulespec.with_suffix(".test.yaml")
+    noncanonical_rulespec = rulespec.with_name(r"66\branch.yaml")
+    noncanonical_tests = noncanonical_rulespec.with_suffix(".test.yaml")
+    rulespec.rename(noncanonical_rulespec)
+    tests.rename(noncanonical_tests)
+    metadata["path"] = noncanonical_rulespec.relative_to(root).as_posix()
+    (root / "issues.json").write_text(json.dumps(metadata) + "\n")
+
+    with pytest.raises(ValueError, match="not canonical"):
+        verify_candidate_directory(root, citation="de/statute/estg/66")
+
+
 @pytest.mark.parametrize(
     "extra_path",
     [
