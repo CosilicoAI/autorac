@@ -14341,7 +14341,9 @@ rules:
             escalation_enabled=True,
         )
         compile_issue = "duplicate compile issue"
-        ci_issue = "current CI completeness issue"
+        ci_issue = (
+            "[complete-source-unit:structure] current CI completeness issue"
+        )
         generated_attempts = 0
 
         def generate(**kwargs):
@@ -14372,7 +14374,10 @@ rules:
                     compile_pass=False,
                     ci_pass=False,
                     compile_issues=[compile_issue] * 48,
-                    ci_issues=[ci_issue],
+                    ci_issues=[
+                        *(f"generic CI issue {index}" for index in range(48)),
+                        ci_issue,
+                    ],
                     grounded_numeric_count=0,
                     ungrounded_numeric_count=0,
                     embedded_source_present=False,
@@ -14381,7 +14386,7 @@ rules:
                     grounding=[],
                 )
             else:
-                assert kwargs["validation_retry_feedback"] == (
+                assert kwargs["validation_retry_feedback"][:3] == (
                     "Generated RuleSpec failed CI validation",
                     compile_issue,
                     ci_issue,
