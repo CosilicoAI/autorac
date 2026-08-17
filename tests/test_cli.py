@@ -13844,6 +13844,36 @@ class TestCmdEncode:
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
 
+    def test_encode_retry_scans_full_overlay_issue_list_for_actionable_feedback(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+        actionable_issue = (
+            "[complete-source-unit:structure] missing final completeness branch"
+        )
+        overlay_issues = [
+            *(f"generic overlay issue {index}" for index in range(48)),
+            actionable_issue,
+        ]
+
+        exit_code, _generated, _validated, mock_run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [(False, overlay_issues), (True, [])],
+            )
+        )
+
+        assert exit_code == 0
+        assert actionable_issue in mock_run.call_args_list[1].kwargs[
+            "validation_retry_feedback"
+        ]
+
     @pytest.mark.parametrize(
         "issue",
         (
@@ -14653,9 +14683,13 @@ rules:
         test_file.write_text("# preserved-companion\n[]\n")
         rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
         tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
-        seeded_issues = [
+        actionable_seeded_issues = [
             "[complete-source-unit:structure] missing branch: section 66(1)",
             "[complete-source-unit:formula-output] section 66(1) has no output",
+        ]
+        seeded_issues = [
+            *(f"generic seeded issue {index}" for index in range(48)),
+            *actionable_seeded_issues,
         ]
         (candidate_root / "issues.json").write_text(
             json.dumps(
@@ -14683,9 +14717,9 @@ rules:
         mock_run, exit_code = self._run_encode(args, self._make_eval_result(True))
 
         assert exit_code == 0
-        assert mock_run.call_args.kwargs["validation_retry_feedback"] == tuple(
-            seeded_issues
-        )
+        feedback = mock_run.call_args.kwargs["validation_retry_feedback"]
+        assert len(feedback) == 12
+        assert all(issue in feedback for issue in actionable_seeded_issues)
 
     def test_encode_emits_only_final_validator_rejected_candidate(self, tmp_path):
         failed_candidate_root = tmp_path / "failed-encode"
