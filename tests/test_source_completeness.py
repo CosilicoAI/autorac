@@ -32836,6 +32836,8 @@ rules:
     assert "100.50 -> 101" in rounding_issue
     assert "unrounded intermediate" in rounding_issue
     assert "affected principal output" in rounding_issue
+    assert "PRECISE typed deferral" in rounding_issue
+    assert "module.deferred_outputs" in rounding_issue
     assert not paired.issues
 
 
