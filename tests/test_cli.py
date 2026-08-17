@@ -14300,6 +14300,74 @@ rules:
             ["current CI issue"],
         ) == ("duplicate compile issue", "current CI issue")
 
+    def test_encode_retry_preserves_ci_feedback_after_compile_issue_flood(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=False,
+            sync=False,
+            escalation_enabled=True,
+        )
+        compile_issue = "duplicate compile issue"
+        ci_issue = "current CI completeness issue"
+        generated_attempts = 0
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            backend, model = kwargs["runner_specs"][0].split(":", 1)
+            result = self._make_eval_result(generated_attempts == 2)
+            result.backend = backend
+            result.model = model
+            result.runner = f"{backend}-{model}"
+            output_file = (
+                args.output
+                / result.runner
+                / "statutes"
+                / "26"
+                / "1"
+                / "j"
+                / "2.yaml"
+            )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("format: rulespec/v1\nrules: []\n")
+            output_file.with_suffix(".test.yaml").write_text("[]\n")
+            result.output_file = str(output_file)
+            if generated_attempts == 1:
+                assert kwargs["validation_retry_feedback"] == ()
+                result.error = "Generated RuleSpec failed CI validation"
+                result.metrics = SimpleNamespace(
+                    compile_pass=False,
+                    ci_pass=False,
+                    compile_issues=[compile_issue] * 48,
+                    ci_issues=[ci_issue],
+                    grounded_numeric_count=0,
+                    ungrounded_numeric_count=0,
+                    embedded_source_present=False,
+                    generalist_review_score=None,
+                    policyengine_score=None,
+                    grounding=[],
+                )
+            else:
+                assert kwargs["validation_retry_feedback"] == (
+                    "Generated RuleSpec failed CI validation",
+                    compile_issue,
+                    ci_issue,
+                )
+            return [result]
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as model,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert model.call_count == 2
+
     def test_encode_retry_issue_snapshot_pairs_structure_with_formula_remediation(self):
         import axiom_encode.cli as cli_module
 
@@ -14429,6 +14497,25 @@ rules:
         assert flooded.inspected == 48
         assert len(issues) == 48
         assert fallback == ("statutes/26/1.yaml: ci: fallback",)
+
+    def test_full_overlay_validator_issues_preserve_post_prompt_bound_diagnostics(
+        self,
+    ):
+        import axiom_encode.cli as cli_module
+
+        long_issue = "long issue " + ("x" * 17_000)
+        raw_issues = [long_issue, *(f"issue {index}" for index in range(63))]
+        raw_issues.append(long_issue)
+
+        issues = cli_module._full_overlay_validator_issues(
+            SimpleNamespace(issues=raw_issues, error=raw_issues[0]),
+            relative_file=Path("statutes/26/1.yaml"),
+            validator_name="ci",
+        )
+
+        assert len(issues) == 65
+        assert issues[0] == f"statutes/26/1.yaml: ci: {long_issue}"
+        assert issues[-1] == issues[0]
 
     def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
         import axiom_encode.cli as cli_module
@@ -14644,7 +14731,13 @@ rules:
         assert "rejected-attempt-4" in (
             failed_candidate_root / relative_rulespec
         ).read_text()
+        assert "deterministic-post-repair-4" in (
+            failed_candidate_root / relative_rulespec
+        ).read_text()
         assert "historical-and-current-cases-4" in (
+            failed_candidate_root / relative_tests
+        ).read_text()
+        assert "deterministic-post-repair-tests-4" in (
             failed_candidate_root / relative_tests
         ).read_text()
         issues = json.loads((failed_candidate_root / "issues.json").read_text())
