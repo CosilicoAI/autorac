@@ -15115,6 +15115,58 @@ rules:
 
         model_call.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("metadata_kind", "message"),
+        [
+            ("invalid-json", "issues.json is not valid UTF-8 JSON"),
+            ("wrong-sha", "issues RuleSpec SHA-256 mismatch"),
+        ],
+    )
+    def test_encode_rejects_invalid_seed_issue_metadata_before_model_call(
+        self, tmp_path, metadata_kind, message
+    ):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("[]\n")
+        rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
+        issues_file = candidate_root / "issues.json"
+        if metadata_kind == "invalid-json":
+            issues_file.write_text("{\n")
+        else:
+            issues_file.write_text(
+                json.dumps(
+                    {
+                        "schema": "axiom-encode/failed-encode-candidate/v1",
+                        "citation": "26 USC 1(j)(2)",
+                        "path": candidate_path.as_posix(),
+                        "issues": ["validator rejected candidate"],
+                        "rulespec_sha256": "0" * 64,
+                        "tests_sha256": tests_sha256,
+                        "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+                        "attempt_count": 1,
+                    }
+                )
+                + "\n"
+            )
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=rulespec_sha256,
+            repair_candidate_tests_sha256=tests_sha256,
+        )
+
+        with patch("axiom_encode.cli.run_model_eval") as model_call:
+            with pytest.raises(ValueError, match=message):
+                cmd_encode(args)
+
+        model_call.assert_not_called()
+
     @pytest.mark.parametrize("unsafe_kind", ["symlink", "invalid-utf8", "oversize"])
     def test_encode_retry_candidate_capture_rejects_unsafe_content(
         self, tmp_path, unsafe_kind
