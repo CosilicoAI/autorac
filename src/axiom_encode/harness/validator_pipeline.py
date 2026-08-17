@@ -9178,7 +9178,7 @@ def _attached_amendment_ungrounded_literal_hint(
         "the exact owning literal `path` (for a scalar parameter, for example, "
         "`path: versions[0].formula`), an appropriate `kind`, and nested "
         f"`source: {{corpus_citation_path: {citations[0]}, excerpt: <exact "
-        "verbatim source span>}}`."
+        "verbatim source span>}`."
     )
 
 

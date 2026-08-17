@@ -29075,6 +29075,7 @@ def _run_encode_attempt(
         )
 
     deferred_output_review_contract = getattr(args, "review_contract_json", None)
+    amendment_source_texts: dict[str, str] | None = None
 
     def _validate_generated_encoding_in_policy_overlay(
         result,
@@ -29084,6 +29085,20 @@ def _run_encode_attempt(
         axiom_rules_path: Path,
         validate_dependents: bool = True,
     ) -> tuple[bool, list[str], dict[Path, str]]:
+        nonlocal amendment_source_texts
+        if amendment_source_texts is None:
+            amendment_source_texts = (
+                {
+                    document.citation_path: document.body
+                    for document in _amendment_documents_visible_in_context_manifest(
+                        source_unit.amendment_documents,
+                        Path(result.context_manifest_file),
+                        expected_manifest_sha256=(result.context_manifest_sha256 or ""),
+                    )
+                }
+                if source_unit.amendment_documents
+                else {}
+            )
         return _run_generated_encoding_overlay_validation(
             result,
             output_root=output_root,
@@ -29096,6 +29111,7 @@ def _run_encode_attempt(
                 getattr(args, "require_complete_source_unit", False) is True
             ),
             deferred_output_review_contract=deferred_output_review_contract,
+            amendment_source_texts=amendment_source_texts,
         )
 
     skip_reviewers = bool(getattr(args, "skip_reviewers", False))
@@ -53992,6 +54008,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
     deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Validate generated artifacts in a temporary policy-repo overlay."""
     setattr(result, _APPLY_VALIDATION_SNAPSHOT_ATTR, None)
@@ -54245,6 +54262,7 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
             local_corpus_release=local_corpus_release,
             rulespec_dependency_roots=staged_dependency_roots,
             source_metadata=source_metadata,
+            amendment_source_texts=amendment_source_texts,
             require_complete_source_unit=require_complete_source_unit,
             existing_target_oracle_contract=existing_target_oracle_contract,
         )
@@ -54816,6 +54834,7 @@ def _run_generated_encoding_overlay_validation(
     rulespec_dependency_roots: Sequence[Path] = (),
     require_complete_source_unit: bool = False,
     deferred_output_review_contract: _DeferredOutputReviewContract | None = None,
+    amendment_source_texts: Mapping[str, str] | None = None,
 ) -> tuple[bool, list[str], dict[Path, str]]:
     """Dispatch a release-bound overlay run through the patchable test seam."""
 
@@ -54829,6 +54848,7 @@ def _run_generated_encoding_overlay_validation(
         rulespec_dependency_roots=rulespec_dependency_roots,
         require_complete_source_unit=require_complete_source_unit,
         deferred_output_review_contract=deferred_output_review_contract,
+        amendment_source_texts=amendment_source_texts,
     )
 
 
@@ -59973,6 +59993,7 @@ def _cmd_eval_suite_revalidate_with_signer(args, evidence_signing_key):
             amendment_documents=_amendment_documents_visible_in_context_manifest(
                 source_unit.amendment_documents,
                 Path(result.context_manifest_file),
+                expected_manifest_sha256=result.context_manifest_sha256 or "",
             ),
         )
         validation_error = _eval_artifact_validation_error(

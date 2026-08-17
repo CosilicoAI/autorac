@@ -318,6 +318,7 @@ from axiom_encode.harness.evals import (
     _bind_eval_result_payload,
     _build_eval_suite_manifest_identity,
     _eval_result_from_payload,
+    _render_amendment_document,
     _signed_eval_result_verdict_evidence_payload,
     load_eval_suite_manifest,
     resolve_corpus_source_unit,
@@ -4602,6 +4603,23 @@ class TestCmdEvalSuiteRevalidate:
         trace_file = source_output / "trace.json"
         context_manifest_file = source_output / "context.json"
         trace_file.write_text("{}\n")
+        visible_amendment = CorpusAmendmentDocument(
+            citation_path="us/statute/amendment-visible",
+            title="Visible amendment",
+            expression_date="2026-01-01",
+            metadata={},
+            body="Visible amendment body.",
+            match_tier="structured",
+        )
+        amendment_context_file = source_output / "context/amendment-act-1.txt"
+        amendment_context_file.parent.mkdir()
+        amendment_context_file.write_text(
+            _render_amendment_document(
+                visible_amendment,
+                body=visible_amendment.body,
+            )
+            + "\n"
+        )
         context_manifest_file.write_text(
             json.dumps(
                 {
@@ -19556,6 +19574,120 @@ rules: []
             "encode_issue",
         ]
 
+    def test_estg_66_apply_passes_only_prompt_visible_amendment_texts(self, tmp_path):
+        amendment_citation = (
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        amendment_sentence = (
+            "In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+            "„255 Euro“ ersetzt."
+        )
+        dropped_citation = "de/statute/bgbl-2023-i-999/document-1"
+        args = self._make_args(
+            tmp_path,
+            backend="codex",
+            citation="de/statute/estg/66",
+            policy_repo_path=tmp_path / "rulespec-de",
+        )
+        args.apply = True
+        original_source_unit = resolve_corpus_source_unit(
+            args.citation,
+            args.corpus_release,
+        )
+        source_unit = CorpusSourceUnit(
+            requested=original_source_unit.requested,
+            citation_path=original_source_unit.citation_path,
+            body=original_source_unit.body,
+            source=original_source_unit.source,
+            source_attestation=original_source_unit.source_attestation,
+            resolved_source=original_source_unit.resolved_source,
+            provision_metadata=original_source_unit.provision_metadata,
+            amendment_documents=(
+                CorpusAmendmentDocument(
+                    citation_path=amendment_citation,
+                    title="Steuerfortentwicklungsgesetz – SteFeG",
+                    expression_date="2024-12-23",
+                    metadata={},
+                    body=amendment_sentence,
+                    match_tier="structured",
+                ),
+                CorpusAmendmentDocument(
+                    citation_path=dropped_citation,
+                    title="Dropped amendment",
+                    expression_date="2023-01-01",
+                    metadata={},
+                    body="A dropped amendment containing 255.",
+                    match_tier="structured",
+                ),
+            ),
+        )
+        result = self._make_eval_result(True)
+        result.citation = args.citation
+        output_file = args.output / result.runner / "statutes/estg/66.yaml"
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        result.output_file = str(output_file)
+        manifest_path = Path(result.context_manifest_file)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["context_files"] = [
+            {
+                "kind": "corpus_amendment_act",
+                "citation_path": amendment_citation,
+                "workspace_path": "context/amendment-act-1.txt",
+            }
+        ]
+        manifest["dropped_amendment_documents"] = [
+            {
+                "citation_path": dropped_citation,
+                "reason": "aggregate_context_limit",
+            }
+        ]
+        amendment_context_file = manifest_path.parent / "context/amendment-act-1.txt"
+        amendment_context_file.parent.mkdir()
+        visible_amendment = source_unit.amendment_documents[0]
+        amendment_context_file.write_text(
+            _render_amendment_document(
+                visible_amendment,
+                body=visible_amendment.body,
+            )
+            + "\n"
+        )
+        manifest_path.write_text(json.dumps(manifest) + "\n")
+        result.context_manifest_sha256 = hashlib.sha256(
+            manifest_path.read_bytes()
+        ).hexdigest()
+
+        with (
+            patch(
+                "axiom_encode.cli.resolve_corpus_source_unit",
+                return_value=source_unit,
+            ),
+            patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._run_generated_encoding_overlay_validation",
+                return_value=(
+                    False,
+                    ["statutes/estg/66.yaml: ci: rejected for test"],
+                    {},
+                ),
+            ) as mock_overlay,
+            patch("axiom_encode.cli._apply_generated_encoding_result") as mock_apply,
+            patch.dict(
+                os.environ,
+                {APPLIED_ENCODING_SIGNING_PUBLIC_KEY_ENV: TEST_APPLY_PUBLIC_KEY_B64},
+                clear=True,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 1
+        mock_apply.assert_not_called()
+        mock_overlay.assert_called_once()
+        assert mock_overlay.call_args.kwargs["amendment_source_texts"] == {
+            amendment_citation: amendment_sentence,
+        }
+
     def test_encode_apply_auto_repairs_nonnegative_taxable_income_floor(
         self, capsys, tmp_path
     ):
@@ -33363,9 +33495,39 @@ rules: []
         output_file.parent.mkdir(parents=True)
         output_file.write_text("format: rulespec/v1\nrules: []\n")
         result.output_file = str(output_file)
+        original_source_unit = resolve_corpus_source_unit(
+            args.citation,
+            args.corpus_release,
+        )
+        source_unit = CorpusSourceUnit(
+            requested=original_source_unit.requested,
+            citation_path=original_source_unit.citation_path,
+            body=original_source_unit.body,
+            source=original_source_unit.source,
+            source_attestation=original_source_unit.source_attestation,
+            resolved_source=original_source_unit.resolved_source,
+            provision_metadata=original_source_unit.provision_metadata,
+            amendment_documents=(
+                CorpusAmendmentDocument(
+                    citation_path="us/statute/amendment-visible",
+                    title="Visible amendment",
+                    expression_date="2026-01-01",
+                    metadata={},
+                    body="Visible amendment body.",
+                    match_tier="structured",
+                ),
+            ),
+        )
 
         with (
+            patch(
+                "axiom_encode.cli.resolve_corpus_source_unit",
+                return_value=source_unit,
+            ),
             patch("axiom_encode.cli.run_model_eval", return_value=[result]),
+            patch(
+                "axiom_encode.cli._amendment_documents_visible_in_context_manifest"
+            ) as amendment_visibility,
             patch(
                 "axiom_encode.cli._validate_generated_encoding_in_policy_overlay",
                 return_value=(True, [], {}),
@@ -33383,6 +33545,7 @@ rules: []
         assert exc_info.value.code == 1
         output = capsys.readouterr().out
         assert "apply=blocked_generation:backend timed out" in output
+        amendment_visibility.assert_not_called()
         mock_overlay.assert_not_called()
         mock_apply.assert_not_called()
         run = EncodingDB(args.db).get_recent_runs(limit=1)[0]
@@ -44068,6 +44231,65 @@ rules: []
             "statutes/27-7-5.yaml: ci: second diagnostic",
         ]
         assert supplemental == {}
+
+    def test_estg_66_apply_pipeline_receives_amendment_grounding_text(self, tmp_path):
+        output_root = tmp_path / "out"
+        policy_repo = tmp_path / "rulespec-de" / "de"
+        generated = output_root / "codex-test-model/statutes/estg/66.yaml"
+        policy_repo.mkdir(parents=True)
+        generated.parent.mkdir(parents=True)
+        generated.write_text("format: rulespec/v1\nrules: []\n")
+        result = SimpleNamespace(
+            output_file=str(generated), runner="codex-test-model", backend="codex"
+        )
+        amendment_citation = (
+            "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+        )
+        amendment_sentence = (
+            "In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+            "„255 Euro“ ersetzt."
+        )
+        observed_pipeline_kwargs = []
+
+        class FakePipeline:
+            def __init__(self, **kwargs):
+                observed_pipeline_kwargs.append(kwargs)
+
+            def validate(self, _path, *, skip_reviewers):
+                assert skip_reviewers is True
+                return SimpleNamespace(
+                    all_passed=False,
+                    results={
+                        "ci": SimpleNamespace(
+                            validator_name="ci",
+                            issues=["rejected for test"],
+                            error=None,
+                        )
+                    },
+                )
+
+        with patch("axiom_encode.cli.ValidatorPipeline", FakePipeline):
+            ok, issues, supplemental = _validate_generated_encoding_in_policy_overlay(
+                result,
+                output_root=output_root,
+                policy_repo_path=policy_repo,
+                axiom_rules_path=tmp_path / "axiom-rules-engine",
+                local_corpus_release=_bind_test_corpus_release(
+                    policy_repo,
+                    tmp_path / "axiom-corpus",
+                    citation_path="de/statute/estg/66",
+                ),
+                validate_dependents=False,
+                amendment_source_texts={amendment_citation: amendment_sentence},
+            )
+
+        assert ok is False
+        assert issues == ["statutes/estg/66.yaml: ci: rejected for test"]
+        assert supplemental == {}
+        assert len(observed_pipeline_kwargs) == 1
+        assert observed_pipeline_kwargs[0]["amendment_source_texts"] == {
+            amendment_citation: amendment_sentence,
+        }
 
     def test_standalone_contract_failure_cannot_be_rescued_by_apply_overlay(
         self, tmp_path

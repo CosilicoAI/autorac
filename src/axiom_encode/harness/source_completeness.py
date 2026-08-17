@@ -15001,10 +15001,22 @@ def _companion_test_issues(
             _branch_citation(corpus_citation_path, branch)
             for branch, _direction in missing_rounding_tests
         )
+        nearest_guidance = (
+            " A satisfying nearest/kaufmännisch shape is same-period paired "
+            "cases with otherwise-identical inputs that drive the executed "
+            "pre-rounding derived amount to 100.49 -> 100 and 100.50 -> 101; "
+            "assert both the reached unrounded intermediate and the affected "
+            "principal output in each case."
+            if any(
+                direction == "nearest" for _branch, direction in missing_rounding_tests
+            )
+            else ""
+        )
         issues.append(
             "[complete-source-unit:tests] Companion tests do not demonstrate "
             "every source-stated rounding rule with distinct fractional input "
             f"evidence on its affected principal output; missing at {rendered}."
+            f"{nearest_guidance}"
         )
     return issues
 

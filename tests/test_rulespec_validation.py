@@ -6217,7 +6217,7 @@ def test_packaged_dc_2026_registry_text_hash_runtime_and_precedence_are_exact():
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1690"')
+        .startswith('__version__ = "0.2.1691"')
     )
 
 
@@ -6449,13 +6449,13 @@ def test_packaged_ca_2026_bhst_text_hash_runtime_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1690"
+    assert encoder_package["version"] == "0.2.1691"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1690"
+    assert project["project"]["version"] == "0.2.1691"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1690"')
+        .startswith('__version__ = "0.2.1691"')
     )
 
 
@@ -6717,13 +6717,13 @@ def test_packaged_ny_2026_text_hash_runtime_pin_and_precedence_are_exact():
     encoder_package = next(
         package for package in lock["package"] if package["name"] == "axiom-encode"
     )
-    assert encoder_package["version"] == "0.2.1690"
+    assert encoder_package["version"] == "0.2.1691"
     project = tomllib.loads((root / "pyproject.toml").read_text())
-    assert project["project"]["version"] == "0.2.1690"
+    assert project["project"]["version"] == "0.2.1691"
     assert (
         (root / "src/axiom_encode/__init__.py")
         .read_text()
-        .startswith('__version__ = "0.2.1690"')
+        .startswith('__version__ = "0.2.1691"')
     )
 
 
@@ -14172,6 +14172,47 @@ rules:
     )
 
     assert cited_issues == []
+
+
+def test_estg_66_amendment_hint_renders_copyable_proof_source_shape():
+    amendment_citation = (
+        "de/statute/bgbl-2024-i-449/steuerfortentwicklungsgesetz/document-1"
+    )
+    amendment_sentence = (
+        "In § 66 Absatz 1 wird die Angabe „250 Euro“ durch die Angabe "
+        "„255 Euro“ ersetzt."
+    )
+    content = """\
+format: rulespec/v1
+module:
+  source_verification:
+    corpus_citation_path: de/statute/estg/66
+rules:
+  - name: kindergeld_monthly_amount_per_child
+    kind: parameter
+    dtype: Money
+    unit: EUR
+    versions:
+      - effective_from: '2025-01-01'
+        formula: 255
+"""
+
+    issues = find_ungrounded_numeric_issues_scoped(
+        content,
+        module_source_text=(
+            "(1) Das Kindergeld beträgt monatlich für jedes Kind 259 Euro."
+        ),
+        module_citation_path="de/statute/estg/66",
+        amendment_source_texts={amendment_citation: amendment_sentence},
+    )
+
+    assert len(issues) == 1
+    assert "`path: versions[0].formula`" in issues[0]
+    assert (
+        f"`source: {{corpus_citation_path: {amendment_citation}, "
+        "excerpt: <exact verbatim source span>}`."
+    ) in issues[0]
+    assert "<exact verbatim source span>}}`" not in issues[0]
 
 
 def test_ungrounded_literal_omits_amendment_hint_when_value_is_absent():
