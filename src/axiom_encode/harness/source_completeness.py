@@ -15017,6 +15017,13 @@ def _companion_test_issues(
             "every source-stated rounding rule with distinct fractional input "
             f"evidence on its affected principal output; missing at {rendered}."
             f"{nearest_guidance}"
+            " Alternative: when the rounded computation depends on outputs "
+            "that are not yet available (for example a cross-module base this "
+            "module cannot compute), a PRECISE typed deferral of that branch "
+            "removes this demand — declare `module.deferred_outputs: "
+            "[{output: <namespaced branch output>, reason: <names the exact "
+            "missing dependency citations>}]` instead of encoding a "
+            "speculative mechanism."
         )
     return issues
 
