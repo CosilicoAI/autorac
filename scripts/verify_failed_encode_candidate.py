@@ -49,6 +49,10 @@ def _canonical_candidate_path(raw_path: object) -> PurePosixPath:
         or path.as_posix() != raw_path
         or any(part in {"", ".", ".."} for part in path.parts)
         or any(part in PROTECTED_SEGMENTS for part in path.parts)
+        or any(
+            any(ord(character) < 32 or ord(character) == 127 for character in part)
+            for part in path.parts
+        )
     ):
         raise ValueError("failed candidate path is not canonical")
     parts = path.parts

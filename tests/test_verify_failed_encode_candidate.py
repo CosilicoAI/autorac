@@ -54,6 +54,13 @@ def test_rejects_issues_json_sha_mismatch(tmp_path):
         verify_candidate_directory(root, citation="de/statute/estg/66")
 
 
+def test_rejects_candidate_from_a_slug_collision_with_another_citation(tmp_path):
+    root, _metadata = _candidate_directory(tmp_path)
+
+    with pytest.raises(ValueError, match="citation mismatch"):
+        verify_candidate_directory(root, citation="de/statute/estg-66")
+
+
 @pytest.mark.parametrize(
     "extra_path",
     [

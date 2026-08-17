@@ -26192,6 +26192,13 @@ def _validation_retry_candidate_location(
             part in _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS
             for part in relative_output.parts
         )
+        or any(
+            any(
+                ord(character) < 32 or ord(character) == 127
+                for character in part
+            )
+            for part in relative_output.parts
+        )
     ):
         raise RuntimeError(
             "Validator-rejected retry candidate is not a canonical RuleSpec module"

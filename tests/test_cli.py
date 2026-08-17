@@ -3067,6 +3067,7 @@ class TestMain:
                 assert args.escalation_model == DEFAULT_OPENAI_ESCALATION_MODEL
                 assert args.escalate_after == DEFAULT_OPENAI_ESCALATE_AFTER
                 assert args.escalation_enabled is True
+                assert args.emit_final_rejected_candidate is None
 
     def test_encode_accepts_policyengine_rule_hint(self):
         with patch(
@@ -14607,8 +14608,8 @@ rules:
             emit_final_rejected_candidate=failed_candidate_root,
         )
         final_issues = [
-            "[complete-source-unit:structure] missing branch: section 66(1)",
-            "[complete-source-unit:formula-output] section 66(1) has no output",
+            f"[complete-source-unit:structure] missing branch {index}: section 66(1)"
+            for index in range(24)
         ]
 
         exit_code, generated, _validated, _run, _validate, _apply = (
@@ -14660,6 +14661,29 @@ rules:
         }
 
     @pytest.mark.parametrize(
+        ("success", "error", "expected_exit"),
+        [
+            (True, None, 0),
+            (False, "model transport failed", 1),
+        ],
+    )
+    def test_encode_does_not_emit_candidate_without_validator_rejection(
+        self, tmp_path, success, error, expected_exit
+    ):
+        destination = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            emit_final_rejected_candidate=destination,
+        )
+        result = self._make_eval_result(success)
+        result.error = error
+
+        _mock_run, exit_code = self._run_encode(args, result)
+
+        assert exit_code == expected_exit
+        assert not destination.exists()
+
+    @pytest.mark.parametrize(
         "relative_output",
         [Path("metrics/result.yaml"), Path("statutes/26/1.test.yaml")],
     )
@@ -14685,6 +14709,21 @@ rules:
                 validation_issues=("validator rejected candidate",),
                 attempt_count=1,
             )
+
+    def test_final_rejected_candidate_emission_requires_absolute_fresh_destination(
+        self, tmp_path
+    ):
+        import axiom_encode.cli as cli_module
+
+        with pytest.raises(ValueError, match="normalized absolute path"):
+            cli_module._resolve_final_rejected_candidate_destination(
+                Path("failed-encode")
+            )
+
+        existing = tmp_path / "failed-encode"
+        existing.mkdir()
+        with pytest.raises(ValueError, match="must not exist"):
+            cli_module._resolve_final_rejected_candidate_destination(existing)
 
     def test_encode_tests_only_repair_requires_bound_apply_contract(self, tmp_path):
         import axiom_encode.cli as cli_module

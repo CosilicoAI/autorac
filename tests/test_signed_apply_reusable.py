@@ -231,6 +231,9 @@ def test_repair_candidate_download_has_minimal_read_permission_and_exact_binding
         "run-id": "${{ steps.repair_run.outputs.run_id }}",
         "github-token": "${{ github.token }}",
     }
+    verify = _workflow_step("Verify downloaded repair candidate")
+    assert verify["env"] == {"CITATION": "${{ matrix.item.citation }}"}
+    assert '--citation "$CITATION"' in verify["run"]
 
 
 @pytest.mark.parametrize("run_id", ["0", "7", "001", "32062103227"])
