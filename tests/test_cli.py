@@ -13310,10 +13310,17 @@ class TestCmdEncode:
                     cmd_encode(args)
             return mock_run, exc_info.value.code
 
-    def _run_validator_escalation_case(self, args, validator_outcomes):
+    def _run_validator_escalation_case(
+        self,
+        args,
+        validator_outcomes,
+        *,
+        omit_final_tests: bool = False,
+    ):
         generated_models = []
         validated_models = []
         remaining_outcomes = list(validator_outcomes)
+        total_attempts = len(remaining_outcomes)
 
         def generate(**kwargs):
             runner_spec = kwargs["runner_specs"][0]
@@ -13337,9 +13344,10 @@ class TestCmdEncode:
             output_file.write_text(
                 f"format: rulespec/v1\n# rejected-attempt-{attempt_number}\nrules: []\n"
             )
-            output_file.with_suffix(".test.yaml").write_text(
-                f"# historical-and-current-cases-{attempt_number}\n[]\n"
-            )
+            if not (omit_final_tests and attempt_number == total_attempts):
+                output_file.with_suffix(".test.yaml").write_text(
+                    f"# historical-and-current-cases-{attempt_number}\n[]\n"
+                )
             result.output_file = str(output_file)
             return [result]
 
@@ -13352,10 +13360,11 @@ class TestCmdEncode:
                 + f"# deterministic-post-repair-{attempt_number}\n"
             )
             test_file = output_file.with_suffix(".test.yaml")
-            test_file.write_text(
-                test_file.read_text()
-                + f"# deterministic-post-repair-tests-{attempt_number}\n"
-            )
+            if test_file.exists():
+                test_file.write_text(
+                    test_file.read_text()
+                    + f"# deterministic-post-repair-tests-{attempt_number}\n"
+                )
             outcome = remaining_outcomes.pop(0)
             if isinstance(outcome, tuple):
                 passed, issues = outcome
@@ -14794,6 +14803,36 @@ rules:
             "encoder_version": AXIOM_ENCODE_TEST_VERSION,
             "attempt_count": 4,
         }
+
+    def test_encode_emits_empty_companion_when_final_rejection_has_no_tests(
+        self, tmp_path
+    ):
+        failed_candidate_root = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=False,
+            emit_final_rejected_candidate=failed_candidate_root,
+        )
+
+        exit_code, generated, _validated, _run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [(False, ["No tests found."])],
+                omit_final_tests=True,
+            )
+        )
+
+        assert exit_code == 1
+        assert len(generated) == 1
+        relative_rulespec = Path("statutes/26/1/j/2.yaml")
+        relative_tests = relative_rulespec.with_suffix(".test.yaml")
+        assert (failed_candidate_root / relative_tests).read_text() == "[]\n"
+        metadata = json.loads((failed_candidate_root / "issues.json").read_text())
+        assert metadata["issues"] == ["No tests found."]
+        assert metadata["tests_sha256"] == hashlib.sha256(b"[]\n").hexdigest()
 
     @pytest.mark.parametrize(
         ("success", "error", "expected_exit"),
