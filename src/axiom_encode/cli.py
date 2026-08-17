@@ -26381,6 +26381,14 @@ def _load_initial_validation_retry_candidate(
         or not relative_output.parts
         or "\\" in relative_output.as_posix()
         or any(part in {"", ".", ".."} for part in relative_output.parts)
+        or any(
+            part in _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS
+            for part in relative_output.parts
+        )
+        or any(
+            any(ord(character) < 32 or ord(character) == 127 for character in part)
+            for part in relative_output.parts
+        )
     ):
         raise ValueError("encode --repair-candidate-path must be a safe relative path")
     parts = relative_output.parts
