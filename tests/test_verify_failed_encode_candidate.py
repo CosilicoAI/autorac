@@ -20,6 +20,7 @@ def _candidate_directory(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     tests.write_text("[]\n")
     metadata: dict[str, object] = {
         "schema": "axiom-encode/failed-encode-candidate/v1",
+        "citation": "de/statute/estg/66",
         "path": "de/statutes/estg/66.yaml",
         "issues": ["[complete-source-unit:structure] missing branch"],
         "rulespec_sha256": hashlib.sha256(rulespec.read_bytes()).hexdigest(),
@@ -34,7 +35,7 @@ def _candidate_directory(tmp_path: Path) -> tuple[Path, dict[str, object]]:
 def test_verifies_exact_checksum_bound_candidate_directory(tmp_path):
     root, metadata = _candidate_directory(tmp_path)
 
-    result = verify_candidate_directory(root)
+    result = verify_candidate_directory(root, citation="de/statute/estg/66")
 
     assert result == {
         "root": str(root),
@@ -50,7 +51,7 @@ def test_rejects_issues_json_sha_mismatch(tmp_path):
     (root / "issues.json").write_text(json.dumps(metadata) + "\n")
 
     with pytest.raises(ValueError, match="RuleSpec SHA-256 mismatch"):
-        verify_candidate_directory(root)
+        verify_candidate_directory(root, citation="de/statute/estg/66")
 
 
 @pytest.mark.parametrize(
@@ -71,7 +72,7 @@ def test_rejects_every_path_outside_exact_three_file_allowlist(
     extra.write_text("must not cross artifact boundary\n")
 
     with pytest.raises(ValueError, match="exactly the rejected RuleSpec"):
-        verify_candidate_directory(root)
+        verify_candidate_directory(root, citation="de/statute/estg/66")
 
 
 def test_rejects_symlinked_candidate_file(tmp_path):
@@ -83,4 +84,4 @@ def test_rejects_symlinked_candidate_file(tmp_path):
     tests.symlink_to(external)
 
     with pytest.raises(ValueError, match="symlink|regular file"):
-        verify_candidate_directory(root)
+        verify_candidate_directory(root, citation="de/statute/estg/66")

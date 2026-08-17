@@ -14570,6 +14570,7 @@ rules:
             json.dumps(
                 {
                     "schema": "axiom-encode/failed-encode-candidate/v1",
+                    "citation": "26 USC 1(j)(2)",
                     "path": candidate_path.as_posix(),
                     "issues": seeded_issues,
                     "rulespec_sha256": rulespec_sha256,
@@ -14645,6 +14646,7 @@ rules:
         issues = json.loads((failed_candidate_root / "issues.json").read_text())
         assert issues == {
             "schema": "axiom-encode/failed-encode-candidate/v1",
+            "citation": "26 USC 1(j)(2)",
             "path": relative_rulespec.as_posix(),
             "issues": final_issues,
             "rulespec_sha256": hashlib.sha256(
