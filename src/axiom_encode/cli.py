@@ -26614,12 +26614,12 @@ def _validation_retry_issue_snapshot(
 
 
 def _finite_validation_retry_issue_snapshot(
-    issue_group: Sequence[str],
+    *issue_groups: Sequence[str],
 ) -> tuple[str, ...]:
-    """Scan one materialized artifact-bounded issue list before prompt capping."""
+    """Scan materialized artifact-bounded issue groups before prompt capping."""
 
     return _validation_retry_issue_snapshot(
-        issue_group,
+        *issue_groups,
         inspection_limit_per_group=_FAILED_ENCODE_CANDIDATE_MAX_ISSUES,
     )
 
@@ -29606,7 +29606,7 @@ def _run_encode_attempt(
             compile_issues,
             ci_issues,
         )
-        retry_validation_issues = _validation_retry_issue_snapshot(
+        retry_validation_issues = _finite_validation_retry_issue_snapshot(
             compile_issues,
             ci_issues,
         )
