@@ -26267,6 +26267,7 @@ def _emit_final_rejected_candidate(
     *,
     output_root: Path,
     destination: Path,
+    citation: str,
     validation_issues: Sequence[str],
     attempt_count: int,
 ) -> Path:
@@ -26303,9 +26304,14 @@ def _emit_final_rejected_candidate(
 
     rulespec_raw = candidate.rulespec.encode("utf-8")
     tests_raw = candidate.tests.encode("utf-8")
+    if not isinstance(citation, str) or not citation:
+        raise ValueError("Final rejected candidate citation is unavailable")
     metadata = {
         "schema": _FAILED_ENCODE_CANDIDATE_SCHEMA,
-        "citation": str(getattr(result, "citation", "") or ""),
+        # Preserve the requested identity exactly. EvalResult.citation is
+        # normalized by the harness, while workflow matrix entries and the
+        # subsequent repair invocation carry the original request spelling.
+        "citation": citation,
         "path": relative_output.as_posix(),
         "issues": issues,
         "rulespec_sha256": hashlib.sha256(rulespec_raw).hexdigest(),
@@ -26313,8 +26319,6 @@ def _emit_final_rejected_candidate(
         "encoder_version": __version__,
         "attempt_count": attempt_count,
     }
-    if not metadata["citation"]:
-        raise ValueError("Final rejected candidate citation is unavailable")
     metadata_raw = (
         json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -29185,6 +29189,7 @@ def _run_encode_attempts_with_retries(
                 execution.result,
                 output_root=args.output,
                 destination=emit_destination,
+                citation=str(args.citation),
                 validation_issues=final_issues,
                 attempt_count=len(failed_attempts) + 1,
             )

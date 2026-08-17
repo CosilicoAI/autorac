@@ -13321,6 +13321,9 @@ class TestCmdEncode:
             runner_name = f"{backend}-{model}"
             generated_models.append(model)
             result = self._make_eval_result(True)
+            # Match the real harness: EvalResult stores a normalized citation,
+            # even when the CLI request used a supported human-readable alias.
+            result.citation = normalize_corpus_identifier(args.citation)
             result.backend = backend
             result.model = model
             result.runner = runner_name
@@ -14706,6 +14709,7 @@ rules:
                 ),
                 output_root=output_root,
                 destination=tmp_path / "failed-encode",
+                citation="26 USC 1(j)(2)",
                 validation_issues=("validator rejected candidate",),
                 attempt_count=1,
             )
