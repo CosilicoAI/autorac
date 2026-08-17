@@ -14899,6 +14899,21 @@ rules:
                 Path(r"statutes/26/foo\bar.yaml"),
                 "safe relative path",
             ),
+            (
+                Path("candidate"),
+                Path("statutes/.github/injected.yaml"),
+                "safe relative path",
+            ),
+            (
+                Path("candidate"),
+                Path("statutes/_axiom/injected.yaml"),
+                "safe relative path",
+            ),
+            (
+                Path("candidate"),
+                Path("statutes/26/control\x1fname.yaml"),
+                "safe relative path",
+            ),
             (Path("candidate"), Path("metrics/1.yaml"), "canonical RuleSpec"),
         ],
     )
