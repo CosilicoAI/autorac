@@ -19,7 +19,6 @@ import csv
 import difflib
 import fcntl
 import hashlib
-import itertools
 import json
 import math
 import os
@@ -55121,41 +55120,6 @@ def _full_overlay_validator_issues(
         return issues
     error = getattr(validator_result, "error", None)
     return (f"{prefix}{error}",) if isinstance(error, str) and error else ()
-
-
-def _bounded_overlay_validator_issues(
-    validator_result: object,
-    *,
-    relative_file: Path,
-    validator_name: str,
-) -> tuple[str, ...]:
-    """Preserve bounded validator diagnostics across the apply-overlay boundary."""
-
-    prefix = f"{relative_file}: {validator_name}: "
-    raw_issues = getattr(validator_result, "issues", ())
-    candidates = (
-        raw_issues
-        if isinstance(raw_issues, Sequence) and not isinstance(raw_issues, (str, bytes))
-        else ()
-    )
-    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
-    bounded: list[str] = []
-    seen: set[str] = set()
-    for raw_issue in itertools.islice(iter(candidates), inspection_limit):
-        if not isinstance(raw_issue, str):
-            continue
-        issue = bounded_validation_retry_feedback_item(f"{prefix}{raw_issue}")
-        if not issue or issue in seen:
-            continue
-        seen.add(issue)
-        bounded.append(issue)
-    if bounded:
-        return tuple(bounded)
-    error = getattr(validator_result, "error", None)
-    if not isinstance(error, str):
-        return ()
-    fallback = bounded_validation_retry_feedback_item(f"{prefix}{error}")
-    return (fallback,) if fallback else ()
 
 
 # Keep the apply-overlay validator importable for focused tests and internal

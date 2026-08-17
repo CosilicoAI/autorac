@@ -14496,52 +14496,6 @@ rules:
         assert feedback[:3] == (first, structure, formula)
         assert candidate is failed_attempt.candidate
 
-    def test_overlay_validator_issues_preserve_all_bounded_deduplicated_issues(self):
-        import axiom_encode.cli as cli_module
-
-        validator_result = SimpleNamespace(
-            issues=["first issue", "second issue", "first issue", None],
-            error="first issue",
-        )
-
-        issues = cli_module._bounded_overlay_validator_issues(
-            validator_result,
-            relative_file=Path("policies/income_tax/schedule.yaml"),
-            validator_name="ci",
-        )
-
-        assert issues == (
-            "policies/income_tax/schedule.yaml: ci: first issue",
-            "policies/income_tax/schedule.yaml: ci: second issue",
-        )
-
-    def test_overlay_validator_issues_bound_diagnostic_flood_and_fallback(self):
-        import axiom_encode.cli as cli_module
-
-        class CountingIssues(list):
-            inspected = 0
-
-            def __iter__(self):
-                for index in range(10_000):
-                    self.inspected += 1
-                    yield f"issue {index}"
-
-        flooded = CountingIssues()
-        issues = cli_module._bounded_overlay_validator_issues(
-            SimpleNamespace(issues=flooded, error="fallback"),
-            relative_file=Path("statutes/26/1.yaml"),
-            validator_name="ci",
-        )
-        fallback = cli_module._bounded_overlay_validator_issues(
-            SimpleNamespace(issues=[None], error="fallback"),
-            relative_file=Path("statutes/26/1.yaml"),
-            validator_name="ci",
-        )
-
-        assert flooded.inspected == 48
-        assert len(issues) == 48
-        assert fallback == ("statutes/26/1.yaml: ci: fallback",)
-
     def test_full_overlay_validator_issues_preserve_post_prompt_bound_diagnostics(
         self,
     ):
