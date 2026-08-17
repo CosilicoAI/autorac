@@ -19,7 +19,6 @@ import csv
 import difflib
 import fcntl
 import hashlib
-import itertools
 import json
 import math
 import os
@@ -191,6 +190,7 @@ from .harness.evals import (
     _render_eval_result_verdict_evidence,
     _resolve_eval_output_path,
     _rulespec_root_execution_identity,
+    _secure_atomic_eval_write,
     _source_metadata_citation_path,
     _source_metadata_with_attestation,
     _suite_retry_attempts_from_execution_identity,
@@ -2779,6 +2779,14 @@ def main():
             "Keep the hash-bound repair candidate RuleSpec immutable and permit "
             "only a non-weakening companion-test expansion required by a v2 "
             "review contract"
+        ),
+    )
+    encode_parser.add_argument(
+        "--emit-final-rejected-candidate",
+        type=Path,
+        help=(
+            "Write the final validator-rejected RuleSpec, companion tests, and "
+            "issue metadata to one fresh absolute directory"
         ),
     )
     encode_parser.add_argument(
@@ -26122,12 +26130,34 @@ class _FailedEncodeAttempt(NamedTuple):
     validation_issues: Sequence[str] = ()
 
 
-def _capture_validation_retry_candidate(
+_FAILED_ENCODE_CANDIDATE_SCHEMA = "axiom-encode/failed-encode-candidate/v1"
+_FAILED_ENCODE_CANDIDATE_METADATA_FIELDS = {
+    "schema",
+    "citation",
+    "path",
+    "issues",
+    "rulespec_sha256",
+    "tests_sha256",
+    "encoder_version",
+    "attempt_count",
+}
+_FAILED_ENCODE_CANDIDATE_MAX_ISSUES_BYTES = 512 * 1024
+_FAILED_ENCODE_CANDIDATE_MAX_ISSUES = 4096
+_FAILED_ENCODE_CANDIDATE_EMPTY_TESTS = "[]\n"
+_FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS = {
+    ".git",
+    ".github",
+    "_axiom",
+    "scripts",
+}
+
+
+def _validation_retry_candidate_location(
     result: Any,
     *,
     output_root: Path,
-) -> ValidationRetryCandidate:
-    """Read one generated candidate through contained, bounded file handles."""
+) -> tuple[Path, Path, Path]:
+    """Resolve one generated candidate to a canonical contained module path."""
 
     runner = str(getattr(result, "runner", "") or "")
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", runner) is None:
@@ -26158,10 +26188,32 @@ def _capture_validation_retry_candidate(
         len(module_parts) < 2
         or output_file.suffix != RULESPEC_FILE_SUFFIX
         or output_file.name.endswith(RULESPEC_TEST_FILE_SUFFIX)
+        or "\\" in relative_output.as_posix()
+        or any(
+            part in _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS
+            for part in relative_output.parts
+        )
+        or any(
+            any(ord(character) < 32 or ord(character) == 127 for character in part)
+            for part in relative_output.parts
+        )
     ):
         raise RuntimeError(
             "Validator-rejected retry candidate is not a canonical RuleSpec module"
         )
+    return generated_root, output_file, relative_output
+
+
+def _capture_validation_retry_candidate(
+    result: Any,
+    *,
+    output_root: Path,
+) -> ValidationRetryCandidate:
+    """Read one generated candidate through contained, bounded file handles."""
+
+    generated_root, output_file, _relative_output = (
+        _validation_retry_candidate_location(result, output_root=output_root)
+    )
     rulespec = read_bounded_regular_file(
         generated_root,
         output_file,
@@ -26180,6 +26232,118 @@ def _capture_validation_retry_candidate(
         else None
     )
     return ValidationRetryCandidate(rulespec=rulespec, tests=tests)
+
+
+def _resolve_final_rejected_candidate_destination(raw_destination: object) -> Path:
+    """Resolve a fresh absolute output directory without symlinked ancestors."""
+
+    if not isinstance(raw_destination, (str, os.PathLike)):
+        raise TypeError("encode rejected-candidate destination must be a path")
+    lexical = Path(raw_destination)
+    destination = Path(os.path.abspath(lexical))
+    if not lexical.is_absolute() or lexical != destination:
+        raise ValueError(
+            "encode --emit-final-rejected-candidate must be a normalized absolute path"
+        )
+    try:
+        parent = destination.parent.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(
+            "encode rejected-candidate destination parent must already exist"
+        ) from exc
+    if parent != destination.parent or not parent.is_dir():
+        raise ValueError(
+            "encode rejected-candidate destination parent must be canonical"
+        )
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("encode rejected-candidate destination must not exist")
+    return destination
+
+
+def _emit_final_rejected_candidate(
+    result: Any,
+    *,
+    output_root: Path,
+    destination: Path,
+    citation: str,
+    validation_issues: Sequence[str],
+    attempt_count: int,
+) -> Path:
+    """Materialize exactly one final rejected pair and its bounded issue metadata."""
+
+    resolved_destination = _resolve_final_rejected_candidate_destination(destination)
+    _generated_root, _output_file, relative_output = (
+        _validation_retry_candidate_location(result, output_root=output_root)
+    )
+    candidate = _capture_validation_retry_candidate(result, output_root=output_root)
+    if (
+        not isinstance(attempt_count, int)
+        or isinstance(attempt_count, bool)
+        or attempt_count < 1
+    ):
+        raise ValueError("Final rejected candidate attempt count must be positive")
+    if isinstance(validation_issues, (str, bytes)) or not isinstance(
+        validation_issues, Sequence
+    ):
+        raise TypeError("Final rejected candidate issues must be a sequence")
+    issues = list(validation_issues)
+    if (
+        not issues
+        or len(issues) > _FAILED_ENCODE_CANDIDATE_MAX_ISSUES
+        or any(not isinstance(issue, str) or not issue for issue in issues)
+    ):
+        raise ValueError(
+            "Final rejected candidate issues must be a nonempty bounded string list"
+        )
+
+    rulespec_raw = candidate.rulespec.encode("utf-8")
+    # A missing companion is itself a rejected-candidate state. Materialize the
+    # canonical empty case list so the durable repair contract remains an exact
+    # three-file pair while representing that no test cases were generated.
+    tests_raw = (
+        candidate.tests
+        if candidate.tests is not None
+        else _FAILED_ENCODE_CANDIDATE_EMPTY_TESTS
+    ).encode("utf-8")
+    if not isinstance(citation, str) or not citation:
+        raise ValueError("Final rejected candidate citation is unavailable")
+    metadata = {
+        "schema": _FAILED_ENCODE_CANDIDATE_SCHEMA,
+        # Preserve the requested identity exactly. EvalResult.citation is
+        # normalized by the harness, while workflow matrix entries and the
+        # subsequent repair invocation carry the original request spelling.
+        "citation": citation,
+        "path": relative_output.as_posix(),
+        "issues": issues,
+        "rulespec_sha256": hashlib.sha256(rulespec_raw).hexdigest(),
+        "tests_sha256": hashlib.sha256(tests_raw).hexdigest(),
+        "encoder_version": __version__,
+        "attempt_count": attempt_count,
+    }
+    metadata_raw = (
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(metadata_raw) > _FAILED_ENCODE_CANDIDATE_MAX_ISSUES_BYTES:
+        raise ValueError("Final rejected candidate issues.json exceeds its size limit")
+
+    _secure_atomic_eval_write(
+        resolved_destination,
+        relative_output,
+        rulespec_raw,
+    )
+    _secure_atomic_eval_write(
+        resolved_destination,
+        _rulespec_test_path(relative_output),
+        tests_raw,
+    )
+    # Write metadata last: its presence marks a complete candidate pair for the
+    # independent workflow verifier. Any interrupted partial root is rejected.
+    _secure_atomic_eval_write(
+        resolved_destination,
+        Path("issues.json"),
+        metadata_raw,
+    )
+    return resolved_destination
 
 
 def _load_initial_validation_retry_candidate(
@@ -26215,7 +26379,16 @@ def _load_initial_validation_retry_candidate(
     if (
         relative_output.is_absolute()
         or not relative_output.parts
+        or "\\" in relative_output.as_posix()
         or any(part in {"", ".", ".."} for part in relative_output.parts)
+        or any(
+            part in _FAILED_ENCODE_CANDIDATE_PROTECTED_SEGMENTS
+            for part in relative_output.parts
+        )
+        or any(
+            any(ord(character) < 32 or ord(character) == 127 for character in part)
+            for part in relative_output.parts
+        )
     ):
         raise ValueError("encode --repair-candidate-path must be a safe relative path")
     parts = relative_output.parts
@@ -26260,6 +26433,71 @@ def _load_initial_validation_retry_candidate(
         rulespec=rulespec_bytes.decode("utf-8", errors="strict"),
         tests=tests_bytes.decode("utf-8", errors="strict"),
     )
+
+
+def _load_initial_validation_retry_feedback(args: Any) -> tuple[str, ...]:
+    """Load optional issue metadata bound to the existing repair flag quartet."""
+
+    raw_root = getattr(args, "repair_candidate_root", None)
+    if raw_root is None:
+        return ()
+    root = Path(os.path.abspath(Path(raw_root)))
+    issues_path = root / "issues.json"
+    if not issues_path.exists() and not issues_path.is_symlink():
+        # Targeted-reencode repair roots predate this optional metadata file.
+        return ()
+    issues_raw = read_bounded_regular_file(
+        root,
+        issues_path,
+        label="preserved validator-rejected issues",
+        max_bytes=_FAILED_ENCODE_CANDIDATE_MAX_ISSUES_BYTES,
+    )
+    try:
+        metadata = json.loads(issues_raw.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(
+            "preserved repair candidate issues.json is not valid UTF-8 JSON"
+        ) from exc
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != _FAILED_ENCODE_CANDIDATE_METADATA_FIELDS
+        or metadata.get("schema") != _FAILED_ENCODE_CANDIDATE_SCHEMA
+    ):
+        raise ValueError("preserved repair candidate issues.json has an invalid shape")
+
+    expected_path = Path(getattr(args, "repair_candidate_path")).as_posix()
+    expected_rulespec_sha256 = getattr(args, "repair_candidate_rulespec_sha256", None)
+    expected_tests_sha256 = getattr(args, "repair_candidate_tests_sha256", None)
+    if metadata.get("citation") != str(getattr(args, "citation", "") or ""):
+        raise ValueError("preserved repair candidate issues citation mismatch")
+    if metadata.get("path") != expected_path:
+        raise ValueError("preserved repair candidate issues path mismatch")
+    if metadata.get("rulespec_sha256") != expected_rulespec_sha256:
+        raise ValueError("preserved repair candidate issues RuleSpec SHA-256 mismatch")
+    if metadata.get("tests_sha256") != expected_tests_sha256:
+        raise ValueError("preserved repair candidate issues tests SHA-256 mismatch")
+    encoder_version = metadata.get("encoder_version")
+    if (
+        not isinstance(encoder_version, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}", encoder_version) is None
+    ):
+        raise ValueError("preserved repair candidate encoder version is invalid")
+    attempt_count = metadata.get("attempt_count")
+    if (
+        not isinstance(attempt_count, int)
+        or isinstance(attempt_count, bool)
+        or attempt_count < 1
+    ):
+        raise ValueError("preserved repair candidate attempt count is invalid")
+    issues = metadata.get("issues")
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or len(issues) > _FAILED_ENCODE_CANDIDATE_MAX_ISSUES
+        or any(not isinstance(issue, str) or not issue for issue in issues)
+    ):
+        raise ValueError("preserved repair candidate issues are invalid")
+    return _finite_validation_retry_issue_snapshot(issues)
 
 
 def _validate_tests_only_repair_contract(
@@ -26322,14 +26560,33 @@ def _latest_validation_retry_candidate(
     return prior_attempts[-1].candidate if prior_attempts else None
 
 
+def _full_validation_issue_list(*issue_groups: object) -> tuple[str, ...]:
+    """Preserve every string issue from finite validator-produced sequences."""
+
+    issues: list[str] = []
+    for issue_group in issue_groups:
+        if not isinstance(issue_group, Sequence) or isinstance(
+            issue_group, (str, bytes)
+        ):
+            continue
+        issues.extend(issue for issue in issue_group if isinstance(issue, str))
+    return tuple(issues)
+
+
 def _validation_retry_issue_snapshot(
     *issue_groups: object,
+    inspection_limit_per_group: int = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4,
 ) -> tuple[str, ...]:
     """Snapshot bounded, category-diverse issues for one captured candidate."""
 
+    if (
+        isinstance(inspection_limit_per_group, bool)
+        or not isinstance(inspection_limit_per_group, int)
+        or inspection_limit_per_group < 1
+    ):
+        raise ValueError("Validation retry issue inspection limit must be positive")
     candidates: list[str] = []
     seen: set[str] = set()
-    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
     for issue_group in issue_groups:
         if not isinstance(issue_group, Sequence) or isinstance(
             issue_group, (str, bytes)
@@ -26337,7 +26594,7 @@ def _validation_retry_issue_snapshot(
             continue
         inspected = 0
         issue_iterator = iter(issue_group)
-        while inspected < inspection_limit:
+        while inspected < inspection_limit_per_group:
             try:
                 issue = next(issue_iterator)
             except StopIteration:
@@ -26351,6 +26608,17 @@ def _validation_retry_issue_snapshot(
             seen.add(item)
             candidates.append(item)
     return _category_diverse_validation_retry_issues(candidates)
+
+
+def _finite_validation_retry_issue_snapshot(
+    *issue_groups: Sequence[str],
+) -> tuple[str, ...]:
+    """Scan materialized artifact-bounded issue groups before prompt capping."""
+
+    return _validation_retry_issue_snapshot(
+        *issue_groups,
+        inspection_limit_per_group=_FAILED_ENCODE_CANDIDATE_MAX_ISSUES,
+    )
 
 
 def _category_diverse_validation_retry_issues(
@@ -26503,12 +26771,15 @@ def _encode_validation_retry_context(
     prior_attempts: Sequence[_FailedEncodeAttempt],
     *,
     initial_retry_candidate: ValidationRetryCandidate | None,
+    initial_retry_feedback: Sequence[str] = (),
     preserve_initial_candidate: bool = False,
 ) -> tuple[tuple[str, ...], ValidationRetryCandidate | None]:
     """Bind validator feedback to the exact candidate that produced it."""
 
     if not prior_attempts:
-        return (), initial_retry_candidate
+        if initial_retry_feedback and initial_retry_candidate is None:
+            raise RuntimeError("Initial validation retry feedback has no candidate")
+        return tuple(initial_retry_feedback), initial_retry_candidate
     if preserve_initial_candidate:
         if initial_retry_candidate is None:
             raise RuntimeError("Preserved validation retry candidate is unavailable")
@@ -26529,6 +26800,7 @@ class _EncodeAttemptExecution(NamedTuple):
     apply_passed: bool
     logged_run: EncodingRun | None
     validation_issues: tuple[str, ...]
+    validation_retry_issues: tuple[str, ...]
 
 
 class _EncodeReplacementTarget(NamedTuple):
@@ -28847,7 +29119,14 @@ def _run_encode_attempts_with_retries(
     resolved_policy_checkout_path: Path | None = None,
 ):
     """Bounded validator-retry loop for one encode invocation."""
+    raw_emit_destination = getattr(args, "emit_final_rejected_candidate", None)
+    emit_destination = (
+        _resolve_final_rejected_candidate_destination(raw_emit_destination)
+        if raw_emit_destination is not None
+        else None
+    )
     initial_retry_candidate = _load_initial_validation_retry_candidate(args)
+    initial_retry_feedback = _load_initial_validation_retry_feedback(args)
     _validate_tests_only_repair_contract(args, initial_retry_candidate)
     failed_attempts: tuple[_FailedEncodeAttempt, ...] = ()
     current_model = config.initial_model
@@ -28858,6 +29137,7 @@ def _run_encode_attempts_with_retries(
             model=current_model,
             prior_attempts=failed_attempts,
             initial_retry_candidate=initial_retry_candidate,
+            initial_retry_feedback=initial_retry_feedback,
             defer_logging=config.enabled,
             apply_signing_broker=apply_signing_broker,
             resolved_policy_checkout_path=resolved_policy_checkout_path,
@@ -28892,7 +29172,7 @@ def _run_encode_attempts_with_retries(
                     result=execution.result,
                     error=retry_error,
                     candidate=candidate,
-                    validation_issues=execution.validation_issues,
+                    validation_issues=execution.validation_retry_issues,
                 )
         if next_model is not None:
             action = "retrying" if next_model == current_model else "escalating"
@@ -28920,6 +29200,23 @@ def _run_encode_attempts_with_retries(
                 continue
 
         outcome = execution.outcome
+        final_validator_rejected = _encode_attempt_was_validator_rejected(
+            execution.result,
+            outcome,
+        )
+        if emit_destination is not None and final_validator_rejected:
+            final_issues = execution.validation_issues or (
+                _encode_outcome_issue(execution.result, outcome),
+            )
+            emitted_candidate = _emit_final_rejected_candidate(
+                execution.result,
+                output_root=args.output,
+                destination=emit_destination,
+                citation=str(args.citation),
+                validation_issues=final_issues,
+                attempt_count=len(failed_attempts) + 1,
+            )
+            print(f"  final_rejected_candidate={emitted_candidate}")
         escalated = (
             current_model == config.escalation_model
             and config.escalation_model != config.initial_model
@@ -28999,6 +29296,7 @@ def _run_encode_attempt(
     model: str,
     prior_attempts: Sequence[_FailedEncodeAttempt] = (),
     initial_retry_candidate: ValidationRetryCandidate | None = None,
+    initial_retry_feedback: Sequence[str] = (),
     defer_logging: bool = True,
     apply_signing_broker: SigningBroker | None = None,
     resolved_policy_checkout_path: Path | None = None,
@@ -29127,6 +29425,7 @@ def _run_encode_attempt(
         _encode_validation_retry_context(
             prior_attempts,
             initial_retry_candidate=initial_retry_candidate,
+            initial_retry_feedback=initial_retry_feedback,
             preserve_initial_candidate=(
                 getattr(args, "repair_candidate_tests_only", False) is True
             ),
@@ -29294,12 +29593,19 @@ def _run_encode_attempt(
 
     outcome = _initial_encode_outcome(result, apply_requested=apply_requested)
     apply_passed = False
+    full_validation_issues: tuple[str, ...] = ()
     retry_validation_issues: tuple[str, ...] = ()
     metrics = getattr(result, "metrics", None)
     if metrics is not None:
-        retry_validation_issues = _validation_retry_issue_snapshot(
-            getattr(metrics, "compile_issues", ()),
-            getattr(metrics, "ci_issues", ()),
+        compile_issues = getattr(metrics, "compile_issues", ())
+        ci_issues = getattr(metrics, "ci_issues", ())
+        full_validation_issues = _full_validation_issue_list(
+            compile_issues,
+            ci_issues,
+        )
+        retry_validation_issues = _finite_validation_retry_issue_snapshot(
+            compile_issues,
+            ci_issues,
         )
     if apply_requested:
         if not _can_attempt_apply(result):
@@ -29315,6 +29621,7 @@ def _run_encode_attempt(
                 output_root=args.output,
             )
             if yaml_preflight_issue is not None:
+                full_validation_issues = (yaml_preflight_issue,)
                 retry_validation_issues = (yaml_preflight_issue,)
                 outcome["status"] = "apply_blocked_validation"
                 outcome["overlay_validation_success"] = False
@@ -29330,7 +29637,8 @@ def _run_encode_attempt(
                     outcome=outcome,
                     apply_passed=False,
                     logged_run=logged_run,
-                    validation_issues=retry_validation_issues,
+                    validation_issues=full_validation_issues,
+                    validation_retry_issues=retry_validation_issues,
                 )
 
             def _retry_generated_unsafe_formula_output_deferrals() -> list[str]:
@@ -31944,7 +32252,10 @@ def _run_encode_attempt(
                     )
                     outcome["overlay_validation_success"] = bool(can_apply)
             if not can_apply:
-                retry_validation_issues = _validation_retry_issue_snapshot(apply_issues)
+                full_validation_issues = _full_validation_issue_list(apply_issues)
+                retry_validation_issues = _finite_validation_retry_issue_snapshot(
+                    apply_issues
+                )
                 detail = (
                     apply_issues[0]
                     if apply_issues
@@ -32035,7 +32346,8 @@ def _run_encode_attempt(
                         apply_issues = required_import_issues
                         outcome["overlay_validation_success"] = False
                 if not can_apply:
-                    retry_validation_issues = _validation_retry_issue_snapshot(
+                    full_validation_issues = _full_validation_issue_list(apply_issues)
+                    retry_validation_issues = _finite_validation_retry_issue_snapshot(
                         apply_issues
                     )
                     detail = (
@@ -32079,7 +32391,8 @@ def _run_encode_attempt(
         outcome=outcome,
         apply_passed=apply_passed,
         logged_run=logged_run,
-        validation_issues=retry_validation_issues,
+        validation_issues=full_validation_issues,
+        validation_retry_issues=retry_validation_issues,
     )
 
 
@@ -54759,7 +55072,6 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                 dependents=dependents,
             )
         issues: list[str] = []
-        seen_issues: set[str] = set()
         for validated_file, validation in validations:
             if getattr(validation, "all_passed", False):
                 continue
@@ -54769,25 +55081,22 @@ def _validate_generated_encoding_in_policy_overlay_with_release(
                     overlay_content_root,
                 )
                 validator_name = getattr(validator_result, "validator_name", "ci")
-                for issue in _bounded_overlay_validator_issues(
+                for issue in _full_overlay_validator_issues(
                     validator_result,
                     relative_file=relative_file,
                     validator_name=validator_name,
                 ):
-                    if issue in seen_issues:
-                        continue
-                    seen_issues.add(issue)
                     issues.append(issue)
         return False, issues, {}
 
 
-def _bounded_overlay_validator_issues(
+def _full_overlay_validator_issues(
     validator_result: object,
     *,
     relative_file: Path,
     validator_name: str,
 ) -> tuple[str, ...]:
-    """Preserve bounded validator diagnostics across the apply-overlay boundary."""
+    """Preserve every finite validator diagnostic for durable artifacts."""
 
     prefix = f"{relative_file}: {validator_name}: "
     raw_issues = getattr(validator_result, "issues", ())
@@ -54796,24 +55105,15 @@ def _bounded_overlay_validator_issues(
         if isinstance(raw_issues, Sequence) and not isinstance(raw_issues, (str, bytes))
         else ()
     )
-    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
-    bounded: list[str] = []
-    seen: set[str] = set()
-    for raw_issue in itertools.islice(iter(candidates), inspection_limit):
-        if not isinstance(raw_issue, str):
-            continue
-        issue = bounded_validation_retry_feedback_item(f"{prefix}{raw_issue}")
-        if not issue or issue in seen:
-            continue
-        seen.add(issue)
-        bounded.append(issue)
-    if bounded:
-        return tuple(bounded)
+    issues = tuple(
+        f"{prefix}{raw_issue}"
+        for raw_issue in candidates
+        if isinstance(raw_issue, str) and raw_issue
+    )
+    if issues:
+        return issues
     error = getattr(validator_result, "error", None)
-    if not isinstance(error, str):
-        return ()
-    fallback = bounded_validation_retry_feedback_item(f"{prefix}{error}")
-    return (fallback,) if fallback else ()
+    return (f"{prefix}{error}",) if isinstance(error, str) and error else ()
 
 
 # Keep the apply-overlay validator importable for focused tests and internal

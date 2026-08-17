@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ""
+      repair-candidate-run-id:
+        description: "Optional failed signed-apply run containing this leg's repair candidate."
+        required: false
+        type: string
+        default: ""
     secrets:
       openai-api-key:
         description: "OpenAI model credential, explicitly passed by the caller."
@@ -123,6 +128,10 @@ jobs:
       matrix:
         item: ${{ fromJSON(needs.dispatch.outputs.matrix).include }}
     permissions:
+      # GitHub does not support step-scoped permissions. actions:read is used
+      # only by the pinned cross-run artifact download action; the model/signer
+      # step receives neither github.token nor any write-capable permission.
+      actions: read
       contents: read
     steps:
       - name: Checkout rules repository (leaf dir must equal the repo name)
@@ -146,6 +155,20 @@ jobs:
         run: |
           set -euo pipefail
           test "$(basename "$GITHUB_WORKSPACE")" = "${{ github.event.repository.name }}"
+
+      - name: Validate repair candidate run ID
+        id: repair_run
+        if: ${{ inputs['repair-candidate-run-id'] != '' }}
+        shell: bash
+        env:
+          REPAIR_CANDIDATE_RUN_ID: ${{ inputs['repair-candidate-run-id'] }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REPAIR_CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            printf 'invalid repair-candidate-run-id: expected a numeric workflow run ID\n' >&2
+            exit 1
+          fi
+          printf 'run_id=%s\n' "$REPAIR_CANDIDATE_RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Resolve pinned refs and release binding
         id: pins
@@ -188,6 +211,44 @@ jobs:
           ref: ${{ steps.pins.outputs.corpus_ref }}
           path: _axiom/axiom-corpus
           persist-credentials: false
+
+      - name: Download failed encode candidate
+        if: ${{ inputs['repair-candidate-run-id'] != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: failed-encode-${{ matrix.item.slug }}
+          path: ${{ runner.temp }}/repair-candidate
+          run-id: ${{ steps.repair_run.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify downloaded repair candidate
+        id: repair_candidate
+        if: ${{ inputs['repair-candidate-run-id'] != '' }}
+        shell: bash
+        env:
+          CITATION: ${{ matrix.item.citation }}
+        run: |
+          set -euo pipefail
+          verified="$RUNNER_TEMP/repair-candidate.json"
+          python3 _axiom/axiom-encode/scripts/verify_failed_encode_candidate.py \
+            "$RUNNER_TEMP/repair-candidate" \
+            --citation "$CITATION" \
+            > "$verified"
+          jq -e '
+            keys == ["path", "root", "rulespec_sha256", "tests_sha256"]
+            and (.root | type == "string" and length > 0)
+            and (.path | type == "string" and length > 0)
+            and (.rulespec_sha256 | test("^[0-9a-f]{64}$"))
+            and (.tests_sha256 | test("^[0-9a-f]{64}$"))
+          ' "$verified" > /dev/null
+          {
+            printf 'root=%s\n' "$(jq -er '.root' "$verified")"
+            printf 'path=%s\n' "$(jq -er '.path' "$verified")"
+            printf 'rulespec_sha256=%s\n' \
+              "$(jq -er '.rulespec_sha256' "$verified")"
+            printf 'tests_sha256=%s\n' \
+              "$(jq -er '.tests_sha256' "$verified")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
@@ -324,6 +385,10 @@ jobs:
           CITATION: ${{ matrix.item.citation }}
           INITIAL_MODEL: ${{ inputs['initial-model'] }}
           ESCALATE_AFTER: ${{ inputs['escalate-after'] }}
+          REPAIR_CANDIDATE_ROOT: ${{ steps.repair_candidate.outputs.root }}
+          REPAIR_CANDIDATE_PATH: ${{ steps.repair_candidate.outputs.path }}
+          REPAIR_CANDIDATE_RULESPEC_SHA256: ${{ steps.repair_candidate.outputs.rulespec_sha256 }}
+          REPAIR_CANDIDATE_TESTS_SHA256: ${{ steps.repair_candidate.outputs.tests_sha256 }}
         run: |
           set -euo pipefail
           # Builtin read/conditionals + pure assignment only — no subprocess is
@@ -350,7 +415,8 @@ jobs:
             --axiom-rules-engine-path "$GITHUB_WORKSPACE/_axiom/axiom-rules-engine" \
             --policy-repo-path "$genroot" \
             --mode cold --skip-reviewers \
-            --db "$RUNNER_TEMP/enc.db"
+            --db "$RUNNER_TEMP/enc.db" \
+            --emit-final-rejected-candidate "$RUNNER_TEMP/failed-encode"
           if [[ "$require_complete_source_unit" == true ]]; then
             set -- "$@" --require-complete-source-unit
           fi
@@ -374,6 +440,26 @@ jobs:
               exit 1
             fi
             set -- "$@" --escalate-after "$ESCALATE_AFTER"
+          fi
+          if [[ -n "$REPAIR_CANDIDATE_ROOT" ]]; then
+            if [[ -z "$REPAIR_CANDIDATE_PATH" ]] || \
+               [[ ! "$REPAIR_CANDIDATE_RULESPEC_SHA256" =~ ^[0-9a-f]{64}$ ]] || \
+               [[ ! "$REPAIR_CANDIDATE_TESTS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              printf 'verified repair candidate outputs are incomplete or malformed\n' >&2
+              exit 1
+            fi
+            set -- "$@" \
+              --repair-candidate-root "$REPAIR_CANDIDATE_ROOT" \
+              --repair-candidate-path "$REPAIR_CANDIDATE_PATH" \
+              --repair-candidate-rulespec-sha256 \
+                "$REPAIR_CANDIDATE_RULESPEC_SHA256" \
+              --repair-candidate-tests-sha256 \
+                "$REPAIR_CANDIDATE_TESTS_SHA256"
+          elif [[ -n "$REPAIR_CANDIDATE_PATH" ]] || \
+               [[ -n "$REPAIR_CANDIDATE_RULESPEC_SHA256" ]] || \
+               [[ -n "$REPAIR_CANDIDATE_TESTS_SHA256" ]]; then
+            printf 'verified repair candidate outputs are incomplete\n' >&2
+            exit 1
           fi
           exec "$@"
 
@@ -512,6 +598,35 @@ jobs:
           path: ${{ runner.temp }}/signed-content
           include-hidden-files: true
           retention-days: 1
+
+      - name: Verify final rejected candidate artifact
+        id: failed_candidate
+        if: ${{ failure() && !cancelled() }}
+        shell: bash
+        env:
+          CITATION: ${{ matrix.item.citation }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/failed-encode"
+          if [[ ! -e "$root" && ! -L "$root" ]]; then
+            printf 'present=false\n' >> "$GITHUB_OUTPUT"
+            printf 'No final validator-rejected candidate was emitted for this failure.\n'
+            exit 0
+          fi
+          python3 _axiom/axiom-encode/scripts/verify_failed_encode_candidate.py \
+            "$root" \
+            --citation "$CITATION" \
+            > "$RUNNER_TEMP/failed-encode-verified.json"
+          printf 'present=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Upload failed encode candidate
+        if: ${{ failure() && !cancelled() && steps.failed_candidate.outputs.present == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: failed-encode-${{ matrix.item.slug }}
+          path: ${{ runner.temp }}/failed-encode
+          if-no-files-found: error
+          retention-days: 30
 
   open_pr:
     needs: [dispatch, encode]

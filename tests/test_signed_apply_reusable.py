@@ -12,6 +12,13 @@ WORKFLOW = ROOT / ".github/workflows/signed-apply-reusable.yml"
 COMPLETE_SOURCE_FLAG = "--require-complete-source-unit"
 MODEL_FLAG = "--model"
 ESCALATE_FLAG = "--escalate-after"
+EMIT_REJECTED_FLAG = "--emit-final-rejected-candidate"
+REPAIR_FLAG_QUAD = (
+    "--repair-candidate-root",
+    "--repair-candidate-path",
+    "--repair-candidate-rulespec-sha256",
+    "--repair-candidate-tests-sha256",
+)
 
 
 def _workflow_payload() -> dict:
@@ -23,6 +30,14 @@ def _signed_apply_step() -> dict:
         step
         for step in _workflow_payload()["jobs"]["encode"]["steps"]
         if step.get("name") == "Signed re-encode under supervisor + leaf signer"
+    )
+
+
+def _workflow_step(name: str) -> dict:
+    return next(
+        step
+        for step in _workflow_payload()["jobs"]["encode"]["steps"]
+        if step.get("name") == name
     )
 
 
@@ -62,6 +77,8 @@ def _base_encoder_argv(tmp_path: Path) -> list[str]:
         "--skip-reviewers",
         "--db",
         f"{tmp_path}/enc.db",
+        EMIT_REJECTED_FLAG,
+        f"{tmp_path}/failed-encode",
     ]
 
 
@@ -100,6 +117,10 @@ def _run_signed_apply_script(
     require_complete_source_unit: bool = False,
     initial_model: str = "",
     escalate_after: str = "",
+    repair_candidate_root: str = "",
+    repair_candidate_path: str = "",
+    repair_candidate_rulespec_sha256: str = "",
+    repair_candidate_tests_sha256: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], bytes | None]:
     launcher = tmp_path / "axiom-encode-apply-signer"
     launcher.write_text(
@@ -129,6 +150,10 @@ def _run_signed_apply_script(
             "GITHUB_REPOSITORY": "TheAxiomFoundation/rulespec-de",
             "GITHUB_WORKSPACE": str(workspace),
             "INITIAL_MODEL": initial_model,
+            "REPAIR_CANDIDATE_PATH": repair_candidate_path,
+            "REPAIR_CANDIDATE_ROOT": repair_candidate_root,
+            "REPAIR_CANDIDATE_RULESPEC_SHA256": repair_candidate_rulespec_sha256,
+            "REPAIR_CANDIDATE_TESTS_SHA256": repair_candidate_tests_sha256,
             "RUNNER_TEMP": str(tmp_path),
         },
         capture_output=True,
@@ -169,6 +194,12 @@ def test_generation_budget_reusable_inputs_are_typed_and_default_off():
         "type": "string",
         "default": "",
     }
+    assert inputs["repair-candidate-run-id"] == {
+        "description": "Optional failed signed-apply run containing this leg's repair candidate.",
+        "required": "false",
+        "type": "string",
+        "default": "",
+    }
 
 
 def test_generation_budget_inputs_enter_only_through_step_environment():
@@ -180,6 +211,75 @@ def test_generation_budget_inputs_enter_only_through_step_environment():
     assert "${{ inputs['escalate-after'] }}" not in step["run"]
 
 
+def test_repair_candidate_download_has_minimal_read_permission_and_exact_binding():
+    workflow = _workflow_payload()
+    encode_job = workflow["jobs"]["encode"]
+    assert encode_job["permissions"] == {"actions": "read", "contents": "read"}
+
+    validate = _workflow_step("Validate repair candidate run ID")
+    assert validate["if"] == "${{ inputs['repair-candidate-run-id'] != '' }}"
+    assert validate["env"]["REPAIR_CANDIDATE_RUN_ID"] == (
+        "${{ inputs['repair-candidate-run-id'] }}"
+    )
+    assert "${{ inputs['repair-candidate-run-id'] }}" not in validate["run"]
+
+    download = _workflow_step("Download failed encode candidate")
+    assert download["if"] == "${{ inputs['repair-candidate-run-id'] != '' }}"
+    assert download["with"] == {
+        "name": "failed-encode-${{ matrix.item.slug }}",
+        "path": "${{ runner.temp }}/repair-candidate",
+        "run-id": "${{ steps.repair_run.outputs.run_id }}",
+        "github-token": "${{ github.token }}",
+    }
+    verify = _workflow_step("Verify downloaded repair candidate")
+    assert verify["env"] == {"CITATION": "${{ matrix.item.citation }}"}
+    assert '--citation "$CITATION"' in verify["run"]
+
+
+@pytest.mark.parametrize("run_id", ["0", "7", "001", "32062103227"])
+def test_repair_candidate_run_id_accepts_only_numeric_strings(tmp_path, run_id):
+    step = _workflow_step("Validate repair candidate run ID")
+    output = tmp_path / "github-output"
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "REPAIR_CANDIDATE_RUN_ID": run_id,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"run_id={run_id}\n"
+
+
+@pytest.mark.parametrize(
+    "run_id", ["", "-1", "+1", "1.0", "1 2", "12x", "$(touch injected)"]
+)
+def test_repair_candidate_run_id_rejects_non_numeric_strings(tmp_path, run_id):
+    step = _workflow_step("Validate repair candidate run ID")
+
+    result = subprocess.run(
+        ["/bin/bash", "-c", step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+            "REPAIR_CANDIDATE_RUN_ID": run_id,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "expected a numeric workflow run ID" in result.stderr
+    assert not (tmp_path / "injected").exists()
+
+
 def test_default_generation_budget_inputs_preserve_exact_launcher_argv(tmp_path):
     result, raw_argv = _run_signed_apply_script(tmp_path)
 
@@ -188,6 +288,70 @@ def test_default_generation_budget_inputs_preserve_exact_launcher_argv(tmp_path)
         argument.encode() + b"\0" for argument in _base_launcher_argv(tmp_path)
     )
     assert raw_argv == expected_raw
+
+
+def test_repair_candidate_absence_preserves_exact_default_launcher_argv(tmp_path):
+    baseline, baseline_raw = _run_signed_apply_script(tmp_path)
+    explicit_absent, absent_raw = _run_signed_apply_script(
+        tmp_path,
+        repair_candidate_root="",
+        repair_candidate_path="",
+        repair_candidate_rulespec_sha256="",
+        repair_candidate_tests_sha256="",
+    )
+
+    assert baseline.returncode == explicit_absent.returncode == 0
+    assert absent_raw == baseline_raw
+
+
+def test_repair_candidate_composes_exact_flag_quad(tmp_path):
+    digest_a = "a" * 64
+    digest_b = "b" * 64
+    root = str(tmp_path / "repair-candidate")
+    path = "de/statutes/estg/66.yaml"
+
+    result, raw_argv = _run_signed_apply_script(
+        tmp_path,
+        repair_candidate_root=root,
+        repair_candidate_path=path,
+        repair_candidate_rulespec_sha256=digest_a,
+        repair_candidate_tests_sha256=digest_b,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert raw_argv is not None
+    encoder_argv = _encoder_argv(raw_argv)
+    assert encoder_argv == [
+        *_base_encoder_argv(tmp_path),
+        "--repair-candidate-root",
+        root,
+        "--repair-candidate-path",
+        path,
+        "--repair-candidate-rulespec-sha256",
+        digest_a,
+        "--repair-candidate-tests-sha256",
+        digest_b,
+    ]
+    for flag in REPAIR_FLAG_QUAD:
+        assert encoder_argv.count(flag) == 1
+
+
+def test_failed_candidate_upload_is_failure_only_and_exactly_preverified():
+    verify = _workflow_step("Verify final rejected candidate artifact")
+    upload = _workflow_step("Upload failed encode candidate")
+
+    assert verify["if"] == "${{ failure() && !cancelled() }}"
+    assert "verify_failed_encode_candidate.py" in verify["run"]
+    assert upload["if"] == (
+        "${{ failure() && !cancelled() "
+        "&& steps.failed_candidate.outputs.present == 'true' }}"
+    )
+    assert upload["with"] == {
+        "name": "failed-encode-${{ matrix.item.slug }}",
+        "path": "${{ runner.temp }}/failed-encode",
+        "if-no-files-found": "error",
+        "retention-days": "30",
+    }
 
 
 @pytest.mark.parametrize(

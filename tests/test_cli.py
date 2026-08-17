@@ -3067,6 +3067,7 @@ class TestMain:
                 assert args.escalation_model == DEFAULT_OPENAI_ESCALATION_MODEL
                 assert args.escalate_after == DEFAULT_OPENAI_ESCALATE_AFTER
                 assert args.escalation_enabled is True
+                assert args.emit_final_rejected_candidate is None
 
     def test_encode_accepts_policyengine_rule_hint(self):
         with patch(
@@ -13117,6 +13118,9 @@ class TestCmdEncode:
         args.repair_candidate_tests_only = overrides.get(
             "repair_candidate_tests_only", False
         )
+        args.emit_final_rejected_candidate = overrides.get(
+            "emit_final_rejected_candidate", None
+        )
         args.policyengine_rule_hint = overrides.get("policyengine_rule_hint", None)
         args.db = overrides.get("db", tmp_path / "encodings.db")
         args.sync = overrides.get("sync", True)
@@ -13306,10 +13310,17 @@ class TestCmdEncode:
                     cmd_encode(args)
             return mock_run, exc_info.value.code
 
-    def _run_validator_escalation_case(self, args, validator_outcomes):
+    def _run_validator_escalation_case(
+        self,
+        args,
+        validator_outcomes,
+        *,
+        omit_final_tests: bool = False,
+    ):
         generated_models = []
         validated_models = []
         remaining_outcomes = list(validator_outcomes)
+        total_attempts = len(remaining_outcomes)
 
         def generate(**kwargs):
             runner_spec = kwargs["runner_specs"][0]
@@ -13317,6 +13328,9 @@ class TestCmdEncode:
             runner_name = f"{backend}-{model}"
             generated_models.append(model)
             result = self._make_eval_result(True)
+            # Match the real harness: EvalResult stores a normalized citation,
+            # even when the CLI request used a supported human-readable alias.
+            result.citation = normalize_corpus_identifier(args.citation)
             result.backend = backend
             result.model = model
             result.runner = runner_name
@@ -13330,9 +13344,10 @@ class TestCmdEncode:
             output_file.write_text(
                 f"format: rulespec/v1\n# rejected-attempt-{attempt_number}\nrules: []\n"
             )
-            output_file.with_suffix(".test.yaml").write_text(
-                f"# historical-and-current-cases-{attempt_number}\n[]\n"
-            )
+            if not (omit_final_tests and attempt_number == total_attempts):
+                output_file.with_suffix(".test.yaml").write_text(
+                    f"# historical-and-current-cases-{attempt_number}\n[]\n"
+                )
             result.output_file = str(output_file)
             return [result]
 
@@ -13345,10 +13360,11 @@ class TestCmdEncode:
                 + f"# deterministic-post-repair-{attempt_number}\n"
             )
             test_file = output_file.with_suffix(".test.yaml")
-            test_file.write_text(
-                test_file.read_text()
-                + f"# deterministic-post-repair-tests-{attempt_number}\n"
-            )
+            if test_file.exists():
+                test_file.write_text(
+                    test_file.read_text()
+                    + f"# deterministic-post-repair-tests-{attempt_number}\n"
+                )
             outcome = remaining_outcomes.pop(0)
             if isinstance(outcome, tuple):
                 passed, issues = outcome
@@ -13837,6 +13853,37 @@ class TestCmdEncode:
             "escalation_model": DEFAULT_OPENAI_ESCALATION_MODEL,
         }
 
+    def test_encode_retry_scans_full_overlay_issue_list_for_actionable_feedback(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+        )
+        actionable_issue = (
+            "[complete-source-unit:structure] missing final completeness branch"
+        )
+        overlay_issues = [
+            *(f"generic overlay issue {index}" for index in range(48)),
+            actionable_issue,
+        ]
+
+        exit_code, _generated, _validated, mock_run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [(False, overlay_issues), (True, [])],
+            )
+        )
+
+        assert exit_code == 0
+        assert (
+            actionable_issue
+            in mock_run.call_args_list[1].kwargs["validation_retry_feedback"]
+        )
+
     @pytest.mark.parametrize(
         "issue",
         (
@@ -14293,6 +14340,71 @@ rules:
             ["current CI issue"],
         ) == ("duplicate compile issue", "current CI issue")
 
+    def test_encode_retry_preserves_ci_feedback_after_compile_issue_flood(
+        self, tmp_path
+    ):
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=False,
+            sync=False,
+            escalation_enabled=True,
+        )
+        compile_issue = "duplicate compile issue"
+        ci_issue = "[complete-source-unit:structure] current CI completeness issue"
+        generated_attempts = 0
+
+        def generate(**kwargs):
+            nonlocal generated_attempts
+            generated_attempts += 1
+            backend, model = kwargs["runner_specs"][0].split(":", 1)
+            result = self._make_eval_result(generated_attempts == 2)
+            result.backend = backend
+            result.model = model
+            result.runner = f"{backend}-{model}"
+            output_file = (
+                args.output / result.runner / "statutes" / "26" / "1" / "j" / "2.yaml"
+            )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_file.write_text("format: rulespec/v1\nrules: []\n")
+            output_file.with_suffix(".test.yaml").write_text("[]\n")
+            result.output_file = str(output_file)
+            if generated_attempts == 1:
+                assert kwargs["validation_retry_feedback"] == ()
+                result.error = "Generated RuleSpec failed CI validation"
+                result.metrics = SimpleNamespace(
+                    compile_pass=False,
+                    ci_pass=False,
+                    compile_issues=[compile_issue] * 48,
+                    ci_issues=[
+                        *(f"generic CI issue {index}" for index in range(48)),
+                        ci_issue,
+                    ],
+                    grounded_numeric_count=0,
+                    ungrounded_numeric_count=0,
+                    embedded_source_present=False,
+                    generalist_review_score=None,
+                    policyengine_score=None,
+                    grounding=[],
+                )
+            else:
+                assert kwargs["validation_retry_feedback"][:3] == (
+                    "Generated RuleSpec failed CI validation",
+                    compile_issue,
+                    ci_issue,
+                )
+            return [result]
+
+        with (
+            patch("axiom_encode.cli.run_model_eval", side_effect=generate) as model,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cmd_encode(args)
+
+        assert exc_info.value.code == 0
+        assert generated_attempts == 2
+        assert model.call_count == 2
+
     def test_encode_retry_issue_snapshot_pairs_structure_with_formula_remediation(self):
         import axiom_encode.cli as cli_module
 
@@ -14377,51 +14489,24 @@ rules:
         assert feedback[:3] == (first, structure, formula)
         assert candidate is failed_attempt.candidate
 
-    def test_overlay_validator_issues_preserve_all_bounded_deduplicated_issues(self):
+    def test_full_overlay_validator_issues_preserve_post_prompt_bound_diagnostics(
+        self,
+    ):
         import axiom_encode.cli as cli_module
 
-        validator_result = SimpleNamespace(
-            issues=["first issue", "second issue", "first issue", None],
-            error="first issue",
-        )
+        long_issue = "long issue " + ("x" * 17_000)
+        raw_issues = [long_issue, *(f"issue {index}" for index in range(63))]
+        raw_issues.append(long_issue)
 
-        issues = cli_module._bounded_overlay_validator_issues(
-            validator_result,
-            relative_file=Path("policies/income_tax/schedule.yaml"),
-            validator_name="ci",
-        )
-
-        assert issues == (
-            "policies/income_tax/schedule.yaml: ci: first issue",
-            "policies/income_tax/schedule.yaml: ci: second issue",
-        )
-
-    def test_overlay_validator_issues_bound_diagnostic_flood_and_fallback(self):
-        import axiom_encode.cli as cli_module
-
-        class CountingIssues(list):
-            inspected = 0
-
-            def __iter__(self):
-                for index in range(10_000):
-                    self.inspected += 1
-                    yield f"issue {index}"
-
-        flooded = CountingIssues()
-        issues = cli_module._bounded_overlay_validator_issues(
-            SimpleNamespace(issues=flooded, error="fallback"),
-            relative_file=Path("statutes/26/1.yaml"),
-            validator_name="ci",
-        )
-        fallback = cli_module._bounded_overlay_validator_issues(
-            SimpleNamespace(issues=[None], error="fallback"),
+        issues = cli_module._full_overlay_validator_issues(
+            SimpleNamespace(issues=raw_issues, error=raw_issues[0]),
             relative_file=Path("statutes/26/1.yaml"),
             validator_name="ci",
         )
 
-        assert flooded.inspected == 48
-        assert len(issues) == 48
-        assert fallback == ("statutes/26/1.yaml: ci: fallback",)
+        assert len(issues) == 65
+        assert issues[0] == f"statutes/26/1.yaml: ci: {long_issue}"
+        assert issues[-1] == issues[0]
 
     def test_encode_retry_feedback_retains_compound_diagnostic_tail(self):
         import axiom_encode.cli as cli_module
@@ -14546,6 +14631,238 @@ rules:
         assert "preserved-rule" in candidate.rulespec
         assert candidate.tests is not None
         assert "preserved-companion" in candidate.tests
+
+    def test_encode_passes_cross_run_candidate_issues_to_first_attempt_feedback(
+        self, tmp_path
+    ):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\n# preserved-rule\nrules: []\n")
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("# preserved-companion\n[]\n")
+        rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
+        actionable_seeded_issues = [
+            "[complete-source-unit:structure] missing branch: section 66(1)",
+            "[complete-source-unit:formula-output] section 66(1) has no output",
+        ]
+        seeded_issues = [
+            *(f"generic seeded issue {index}" for index in range(48)),
+            *actionable_seeded_issues,
+        ]
+        (candidate_root / "issues.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/failed-encode-candidate/v1",
+                    "citation": "26 USC 1(j)(2)",
+                    "path": candidate_path.as_posix(),
+                    "issues": seeded_issues,
+                    "rulespec_sha256": rulespec_sha256,
+                    "tests_sha256": tests_sha256,
+                    "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+                    "attempt_count": 4,
+                }
+            )
+            + "\n"
+        )
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=rulespec_sha256,
+            repair_candidate_tests_sha256=tests_sha256,
+        )
+
+        mock_run, exit_code = self._run_encode(args, self._make_eval_result(True))
+
+        assert exit_code == 0
+        feedback = mock_run.call_args.kwargs["validation_retry_feedback"]
+        assert len(feedback) == 12
+        assert all(issue in feedback for issue in actionable_seeded_issues)
+
+    def test_encode_emits_only_final_validator_rejected_candidate(self, tmp_path):
+        failed_candidate_root = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            emit_final_rejected_candidate=failed_candidate_root,
+        )
+        final_issues = [
+            f"[complete-source-unit:structure] missing branch {index}: section 66(1)"
+            for index in range(24)
+        ]
+
+        exit_code, generated, _validated, _run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [
+                    (False, ["terra attempt one"]),
+                    (False, ["terra attempt two"]),
+                    (False, ["sol attempt one"]),
+                    (False, final_issues),
+                ],
+            )
+        )
+
+        assert exit_code == 1
+        assert len(generated) == 4
+        relative_rulespec = Path("statutes/26/1/j/2.yaml")
+        relative_tests = relative_rulespec.with_suffix(".test.yaml")
+        emitted_files = {
+            path.relative_to(failed_candidate_root).as_posix()
+            for path in failed_candidate_root.rglob("*")
+            if path.is_file()
+        }
+        assert emitted_files == {
+            "issues.json",
+            relative_rulespec.as_posix(),
+            relative_tests.as_posix(),
+        }
+        assert (
+            "rejected-attempt-4"
+            in (failed_candidate_root / relative_rulespec).read_text()
+        )
+        assert (
+            "deterministic-post-repair-4"
+            in (failed_candidate_root / relative_rulespec).read_text()
+        )
+        assert (
+            "historical-and-current-cases-4"
+            in (failed_candidate_root / relative_tests).read_text()
+        )
+        assert (
+            "deterministic-post-repair-tests-4"
+            in (failed_candidate_root / relative_tests).read_text()
+        )
+        issues = json.loads((failed_candidate_root / "issues.json").read_text())
+        assert issues == {
+            "schema": "axiom-encode/failed-encode-candidate/v1",
+            "citation": "26 USC 1(j)(2)",
+            "path": relative_rulespec.as_posix(),
+            "issues": final_issues,
+            "rulespec_sha256": hashlib.sha256(
+                (failed_candidate_root / relative_rulespec).read_bytes()
+            ).hexdigest(),
+            "tests_sha256": hashlib.sha256(
+                (failed_candidate_root / relative_tests).read_bytes()
+            ).hexdigest(),
+            "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+            "attempt_count": 4,
+        }
+
+    def test_encode_emits_empty_companion_when_final_rejection_has_no_tests(
+        self, tmp_path
+    ):
+        failed_candidate_root = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=False,
+            emit_final_rejected_candidate=failed_candidate_root,
+        )
+
+        exit_code, generated, _validated, _run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [(False, ["No tests found."])],
+                omit_final_tests=True,
+            )
+        )
+
+        assert exit_code == 1
+        assert len(generated) == 1
+        relative_rulespec = Path("statutes/26/1/j/2.yaml")
+        relative_tests = relative_rulespec.with_suffix(".test.yaml")
+        assert (failed_candidate_root / relative_tests).read_text() == "[]\n"
+        metadata = json.loads((failed_candidate_root / "issues.json").read_text())
+        assert metadata["issues"] == ["No tests found."]
+        assert metadata["tests_sha256"] == hashlib.sha256(b"[]\n").hexdigest()
+
+    @pytest.mark.parametrize(
+        ("success", "error", "expected_exit"),
+        [
+            (True, None, 0),
+            (False, "model transport failed", 1),
+        ],
+    )
+    def test_encode_does_not_emit_candidate_without_validator_rejection(
+        self, tmp_path, success, error, expected_exit
+    ):
+        destination = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            emit_final_rejected_candidate=destination,
+        )
+        result = self._make_eval_result(success)
+        result.error = error
+
+        _mock_run, exit_code = self._run_encode(args, result)
+
+        assert exit_code == expected_exit
+        assert not destination.exists()
+
+    @pytest.mark.parametrize(
+        "relative_output",
+        [
+            Path("metrics/result.yaml"),
+            Path("statutes/26/1.test.yaml"),
+            Path(r"statutes/26/foo\bar.yaml"),
+        ],
+    )
+    def test_final_rejected_candidate_emission_rejects_noncanonical_output(
+        self, tmp_path, relative_output
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / "codex-terra" / relative_output
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        output_file.with_suffix(".test.yaml").write_text("[]\n")
+
+        with pytest.raises(RuntimeError, match="canonical RuleSpec module"):
+            cli_module._emit_final_rejected_candidate(
+                SimpleNamespace(
+                    runner="codex-terra",
+                    output_file=str(output_file),
+                ),
+                output_root=output_root,
+                destination=tmp_path / "failed-encode",
+                citation="26 USC 1(j)(2)",
+                validation_issues=("validator rejected candidate",),
+                attempt_count=1,
+            )
+
+    def test_final_rejected_candidate_emission_requires_absolute_fresh_destination(
+        self, tmp_path
+    ):
+        import axiom_encode.cli as cli_module
+
+        with pytest.raises(ValueError, match="normalized absolute path"):
+            cli_module._resolve_final_rejected_candidate_destination(
+                Path("failed-encode")
+            )
+
+        existing = tmp_path / "failed-encode"
+        existing.mkdir()
+        with pytest.raises(ValueError, match="must not exist"):
+            cli_module._resolve_final_rejected_candidate_destination(existing)
+
+        real_parent = tmp_path / "real-parent"
+        real_parent.mkdir()
+        symlinked_parent = tmp_path / "symlinked-parent"
+        symlinked_parent.symlink_to(real_parent, target_is_directory=True)
+        with pytest.raises(ValueError, match="parent must be canonical"):
+            cli_module._resolve_final_rejected_candidate_destination(
+                symlinked_parent / "failed-encode"
+            )
 
     def test_encode_tests_only_repair_requires_bound_apply_contract(self, tmp_path):
         import axiom_encode.cli as cli_module
@@ -14708,6 +15025,26 @@ rules:
             (Path("candidate"), None, "must be supplied together"),
             (None, Path("statutes/26/1.yaml"), "must be supplied together"),
             (Path("candidate"), Path("../1.yaml"), "safe relative path"),
+            (
+                Path("candidate"),
+                Path(r"statutes/26/foo\bar.yaml"),
+                "safe relative path",
+            ),
+            (
+                Path("candidate"),
+                Path("statutes/.github/injected.yaml"),
+                "safe relative path",
+            ),
+            (
+                Path("candidate"),
+                Path("statutes/_axiom/injected.yaml"),
+                "safe relative path",
+            ),
+            (
+                Path("candidate"),
+                Path("statutes/26/control\x1fname.yaml"),
+                "safe relative path",
+            ),
             (Path("candidate"), Path("metrics/1.yaml"), "canonical RuleSpec"),
         ],
     )
@@ -14747,8 +15084,15 @@ rules:
                 )
             )
 
+    @pytest.mark.parametrize(
+        ("mutated_file", "message"),
+        [
+            ("rulespec", "RuleSpec SHA-256 mismatch"),
+            ("tests", "tests SHA-256 mismatch"),
+        ],
+    )
     def test_encode_rejects_mutated_cross_run_candidate_before_model_call(
-        self, tmp_path
+        self, tmp_path, mutated_file, message
     ):
         candidate_root = tmp_path / "preserved-candidate"
         candidate_path = Path("statutes/26/1/j/2.yaml")
@@ -14759,7 +15103,10 @@ rules:
         test_file.write_text("[]\n")
         expected_rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
         expected_tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
-        output_file.write_text("format: rulespec/v1\n# mutated\nrules: []\n")
+        if mutated_file == "rulespec":
+            output_file.write_text("format: rulespec/v1\n# mutated\nrules: []\n")
+        else:
+            test_file.write_text("# mutated\n[]\n")
         args = self._make_args(
             tmp_path,
             repair_candidate_root=candidate_root,
@@ -14769,7 +15116,59 @@ rules:
         )
 
         with patch("axiom_encode.cli.run_model_eval") as model_call:
-            with pytest.raises(ValueError, match="RuleSpec SHA-256 mismatch"):
+            with pytest.raises(ValueError, match=message):
+                cmd_encode(args)
+
+        model_call.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("metadata_kind", "message"),
+        [
+            ("invalid-json", "issues.json is not valid UTF-8 JSON"),
+            ("wrong-sha", "issues RuleSpec SHA-256 mismatch"),
+        ],
+    )
+    def test_encode_rejects_invalid_seed_issue_metadata_before_model_call(
+        self, tmp_path, metadata_kind, message
+    ):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("[]\n")
+        rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
+        issues_file = candidate_root / "issues.json"
+        if metadata_kind == "invalid-json":
+            issues_file.write_text("{\n")
+        else:
+            issues_file.write_text(
+                json.dumps(
+                    {
+                        "schema": "axiom-encode/failed-encode-candidate/v1",
+                        "citation": "26 USC 1(j)(2)",
+                        "path": candidate_path.as_posix(),
+                        "issues": ["validator rejected candidate"],
+                        "rulespec_sha256": "0" * 64,
+                        "tests_sha256": tests_sha256,
+                        "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+                        "attempt_count": 1,
+                    }
+                )
+                + "\n"
+            )
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=rulespec_sha256,
+            repair_candidate_tests_sha256=tests_sha256,
+        )
+
+        with patch("axiom_encode.cli.run_model_eval") as model_call:
+            with pytest.raises(ValueError, match=message):
                 cmd_encode(args)
 
         model_call.assert_not_called()
