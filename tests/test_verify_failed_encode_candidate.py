@@ -92,9 +92,7 @@ def test_rejects_backslash_in_noncanonical_candidate_path(tmp_path):
         Path("diagnostics.log"),
     ],
 )
-def test_rejects_every_path_outside_exact_three_file_allowlist(
-    tmp_path, extra_path
-):
+def test_rejects_every_path_outside_exact_three_file_allowlist(tmp_path, extra_path):
     root, _metadata = _candidate_directory(tmp_path)
     extra = root / extra_path
     extra.parent.mkdir(parents=True, exist_ok=True)

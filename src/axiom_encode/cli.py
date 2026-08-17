@@ -26194,10 +26194,7 @@ def _validation_retry_candidate_location(
             for part in relative_output.parts
         )
         or any(
-            any(
-                ord(character) < 32 or ord(character) == 127
-                for character in part
-            )
+            any(ord(character) < 32 or ord(character) == 127 for character in part)
             for part in relative_output.parts
         )
     ):
@@ -26469,9 +26466,7 @@ def _load_initial_validation_retry_feedback(args: Any) -> tuple[str, ...]:
         raise ValueError("preserved repair candidate issues.json has an invalid shape")
 
     expected_path = Path(getattr(args, "repair_candidate_path")).as_posix()
-    expected_rulespec_sha256 = getattr(
-        args, "repair_candidate_rulespec_sha256", None
-    )
+    expected_rulespec_sha256 = getattr(args, "repair_candidate_rulespec_sha256", None)
     expected_tests_sha256 = getattr(args, "repair_candidate_tests_sha256", None)
     if metadata.get("citation") != str(getattr(args, "citation", "") or ""):
         raise ValueError("preserved repair candidate issues citation mismatch")
@@ -26484,8 +26479,7 @@ def _load_initial_validation_retry_feedback(args: Any) -> tuple[str, ...]:
     encoder_version = metadata.get("encoder_version")
     if (
         not isinstance(encoder_version, str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}", encoder_version)
-        is None
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}", encoder_version) is None
     ):
         raise ValueError("preserved repair candidate encoder version is invalid")
     attempt_count = metadata.get("attempt_count")

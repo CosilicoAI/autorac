@@ -13879,9 +13879,10 @@ class TestCmdEncode:
         )
 
         assert exit_code == 0
-        assert actionable_issue in mock_run.call_args_list[1].kwargs[
-            "validation_retry_feedback"
-        ]
+        assert (
+            actionable_issue
+            in mock_run.call_args_list[1].kwargs["validation_retry_feedback"]
+        )
 
     @pytest.mark.parametrize(
         "issue",
@@ -14350,9 +14351,7 @@ rules:
             escalation_enabled=True,
         )
         compile_issue = "duplicate compile issue"
-        ci_issue = (
-            "[complete-source-unit:structure] current CI completeness issue"
-        )
+        ci_issue = "[complete-source-unit:structure] current CI completeness issue"
         generated_attempts = 0
 
         def generate(**kwargs):
@@ -14364,13 +14363,7 @@ rules:
             result.model = model
             result.runner = f"{backend}-{model}"
             output_file = (
-                args.output
-                / result.runner
-                / "statutes"
-                / "26"
-                / "1"
-                / "j"
-                / "2.yaml"
+                args.output / result.runner / "statutes" / "26" / "1" / "j" / "2.yaml"
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text("format: rulespec/v1\nrules: []\n")
@@ -14730,18 +14723,22 @@ rules:
             relative_rulespec.as_posix(),
             relative_tests.as_posix(),
         }
-        assert "rejected-attempt-4" in (
-            failed_candidate_root / relative_rulespec
-        ).read_text()
-        assert "deterministic-post-repair-4" in (
-            failed_candidate_root / relative_rulespec
-        ).read_text()
-        assert "historical-and-current-cases-4" in (
-            failed_candidate_root / relative_tests
-        ).read_text()
-        assert "deterministic-post-repair-tests-4" in (
-            failed_candidate_root / relative_tests
-        ).read_text()
+        assert (
+            "rejected-attempt-4"
+            in (failed_candidate_root / relative_rulespec).read_text()
+        )
+        assert (
+            "deterministic-post-repair-4"
+            in (failed_candidate_root / relative_rulespec).read_text()
+        )
+        assert (
+            "historical-and-current-cases-4"
+            in (failed_candidate_root / relative_tests).read_text()
+        )
+        assert (
+            "deterministic-post-repair-tests-4"
+            in (failed_candidate_root / relative_tests).read_text()
+        )
         issues = json.loads((failed_candidate_root / "issues.json").read_text())
         assert issues == {
             "schema": "axiom-encode/failed-encode-candidate/v1",

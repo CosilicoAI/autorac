@@ -757,9 +757,7 @@ def build_run_record(
             "generalist_review_score": metrics.get("generalist_review_score"),
             "policyengine_score": metrics.get("policyengine_score"),
             "estimated_cost_usd": (
-                estimated_cost_usd
-                if result_rows and estimated_cost_complete
-                else None
+                estimated_cost_usd if result_rows and estimated_cost_complete else None
             ),
             "actual_cost_usd": actual_cost_usd,
             **token_fields,

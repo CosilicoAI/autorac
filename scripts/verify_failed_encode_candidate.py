@@ -24,9 +24,7 @@ CONTRACT = runpy.run_path(
     Path(__file__).parents[1] / "src/axiom_encode/repair_candidate_contract.py"
 )
 MAX_CANDIDATE_BYTES = CONTRACT["VALIDATION_RETRY_CANDIDATE_MAX_FILE_BYTES"]
-MAX_CANDIDATE_TOTAL_BYTES = CONTRACT[
-    "VALIDATION_RETRY_CANDIDATE_MAX_TOTAL_BYTES"
-]
+MAX_CANDIDATE_TOTAL_BYTES = CONTRACT["VALIDATION_RETRY_CANDIDATE_MAX_TOTAL_BYTES"]
 METADATA_FIELDS = {
     "schema",
     "citation",
@@ -150,7 +148,9 @@ def _directory_inventory(root: Path) -> tuple[set[str], set[str]]:
             try:
                 candidate_stat = os.lstat(candidate)
             except OSError as exc:
-                raise ValueError("failed candidate directory changed during scan") from exc
+                raise ValueError(
+                    "failed candidate directory changed during scan"
+                ) from exc
             if not stat.S_ISDIR(candidate_stat.st_mode):
                 raise ValueError("failed candidate artifact contains a symlink")
             directories.add(candidate.relative_to(root).as_posix())
@@ -196,7 +196,9 @@ def verify_candidate_directory(
     try:
         metadata = json.loads(issues_raw.decode("utf-8", errors="strict"))
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise ValueError("failed candidate issues.json is not valid UTF-8 JSON") from exc
+        raise ValueError(
+            "failed candidate issues.json is not valid UTF-8 JSON"
+        ) from exc
     if not isinstance(metadata, dict) or set(metadata) != METADATA_FIELDS:
         raise ValueError("failed candidate issues.json has an invalid shape")
     if metadata.get("schema") != SCHEMA:
@@ -208,9 +210,7 @@ def verify_candidate_directory(
         raise ValueError("failed candidate citation mismatch")
 
     relative_rulespec = _canonical_candidate_path(metadata.get("path"))
-    relative_tests = relative_rulespec.with_name(
-        f"{relative_rulespec.stem}.test.yaml"
-    )
+    relative_tests = relative_rulespec.with_name(f"{relative_rulespec.stem}.test.yaml")
     expected_files = {
         "issues.json",
         relative_rulespec.as_posix(),
