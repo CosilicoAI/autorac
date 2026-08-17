@@ -26500,7 +26500,7 @@ def _load_initial_validation_retry_feedback(args: Any) -> tuple[str, ...]:
         or any(not isinstance(issue, str) or not issue for issue in issues)
     ):
         raise ValueError("preserved repair candidate issues are invalid")
-    return _validation_retry_issue_snapshot(issues)
+    return _finite_validation_retry_issue_snapshot(issues)
 
 
 def _validate_tests_only_repair_contract(
@@ -26578,12 +26578,18 @@ def _full_validation_issue_list(*issue_groups: object) -> tuple[str, ...]:
 
 def _validation_retry_issue_snapshot(
     *issue_groups: object,
+    inspection_limit_per_group: int = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4,
 ) -> tuple[str, ...]:
     """Snapshot bounded, category-diverse issues for one captured candidate."""
 
+    if (
+        isinstance(inspection_limit_per_group, bool)
+        or not isinstance(inspection_limit_per_group, int)
+        or inspection_limit_per_group < 1
+    ):
+        raise ValueError("Validation retry issue inspection limit must be positive")
     candidates: list[str] = []
     seen: set[str] = set()
-    inspection_limit = VALIDATION_RETRY_FEEDBACK_MAX_ITEMS * 4
     for issue_group in issue_groups:
         if not isinstance(issue_group, Sequence) or isinstance(
             issue_group, (str, bytes)
@@ -26591,7 +26597,7 @@ def _validation_retry_issue_snapshot(
             continue
         inspected = 0
         issue_iterator = iter(issue_group)
-        while inspected < inspection_limit:
+        while inspected < inspection_limit_per_group:
             try:
                 issue = next(issue_iterator)
             except StopIteration:
@@ -26605,6 +26611,17 @@ def _validation_retry_issue_snapshot(
             seen.add(item)
             candidates.append(item)
     return _category_diverse_validation_retry_issues(candidates)
+
+
+def _finite_validation_retry_issue_snapshot(
+    issue_group: Sequence[str],
+) -> tuple[str, ...]:
+    """Scan one materialized artifact-bounded issue list before prompt capping."""
+
+    return _validation_retry_issue_snapshot(
+        issue_group,
+        inspection_limit_per_group=_FAILED_ENCODE_CANDIDATE_MAX_ISSUES,
+    )
 
 
 def _category_diverse_validation_retry_issues(
@@ -32239,7 +32256,7 @@ def _run_encode_attempt(
                     outcome["overlay_validation_success"] = bool(can_apply)
             if not can_apply:
                 full_validation_issues = _full_validation_issue_list(apply_issues)
-                retry_validation_issues = _validation_retry_issue_snapshot(
+                retry_validation_issues = _finite_validation_retry_issue_snapshot(
                     apply_issues
                 )
                 detail = (
@@ -32333,7 +32350,7 @@ def _run_encode_attempt(
                         outcome["overlay_validation_success"] = False
                 if not can_apply:
                     full_validation_issues = _full_validation_issue_list(apply_issues)
-                    retry_validation_issues = _validation_retry_issue_snapshot(
+                    retry_validation_issues = _finite_validation_retry_issue_snapshot(
                         apply_issues
                     )
                     detail = (
