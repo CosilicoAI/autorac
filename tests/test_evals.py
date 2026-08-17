@@ -1297,9 +1297,7 @@ def test_estg_66_multibyte_amendment_body_remains_visible_in_prompt(tmp_path):
     # The sentence itself contributes nine UTF-8 continuation bytes; the suffix
     # supplies the remaining 433 needed to reproduce the 12,317-byte document.
     multibyte_suffix = "ä" * 433
-    ascii_padding = "x" * (
-        11_875 - len(amendment_sentence) - len(multibyte_suffix) - 1
-    )
+    ascii_padding = "x" * (11_875 - len(amendment_sentence) - len(multibyte_suffix) - 1)
     amendment_body = f"{amendment_sentence}\n{ascii_padding}{multibyte_suffix}"
     amendment = CorpusAmendmentDocument(
         citation_path=amendment_citation,

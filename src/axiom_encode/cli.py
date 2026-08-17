@@ -29093,9 +29093,7 @@ def _run_encode_attempt(
                     for document in _amendment_documents_visible_in_context_manifest(
                         source_unit.amendment_documents,
                         Path(result.context_manifest_file),
-                        expected_manifest_sha256=(
-                            result.context_manifest_sha256 or ""
-                        ),
+                        expected_manifest_sha256=(result.context_manifest_sha256 or ""),
                     )
                 }
                 if source_unit.amendment_documents

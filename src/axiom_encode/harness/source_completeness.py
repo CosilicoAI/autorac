@@ -15007,7 +15007,9 @@ def _companion_test_issues(
             "pre-rounding derived amount to 100.49 -> 100 and 100.50 -> 101; "
             "assert both the reached unrounded intermediate and the affected "
             "principal output in each case."
-            if any(direction == "nearest" for _branch, direction in missing_rounding_tests)
+            if any(
+                direction == "nearest" for _branch, direction in missing_rounding_tests
+            )
             else ""
         )
         issues.append(
