@@ -13117,6 +13117,9 @@ class TestCmdEncode:
         args.repair_candidate_tests_only = overrides.get(
             "repair_candidate_tests_only", False
         )
+        args.emit_final_rejected_candidate = overrides.get(
+            "emit_final_rejected_candidate", None
+        )
         args.policyengine_rule_hint = overrides.get("policyengine_rule_hint", None)
         args.db = overrides.get("db", tmp_path / "encodings.db")
         args.sync = overrides.get("sync", True)
@@ -14546,6 +14549,140 @@ rules:
         assert "preserved-rule" in candidate.rulespec
         assert candidate.tests is not None
         assert "preserved-companion" in candidate.tests
+
+    def test_encode_passes_cross_run_candidate_issues_to_first_attempt_feedback(
+        self, tmp_path
+    ):
+        candidate_root = tmp_path / "preserved-candidate"
+        candidate_path = Path("statutes/26/1/j/2.yaml")
+        output_file = candidate_root / candidate_path
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\n# preserved-rule\nrules: []\n")
+        test_file = output_file.with_suffix(".test.yaml")
+        test_file.write_text("# preserved-companion\n[]\n")
+        rulespec_sha256 = hashlib.sha256(output_file.read_bytes()).hexdigest()
+        tests_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
+        seeded_issues = [
+            "[complete-source-unit:structure] missing branch: section 66(1)",
+            "[complete-source-unit:formula-output] section 66(1) has no output",
+        ]
+        (candidate_root / "issues.json").write_text(
+            json.dumps(
+                {
+                    "schema": "axiom-encode/failed-encode-candidate/v1",
+                    "path": candidate_path.as_posix(),
+                    "issues": seeded_issues,
+                    "rulespec_sha256": rulespec_sha256,
+                    "tests_sha256": tests_sha256,
+                    "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+                    "attempt_count": 4,
+                }
+            )
+            + "\n"
+        )
+        args = self._make_args(
+            tmp_path,
+            repair_candidate_root=candidate_root,
+            repair_candidate_path=candidate_path,
+            repair_candidate_rulespec_sha256=rulespec_sha256,
+            repair_candidate_tests_sha256=tests_sha256,
+        )
+
+        mock_run, exit_code = self._run_encode(args, self._make_eval_result(True))
+
+        assert exit_code == 0
+        assert mock_run.call_args.kwargs["validation_retry_feedback"] == tuple(
+            seeded_issues
+        )
+
+    def test_encode_emits_only_final_validator_rejected_candidate(self, tmp_path):
+        failed_candidate_root = tmp_path / "failed-encode"
+        args = self._make_args(
+            tmp_path,
+            model=None,
+            apply=True,
+            sync=False,
+            escalation_enabled=True,
+            emit_final_rejected_candidate=failed_candidate_root,
+        )
+        final_issues = [
+            "[complete-source-unit:structure] missing branch: section 66(1)",
+            "[complete-source-unit:formula-output] section 66(1) has no output",
+        ]
+
+        exit_code, generated, _validated, _run, _validate, _apply = (
+            self._run_validator_escalation_case(
+                args,
+                [
+                    (False, ["terra attempt one"]),
+                    (False, ["terra attempt two"]),
+                    (False, ["sol attempt one"]),
+                    (False, final_issues),
+                ],
+            )
+        )
+
+        assert exit_code == 1
+        assert len(generated) == 4
+        relative_rulespec = Path("statutes/26/1/j/2.yaml")
+        relative_tests = relative_rulespec.with_suffix(".test.yaml")
+        emitted_files = {
+            path.relative_to(failed_candidate_root).as_posix()
+            for path in failed_candidate_root.rglob("*")
+            if path.is_file()
+        }
+        assert emitted_files == {
+            "issues.json",
+            relative_rulespec.as_posix(),
+            relative_tests.as_posix(),
+        }
+        assert "rejected-attempt-4" in (
+            failed_candidate_root / relative_rulespec
+        ).read_text()
+        assert "historical-and-current-cases-4" in (
+            failed_candidate_root / relative_tests
+        ).read_text()
+        issues = json.loads((failed_candidate_root / "issues.json").read_text())
+        assert issues == {
+            "schema": "axiom-encode/failed-encode-candidate/v1",
+            "path": relative_rulespec.as_posix(),
+            "issues": final_issues,
+            "rulespec_sha256": hashlib.sha256(
+                (failed_candidate_root / relative_rulespec).read_bytes()
+            ).hexdigest(),
+            "tests_sha256": hashlib.sha256(
+                (failed_candidate_root / relative_tests).read_bytes()
+            ).hexdigest(),
+            "encoder_version": AXIOM_ENCODE_TEST_VERSION,
+            "attempt_count": 4,
+        }
+
+    @pytest.mark.parametrize(
+        "relative_output",
+        [Path("metrics/result.yaml"), Path("statutes/26/1.test.yaml")],
+    )
+    def test_final_rejected_candidate_emission_rejects_noncanonical_output(
+        self, tmp_path, relative_output
+    ):
+        import axiom_encode.cli as cli_module
+
+        output_root = tmp_path / "out"
+        output_file = output_root / "codex-terra" / relative_output
+        output_file.parent.mkdir(parents=True)
+        output_file.write_text("format: rulespec/v1\nrules: []\n")
+        output_file.with_suffix(".test.yaml").write_text("[]\n")
+
+        with pytest.raises(RuntimeError, match="canonical RuleSpec module"):
+            cli_module._emit_final_rejected_candidate(
+                SimpleNamespace(
+                    runner="codex-terra",
+                    output_file=str(output_file),
+                ),
+                output_root=output_root,
+                destination=tmp_path / "failed-encode",
+                validation_issues=("validator rejected candidate",),
+                attempt_count=1,
+            )
 
     def test_encode_tests_only_repair_requires_bound_apply_contract(self, tmp_path):
         import axiom_encode.cli as cli_module
