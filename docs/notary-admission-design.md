@@ -1,9 +1,9 @@
-# Notary admission: design v16
+# Notary admission: design v17
 
 Status: draft for sign-off. Implements the #1192 charter with the #1506
 diff-coverage delta, under the build decision recorded on both issues
-(dual-verdict, 2026-08-17). Version 16 folds design-review rounds 1–15
-(ninety-nine blocking findings; the record lives on #1507). Nothing
+(dual-verdict, 2026-08-17). Version 17 folds design-review rounds 1–16
+(one hundred three blocking findings; the record lives on #1507). Nothing
 admission-capable merges until the §9 preconditions are satisfied and this
 document is approved by the charter's gate: an independent cross-family
 review of this concrete design plus Max's named sign-off, with every §11
@@ -278,10 +278,26 @@ eligibility (§3.2 in listed order), assignment (§3.3 rules 1–4 in
 order), gates (missing before unacceptable, then bytewise-least
 `gate_id`) — the reported refusal is the first failing check; `path` is
 the bytewise-least affected path for path-scoped codes and `null`
-otherwise; `detail` is the fixed template string defined per code (no
-free text), so identical faults produce identical bytes. The
+otherwise; `detail` is the fixed template string defined per code — normatively:
+`uncovered-path` → "no eligible transition covers this path";
+`ambiguous-assignment` → "more than one valid assignment";
+`inconsistent-chain` → "eligible transitions exist but no valid chain";
+`record-cycle` → "consumed records admit no execution order";
+`no-valid-execution` → "no topological order yields realizable trees";
+`inadmissible-entry` → "entry mode or type inadmissible";
+`structural` → "tree or store structurally malformed";
+`state-identical` → "base and subject states are identical";
+`gate-missing` → "required gate absent";
+`gate-unacceptable` → "gate outcome outside the acceptable set" —
+so identical faults produce identical bytes. Code selection between
+`uncovered-path` and `inconsistent-chain` is fixed: `uncovered-path`
+when no eligible transition names the path at all,
+`inconsistent-chain` when transitions name it but no valid chain
+exists. The preflight order is the closed list: repository resolution,
+chain-predecessor admissibility, policy and profile presence, registry
+validity, trust-surface refusals in §4's listed sentence order. The
 state-identical refusal carries code `"state-identical"`, stage
-`"preflight"`, added to the closed enum. There is no `diff_coverage` refusal
+`"preflight"`. There is no `diff_coverage` refusal
 object anywhere; the pass variant's `diff_coverage` is the literal
 `"pass"` and nothing else.
 
@@ -363,6 +379,12 @@ detached signatures beside it. The lineage directory is outside the
 protected-content coverage domain but inside the preflight's structural
 checks: schema-valid, authenticated, correctly content-addressed,
 append-only; deleting or mutating an existing record is a refusal.
+Structural checks govern **records present at the base** — the store's
+integrity as inherited; a **newly introduced** record that is
+malformed, misaddressed, or badly signed is not a structural refusal
+but an eligibility-stage ineligible record, enumerated with its
+reasons, so one bad new record cannot veto an otherwise covered
+candidate.
 Reports, receipts, genesis, and transition records publish per §7 and are
 never part of the subject tree.
 
@@ -386,10 +408,15 @@ manifest the system accepts.
 Records present under `.axiom/lineage/` in the subject tree and absent at
 the base — introduced by this candidate — carrying this `lane` and
 `epoch_sha256`, with valid signatures per the role table. The sorted
-digest list is bound into report and receipt. Replay is dead: a record
-merged by an earlier candidate is present at the base and ineligible ever
-after; cross-lane and cross-epoch records refuse on their bindings; stale
-records refuse in replay (§3.3).
+digest list is bound into report and receipt. Replay of **previously
+published** records is dead: one merged by an earlier candidate is
+present at the base and ineligible ever after; cross-lane and
+cross-epoch records refuse on their bindings; records whose
+before-digests no longer match the base refuse in replay (§3.3). A
+never-published record stockpiled from an abandoned attempt can be
+introduced later if its endpoints recur — within the coverage claim
+(the bytes are authentically lineage-attested); event-to-attempt
+freshness binding is named future work, not claimed.
 
 ### 3.3 The predicate, deterministic and total
 
@@ -643,13 +670,23 @@ Trust roots for every step resolve through one normative committed
 registry: `.axiom/notary/keys.json` at the base, schema
 `axiom/notary-key-registry/v1` — a closed object mapping each role to
 its sorted (by `spki_sha256`), strictly unique array of
-`{spki_sha256, public_key_pem_base64}` entries: **the key bytes
-themselves**, because a fingerprint alone cannot verify an Ed25519
-signature. Registry role names are exactly the §2.1 role-table roles —
+`{spki_sha256, public_key_spki_der_base64}` entries: **the key bytes
+themselves** (standard base64 with padding, RFC 4648 §4, of the DER
+SubjectPublicKeyInfo; decoding must yield a valid Ed25519 SPKI whose
+SHA-256 equals the beside fingerprint, else the registry refuses) —
+because a fingerprint alone cannot verify a signature. Registry role names are exactly the §2.1 role-table roles —
 `producer`, `actor`, `review`, `admin-approver`, `approver` — plus
 `notary` (whose entry mirrors the SPKI pinned in the lane's consumer
-verification spec; a mismatch refuses). Scope-to-registry resolution
-is the role table itself: a detached signature under a scope verifies
+verification spec; a mismatch refuses). The three typed scopes —
+`genesis`, `transition`, and `notary` — all resolve to the **`notary`**
+registry entry: the external typed signer signs all three with the
+notary key, and the admin-approver's separate signature is what
+authorizes the administrative ones. **Generation-side and
+admission-side roles are disjoint**: an SPKI registered under
+`producer` or `actor` must not appear under `review`, `admin-approver`,
+`approver`, or `notary` (the charter's separate-key requirement made
+checkable; a collision refuses the registry). For every other scope,
+scope-to-registry resolution is the role table itself: a detached signature under a scope verifies
 against the key bytes registered for that scope's role, never against
 the signature file's self-declared fingerprint (which is
 cross-checked, not trusted). The registry is a §4 trust surface: it
@@ -812,10 +849,14 @@ audited bypass**: the bootstrap administrative actor, whose one
 permitted action is merging the activation commit, listed in §9 as a
 security-critical authority. The guarantee does not rest on that
 actor's discipline: activation refuses unless the recomputed
-base→subject diff equals exactly the epoch pin plus the three
-genesis-bound policy files, so a bypass misused for any other merge
-produces an activation that cannot finalize and a bootstrap that
-voids. A genesis attempt observing a moved tip or an absent lock
+base→subject state installs exactly the five bootstrap paths — the
+epoch-pinned consumer spec, the three policies, the key registry —
+**defined by final installed values, not by diff membership**: each
+path's subject bytes must equal its genesis-bound digest (with the
+epoch substitution for the spec), whether or not the path already held
+those bytes at genesis, and no other path may change. A bypass misused
+for any other merge produces an activation that cannot finalize and a
+bootstrap that voids. A genesis attempt observing a moved tip or an absent lock
 refuses.
 
 Genesis also **binds its prospective policies and the activation
@@ -836,9 +877,10 @@ afterward. The lane's epoch pin cannot
 live inside the genesis tree (that would be `epoch → tree → body →
 epoch`); it lands immediately after, in the **bootstrap activation
 transition** — the chain's second artifact, predecessor genesis, whose
-delta is exactly the consumer-spec epoch pin plus those four bound
-files (the three policies and the key registry), digest-identical to
-`bootstrap_policies`; its eligibility oracle
+delta installs the five bootstrap paths by final value — each
+byte-equal to its genesis-bound digest (epoch substituted in the spec),
+paths already correct at genesis permitted to be absent from the diff,
+no other path changing; its eligibility oracle
 is the genesis-bound transition-path policy. Enforcement begins at
 activation finalization; the lock spans the whole interval, so no
 ordinary candidate can slip between. The stale-genesis laundering path
@@ -1173,7 +1215,18 @@ intermediate mode refused (chain-wide agreement); registry entry whose
 key bytes hash to a different spki_sha256 refused; scope resolved to
 the wrong registry role refused; genesis over a locked tip whose
 ceremony key is absent from the genesis-bound prospective registry
-refused; activation delta missing the key registry refused; intermediate replay projection with a path both
+refused; activation leaving any bootstrap path's installed bytes
+unequal to its genesis-bound digest refused; bootstrap path already
+byte-correct at genesis absent from the activation diff accepted
+(positive control — installed values, not diff membership);
+generation-side SPKI colliding with an admission-side role refused;
+registry key bytes failing base64, DER, Ed25519, or fingerprint
+validation refused; noncanonical decimal id ("01") refused; invalid
+RFC 3339 emitted_at refused; registry notary entry differing from the
+consumer pin refused; waiver bytes disagreeing with the base toolchain
+pin refused; equal-manifest transition carrying a forged nonempty
+delta refused; bad newly-introduced record enumerated ineligible while
+the candidate passes (positive control — structural scope); intermediate replay projection with a path both
 terminal and directory-prefix refused as no-valid-execution;
 noncanonical JCS bytes or wrong semantic-array order refused; genesis
 inventory containing a path outside the protected domain refused;
